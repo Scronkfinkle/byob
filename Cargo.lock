@@ -5026,7 +5026,9 @@ dependencies = [
 name = "yah-store"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "directories",
+ "log",
  "rusqlite",
  "serde",
  "serde_json",

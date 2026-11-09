@@ -1,0 +1,161 @@
+//! `settings.json` (user preferences) and `secrets.json` (API keys) in the config dir.
+//!
+//! Settings are forgiving: a missing file means defaults, a field with the wrong type falls
+//! back to its default (logged), unknown fields are kept and written back, and a corrupt
+//! file is copied aside and replaced by defaults with a warning. Secrets never go in
+//! `settings.json`; `secrets.json` is written with mode 0600 on unix.
+
+use std::path::{Path, PathBuf};
+
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Map, Value};
+
+use crate::error::Result;
+use crate::files::{Loaded, load_json, save_json};
+
+/// Deserialize a field, falling back to its default when the stored value has the wrong
+/// shape — one bad field shouldn't reset every other setting.
+fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(d: D) -> Result<T, D::Error> {
+    let v = Value::deserialize(d)?;
+    Ok(serde_json::from_value(v.clone()).unwrap_or_else(|e| {
+        log::warn!("yah-store: ignoring settings value {v}: {e}");
+        T::default()
+    }))
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Follow the operating system.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// Where to send inference requests. `None` means "use the built-in default".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct InferenceSettings {
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Fields this build doesn't know (written by a newer yah, or by hand); preserved.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl InferenceSettings {
+    fn is_empty(&self) -> bool {
+        self.base_url.is_none() && self.model.is_none() && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "InferenceSettings::is_empty")]
+    pub inference: InferenceSettings,
+    #[serde(default, deserialize_with = "lenient")]
+    pub theme: Theme,
+    /// Folder new chats work in.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<PathBuf>,
+    /// Extra folders to load plugins from.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Vec::is_empty")]
+    pub plugin_dirs: Vec<PathBuf>,
+    /// Fields this build doesn't know; preserved across load/save.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Keys that must never live in settings.json.
+const SECRET_KEYS: &[&str] = &["api_key", "apiKey"];
+
+fn strip_secrets(map: &mut Map<String, Value>, at: &str, warnings: &mut Vec<String>) {
+    for k in SECRET_KEYS {
+        if map.remove(*k).is_some() {
+            warnings.push(format!("ignored {at}{k} in settings.json: API keys belong in secrets.json"));
+        }
+    }
+}
+
+impl Settings {
+    /// Read settings; never fails (see the module docs). Warnings are also logged.
+    pub fn load(path: &Path) -> Loaded<Self> {
+        let mut loaded: Loaded<Self> = load_json(path);
+        strip_secrets(&mut loaded.value.extra, "", &mut loaded.warnings);
+        strip_secrets(&mut loaded.value.inference.extra, "inference.", &mut loaded.warnings);
+        for w in &loaded.warnings {
+            log::warn!("yah-store: {w}");
+        }
+        loaded
+    }
+
+    /// Write atomically (temp file + rename).
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let mut clean = self.clone();
+        let mut ignored = Vec::new();
+        strip_secrets(&mut clean.extra, "", &mut ignored);
+        strip_secrets(&mut clean.inference.extra, "inference.", &mut ignored);
+        save_json(path, &clean, None)
+    }
+
+    /// Load, change, save; returns what was saved.
+    pub fn update(path: &Path, change: impl FnOnce(&mut Self)) -> Result<Self> {
+        let mut s = Self::load(path).value;
+        change(&mut s);
+        s.save(path)?;
+        Ok(s)
+    }
+}
+
+/// Credentials, kept apart from settings so settings.json can be shared or synced.
+/// Later this may move to the OS keyring; callers only see this type.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Secrets {
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl std::fmt::Debug for Secrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Secrets").field("api_key", &self.api_key.as_ref().map(|_| "<redacted>")).field("extra", &self.extra.keys().collect::<Vec<_>>()).finish()
+    }
+}
+
+/// Owner read/write only.
+pub const SECRETS_MODE: u32 = 0o600;
+
+impl Secrets {
+    /// Read secrets; never fails. On unix, a file readable by others is tightened to 0600
+    /// (with a warning).
+    pub fn load(path: &Path) -> Loaded<Self> {
+        let mut loaded: Loaded<Self> = load_json(path);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(path) {
+                let mode = meta.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    let fixed = std::fs::set_permissions(path, std::fs::Permissions::from_mode(SECRETS_MODE));
+                    loaded.warnings.push(match fixed {
+                        Ok(()) => format!("{} was readable by others (mode {mode:o}); changed it to 600", path.display()),
+                        Err(e) => format!("{} is readable by others (mode {mode:o}) and couldn't be fixed: {e}", path.display()),
+                    });
+                }
+            }
+        }
+        for w in &loaded.warnings {
+            log::warn!("yah-store: {w}");
+        }
+        loaded
+    }
+
+    /// Write atomically, mode 0600 on unix.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        save_json(path, self, Some(SECRETS_MODE))
+    }
+}

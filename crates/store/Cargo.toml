@@ -1,6 +1,6 @@
 [package]
 name = "yah-store"
-description = "SQLite persistence for chats, messages, projects, undo journal (L1)"
+description = "SQLite persistence for chats, messages, tool steps, grants and the undo journal; settings and secrets files (L1)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,6 +14,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 rusqlite.workspace = true
 directories.workspace = true
+chrono.workspace = true
+log.workspace = true
 
 [lints]
 workspace = true
