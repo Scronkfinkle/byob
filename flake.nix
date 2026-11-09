@@ -73,6 +73,8 @@
             wasm-bindgen --target web --no-typescript --out-dir dist target/wasm32-unknown-unknown/release/yah-web.wasm
             wasm-opt -O2 --enable-bulk-memory --enable-nontrapping-float-to-int -o dist/yah-web_bg.wasm dist/yah-web_bg.wasm
             cp apps/yah-web/index.html dist/
+            # Precompressed copies; the server sends them on Accept-Encoding: gzip.
+            gzip -9 -k -n dist/yah-web_bg.wasm dist/yah-web.js
             runHook postBuild
           '';
           installPhase = ''

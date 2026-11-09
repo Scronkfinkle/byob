@@ -5068,6 +5068,8 @@ dependencies = [
  "egui",
  "ewebsock",
  "log",
+ "tungstenite 0.30.0",
+ "web-time",
  "yah-protocol",
 ]
 

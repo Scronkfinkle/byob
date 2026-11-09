@@ -5,6 +5,7 @@
 //! yah --serve [ADDR]          desktop window + browser access (default 127.0.0.1:7470)
 //! yah --headless [ADDR]       browser access only, no window
 //!     --web-dir DIR           built web bundle to serve (default: $YAH_WEB_DIR, else apps/yah-web/dist)
+//!     --allow-user LOGIN      only admit this Tailscale login via `tailscale serve` (repeatable)
 //!     --inference-url URL     OpenAI-compatible base URL
 //!     --model NAME
 //!     --workspace DIR         folder tools work in (default: current directory)
@@ -32,6 +33,7 @@ struct Args {
     serve: Option<SocketAddr>,
     headless: bool,
     web_dir: PathBuf,
+    allowed_users: Vec<String>,
     inference: InferenceConfig,
     workspace: Option<PathBuf>,
     dev_tools: bool,
@@ -43,6 +45,7 @@ fn parse_args() -> Result<Args, String> {
     let mut args = Args {
         serve: None,
         headless: false,
+        allowed_users: Vec::new(),
         web_dir: std::env::var_os("YAH_WEB_DIR").map_or_else(|| PathBuf::from("apps/yah-web/dist"), PathBuf::from),
         inference: InferenceConfig::default(),
         workspace: None,
@@ -67,6 +70,7 @@ fn parse_args() -> Result<Args, String> {
                 args.serve = Some(addr);
             }
             "--web-dir" => args.web_dir = it.next().ok_or("--web-dir needs a path")?.into(),
+            "--allow-user" => args.allowed_users.push(it.next().ok_or("--allow-user needs a Tailscale login")?),
             "--inference-url" => args.inference.base_url = it.next().ok_or("--inference-url needs a URL")?,
             "--model" => args.inference.model = it.next().ok_or("--model needs a name")?,
             "--workspace" => args.workspace = Some(it.next().ok_or("--workspace needs a folder")?.into()),
@@ -80,7 +84,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "-h" | "--help" => {
                 return Err(
-                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--inference-url URL] [--model NAME] [--workspace DIR] [--dev-tools]"
+                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--dev-tools]"
                         .into(),
                 );
             }
@@ -129,7 +133,7 @@ fn run() -> Result<(), String> {
     let engine = EngineHandle::spawn_with(config).map_err(|e| format!("starting engine: {e}"))?;
 
     if let Some(addr) = args.serve {
-        let config = yah_server::ServerConfig { addr, web_dir: Some(args.web_dir) };
+        let config = yah_server::ServerConfig { addr, web_dir: Some(args.web_dir), allowed_users: args.allowed_users, ..Default::default() };
         let bound = yah_server::spawn(engine.clone(), config).map_err(|e| format!("binding {addr}: {e}"))?;
         eprintln!("yah: browser UI at http://{bound}  (expose on your tailnet with: tailscale serve {})", bound.port());
     }

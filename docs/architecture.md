@@ -57,12 +57,41 @@ build for `wasm32-unknown-unknown`.
 `yah --serve` binds `127.0.0.1:7470` by default. Expose it with `tailscale serve 7470`,
 which terminates TLS and restricts access to your tailnet. Never bind a public interface.
 
-- The `/ws` upgrade rejects browser `Origin`s that don't match `Host`/`X-Forwarded-Host`,
-  so a random website open in your browser can't drive the harness (cross-site WebSocket
-  hijacking).
-- Static files: plain path components only (no `..`), fixed content types, `nosniff`.
+What `tailscale serve` forwards (from its source, `ipn/ipnlocal/serve.go`; not observed
+live because Serve is not enabled on the dev tailnet): it connects from loopback, passes the
+browser's `Host` through unchanged, always *sets* `X-Forwarded-Host` (and `X-Forwarded-Proto`,
+`X-Forwarded-For`), strips any client-sent `Tailscale-*` headers, then adds
+`Tailscale-User-Login`/`-Name` for untagged tailnet users. Tagged devices get no identity;
+Funnel (public internet) requests get `Tailscale-Funnel-Request: ?1` and no identity.
+
+- **Origin check.** The `/ws` upgrade rejects browser `Origin`s that don't match `Host` (or
+  `X-Forwarded-Host`, honoured only from a loopback proxy), so a random website open in your
+  browser can't drive the harness (cross-site WebSocket hijacking). Behind `tailscale serve`
+  `Host` already equals the tailnet name, so the check holds unchanged.
+- **Identity.** `Tailscale-User-*` headers are trusted only when the TCP peer is loopback;
+  from any other peer they are attacker-controlled and ignored (and logged). Every WebSocket
+  connect/disconnect is logged with who it was (`Ann <ann@…>`, `local user`, `anonymous`).
+- **Allowlist.** `--allow-user LOGIN` (repeatable) admits only those logins, for page loads
+  and WebSocket upgrades alike; others get a 403 page naming the flag. Direct loopback
+  requests that carry no proxy headers (you, on this machine) are still admitted; anything
+  else without an identity — non-loopback peers, tagged devices, other proxies — is not.
+  Without `--allow-user`, the tailnet is the boundary, as before.
+- **Funnel is always refused**: it would put the harness on the public internet.
+- **Resource limits.** 64 concurrent connections (extra ones get a 503 from the accept loop);
+  the whole request head must arrive within 10 s (a per-read timeout alone lets slowloris
+  trickle bytes forever); writes time out after 10 s; WebSockets are pinged after 20 s of
+  silence and dropped after 60 s with nothing received (browsers answer pings themselves).
+- **Static files.** Plain path components only (no `..`), fixed content types, `nosniff`,
+  `Referrer-Policy: no-referrer`. `cargo xtask web` writes `*.gz` next to the wasm and JS
+  (6.9 MB → 2.5 MB); they're served with `Content-Encoding: gzip` to clients that accept it,
+  unless older than the source. File names aren't content-hashed, so everything is
+  `Cache-Control: no-cache` with per-variant ETags (cheap 304 revalidation); errors are `no-store`.
 - Input caps: 16 KiB request head, 4 MiB WebSocket frames, 4 MiB SSE lines, 64 tool calls.
-- Not yet: per-user auth (planned: Tailscale identity headers), read-only clients.
+- **Reconnect.** The browser's `WsConnection` redials on close/error/hung dial with backoff
+  (0.5 s doubling to 10 s; reset once a link has stayed up 5 s), replays `Hello` so the engine
+  resends `State` + `Transcript`, and queues messages typed while offline (up to 64). The tab
+  shows one "reconnecting…" banner rather than a notice per retry.
+- Not yet: read-only clients.
 
 ## Inference
 
