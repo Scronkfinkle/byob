@@ -38,10 +38,11 @@ graph of a shipped target.
 ## Layers
 
 ```
-L5  apps/yah (desktop, --serve, --headless) · apps/yah-web (wasm)
-L4  server (HTTP + WebSocket) · ui-egui (wasm-safe)
-L3  agent: engine, turns (tool loop next)
-L2  tools
+L6  apps/yah (desktop, --serve, --headless) · apps/yah-web (wasm)
+L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
+L4  agent: engine, turns, tool loop, permissions, approvals
+L3  plugins: manifests, skills, connectors → adapted into Tools
+L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client)
 L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store
 L0  types
 ```

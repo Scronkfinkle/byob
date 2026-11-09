@@ -18,6 +18,8 @@ yah-server = { path = "crates/server" }
 yah-llm = { path = "crates/llm" }
 yah-store = { path = "crates/store" }
 yah-tools = { path = "crates/tools" }
+yah-mcp = { path = "crates/mcp" }
+yah-plugins = { path = "crates/plugins" }
 yah-agent = { path = "crates/agent" }
 yah-ui-egui = { path = "crates/ui-egui" }
 

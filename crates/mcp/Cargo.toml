@@ -1,0 +1,17 @@
+[package]
+name = "yah-mcp"
+description = "Blocking MCP client: stdio and streamable HTTP transports, tools/list and tools/call (L2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

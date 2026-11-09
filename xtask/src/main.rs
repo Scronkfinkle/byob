@@ -13,11 +13,13 @@ const LAYERS: &[(&str, u8)] = &[
     ("yah-llm", 1),
     ("yah-store", 1),
     ("yah-tools", 2),
-    ("yah-agent", 3),
-    ("yah-server", 4),
-    ("yah-ui-egui", 4),
-    ("yah", 5),
-    ("yah-web", 5),
+    ("yah-mcp", 2),
+    ("yah-plugins", 3),
+    ("yah-agent", 4),
+    ("yah-server", 5),
+    ("yah-ui-egui", 5),
+    ("yah", 6),
+    ("yah-web", 6),
     ("xtask", 9),
 ];
 

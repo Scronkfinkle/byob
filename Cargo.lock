@@ -4863,6 +4863,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "yah-mcp"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "yah-plugins"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "yah-mcp",
+ "yah-tools",
+]
+
+[[package]]
 name = "yah-protocol"
 version = "0.1.0"
 dependencies = [
