@@ -8,10 +8,12 @@
 //! keep the leading system prompt and the newest turns whole, fold older turns into a short
 //! recap, and shrink oversized messages if the newest turn alone does not fit.
 
-use crate::{ChatMessage, ToolSpec};
+use crate::{ChatMessage, ToolSpec, toolprompt};
 
 /// Fixed per-message cost (role markers, separators) in chat templates.
 const MESSAGE_OVERHEAD: usize = 4;
+/// Flat estimate for one image input (vision encoders use a few hundred to ~1.5k tokens).
+const IMAGE_TOKENS: usize = 1_024;
 /// Context assumed when the server does not report one.
 pub const DEFAULT_CONTEXT_TOKENS: usize = 32_768;
 /// Messages are never cut below this many characters, so the model still sees what happened.
@@ -36,7 +38,8 @@ pub fn estimate_message_tokens(m: &ChatMessage) -> usize {
         .iter()
         .map(|c| estimate_tokens(&c.function.name).saturating_add(estimate_tokens(&c.function.arguments)).saturating_add(MESSAGE_OVERHEAD))
         .fold(0, usize::saturating_add);
-    MESSAGE_OVERHEAD.saturating_add(m.content.as_deref().map(estimate_tokens).unwrap_or(0)).saturating_add(calls)
+    let images = m.images.len().saturating_mul(IMAGE_TOKENS);
+    MESSAGE_OVERHEAD.saturating_add(m.content.as_deref().map(estimate_tokens).unwrap_or(0)).saturating_add(calls).saturating_add(images)
 }
 
 /// Estimated tokens for a transcript.
@@ -67,12 +70,16 @@ pub fn default_reply_reserve(context_tokens: usize) -> usize {
 /// into a recap user/assistant pair; finally, if the newest turn alone is too big, its largest
 /// messages are shortened (head and tail kept). Tool-call/tool-result pairs are never split.
 /// Best effort: the result can still exceed the budget if the system prompt alone does.
+///
+/// Each message is estimated once and the steps work on those numbers, so the cost stays
+/// linear in the history size even for very large contexts and long transcripts.
 pub fn fit_history(messages: &[ChatMessage], budget_tokens: usize, reserve_for_reply: usize) -> Vec<ChatMessage> {
     let avail = budget_tokens.saturating_sub(reserve_for_reply);
     let sys_end = messages.iter().position(|m| m.role != "system").unwrap_or(messages.len());
     let (system, rest) = messages.split_at(sys_end);
     let room = avail.saturating_sub(estimate_history_tokens(system));
-    if estimate_history_tokens(rest) <= room {
+    let mut costs: Vec<usize> = rest.iter().map(estimate_message_tokens).collect();
+    if sum(&costs) <= room {
         return messages.to_vec();
     }
 
@@ -80,24 +87,30 @@ pub fn fit_history(messages: &[ChatMessage], budget_tokens: usize, reserve_for_r
     let starts = turn_starts(rest);
     let last_start = starts.last().copied().unwrap_or(0);
     let mut rest: Vec<ChatMessage> = rest.to_vec();
-    for m in rest.iter_mut().take(last_start).filter(|m| m.role == "tool") {
-        shorten_content(m, CONDENSED_TOOL_CHARS);
+    for (m, cost) in rest.iter_mut().zip(costs.iter_mut()).take(last_start) {
+        if toolprompt::is_tool_result(m) && shorten_content(m, CONDENSED_TOOL_CHARS) {
+            *cost = estimate_message_tokens(m);
+        }
     }
     let mut out = system.to_vec();
-    if estimate_history_tokens(&rest) <= room {
+    if sum(&costs) <= room {
         out.extend(rest);
         return out;
     }
 
     // 2. Keep whole turns from the end within 80% of the room; the newest always stays.
     let mut keep_from = rest.len();
+    let mut kept_cost = 0usize;
     for &s in starts.iter().rev() {
-        if keep_from < rest.len() && estimate_history_tokens(rest.get(s..).unwrap_or_default()) > room.saturating_mul(4) / 5 {
+        let cost = kept_cost.saturating_add(sum(costs.get(s..keep_from).unwrap_or_default()));
+        if keep_from < rest.len() && cost > room.saturating_mul(4) / 5 {
             break;
         }
         keep_from = s;
+        kept_cost = cost;
     }
     let mut kept = rest.split_off(keep_from);
+    let kept_costs = costs.split_off(keep_from);
     if !rest.is_empty() {
         let recap = recap_text(&rest, room / 5);
         out.push(ChatMessage::user(recap));
@@ -106,15 +119,19 @@ pub fn fit_history(messages: &[ChatMessage], budget_tokens: usize, reserve_for_r
 
     // 3. Shrink the biggest kept messages until it fits.
     let kept_room = room.saturating_sub(estimate_history_tokens(out.get(system.len()..).unwrap_or_default()));
-    shrink_to_fit(&mut kept, kept_room);
+    shrink_to_fit(&mut kept, kept_costs, kept_room);
     out.extend(kept);
     out
 }
 
-/// Indices where a turn starts: 0, then every `user` message.
+fn sum(costs: &[usize]) -> usize {
+    costs.iter().copied().fold(0, usize::saturating_add)
+}
+
+/// Indices where a turn starts: 0, then every `user` message that is not a tool result.
 fn turn_starts(messages: &[ChatMessage]) -> Vec<usize> {
     let mut starts = vec![0];
-    starts.extend(messages.iter().enumerate().skip(1).filter(|(_, m)| m.role == "user").map(|(i, _)| i));
+    starts.extend(messages.iter().enumerate().skip(1).filter(|(_, m)| m.role == "user" && !toolprompt::is_tool_result(m)).map(|(i, _)| i));
     starts
 }
 
@@ -172,31 +189,45 @@ fn recap_text(older: &[ChatMessage], max_tokens: usize) -> String {
 }
 
 /// Shorten the largest messages (tool results first) until `messages` fits `max_tokens`.
-fn shrink_to_fit(messages: &mut [ChatMessage], max_tokens: usize) {
+/// `costs` are the messages' current estimates; only changed messages are re-estimated.
+fn shrink_to_fit(messages: &mut [ChatMessage], mut costs: Vec<usize>, max_tokens: usize) {
+    let mut chars: Vec<usize> = messages.iter().map(|m| m.content.as_ref().map_or(0, |c| c.chars().count())).collect();
+    let mut total = sum(&costs);
     for _ in 0..messages.len().saturating_mul(2) {
-        let total = estimate_history_tokens(messages);
         if total <= max_tokens {
             return;
         }
         let excess = total - max_tokens;
         let biggest = messages
-            .iter_mut()
-            .filter(|m| m.content.as_ref().is_some_and(|c| c.chars().count() > SHRINK_FLOOR_CHARS))
-            .max_by_key(|m| (m.role == "tool", m.content.as_ref().map(|c| c.len()).unwrap_or(0)));
-        let Some(m) = biggest else { return };
-        let len = m.content.as_ref().map(|c| c.chars().count()).unwrap_or(0);
+            .iter()
+            .zip(&chars)
+            .enumerate()
+            .filter(|(_, (_, n))| **n > SHRINK_FLOOR_CHARS)
+            .max_by_key(|(_, (m, n))| (toolprompt::is_tool_result(m), **n))
+            .map(|(i, _)| i);
+        let Some(i) = biggest else { return };
+        let (Some(m), Some(cost), Some(n)) = (messages.get_mut(i), costs.get_mut(i), chars.get_mut(i)) else { return };
         // Tokens -> characters at the ASCII rate, plus room for the marker.
         let cut = excess.saturating_mul(7).div_ceil(2).saturating_add(120);
-        shorten_content(m, len.saturating_sub(cut).max(SHRINK_FLOOR_CHARS));
+        if !shorten_content(m, n.saturating_sub(cut).max(SHRINK_FLOOR_CHARS)) {
+            // Can't get shorter (the marker makes floor-sized cuts a no-op): skip it from now on.
+            *n = 0;
+            continue;
+        }
+        let new_cost = estimate_message_tokens(m);
+        total = total.saturating_sub(*cost).saturating_add(new_cost);
+        *cost = new_cost;
+        *n = m.content.as_ref().map_or(0, |c| c.chars().count());
     }
 }
 
-/// Cut `m.content` to about `max_chars`, keeping the head and the tail.
-fn shorten_content(m: &mut ChatMessage, max_chars: usize) {
-    let Some(text) = m.content.as_ref() else { return };
+/// Cut `m.content` to about `max_chars`, keeping the head and the tail. True if it changed.
+fn shorten_content(m: &mut ChatMessage, max_chars: usize) -> bool {
+    let Some(text) = m.content.as_ref() else { return false };
     let len = text.chars().count();
-    if len <= max_chars {
-        return;
+    // Cutting less than the marker adds would make the message longer.
+    if len <= max_chars.saturating_add(MARKER_CHARS) {
+        return false;
     }
     let head = max_chars.saturating_mul(2) / 3;
     let tail = max_chars.saturating_sub(head);
@@ -205,7 +236,11 @@ fn shorten_content(m: &mut ChatMessage, max_chars: usize) {
     out.push_str(&format!("\n… [{omitted} characters omitted to fit the context] …\n"));
     out.extend(text.chars().skip(len.saturating_sub(tail)));
     m.content = Some(out);
+    true
 }
+
+/// Rough length of the "characters omitted" marker.
+const MARKER_CHARS: usize = 64;
 
 #[cfg(test)]
 mod tests {
@@ -284,6 +319,64 @@ mod tests {
         let r = out[3].content.as_deref().unwrap();
         assert!(r.starts_with("HEAD") && r.ends_with("TAIL"));
         assert!(estimate_history_tokens(&out) <= 3_000, "{}", estimate_history_tokens(&out));
+    }
+
+    #[test]
+    fn huge_histories_fit_in_linear_time() {
+        // 4000 turns, ~2.4 MB of text, against a 262k context: must not go quadratic.
+        let mut h = vec![ChatMessage::system("sys")];
+        for i in 0..4_000 {
+            h.push(ChatMessage::user(format!("q{i} {}", big(300))));
+            h.push(ChatMessage::assistant(format!("a{i} {}", big(300))));
+        }
+        let started = std::time::Instant::now();
+        let out = fit_history(&h, 262_144, default_reply_reserve(262_144));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+        assert!(estimate_history_tokens(&out) <= 262_144 - 16_384);
+        assert_eq!(out.last(), h.last());
+        // And a single newest turn made of hundreds of big tool results.
+        let call = ToolCall { id: "c".into(), name: "read_file".into(), arguments: "{}".into() };
+        for rounds in [60, 1_000] {
+            let mut h = vec![ChatMessage::system("sys"), ChatMessage::user("go")];
+            for _ in 0..rounds {
+                h.push(ChatMessage::assistant_tool_calls(None, std::slice::from_ref(&call)));
+                h.push(ChatMessage::tool_result("c", big(16_000)));
+            }
+            let started = std::time::Instant::now();
+            let out = fit_history(&h, 32_768, 4_096);
+            assert!(started.elapsed() < std::time::Duration::from_secs(2), "{rounds}: {:?}", started.elapsed());
+            assert_eq!(out.len(), h.len());
+            // 1000 results can't fit even at the floor size; 60 can.
+            if rounds == 60 {
+                assert!(estimate_history_tokens(&out) <= 32_768 - 4_096, "{}", estimate_history_tokens(&out));
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_tool_responses_do_not_start_turns() {
+        let call = ToolCall { id: "c1".into(), name: "read_file".into(), arguments: "{}".into() };
+        let h = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("old question"),
+            ChatMessage::assistant(big(4_000)),
+            ChatMessage::user("read it"),
+            toolprompt::fallback_assistant_message("", std::slice::from_ref(&call)),
+            toolprompt::fallback_tool_result(&call, &big(20_000)),
+        ];
+        let out = fit_history(&h, 3_000, 500);
+        // The old turn is folded into a recap; the call and its result stay together.
+        assert!(out[1].content.as_deref().unwrap().starts_with(RECAP_HEADER));
+        let n = out.len();
+        assert_eq!(out[n - 3].content.as_deref(), Some("read it"));
+        assert!(toolprompt::is_tool_result(&out[n - 1]));
+        assert!(out[n - 1].content.as_deref().unwrap().contains("omitted"));
+    }
+
+    #[test]
+    fn images_cost_tokens() {
+        let m = ChatMessage::user_with_images("look", vec!["data:image/png;base64,AAAA".into()]);
+        assert!(estimate_message_tokens(&m) >= IMAGE_TOKENS);
     }
 
     #[test]

@@ -14,6 +14,9 @@
 //! client answers the approval card, or the turn is stopped.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+mod adapt;
+#[cfg(test)]
+mod adapt_tests;
 mod chats;
 pub mod dev_tools;
 #[cfg(test)]
@@ -34,6 +37,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub use adapt::{AdaptOptions, ToolMode};
 pub use permissions::{Policy, Rule};
 use yah_protocol::{
     ApprovalAnswer, ChatCursor, ChatSummary, ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, Step, StepStatus,
@@ -64,6 +68,8 @@ pub struct EngineConfig {
     /// Name each chat with a short model request after its first reply (otherwise the
     /// first line of the first message stays the title).
     pub auto_title: bool,
+    /// Endpoint probing and tool-calling mode.
+    pub adapt: AdaptOptions,
 }
 
 impl EngineConfig {
@@ -78,6 +84,7 @@ impl EngineConfig {
             system_prompt: turn::DEFAULT_SYSTEM_PROMPT.to_owned(),
             paths: None,
             auto_title: true,
+            adapt: AdaptOptions::default(),
         }
     }
 }
@@ -106,6 +113,7 @@ enum Input {
         chat: String,
         title: String,
     },
+    Adapt(adapt::Event),
 }
 
 /// Cheap, cloneable handle used to attach clients to a running engine.
@@ -184,6 +192,8 @@ struct Client {
     wake: Waker,
     /// The chat this client looks at; `None` is a new chat that has no messages yet.
     chat: Option<String>,
+    /// Said `Hello`: gets broadcasts (before that it has no transcript to apply them to).
+    attached: bool,
 }
 
 /// An approval card waiting for an answer.
@@ -235,6 +245,8 @@ struct Engine {
     /// Chats still titled from their first line (the title we gave them): a model title
     /// may replace it, but never one the user chose.
     provisional: BTreeMap<String, String>,
+    /// Probed endpoint capabilities (see [`adapt`]).
+    endpoints: adapt::Endpoints,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -260,7 +272,12 @@ fn run(mut engine: Engine, rx: Receiver<Input>) {
 impl Engine {
     fn new(config: EngineConfig, store: Store, inbox: Sender<Input>) -> Self {
         let llm = yah_llm::Client::new(config.inference.clone()).map_err(|e| e.to_string());
+        let mut endpoints = adapt::Endpoints::new(config.adapt);
+        if let Ok(client) = &llm {
+            endpoints.probe(client, &inbox);
+        }
         Self {
+            endpoints,
             config: config.inference,
             llm,
             clients: BTreeMap::new(),
@@ -473,12 +490,13 @@ impl Engine {
             has_api_key: self.config.api_key.is_some(),
             endpoint: self.llm.as_ref().ok().map(|c| c.endpoint().to_string()),
             busy: chat.is_some_and(|c| self.chat_busy(c)),
+            endpoint_info: Some(self.endpoints.info(&self.config)),
         }
     }
 
     /// Send every client the state as it sees it (busy is per chat).
     fn broadcast_state(&mut self) {
-        let ids: Vec<ClientId> = self.clients.keys().copied().collect();
+        let ids: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.attached).map(|(id, _)| *id).collect();
         for id in ids {
             let state = self.state(self.clients.get(&id).and_then(|c| c.chat.as_deref()));
             self.send_to(id, ServerMsg::State(state));
@@ -488,7 +506,7 @@ impl Engine {
     fn handle(&mut self, input: Input) {
         match input {
             Input::Connect { id, tx, wake } => {
-                self.clients.insert(id, Client { tx, wake, chat: None });
+                self.clients.insert(id, Client { tx, wake, chat: None, attached: false });
             }
             Input::Disconnect { id } => {
                 self.clients.remove(&id);
@@ -497,6 +515,10 @@ impl Engine {
             Input::Client { id, msg } => self.handle_client(id, msg),
             Input::Turn(event) => self.handle_turn(event),
             Input::Titled { chat, title } => self.titled(&chat, &title),
+            Input::Adapt(event) => {
+                self.endpoints.handle(event);
+                self.broadcast_state();
+            }
         }
     }
 
@@ -509,6 +531,9 @@ impl Engine {
                     return;
                 }
                 log::info!("client {id} attached: {client}");
+                if let Some(c) = self.clients.get_mut(&id) {
+                    c.attached = true;
+                }
                 let mut chat = self.client_chat(id).or_else(|| self.most_recent_chat());
                 if let Some(c) = chat.clone()
                     && let Err(e) = self.live(&c)
@@ -551,6 +576,7 @@ impl Engine {
                     self.notice(id, format!("inference settings apply now but couldn't be saved: {e}"));
                 }
                 self.config = config;
+                self.endpoints.probe(&client, &self.inbox);
                 self.llm = Ok(client);
                 self.broadcast_state();
             }
@@ -771,6 +797,7 @@ impl Engine {
             tools: self.tools.clone(),
             workspace,
             step_ids: Arc::clone(&self.step_ids),
+            plan: self.endpoints.plan(&self.config),
         };
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });
@@ -864,7 +891,7 @@ impl Engine {
     }
 
     fn broadcast(&mut self, msg: ServerMsg) {
-        self.clients.retain(|_, c| deliver(c, msg.clone()).is_ok());
+        self.clients.retain(|_, c| !c.attached || deliver(c, msg.clone()).is_ok());
     }
 
     /// Send to the clients looking at `chat`.

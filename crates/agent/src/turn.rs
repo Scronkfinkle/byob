@@ -12,11 +12,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use yah_llm::{ChatMessage, StreamEvent, ToolCall, Usage};
+use yah_llm::{ChatMessage, LlmError, StreamEvent, ToolCall, ToolCallFilter, Usage, toolprompt};
 use yah_protocol::{Entry, EntryRole, FileChange, Step, StepStatus, ToolAccess, TurnStats};
 use yah_tools::{Access, Journal, Registry, Tool, ToolContext, ToolOutput, UndoOp};
 
-use crate::Input;
+use crate::{Input, adapt};
+
 use crate::limits::{DETAIL_CHARS, MAX_CALLS, MAX_OUTPUT, MAX_REPEATS, MAX_ROUNDS, REPEAT_QUOTE, TURN_OUTPUT_BUDGET, cap, one_line, prefix};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are yah, a helpful assistant running inside a desktop harness. Be concise and accurate. \
@@ -90,6 +91,8 @@ pub struct Setup {
     pub tools: Registry,
     pub workspace: Arc<PathBuf>,
     pub step_ids: Arc<AtomicU64>,
+    /// Tool-calling mode, history budget and vision for this endpoint.
+    pub plan: adapt::Plan,
 }
 
 pub fn spawn(setup: Setup) -> std::io::Result<()> {
@@ -125,6 +128,8 @@ struct Turn {
     rounds_done: bool,
     /// Bytes of visible content streamed so far (for step offsets).
     content_len: usize,
+    /// Newlines the visible content ends with.
+    tail_newlines: usize,
     /// Tool calls attempted this turn (including refused ones).
     calls: usize,
     /// Bytes of tool output given to the model this turn.
@@ -141,7 +146,19 @@ impl Turn {
         let messages = s.history.clone();
         let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let journal = Journal::new(s.workspace.as_path(), &format!("{}-{started}", s.entry));
-        Self { s, messages, usage: Usage::default(), rounds_done: false, content_len: 0, calls: 0, output_used: 0, seen: BTreeMap::new(), repeats: 0, journal }
+        Self {
+            s,
+            messages,
+            usage: Usage::default(),
+            rounds_done: false,
+            content_len: 0,
+            tail_newlines: 0,
+            calls: 0,
+            output_used: 0,
+            seen: BTreeMap::new(),
+            repeats: 0,
+            journal,
+        }
     }
 
     fn cancelled(&self) -> bool {
@@ -160,20 +177,33 @@ impl Turn {
         for _ in 0..MAX_ROUNDS {
             let tools_on = self.tools_on();
             let specs = if tools_on { specs(&self.s.tools) } else { Vec::new() };
-            let out = self.stream(&specs)?;
+            let out = self.model_call(&specs)?;
             if out.cancelled {
                 return Err(End::Stopped);
             }
-            let calls = usable_calls(out.tool_calls, self.s.entry);
+            let prompt = self.s.plan.prompt_tools;
+            let (text, calls) = if prompt && tools_on {
+                let mut parsed = toolprompt::parse_tool_calls(&out.content, &specs);
+                // Servers with a tool parser may turn call text into structured calls anyway.
+                parsed.calls.extend(out.tool_calls);
+                (parsed.text, parsed.calls)
+            } else {
+                (out.content, out.tool_calls)
+            };
+            let calls = usable_calls(calls, self.s.entry);
             // With tools off, calls the model makes anyway are ignored: its text is the answer.
             if calls.is_empty() || !tools_on {
                 return Ok(());
             }
-            let text = Some(out.content).filter(|c| !c.trim().is_empty());
-            self.messages.push(ChatMessage::assistant_tool_calls(text, &calls));
+            if prompt {
+                self.messages.push(toolprompt::fallback_assistant_message(&text, &calls));
+            } else {
+                let text = Some(text).filter(|c| !c.trim().is_empty());
+                self.messages.push(ChatMessage::assistant_tool_calls(text, &calls));
+            }
             for call in &calls {
                 let result = self.call(call);
-                self.messages.push(ChatMessage::tool_result(call.id.clone(), result));
+                self.messages.push(if prompt { toolprompt::fallback_tool_result(call, &result) } else { ChatMessage::tool_result(call.id.clone(), result) });
             }
             if self.cancelled() {
                 return Err(End::Stopped);
@@ -182,27 +212,51 @@ impl Turn {
         Err(End::Error(format!("stopped after {MAX_ROUNDS} model requests without an answer")))
     }
 
-    /// One model request; streams visible text to clients.
-    fn stream(&mut self, specs: &[yah_llm::ToolSpec]) -> Result<yah_llm::ChatOutcome, End> {
+    /// One model request. If the server rejects native tools and the plan allows it, switch
+    /// this turn (and, via the engine, the endpoint) to prompt-based tool calling and retry once.
+    fn model_call(&mut self, specs: &[yah_llm::ToolSpec]) -> Result<yah_llm::ChatOutcome, End> {
+        match self.stream(specs) {
+            Err(e) if !specs.is_empty() && !self.s.plan.prompt_tools && self.s.plan.fallback && adapt::rejects_tools(&e) => {
+                log::warn!("server rejected native tools ({e}); retrying with prompt-based tool calling");
+                self.s.plan.prompt_tools = true;
+                self.s.plan.fallback = false;
+                self.messages = toolprompt::to_fallback(&self.messages);
+                let _ = self.s.inbox.send(Input::Adapt(adapt::Event::ToolsRejected { key: self.s.plan.key.clone() }));
+                self.stream(specs).map_err(|e| End::Error(e.to_string()))
+            }
+            result => result.map_err(|e| End::Error(e.to_string())),
+        }
+    }
+
+    /// One model request; streams visible text to clients. In prompt mode, tool-call markup
+    /// is hidden from the stream (the full text is still returned for parsing).
+    fn stream(&mut self, specs: &[yah_llm::ToolSpec]) -> Result<yah_llm::ChatOutcome, LlmError> {
         let id = self.s.entry;
         let inbox = &self.s.inbox;
-        let mut content_len = self.content_len;
+        let prompt = self.s.plan.prompt_tools;
+        let request = self.s.plan.request(&self.messages, specs);
+        let wire_specs = if prompt { &[][..] } else { specs };
         // Text of a later round starts a new paragraph.
-        let mut separate = content_len > 0;
-        let result = self.s.llm.stream_chat(&self.messages, specs, &self.s.cancel, |ev| {
-            let (mut content, reasoning) = match ev {
+        let mut shown = Shown::new(self.content_len);
+        shown.tail_newlines = self.tail_newlines;
+        let mut filter = (prompt && !specs.is_empty()).then(ToolCallFilter::default);
+        let result = self.s.llm.stream_chat(&request, wire_specs, &self.s.cancel, |ev| {
+            let (content, reasoning) = match ev {
                 StreamEvent::Content(t) => (t, String::new()),
                 StreamEvent::Reasoning(t) => (String::new(), t),
             };
-            if !content.is_empty() && separate {
-                separate = false;
-                content.insert_str(0, "\n\n");
-            }
-            content_len = content_len.saturating_add(content.len());
-            let _ = inbox.send(Input::Turn(TurnEvent::Delta { id, content, reasoning }));
+            let content = match filter.as_mut() {
+                Some(f) => f.push(&content),
+                None => content,
+            };
+            shown.send(inbox, id, content, reasoning);
         });
-        self.content_len = content_len;
-        let out = result.map_err(|e| End::Error(e.to_string()))?;
+        if let Some(f) = filter.as_mut() {
+            shown.send(inbox, id, f.finish(), String::new());
+        }
+        self.content_len = shown.len;
+        self.tail_newlines = shown.tail_newlines;
+        let out = result?;
         self.rounds_done = true;
         if let Some(u) = out.usage {
             self.usage.prompt_tokens = self.usage.prompt_tokens.saturating_add(u.prompt_tokens);
@@ -318,6 +372,38 @@ impl Turn {
             preview: None,
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step });
+    }
+}
+
+/// Visible text streamed so far in a turn.
+struct Shown {
+    /// Bytes sent (for step offsets).
+    len: usize,
+    /// The next text starts a new paragraph (a later round's text).
+    separate: bool,
+    /// Newlines the text sent so far ends with (counts towards the paragraph break).
+    tail_newlines: usize,
+}
+
+impl Shown {
+    fn new(len: usize) -> Self {
+        Self { len, separate: len > 0, tail_newlines: 0 }
+    }
+
+    fn send(&mut self, inbox: &Sender<Input>, id: u64, mut content: String, reasoning: String) {
+        if content.is_empty() && reasoning.is_empty() {
+            return;
+        }
+        if !content.is_empty() && self.separate {
+            self.separate = false;
+            content.insert_str(0, &"\n".repeat(2usize.saturating_sub(self.tail_newlines)));
+        }
+        if !content.is_empty() {
+            let trailing = content.len() - content.trim_end_matches('\n').len();
+            self.tail_newlines = if trailing == content.len() { self.tail_newlines.saturating_add(trailing) } else { trailing };
+        }
+        self.len = self.len.saturating_add(content.len());
+        let _ = inbox.send(Input::Turn(TurnEvent::Delta { id, content, reasoning }));
     }
 }
 

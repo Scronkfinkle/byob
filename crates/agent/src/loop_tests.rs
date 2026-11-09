@@ -159,6 +159,7 @@ fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Opt
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
         paths,
         auto_title: false,
+        adapt: crate::AdaptOptions::default(),
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests, runs }
 }
@@ -481,6 +482,7 @@ fn approval_card_then_undo_the_turn() {
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
         paths: None,
         auto_title: false,
+        adapt: crate::AdaptOptions { probe: false, ..Default::default() },
     };
     let h = Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests: Arc::default(), runs: Arc::default() };
     let (mut c, _) = client(&h);
