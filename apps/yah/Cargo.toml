@@ -10,6 +10,9 @@ publish = false
 [dependencies]
 yah-types.workspace = true
 yah-agent.workspace = true
+yah-tools.workspace = true
+yah-plugins.workspace = true
+yah-store.workspace = true
 yah-server.workspace = true
 yah-ui-egui.workspace = true
 egui.workspace = true

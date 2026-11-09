@@ -147,8 +147,13 @@ fn harness_with(script: Vec<Reply>, tool: &'static str, access: Access, reply: O
     let runs = Arc::new(AtomicUsize::new(0));
     let mut tools = Registry::default();
     tools.register(Arc::new(Fake { name: tool, access, runs: Arc::clone(&runs), reply, change: access == Access::Write }));
-    let config =
-        EngineConfig { inference: InferenceConfig { base_url: url, ..Default::default() }, workspace: PathBuf::from("/ws"), tools, policy: Policy::default() };
+    let config = EngineConfig {
+        inference: InferenceConfig { base_url: url, ..Default::default() },
+        workspace: PathBuf::from("/ws"),
+        tools,
+        policy: Policy::default(),
+        system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
+    };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests, runs }
 }
 

@@ -19,7 +19,7 @@ use yah_tools::{Access, Registry, Tool, ToolContext, ToolOutput};
 use crate::Input;
 use crate::limits::{DETAIL_CHARS, MAX_CALLS, MAX_OUTPUT, MAX_REPEATS, MAX_ROUNDS, REPEAT_QUOTE, TURN_OUTPUT_BUDGET, cap, one_line, prefix};
 
-const SYSTEM_PROMPT: &str = "You are yah, a helpful assistant running inside a desktop harness. Be concise and accurate. \
+pub const DEFAULT_SYSTEM_PROMPT: &str = "You are yah, a helpful assistant running inside a desktop harness. Be concise and accurate. \
 Use the provided tools when they help; when a tool fails or the user declines it, explain instead of retrying the same call.";
 
 /// How often a turn blocked on an approval re-checks its cancel flag.
@@ -60,8 +60,8 @@ pub enum TurnEvent {
 
 /// Build the request transcript from finished entries plus the new user message.
 /// Reasoning and earlier tool steps are not sent back; failed or empty replies are skipped.
-pub fn history(transcript: &[Entry], new_user_text: &str) -> Vec<ChatMessage> {
-    let mut out = vec![ChatMessage::system(SYSTEM_PROMPT)];
+pub fn history(transcript: &[Entry], new_user_text: &str, system_prompt: &str) -> Vec<ChatMessage> {
+    let mut out = vec![ChatMessage::system(system_prompt)];
     for e in transcript.iter().filter(|e| e.done && e.error.is_none() && !e.content.is_empty()) {
         out.push(match e.role {
             EntryRole::User => ChatMessage::user(e.content.clone()),

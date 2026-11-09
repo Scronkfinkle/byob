@@ -3,17 +3,26 @@
 Last updated: 2026-11-09
 
 ## Done
-- Workspace, nix flake (dev shell + `yah` and `yah-web` packages), xtask gate.
-- Protocol, engine, server; desktop + browser UI sharing one live session.
-- Streaming chat against any OpenAI-compatible URL (reasoning split out, usage stats, cancel).
+- Workspace, nix flake (dev shell + `yah` and `yah-web` packages, gzip web assets), xtask gate.
+- Protocol, engine, server; desktop + browser UI sharing one live session; browser auto-reconnect.
+- Streaming chat against any OpenAI-compatible URL; capability probe; token budgeting.
+- Tool loop (30-call cap, repeat detection), permission gate, approval cards any client can answer.
+- Sandboxed file tools; hob-compatible plugins: skills, Python tools, MCP connectors (blocking client).
+- Themes (system/dark/light, accents, sizes, high contrast), markdown rendering.
+- Remote access hardening: Tailscale identity allowlist, Origin checks, connection caps, timeouts.
+- `yah-store` (SQLite + settings/secrets) — built and tested, **not yet wired into the engine**.
 
 ## Next
-1. **Tool loop** in `yah-agent`: tool specs → streamed `tool_calls` → permission gate →
-   run → feed results back; cap 30 calls/turn. Port hob's core file tools.
-2. **Approvals over the protocol**: approval cards any client can answer (phone included).
-3. **Persistence** (`yah-store`, SQLite): chats, messages, steps, undo journal; multiple chats.
-4. **Markdown** rendering (egui_commonmark or own) with code blocks + copy.
-5. **Settings persistence**: inference URL/model in a config file; API key in the OS keyring.
+1. **Persistence in the engine**: chats/messages/steps via `yah-store`; multiple chats (sidebar);
+   inference URL/model/API key from `settings.json`/`secrets.json`; persist "always allow".
+2. **Undo** of file changes using the journal + `.yah/trash`.
+3. **Approval card polish**: present-tense titles ("Write todo.md?"), readable args/diff instead
+   of raw JSON; steps interleaved with text (`Step.at`); stop showing "Thinking…" while waiting.
+4. **Plugins UI**: list/enable plugins, settings values (secrets), add connector by pasting config.
+5. **Use the probe**: pick native vs prompt-based tool calling, budget history from context size.
+6. Legacy HTTP+SSE MCP transport; OAuth for MCP; process-group kill for stdio servers/scripts.
+7. Sandbox for Python tools and stdio MCP servers (Landlock on Linux).
+8. Syntax highlighting; table alignment; markdown for thinking text.
 
 ## Ideas worth deciding early
 - **Endpoint capability probe.** Tool calling differs per server (llama-server needs

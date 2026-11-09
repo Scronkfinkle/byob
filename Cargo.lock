@@ -5011,7 +5011,10 @@ dependencies = [
  "log",
  "png",
  "yah-agent",
+ "yah-plugins",
  "yah-server",
+ "yah-store",
+ "yah-tools",
  "yah-types",
  "yah-ui-egui",
 ]

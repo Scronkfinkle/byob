@@ -38,13 +38,15 @@ pub struct EngineConfig {
     /// Tools offered to the model.
     pub tools: Registry,
     pub policy: Policy,
+    /// System prompt for every turn (plugins and skills append to it).
+    pub system_prompt: String,
 }
 
 impl EngineConfig {
     /// No tools, default policy, the current directory as workspace.
     pub fn new(inference: InferenceConfig) -> Self {
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        Self { inference, workspace, tools: Registry::default(), policy: Policy::default() }
+        Self { inference, workspace, tools: Registry::default(), policy: Policy::default(), system_prompt: turn::DEFAULT_SYSTEM_PROMPT.to_owned() }
     }
 }
 
@@ -139,6 +141,7 @@ struct Engine {
     tools: Registry,
     workspace: Arc<PathBuf>,
     policy: Policy,
+    system_prompt: String,
     /// Tools the user chose "Always" for, this session.
     always: BTreeSet<String>,
     /// Approval requests by step id.
@@ -169,6 +172,7 @@ impl Engine {
             tools: config.tools,
             workspace: Arc::new(config.workspace),
             policy: config.policy,
+            system_prompt: config.system_prompt,
             always: BTreeSet::new(),
             pending: BTreeMap::new(),
             step_ids: Arc::default(),
@@ -321,7 +325,7 @@ impl Engine {
                 return;
             }
         };
-        let history = turn::history(&self.transcript, &text);
+        let history = turn::history(&self.transcript, &text, &self.system_prompt);
         self.push_entry(EntryRole::User, text, true);
         let reply = self.push_entry(EntryRole::Assistant, String::new(), false);
         let cancel = Arc::new(AtomicBool::new(false));

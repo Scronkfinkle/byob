@@ -9,6 +9,7 @@
 //!     --inference-url URL     OpenAI-compatible base URL
 //!     --model NAME
 //!     --workspace DIR         folder tools work in (default: current directory)
+//!     --plugin DIR            load the plugin in DIR (repeatable; also <config>/plugins)
 //!     --dev-tools             offer trivial test tools (get_time, set_reminder)
 //!     --theme NAME            system | dark | light (overrides the saved preference)
 //!
@@ -20,6 +21,7 @@
 //! ```
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+mod extensions;
 mod gpu;
 mod testing;
 
@@ -39,6 +41,7 @@ struct Args {
     inference: InferenceConfig,
     workspace: Option<PathBuf>,
     dev_tools: bool,
+    plugins: Vec<PathBuf>,
     theme: Option<yah_ui_egui::theme::ThemeKind>,
     open_settings: bool,
     script: testing::Script,
@@ -54,6 +57,7 @@ fn parse_args() -> Result<Args, String> {
         inference: InferenceConfig::default(),
         workspace: None,
         dev_tools: false,
+        plugins: Vec::new(),
         theme: None,
         open_settings: false,
         script: testing::Script { after: std::time::Duration::from_secs(2), ..Default::default() },
@@ -81,6 +85,7 @@ fn parse_args() -> Result<Args, String> {
             "--model" => args.inference.model = it.next().ok_or("--model needs a name")?,
             "--workspace" => args.workspace = Some(it.next().ok_or("--workspace needs a folder")?.into()),
             "--dev-tools" => args.dev_tools = true,
+            "--plugin" => args.plugins.push(it.next().ok_or("--plugin needs a folder")?.into()),
             "--theme" => {
                 let v = it.next().ok_or("--theme needs a name")?;
                 args.theme = Some(yah_ui_egui::theme::ThemeKind::from_name(&v).ok_or_else(|| format!("unknown theme {v:?} (system, dark, light)"))?);
@@ -95,7 +100,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "-h" | "--help" => {
                 return Err(
-                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--dev-tools] [--theme system|dark|light]"
+                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--plugin DIR]... [--dev-tools] [--theme system|dark|light]"
                         .into(),
                 );
             }
@@ -142,9 +147,14 @@ fn run() -> Result<(), String> {
         }
         config.workspace = std::fs::canonicalize(&dir).map_err(|e| format!("workspace {}: {e}", dir.display()))?;
     }
+    let extra = extensions::load(&mut config.tools, args.plugins);
+    if !extra.is_empty() {
+        config.system_prompt = format!("{}\n\n{extra}", config.system_prompt);
+    }
     if args.dev_tools {
         yah_agent::dev_tools::register(&mut config.tools);
     }
+    log::info!("{} tools available in {}", config.tools.len(), config.workspace.display());
     let engine = EngineHandle::spawn_with(config).map_err(|e| format!("starting engine: {e}"))?;
 
     if let Some(addr) = args.serve {
