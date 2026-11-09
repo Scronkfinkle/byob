@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -23,8 +23,11 @@ pub enum ClientMsg {
     SetInference { base_url: String, model: String, api_key: Option<String> },
     /// Send a user message and start a turn.
     SendMessage { text: String },
-    /// Stop the running turn.
+    /// Stop the running turn. Pending approvals are denied.
     Cancel,
+    /// Answer a pending approval (a [`Step`] with status [`StepStatus::Waiting`]). Any
+    /// client may answer; the first answer wins and later ones are ignored.
+    Approve { step: u64, answer: ApprovalAnswer },
 }
 
 /// Engine -> client(s).
@@ -43,6 +46,8 @@ pub enum ServerMsg {
     EntryDelta { id: u64, content: String, reasoning: String },
     /// An entry finished streaming.
     EntryFinished { id: u64, error: Option<String>, stats: Option<TurnStats> },
+    /// A tool step of entry `entry` was added or changed (replace by `step.id`).
+    StepUpdated { entry: u64, step: Step },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +68,10 @@ pub struct Entry {
     pub done: bool,
     pub error: Option<String>,
     pub stats: Option<TurnStats>,
+    /// Tool calls made while producing this reply, in order. Part of the transcript so a
+    /// client that connects late sees them and can answer pending approvals.
+    #[serde(default)]
+    pub steps: Vec<Step>,
 }
 
 impl Entry {
@@ -71,6 +80,99 @@ impl Entry {
         self.content.push_str(content);
         self.reasoning.push_str(reasoning);
     }
+
+    /// Apply a [`ServerMsg::StepUpdated`]: replace the step with the same id, or append it.
+    pub fn upsert_step(&mut self, step: Step) {
+        match self.steps.iter_mut().find(|s| s.id == step.id) {
+            Some(existing) => *existing = step,
+            None => self.steps.push(step),
+        }
+    }
+
+    /// Steps waiting for a user's approval.
+    pub fn pending_approvals(&self) -> impl Iterator<Item = &Step> {
+        self.steps.iter().filter(|s| s.status == StepStatus::Waiting)
+    }
+}
+
+/// How dangerous a tool call is; drives the permission gate. Mirrors `yah_tools::Access`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAccess {
+    Read,
+    Write,
+    Network,
+    Execute,
+}
+
+impl ToolAccess {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Network => "network",
+            Self::Execute => "execute",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepStatus {
+    Running,
+    /// An approval request: blocked until a client sends [`ClientMsg::Approve`].
+    Waiting,
+    Done,
+    /// The tool ran (or could not run) and reported an error.
+    Failed,
+    /// The user (or the policy) said no, or the turn was stopped while waiting.
+    Denied,
+}
+
+impl StepStatus {
+    pub fn finished(self) -> bool {
+        matches!(self, Self::Done | Self::Failed | Self::Denied)
+    }
+}
+
+/// A user's answer to an approval request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalAnswer {
+    Allow,
+    /// Allow, and stop asking about this tool for the rest of the session.
+    Always,
+    Deny,
+}
+
+/// A file-system effect of a tool call. Paths are for display (workspace-relative when possible).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FileChange {
+    Created { path: String },
+    Modified { path: String },
+    Deleted { path: String },
+    Moved { from: String, to: String },
+}
+
+/// One tool call inside an assistant reply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Step {
+    /// Unique within the engine; also the approval id.
+    pub id: u64,
+    /// Tool name, e.g. `read_file`.
+    pub tool: String,
+    /// Short human title, e.g. "Read notes.md".
+    pub title: String,
+    pub access: ToolAccess,
+    pub status: StepStatus,
+    /// Short detail: the arguments while running or waiting, then a result excerpt or reason.
+    pub detail: String,
+    #[serde(default)]
+    pub changes: Vec<FileChange>,
+    /// Byte offset into the entry's `content` when the step started, for interleaving.
+    #[serde(default)]
+    pub at: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -155,6 +257,40 @@ mod tests {
     fn rejects_garbage_and_oversized_frames() {
         assert!(ClientMsg::from_json("{not json").is_err());
         assert!(ClientMsg::from_json(&" ".repeat(MAX_FRAME_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn approve_wire_format() {
+        let m = ClientMsg::Approve { step: 7, answer: ApprovalAnswer::Always };
+        assert_eq!(m.to_json(), r#"{"type":"approve","step":7,"answer":"always"}"#);
+        assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m);
+    }
+
+    fn step(id: u64, status: StepStatus) -> Step {
+        Step { id, tool: "t".into(), title: "T".into(), access: ToolAccess::Write, status, detail: String::new(), changes: vec![], at: 0 }
+    }
+
+    #[test]
+    fn steps_upsert_and_round_trip() {
+        let mut e =
+            Entry { id: 1, role: EntryRole::Assistant, content: String::new(), reasoning: String::new(), done: false, error: None, stats: None, steps: vec![] };
+        e.upsert_step(step(3, StepStatus::Running));
+        e.upsert_step(step(4, StepStatus::Waiting));
+        e.upsert_step(step(3, StepStatus::Done));
+        assert_eq!(e.steps.len(), 2);
+        assert_eq!(e.steps[0].status, StepStatus::Done);
+        assert_eq!(e.pending_approvals().map(|s| s.id).collect::<Vec<_>>(), vec![4]);
+        let mut s = step(5, StepStatus::Done);
+        s.changes = vec![FileChange::Moved { from: "a".into(), to: "b".into() }];
+        let msg = ServerMsg::StepUpdated { entry: 1, step: s };
+        assert_eq!(ServerMsg::from_json(&msg.to_json()).unwrap(), msg);
+    }
+
+    #[test]
+    fn entry_without_steps_still_parses() {
+        let json = r#"{"id":1,"role":"user","content":"hi","reasoning":"","done":true,"error":null,"stats":null}"#;
+        let e: Entry = serde_json::from_str(json).unwrap();
+        assert!(e.steps.is_empty());
     }
 
     #[test]

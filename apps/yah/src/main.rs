@@ -7,6 +7,8 @@
 //!     --web-dir DIR           built web bundle to serve (default: $YAH_WEB_DIR, else apps/yah-web/dist)
 //!     --inference-url URL     OpenAI-compatible base URL
 //!     --model NAME
+//!     --workspace DIR         folder tools work in (default: current directory)
+//!     --dev-tools             offer trivial test tools (get_time, set_reminder)
 //!
 //! Testing (see scripts/headless.sh):
 //!     --send TEXT             send a message on startup (repeatable)
@@ -23,7 +25,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use yah_agent::EngineHandle;
+use yah_agent::{EngineConfig, EngineHandle};
 use yah_types::InferenceConfig;
 
 struct Args {
@@ -31,6 +33,8 @@ struct Args {
     headless: bool,
     web_dir: PathBuf,
     inference: InferenceConfig,
+    workspace: Option<PathBuf>,
+    dev_tools: bool,
     script: testing::Script,
 }
 
@@ -41,6 +45,8 @@ fn parse_args() -> Result<Args, String> {
         headless: false,
         web_dir: std::env::var_os("YAH_WEB_DIR").map_or_else(|| PathBuf::from("apps/yah-web/dist"), PathBuf::from),
         inference: InferenceConfig::default(),
+        workspace: None,
+        dev_tools: false,
         script: testing::Script { after: std::time::Duration::from_secs(2), ..Default::default() },
     };
     if let Ok(key) = std::env::var("YAH_API_KEY") {
@@ -63,6 +69,8 @@ fn parse_args() -> Result<Args, String> {
             "--web-dir" => args.web_dir = it.next().ok_or("--web-dir needs a path")?.into(),
             "--inference-url" => args.inference.base_url = it.next().ok_or("--inference-url needs a URL")?,
             "--model" => args.inference.model = it.next().ok_or("--model needs a name")?,
+            "--workspace" => args.workspace = Some(it.next().ok_or("--workspace needs a folder")?.into()),
+            "--dev-tools" => args.dev_tools = true,
             "--send" => args.script.send.push(it.next().ok_or("--send needs text")?),
             "--screenshot" => args.script.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into()),
             "--screenshot-after" => {
@@ -70,7 +78,12 @@ fn parse_args() -> Result<Args, String> {
                 let secs: f64 = v.parse().map_err(|e| format!("bad seconds {v:?}: {e}"))?;
                 args.script.after = std::time::Duration::try_from_secs_f64(secs).map_err(|e| format!("bad seconds {v:?}: {e}"))?;
             }
-            "-h" | "--help" => return Err("usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--inference-url URL] [--model NAME]".into()),
+            "-h" | "--help" => {
+                return Err(
+                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--inference-url URL] [--model NAME] [--workspace DIR] [--dev-tools]"
+                        .into(),
+                );
+            }
             other => return Err(format!("unknown argument {other:?} (try --help)")),
         }
     }
@@ -103,7 +116,17 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
-    let engine = EngineHandle::spawn(args.inference).map_err(|e| format!("starting engine: {e}"))?;
+    let mut config = EngineConfig::new(args.inference);
+    if let Some(dir) = args.workspace {
+        if !dir.is_dir() {
+            return Err(format!("workspace {} is not a folder", dir.display()));
+        }
+        config.workspace = std::fs::canonicalize(&dir).map_err(|e| format!("workspace {}: {e}", dir.display()))?;
+    }
+    if args.dev_tools {
+        yah_agent::dev_tools::register(&mut config.tools);
+    }
+    let engine = EngineHandle::spawn_with(config).map_err(|e| format!("starting engine: {e}"))?;
 
     if let Some(addr) = args.serve {
         let config = yah_server::ServerConfig { addr, web_dir: Some(args.web_dir) };

@@ -4,21 +4,49 @@
 //! browser tab via `yah-server`) attach with [`EngineHandle::connect`] and speak only
 //! [`yah_protocol`] messages, so every client sees the same live session.
 //!
-//! Later this crate also owns the multi-round tool-calling loop that hob delegated to
-//! node-llama-cpp.
+//! It also owns the multi-round tool-calling loop (`turn`), the permission gate
+//! ([`permissions`]) and pending approvals: a turn that needs approval blocks until any
+//! client answers the approval card, or the turn is stopped.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod dev_tools;
+mod limits;
+#[cfg(test)]
+mod loop_tests;
+pub mod permissions;
 mod turn;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
-use yah_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg};
+pub use permissions::{Policy, Rule};
+use yah_protocol::{ApprovalAnswer, ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, Step, StepStatus};
+use yah_tools::Registry;
 use yah_types::InferenceConfig;
+
+/// Everything the engine starts with.
+#[derive(Clone)]
+pub struct EngineConfig {
+    pub inference: InferenceConfig,
+    /// Root folder tools work in.
+    pub workspace: PathBuf,
+    /// Tools offered to the model.
+    pub tools: Registry,
+    pub policy: Policy,
+}
+
+impl EngineConfig {
+    /// No tools, default policy, the current directory as workspace.
+    pub fn new(inference: InferenceConfig) -> Self {
+        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self { inference, workspace, tools: Registry::default(), policy: Policy::default() }
+    }
+}
 
 /// Called after the engine queues a message for a client, e.g. to request a UI repaint.
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -40,8 +68,13 @@ pub struct EngineHandle {
 }
 
 impl EngineHandle {
+    /// Start the engine thread with no tools.
+    pub fn spawn(inference: InferenceConfig) -> std::io::Result<Self> {
+        Self::spawn_with(EngineConfig::new(inference))
+    }
+
     /// Start the engine thread.
-    pub fn spawn(config: InferenceConfig) -> std::io::Result<Self> {
+    pub fn spawn_with(config: EngineConfig) -> std::io::Result<Self> {
         let (inbox, rx) = channel();
         let engine = Engine::new(config, inbox.clone());
         thread::Builder::new().name("yah-engine".into()).spawn(move || run(engine, rx))?;
@@ -86,6 +119,13 @@ struct Client {
     wake: Waker,
 }
 
+/// An approval card waiting for an answer.
+struct Pending {
+    entry: u64,
+    step: Step,
+    reply: Sender<turn::Verdict>,
+}
+
 struct Engine {
     config: InferenceConfig,
     llm: Result<yah_llm::Client, String>,
@@ -96,6 +136,14 @@ struct Engine {
     next_entry: u64,
     /// Cancel flag of the running turn, if any.
     running: Option<Arc<AtomicBool>>,
+    tools: Registry,
+    workspace: Arc<PathBuf>,
+    policy: Policy,
+    /// Tools the user chose "Always" for, this session.
+    always: BTreeSet<String>,
+    /// Approval requests by step id.
+    pending: BTreeMap<u64, Pending>,
+    step_ids: Arc<AtomicU64>,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -108,15 +156,29 @@ fn run(mut engine: Engine, rx: Receiver<Input>) {
 }
 
 impl Engine {
-    fn new(config: InferenceConfig, inbox: Sender<Input>) -> Self {
-        let llm = yah_llm::Client::new(config.clone()).map_err(|e| e.to_string());
-        Self { config, llm, clients: BTreeMap::new(), inbox, transcript: Vec::new(), next_entry: 0, running: None }
+    fn new(config: EngineConfig, inbox: Sender<Input>) -> Self {
+        let llm = yah_llm::Client::new(config.inference.clone()).map_err(|e| e.to_string());
+        Self {
+            config: config.inference,
+            llm,
+            clients: BTreeMap::new(),
+            inbox,
+            transcript: Vec::new(),
+            next_entry: 0,
+            running: None,
+            tools: config.tools,
+            workspace: Arc::new(config.workspace),
+            policy: config.policy,
+            always: BTreeSet::new(),
+            pending: BTreeMap::new(),
+            step_ids: Arc::default(),
+        }
     }
 
     fn push_entry(&mut self, role: EntryRole, content: String, done: bool) -> u64 {
         let id = self.next_entry;
         self.next_entry = self.next_entry.saturating_add(1);
-        let entry = Entry { id, role, content, reasoning: String::new(), done, error: None, stats: None };
+        let entry = Entry { id, role, content, reasoning: String::new(), done, error: None, stats: None, steps: Vec::new() };
         self.transcript.push(entry.clone());
         self.broadcast(ServerMsg::EntryAdded(entry));
         id
@@ -178,8 +240,68 @@ impl Engine {
                 if let Some(flag) = &self.running {
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                self.deny_all_pending("stopped");
+            }
+            ClientMsg::Approve { step, answer } => self.answer(step, answer),
+        }
+    }
+
+    /// A client answered an approval card. The first answer wins; late or unknown ids are ignored.
+    fn answer(&mut self, step_id: u64, answer: ApprovalAnswer) {
+        let Some(Pending { entry, mut step, reply }) = self.pending.remove(&step_id) else { return };
+        let verdict = match answer {
+            ApprovalAnswer::Allow => turn::Verdict::Allow,
+            ApprovalAnswer::Always => {
+                self.always.insert(step.tool.clone());
+                turn::Verdict::Allow
+            }
+            ApprovalAnswer::Deny => turn::Verdict::Deny("the user said no".into()),
+        };
+        step.status = if verdict == turn::Verdict::Allow { StepStatus::Running } else { StepStatus::Denied };
+        if let turn::Verdict::Deny(reason) = &verdict {
+            step.detail.clone_from(reason);
+        }
+        // The turn thread may be gone (stopped); the step update still settles the card.
+        let _ = reply.send(verdict);
+        self.update_step(entry, step);
+    }
+
+    fn deny_all_pending(&mut self, reason: &str) {
+        for (_, Pending { entry, mut step, reply }) in std::mem::take(&mut self.pending) {
+            let _ = reply.send(turn::Verdict::Deny(reason.to_owned()));
+            step.status = StepStatus::Denied;
+            reason.clone_into(&mut step.detail);
+            self.update_step(entry, step);
+        }
+    }
+
+    /// A turn asks whether a step may run.
+    fn gate(&mut self, entry: u64, mut step: Step, reply: Sender<turn::Verdict>) {
+        let cancelled = self.running.as_ref().is_none_or(|f| f.load(std::sync::atomic::Ordering::Relaxed));
+        if cancelled {
+            let _ = reply.send(turn::Verdict::Deny("stopped".into()));
+            return;
+        }
+        match permissions::decide(&self.policy, &self.always, &step.tool, step.access) {
+            permissions::Gate::Allow => {
+                let _ = reply.send(turn::Verdict::Allow);
+            }
+            permissions::Gate::Deny(reason) => {
+                let _ = reply.send(turn::Verdict::Deny(reason));
+            }
+            permissions::Gate::Ask => {
+                step.status = StepStatus::Waiting;
+                self.update_step(entry, step.clone());
+                self.pending.insert(step.id, Pending { entry, step, reply });
             }
         }
+    }
+
+    fn update_step(&mut self, entry: u64, step: Step) {
+        if let Some(e) = self.entry_mut(entry) {
+            e.upsert_step(step.clone());
+        }
+        self.broadcast(ServerMsg::StepUpdated { entry, step });
     }
 
     fn start_turn(&mut self, client: ClientId, text: String) {
@@ -205,7 +327,17 @@ impl Engine {
         let cancel = Arc::new(AtomicBool::new(false));
         self.running = Some(Arc::clone(&cancel));
         self.broadcast(ServerMsg::State(self.state()));
-        if let Err(e) = turn::spawn(llm, history, reply, cancel, self.inbox.clone()) {
+        let setup = turn::Setup {
+            llm,
+            history,
+            entry: reply,
+            cancel,
+            inbox: self.inbox.clone(),
+            tools: self.tools.clone(),
+            workspace: Arc::clone(&self.workspace),
+            step_ids: Arc::clone(&self.step_ids),
+        };
+        if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });
         }
     }
@@ -218,7 +350,22 @@ impl Engine {
                 }
                 self.broadcast(ServerMsg::EntryDelta { id, content, reasoning });
             }
+            turn::TurnEvent::Step { id, step } => {
+                // A pending card keeps its Waiting status until answered.
+                if !self.pending.contains_key(&step.id) {
+                    self.update_step(id, step);
+                }
+            }
+            turn::TurnEvent::Gate { id, step, reply } => self.gate(id, step, reply),
             turn::TurnEvent::Finished { id, error, stats } => {
+                self.deny_all_pending("stopped");
+                // Nothing may stay "running" or "waiting" in a finished entry.
+                let open: Vec<Step> = self.entry_mut(id).map(|e| e.steps.iter().filter(|s| !s.status.finished()).cloned().collect()).unwrap_or_default();
+                for mut step in open {
+                    step.status = StepStatus::Failed;
+                    "interrupted".clone_into(&mut step.detail);
+                    self.update_step(id, step);
+                }
                 if let Some(entry) = self.entry_mut(id) {
                     entry.done = true;
                     entry.error.clone_from(&error);
