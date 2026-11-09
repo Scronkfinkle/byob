@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use yah_llm::{ChatMessage, StreamEvent, ToolCall, Usage};
 use yah_protocol::{Entry, EntryRole, FileChange, Step, StepStatus, ToolAccess, TurnStats};
-use yah_tools::{Access, Registry, Tool, ToolContext, ToolOutput};
+use yah_tools::{Access, Journal, Registry, Tool, ToolContext, ToolOutput, UndoOp};
 
 use crate::Input;
 use crate::limits::{DETAIL_CHARS, MAX_CALLS, MAX_OUTPUT, MAX_REPEATS, MAX_ROUNDS, REPEAT_QUOTE, TURN_OUTPUT_BUDGET, cap, one_line, prefix};
@@ -55,6 +55,13 @@ pub enum TurnEvent {
         id: u64,
         error: Option<String>,
         stats: Option<TurnStats>,
+    },
+    /// Undo information for one call's file changes in entry `id`. `complete` is false if
+    /// some change can't be undone (a tool that keeps no journal modified or deleted files).
+    Undo {
+        id: u64,
+        ops: Vec<UndoOp>,
+        complete: bool,
     },
 }
 
@@ -125,12 +132,16 @@ struct Turn {
     /// `name:args` → result text, for repeated-call detection.
     seen: BTreeMap<String, String>,
     repeats: usize,
+    /// Undo journal for the file changes of this turn.
+    journal: Journal,
 }
 
 impl Turn {
     fn new(s: Setup) -> Self {
         let messages = s.history.clone();
-        Self { s, messages, usage: Usage::default(), rounds_done: false, content_len: 0, calls: 0, output_used: 0, seen: BTreeMap::new(), repeats: 0 }
+        let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let journal = Journal::new(s.workspace.as_path(), &format!("{}-{started}", s.entry));
+        Self { s, messages, usage: Usage::default(), rounds_done: false, content_len: 0, calls: 0, output_used: 0, seen: BTreeMap::new(), repeats: 0, journal }
     }
 
     fn cancelled(&self) -> bool {
@@ -236,10 +247,11 @@ impl Turn {
     }
 
     fn run_tool(&mut self, tool: &dyn Tool, name: &str, args: &Value) -> String {
-        // Tool code is not ours to trust either: a panic in title/access/run fails the call.
-        let title = catch_unwind(AssertUnwindSafe(|| tool.title(args))).unwrap_or_else(|_| name.to_owned());
+        // Tool code is not ours to trust either: a panic in title/access/preview/run fails the call.
+        let title = catch_unwind(AssertUnwindSafe(|| tool.pending_title(args))).unwrap_or_else(|_| name.to_owned());
         // If access() can't say, assume the most dangerous.
         let access = catch_unwind(AssertUnwindSafe(|| tool.access(args))).map_or(ToolAccess::Execute, to_protocol);
+        let preview = catch_unwind(AssertUnwindSafe(|| tool.preview(args, self.s.workspace.as_path()))).ok().flatten().map(crate::steps::bound_preview);
         let mut step = Step {
             id: self.s.step_ids.fetch_add(1, Ordering::Relaxed),
             tool: name.to_owned(),
@@ -249,6 +261,7 @@ impl Turn {
             detail: one_line(&args.to_string(), DETAIL_CHARS),
             changes: Vec::new(),
             at: self.content_len,
+            preview,
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step: step.clone() });
         if let Verdict::Deny(reason) = self.gate(&step) {
@@ -260,13 +273,21 @@ impl Turn {
             }
             return format!("Not run: {reason}. Don't retry this call; tell the user what you would have done.");
         }
-        let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel);
+        let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel).with_journal(&self.journal);
         let output = catch_unwind(AssertUnwindSafe(|| tool.run(args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
+        let (ops, complete) = crate::steps::undo_ops(self.journal.take(), &output.changes);
+        if !ops.is_empty() || !complete {
+            self.emit(TurnEvent::Undo { id: self.s.entry, ops, complete });
+        }
         let mut text = cap(output.text, MAX_OUTPUT, "the tool's output is longer than one call may return");
         let remaining = TURN_OUTPUT_BUDGET.saturating_sub(self.output_used);
         text = cap(text, remaining, "this turn's tool output budget is used up; answer with what you have");
         self.output_used = self.output_used.saturating_add(text.len());
         step.status = if output.failed { StepStatus::Failed } else { StepStatus::Done };
+        if !output.failed {
+            let done = catch_unwind(AssertUnwindSafe(|| tool.title(args))).unwrap_or_else(|_| name.to_owned());
+            step.title = one_line(&done, DETAIL_CHARS);
+        }
         step.detail = one_line(&text, DETAIL_CHARS);
         step.changes = output.changes.iter().map(|c| display_change(c, &self.s.workspace)).collect();
         self.emit(TurnEvent::Step { id: self.s.entry, step });
@@ -294,6 +315,7 @@ impl Turn {
             detail: one_line(detail, DETAIL_CHARS),
             changes: Vec::new(),
             at: self.content_len,
+            preview: None,
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step });
     }

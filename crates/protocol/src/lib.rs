@@ -28,6 +28,9 @@ pub enum ClientMsg {
     /// Answer a pending approval (a [`Step`] with status [`StepStatus::Waiting`]). Any
     /// client may answer; the first answer wins and later ones are ignored.
     Approve { step: u64, answer: ApprovalAnswer },
+    /// Reverse the file changes of assistant entry `entry` (see [`Entry::undoable`]). The
+    /// engine refuses, changing nothing, if any of those files changed since.
+    Undo { entry: u64 },
 }
 
 /// Engine -> client(s).
@@ -48,6 +51,8 @@ pub enum ServerMsg {
     EntryFinished { id: u64, error: Option<String>, stats: Option<TurnStats> },
     /// A tool step of entry `entry` was added or changed (replace by `step.id`).
     StepUpdated { entry: u64, step: Step },
+    /// Whether entry `id`'s file changes can be undone, or have been.
+    EntryUndo { id: u64, undoable: bool, undone: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +77,12 @@ pub struct Entry {
     /// client that connects late sees them and can answer pending approvals.
     #[serde(default)]
     pub steps: Vec<Step>,
+    /// Every file change of this reply can be reversed with [`ClientMsg::Undo`].
+    #[serde(default)]
+    pub undoable: bool,
+    /// The reply's file changes were undone.
+    #[serde(default)]
+    pub undone: bool,
 }
 
 impl Entry {
@@ -173,6 +184,66 @@ pub struct Step {
     /// Byte offset into the entry's `content` when the step started, for interleaving.
     #[serde(default)]
     pub at: usize,
+    /// What the call will do, readable, for the approval card and the expanded row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<Preview>,
+}
+
+/// Most lines in a [`Preview`]'s line lists.
+pub const MAX_PREVIEW_LINES: usize = 40;
+/// Most characters in one preview line or value.
+pub const MAX_PREVIEW_LINE_CHARS: usize = 300;
+
+/// A readable account of a tool call, built from its (untrusted, bounded) arguments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Preview {
+    /// Create or replace a file. `lines` is the start of the new content, or for a
+    /// replacement a compact line diff against the current file.
+    Write {
+        path: String,
+        bytes: u64,
+        /// The file exists and will be replaced.
+        replaces: bool,
+        lines: Vec<DiffLine>,
+        /// Lines (or changes) not shown.
+        #[serde(default)]
+        more: usize,
+    },
+    /// Move or rename: `(from, to)` pairs.
+    Move {
+        moves: Vec<(String, String)>,
+        #[serde(default)]
+        more: usize,
+    },
+    /// Move something to the trash; `what` describes it, e.g. "file, 2.1 KB".
+    Delete { path: String, what: String },
+    /// Any other tool: its key arguments. `code` is command/script text, shown monospaced.
+    Args {
+        fields: Vec<(String, String)>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+        #[serde(default)]
+        more: usize,
+    },
+}
+
+/// One line of a preview's content or diff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffLine {
+    pub kind: LineKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineKind {
+    /// Unchanged (or, for a new file, plain content).
+    Same,
+    Added,
+    Removed,
+    /// Unchanged lines left out; `text` says how many.
+    Skipped,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -267,13 +338,23 @@ mod tests {
     }
 
     fn step(id: u64, status: StepStatus) -> Step {
-        Step { id, tool: "t".into(), title: "T".into(), access: ToolAccess::Write, status, detail: String::new(), changes: vec![], at: 0 }
+        Step { id, tool: "t".into(), title: "T".into(), access: ToolAccess::Write, status, detail: String::new(), changes: vec![], at: 0, preview: None }
     }
 
     #[test]
     fn steps_upsert_and_round_trip() {
-        let mut e =
-            Entry { id: 1, role: EntryRole::Assistant, content: String::new(), reasoning: String::new(), done: false, error: None, stats: None, steps: vec![] };
+        let mut e = Entry {
+            id: 1,
+            role: EntryRole::Assistant,
+            content: String::new(),
+            reasoning: String::new(),
+            done: false,
+            error: None,
+            stats: None,
+            steps: vec![],
+            undoable: false,
+            undone: false,
+        };
         e.upsert_step(step(3, StepStatus::Running));
         e.upsert_step(step(4, StepStatus::Waiting));
         e.upsert_step(step(3, StepStatus::Done));
@@ -291,6 +372,20 @@ mod tests {
         let json = r#"{"id":1,"role":"user","content":"hi","reasoning":"","done":true,"error":null,"stats":null}"#;
         let e: Entry = serde_json::from_str(json).unwrap();
         assert!(e.steps.is_empty());
+    }
+
+    #[test]
+    fn undo_and_preview_wire_format() {
+        let m = ClientMsg::Undo { entry: 4 };
+        assert_eq!(m.to_json(), r#"{"type":"undo","entry":4}"#);
+        assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m);
+        let mut s = step(1, StepStatus::Waiting);
+        s.preview =
+            Some(Preview::Write { path: "a.md".into(), bytes: 3, replaces: true, lines: vec![DiffLine { kind: LineKind::Added, text: "hi".into() }], more: 0 });
+        let msg = ServerMsg::StepUpdated { entry: 1, step: s };
+        assert_eq!(ServerMsg::from_json(&msg.to_json()).unwrap(), msg);
+        let msg = ServerMsg::EntryUndo { id: 1, undoable: false, undone: true };
+        assert_eq!(ServerMsg::from_json(&msg.to_json()).unwrap(), msg);
     }
 
     #[test]

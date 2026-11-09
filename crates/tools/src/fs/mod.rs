@@ -116,6 +116,11 @@ pub(crate) mod testutil {
         let cancel = AtomicBool::new(false);
         tool.run(&args, &ToolContext::new(ws, &cancel))
     }
+
+    pub fn run_journaled(tool: &dyn Tool, ws: &Path, journal: &crate::Journal, args: Value) -> ToolOutput {
+        let cancel = AtomicBool::new(false);
+        tool.run(&args, &ToolContext::new(ws, &cancel).with_journal(journal))
+    }
 }
 
 #[cfg(test)]

@@ -37,6 +37,18 @@ impl Tool for ListFiles {
         }
     }
 
+    fn pending_title(&self, args: &Value) -> String {
+        match arg_str(args, "path").map(str::trim) {
+            Some(p) if !p.is_empty() && p != "." => format!("Look in {}", short_name(p)),
+            _ => "Look at the files".into(),
+        }
+    }
+
+    /// The title says it all.
+    fn preview(&self, _args: &Value, _workspace: &std::path::Path) -> Option<crate::Preview> {
+        None
+    }
+
     fn access(&self, _args: &Value) -> Access {
         Access::Read
     }
@@ -208,5 +220,7 @@ mod tests {
         assert_eq!(ListFiles.title(&json!({"path": "a/docs/"})), "Looked in docs");
         assert_eq!(ListFiles.title(&json!({})), "Looked at the files");
         assert_eq!(ListFiles.title(&json!(null)), "Looked at the files");
+        assert_eq!(ListFiles.pending_title(&json!({"path": "a/docs/"})), "Look in docs");
+        assert_eq!(ListFiles.pending_title(&json!({})), "Look at the files");
     }
 }

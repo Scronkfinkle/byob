@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::{arg_str, clip, lexists, opt_string, req_string, resolve_mut, short_name};
+use crate::preview::{self, MAX_PREVIEW_LINES, Preview};
 use crate::sandbox::{self, Resolved};
+use crate::undo::UndoOp;
 use crate::{Access, FileChange, Tool, ToolContext, ToolOutput, ToolSpec};
 
 /// Most moves in one `move_files` call.
@@ -37,6 +39,19 @@ impl Tool for MoveFile {
         format!("Moved {from} → {to}")
     }
 
+    fn pending_title(&self, args: &Value) -> String {
+        let from = short_name(arg_str(args, "from").unwrap_or("a file"));
+        let to = arg_str(args, "to").map(|t| clip(t.trim(), 60)).unwrap_or_else(|| "?".into());
+        format!("Move {from} → {to}")
+    }
+
+    fn preview(&self, args: &Value, workspace: &Path) -> Option<Preview> {
+        match (arg_str(args, "from"), arg_str(args, "to")) {
+            (Some(from), Some(to)) => Some(Preview::Move { moves: vec![shown_pair(workspace, from, to)], more: 0 }),
+            _ => Some(preview::args(args)),
+        }
+    }
+
     fn access(&self, _args: &Value) -> Access {
         Access::Write
     }
@@ -46,7 +61,7 @@ impl Tool for MoveFile {
         match plan {
             Err(e) => ToolOutput::err(e),
             Ok(Plan::Done { to }) => ToolOutput::ok(format!("{} is already there. Nothing to do.", to.show())),
-            Ok(Plan::Move { from, to }) => match apply(&from, &to) {
+            Ok(Plan::Move { from, to }) => match apply(ctx, &from, &to) {
                 Ok(change) => ToolOutput { text: format!("Moved {} to {}", from.show(), to.show()), failed: false, changes: vec![change] },
                 Err(e) => ToolOutput::err(e),
             },
@@ -84,6 +99,20 @@ impl Tool for MoveFiles {
         }
     }
 
+    fn pending_title(&self, args: &Value) -> String {
+        match moves_of(args) {
+            Ok(m) if m.len() == 1 => "Move 1 file".into(),
+            Ok(m) => format!("Move {} files", m.len()),
+            Err(_) => "Move files".into(),
+        }
+    }
+
+    fn preview(&self, args: &Value, workspace: &Path) -> Option<Preview> {
+        let Ok(list) = moves_of(args) else { return Some(preview::args(args)) };
+        let moves = list.iter().take(MAX_PREVIEW_LINES).map(|(f, t)| shown_pair(workspace, f, t)).collect();
+        Some(Preview::Move { moves, more: list.len().saturating_sub(MAX_PREVIEW_LINES) })
+    }
+
     fn access(&self, _args: &Value) -> Access {
         Access::Write
     }
@@ -93,6 +122,16 @@ impl Tool for MoveFiles {
             Ok(out) => out,
             Err(e) => ToolOutput::err(e),
         }
+    }
+}
+
+/// A move as the user should read it: workspace-relative where the paths resolve, and
+/// into a folder when `to` is one.
+fn shown_pair(ws: &Path, from: &str, to: &str) -> (String, String) {
+    match plan(ws, from, to) {
+        Ok(Plan::Move { from, to }) => (from.show(), to.show()),
+        Ok(Plan::Done { to }) => (preview::clip_line(from), to.show()),
+        Err(_) => (preview::clip_line(from), preview::clip_line(to)),
     }
 }
 
@@ -138,12 +177,13 @@ fn plan(ws: &Path, from: &str, to: &str) -> Result<Plan, String> {
     Ok(Plan::Move { from, to })
 }
 
-fn apply(from: &Resolved, to: &Resolved) -> Result<FileChange, String> {
+fn apply(ctx: &ToolContext<'_>, from: &Resolved, to: &Resolved) -> Result<FileChange, String> {
     if let Some(parent) = to.abs.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("can't create the folder for {}: {e}", to.show()))?;
     }
     // rename doesn't follow a link at `from`: the link itself moves
     std::fs::rename(&from.abs, &to.abs).map_err(|e| format!("can't move {} to {}: {e}", from.show(), to.show()))?;
+    ctx.record(UndoOp::Moved { from: from.abs.clone(), to: to.abs.clone() });
     Ok(FileChange::Moved { from: from.abs.clone(), to: to.abs.clone() })
 }
 
@@ -221,7 +261,7 @@ fn run_batch(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> 
         if ctx.cancelled() {
             return Ok(ToolOutput { text: format!("Stopped after moving {} of {}.", changes.len(), todo.len()), failed: true, changes });
         }
-        match apply(from, to) {
+        match apply(ctx, from, to) {
             Ok(c) => changes.push(c),
             Err(e) => return Ok(ToolOutput { text: format!("Moved {} of {}, then stopped: {e}", changes.len(), todo.len()), failed: true, changes }),
         }
@@ -352,5 +392,20 @@ mod tests {
         assert_eq!(MoveFile.title(&json!({"from": "a/b.txt", "to": "c/b.txt"})), "Moved b.txt → c/b.txt");
         assert_eq!(MoveFiles.title(&json!({"moves": [{"from": "a", "to": "b"}, {"from": "c", "to": "d"}]})), "Moved 2 files");
         assert_eq!(MoveFiles.title(&json!(null)), "Moved files");
+        assert_eq!(MoveFile.pending_title(&json!({"from": "a/b.txt", "to": "c/b.txt"})), "Move b.txt → c/b.txt");
+        assert_eq!(MoveFiles.pending_title(&json!({"moves": [{"from": "a", "to": "b"}]})), "Move 1 file");
+    }
+
+    #[test]
+    fn previews() {
+        let (_d, root) = ws();
+        fs::create_dir(root.join("dest")).unwrap();
+        fs::write(root.join("a.txt"), "").unwrap();
+        let p = MoveFile.preview(&json!({"from": "./a.txt", "to": "dest"}), &root).unwrap();
+        assert_eq!(p, Preview::Move { moves: vec![("a.txt".into(), "dest/a.txt".into())], more: 0 });
+        let list: Vec<Value> = (0..50).map(|i| json!({"from": format!("f{i}"), "to": format!("g{i}")})).collect();
+        let Some(Preview::Move { moves, more }) = MoveFiles.preview(&json!({"moves": list, "folder": "x"}), &root) else { panic!() };
+        assert_eq!((moves.len(), more), (MAX_PREVIEW_LINES, 10));
+        assert_eq!(moves[0], ("x/f0".into(), "x/g0".into()));
     }
 }
