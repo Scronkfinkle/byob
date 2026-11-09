@@ -6,8 +6,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use super::{arg_str, lexists, req_string, resolve_mut, short_name};
+use super::{arg_str, bytes, lexists, req_string, resolve_mut, short_name};
+use crate::preview::{self, Preview};
+use crate::undo::UndoOp;
 use crate::{Access, FileChange, Tool, ToolContext, ToolOutput, ToolSpec, sandbox};
+
+/// Most entries counted when describing a folder for a preview.
+const MAX_COUNT: usize = 10_000;
 
 /// Default trash folder, relative to the workspace.
 pub const DEFAULT_TRASH_DIR: &str = ".yah/trash";
@@ -51,6 +56,18 @@ impl Tool for DeleteFile {
         format!("Deleted {}", short_name(arg_str(args, "path").unwrap_or("a file")))
     }
 
+    fn pending_title(&self, args: &Value) -> String {
+        format!("Delete {}", short_name(arg_str(args, "path").unwrap_or("a file")))
+    }
+
+    fn preview(&self, args: &Value, workspace: &Path) -> Option<Preview> {
+        let Some(path) = arg_str(args, "path") else { return Some(preview::args(args)) };
+        Some(match resolve_mut(workspace, path) {
+            Ok(r) => Preview::Delete { path: r.show(), what: describe(&r.abs) },
+            Err(e) => Preview::Delete { path: preview::clip_line(path), what: preview::clip_line(&e) },
+        })
+    }
+
     fn access(&self, _args: &Value) -> Access {
         Access::Write
     }
@@ -60,6 +77,41 @@ impl Tool for DeleteFile {
             Ok(out) => out,
             Err(e) => ToolOutput::err(e),
         }
+    }
+}
+
+/// "file, 2.1 KB", "folder with 3 files (4.0 KB)", "link", "doesn't exist".
+fn describe(p: &Path) -> String {
+    let Ok(meta) = std::fs::symlink_metadata(p) else { return "doesn't exist".into() };
+    if meta.file_type().is_symlink() {
+        return "link (only the link is removed)".into();
+    }
+    if !meta.is_dir() {
+        return format!("file, {}", bytes(meta.len()));
+    }
+    // bounded walk, never following links
+    let (mut files, mut size, mut stack, mut seen) = (0usize, 0u64, vec![p.to_path_buf()], 0usize);
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > MAX_COUNT {
+                return format!("folder with more than {MAX_COUNT} items");
+            }
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(_) => {
+                    files += 1;
+                    size = size.saturating_add(e.metadata().map(|m| m.len()).unwrap_or(0));
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    match files {
+        0 => "empty folder".into(),
+        1 => format!("folder with 1 file ({})", bytes(size)),
+        n => format!("folder with {n} files ({})", bytes(size)),
     }
 }
 
@@ -88,6 +140,7 @@ impl DeleteFile {
             std::fs::create_dir_all(parent).map_err(|e| format!("can't create the trash folder: {e}"))?;
         }
         std::fs::rename(&target.abs, &dest.abs).map_err(|e| format!("can't delete {}: {e}", target.show()))?;
+        ctx.record(UndoOp::Deleted { path: target.abs.clone(), backup: Some(dest.abs.clone()) });
         Ok(ToolOutput {
             text: format!("Deleted {} (moved to {}; move it back to restore)", target.show(), dest.show()),
             failed: false,
@@ -181,5 +234,24 @@ mod tests {
     #[test]
     fn title() {
         assert_eq!(DeleteFile::default().title(&json!({"path": "a/b.txt"})), "Deleted b.txt");
+        assert_eq!(DeleteFile::default().pending_title(&json!({"path": "a/b.txt"})), "Delete b.txt");
+    }
+
+    #[test]
+    fn previews() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join("docs/sub")).unwrap();
+        fs::write(d.path().join("docs/a.txt"), "12345").unwrap();
+        fs::write(d.path().join("docs/sub/b.txt"), "1").unwrap();
+        fs::create_dir(d.path().join("empty")).unwrap();
+        let what = |p: &str| match DeleteFile::default().preview(&json!({"path": p}), d.path()) {
+            Some(Preview::Delete { what, .. }) => what,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(what("docs"), "folder with 2 files (6 B)");
+        assert_eq!(what("docs/a.txt"), "file, 5 B");
+        assert_eq!(what("empty"), "empty folder");
+        assert_eq!(what("nope"), "doesn't exist");
+        assert!(what("..").contains("outside"), "{}", what(".."));
     }
 }

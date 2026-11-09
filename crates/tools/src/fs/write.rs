@@ -6,7 +6,12 @@ use std::io::{ErrorKind, Write as _};
 use serde_json::{Value, json};
 
 use super::{arg_str, bytes, req_string, resolve_mut, short_name};
+use crate::preview::{self, Preview};
+use crate::undo::{Fingerprint, UndoOp};
 use crate::{Access, FileChange, Tool, ToolContext, ToolOutput, ToolSpec};
+
+/// Existing files up to this size are diffed in previews.
+const MAX_DIFF_BYTES: u64 = 1024 * 1024;
 
 /// Largest content accepted in one call.
 pub const MAX_WRITE_BYTES: usize = 16 * 1024 * 1024;
@@ -31,6 +36,27 @@ impl Tool for WriteFile {
 
     fn title(&self, args: &Value) -> String {
         format!("Wrote {}", short_name(arg_str(args, "path").unwrap_or("a file")))
+    }
+
+    fn pending_title(&self, args: &Value) -> String {
+        format!("Write {}", short_name(arg_str(args, "path").unwrap_or("a file")))
+    }
+
+    fn preview(&self, args: &Value, workspace: &std::path::Path) -> Option<Preview> {
+        let (Some(path), Some(content)) = (arg_str(args, "path"), arg_str(args, "content")) else {
+            return Some(preview::args(args));
+        };
+        let shown = super::sandbox::resolve(workspace, path).map(|r| r.show()).unwrap_or_else(|_| preview::clip_line(path));
+        let old = super::sandbox::resolve(workspace, path).ok().and_then(|r| {
+            let meta = std::fs::symlink_metadata(&r.abs).ok()?;
+            Some(if meta.is_file() && meta.len() <= MAX_DIFF_BYTES { std::fs::read(&r.abs).ok().and_then(|b| String::from_utf8(b).ok()) } else { None })
+        });
+        let replaces = old.is_some();
+        let (lines, more) = match old.flatten() {
+            Some(old) => preview::diff(&old, content),
+            None => preview::head(content),
+        };
+        Some(Preview::Write { path: shown, bytes: content.len() as u64, replaces, lines, more })
     }
 
     fn access(&self, _args: &Value) -> Access {
@@ -64,6 +90,11 @@ fn write(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
         Err(e) if e.kind() == ErrorKind::NotFound => false,
         Err(e) => return Err(format!("can't access {name}: {e}")),
     };
+    // keep the old content so the change can be undone
+    let backup = match ctx.journal() {
+        Some(j) if existed => Some(j.backup(ctx.workspace, &file.abs).map_err(|e| format!("can't keep a copy of {name} for undo ({e}); not writing it"))?),
+        _ => None,
+    };
     if let Some(parent) = file.abs.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("can't create the folder for {name}: {e}"))?;
     }
@@ -80,6 +111,11 @@ fn write(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
         _ => format!("can't write {name}: {e}"),
     })?;
     f.write_all(content.as_bytes()).map_err(|e| format!("can't write {name}: {e}"))?;
+    let fingerprint = Some(Fingerprint::of_bytes(content.as_bytes()));
+    ctx.record(match backup {
+        Some(backup) => UndoOp::Replaced { path: file.abs.clone(), backup, fingerprint },
+        None => UndoOp::Created { path: file.abs.clone(), fingerprint },
+    });
     let change = if existed { FileChange::Modified(file.abs.clone()) } else { FileChange::Created(file.abs.clone()) };
     let verb = if existed { "Replaced" } else { "Created" };
     Ok(ToolOutput { text: format!("{verb} {name} ({})", bytes(content.len() as u64)), failed: false, changes: vec![change] })
@@ -143,8 +179,29 @@ mod tests {
     }
 
     #[test]
+    fn previews() {
+        use crate::preview::{DiffLine, LineKind};
+        let d = tempfile::tempdir().unwrap();
+        let p = WriteFile.preview(&json!({"path": "./new.md", "content": "# Hi\n- a\n"}), d.path()).unwrap();
+        let Preview::Write { path, bytes, replaces, lines, more } = p else { panic!("{p:?}") };
+        assert_eq!((path.as_str(), bytes, replaces, lines.len(), more), ("new.md", 9, false, 2, 0));
+        fs::write(d.path().join("old.md"), "one\ntwo\n").unwrap();
+        let p = WriteFile.preview(&json!({"path": "old.md", "content": "one\nTWO\n"}), d.path()).unwrap();
+        let Preview::Write { replaces: true, lines, .. } = p else { panic!("{p:?}") };
+        assert_eq!(lines[1], DiffLine { kind: LineKind::Removed, text: "two".into() });
+        assert_eq!(lines[2], DiffLine { kind: LineKind::Added, text: "TWO".into() });
+        // missing content: fall back to the arguments
+        assert!(matches!(WriteFile.preview(&json!({"path": "x"}), d.path()), Some(Preview::Args { .. })));
+        // nothing outside the workspace is read
+        let p = WriteFile.preview(&json!({"path": "/etc/passwd", "content": "x"}), d.path()).unwrap();
+        assert!(matches!(p, Preview::Write { replaces: false, .. }), "{p:?}");
+    }
+
+    #[test]
     fn title() {
         assert_eq!(WriteFile.title(&json!({"path": "a/notes.md"})), "Wrote notes.md");
+        assert_eq!(WriteFile.pending_title(&json!({"path": "a/notes.md"})), "Write notes.md");
+        assert_eq!(WriteFile.pending_title(&json!(null)), "Write a file");
         assert_eq!(WriteFile.access(&json!({})), Access::Write);
     }
 }

@@ -8,7 +8,7 @@ pub mod steps;
 pub mod theme;
 pub mod ws;
 
-use yah_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg};
+use yah_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, StepStatus};
 
 /// Notices kept on screen.
 const MAX_NOTICES: usize = 3;
@@ -78,6 +78,7 @@ impl YahApp {
                     }
                 }
                 ServerMsg::StepUpdated { entry, step } => steps::apply(&mut self.entries, entry, step),
+                ServerMsg::EntryUndo { id, undoable, undone } => steps::apply_undo(&mut self.entries, id, undoable, undone),
             }
         }
     }
@@ -150,7 +151,9 @@ impl YahApp {
                     Some(s) => ui.label(egui::RichText::new(format!("{} · {}", s.inference_model, s.inference_base_url)).color(t.text_dim)),
                     None => ui.label(egui::RichText::new("connecting…").color(t.text_dim)),
                 };
-                if self.busy() {
+                if steps::awaiting_approval(&self.entries) {
+                    steps::waiting_badge(ui, &t);
+                } else if self.busy() {
                     ui.spinner();
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -235,27 +238,26 @@ fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry, markdown: &mu
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(who).strong().color(t.accent));
-            if !entry.done {
+            if entry.pending_approvals().next().is_some() {
+                steps::waiting_badge(ui, t);
+            } else if !entry.done {
                 ui.spinner();
             }
         });
         if !entry.reasoning.is_empty() {
-            let title = if entry.done || !entry.content.is_empty() { "Thought" } else { "Thinking…" };
+            let thinking = !entry.done && entry.content.is_empty() && entry.steps.iter().all(|s| s.status == StepStatus::Running);
+            let title = if thinking { "Thinking…" } else { "Thought" };
             egui::CollapsingHeader::new(egui::RichText::new(title).color(t.text_dim)).id_salt(("thinking", entry.id)).show(ui, |ui| {
                 ui.label(egui::RichText::new(&entry.reasoning).color(t.text_dim).small());
             });
         }
-        answer = steps::show(ui, t, entry);
-        if !entry.content.is_empty() {
-            match entry.role {
-                EntryRole::Assistant => {
-                    let doc = markdown.doc(entry.id, &entry.content, entry.done);
-                    markdown::show(ui, t, doc, egui::Id::unique(("md", entry.id)));
-                }
-                EntryRole::User => {
-                    ui.add(egui::Label::new(egui::RichText::new(&entry.content).color(t.text)).selectable(true));
-                }
+        match entry.role {
+            // reply text with its tool steps where they happened, approval cards, undo
+            EntryRole::Assistant => answer = steps::body(ui, t, entry, markdown),
+            EntryRole::User if !entry.content.is_empty() => {
+                ui.add(egui::Label::new(egui::RichText::new(&entry.content).color(t.text)).selectable(true));
             }
+            EntryRole::User => {}
         }
         if let Some(err) = &entry.error {
             ui.label(egui::RichText::new(err).color(t.danger));

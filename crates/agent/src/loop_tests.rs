@@ -450,3 +450,61 @@ fn later_turns_send_only_final_text() {
     let roles: Vec<String> = messages(reqs.last().unwrap()).iter().map(|m| m["role"].as_str().unwrap_or("").to_owned()).collect();
     assert_eq!(roles, ["system", "user", "assistant", "user"]);
 }
+
+#[test]
+fn approval_card_then_undo_the_turn() {
+    use yah_protocol::{NoticeLevel, Preview};
+    let ws = tempfile::tempdir().unwrap();
+    std::fs::write(ws.path().join("old.txt"), "one\ntwo\n").unwrap();
+    let (url, _) = fake_llm(
+        vec![
+            call("write_file", r#"{"path":"todo.md","content":"- [ ] eggs\n"}"#),
+            call("write_file", r#"{"path":"old.txt","content":"one\nTWO\n"}"#),
+            Reply::Text("done"),
+        ],
+        "done",
+    );
+    let config = EngineConfig {
+        inference: InferenceConfig { base_url: url, ..Default::default() },
+        workspace: ws.path().to_path_buf(),
+        tools: yah_tools::builtin(),
+        policy: Policy::default(),
+        system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
+    };
+    let h = Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests: Arc::default(), runs: Arc::default() };
+    let (mut c, _) = client(&h);
+    let mut cards = Vec::new();
+    let view = run_turn(&mut c, "make a todo", |step, c| {
+        cards.push(step.clone());
+        c.send(ClientMsg::Approve { step: step.id, answer: ApprovalAnswer::Allow });
+    });
+    // cards ask in the present tense and carry a readable preview
+    assert_eq!(cards[0].title, "Write todo.md");
+    assert!(matches!(&cards[0].preview, Some(Preview::Write { path, replaces: false, .. }) if path == "todo.md"), "{:?}", cards[0].preview);
+    assert!(matches!(&cards[1].preview, Some(Preview::Write { replaces: true, lines, .. }) if lines.len() == 3), "{:?}", cards[1].preview);
+    // finished rows say what happened
+    let titles: Vec<_> = view.reply().steps.iter().map(|s| s.title.as_str()).collect();
+    assert_eq!(titles, ["Wrote todo.md", "Wrote old.txt"]);
+    let entry = view.reply().id;
+
+    // a late client sees the reply as undoable
+    let (mut late, entries) = client(&h);
+    assert!(entries.last().unwrap().undoable);
+    late.send(ClientMsg::Undo { entry });
+    let mut notice = None;
+    let mut flags = None;
+    while notice.is_none() || flags.is_none() {
+        match recv(&mut late) {
+            ServerMsg::Notice { level, text } => notice = Some((level, text)),
+            ServerMsg::EntryUndo { id, undoable, undone } => flags = Some((id, undoable, undone)),
+            _ => {}
+        }
+    }
+    assert_eq!(notice.as_ref().map(|n| n.0), Some(NoticeLevel::Info), "{notice:?}");
+    assert_eq!(flags, Some((entry, false, true)));
+    assert!(!ws.path().join("todo.md").exists());
+    assert_eq!(std::fs::read_to_string(ws.path().join("old.txt")).unwrap(), "one\ntwo\n");
+    // twice is refused
+    late.send(ClientMsg::Undo { entry });
+    assert!(matches!(recv(&mut late), ServerMsg::Notice { level: NoticeLevel::Error, .. }));
+}

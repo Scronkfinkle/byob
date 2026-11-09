@@ -382,16 +382,27 @@ fn next_fence(state: Option<(u8, usize)>, line: &str) -> Option<(u8, usize)> {
     }
 }
 
-/// Per-entry [`Doc`]s.
+/// Per-entry [`Doc`]s. An entry's text may be split into parts (text between tool steps),
+/// each with its own document.
 #[derive(Debug, Default)]
 pub struct Cache {
-    docs: HashMap<u64, Doc>,
+    docs: HashMap<u64, Vec<Doc>>,
 }
 
 impl Cache {
     /// The up-to-date document for entry `id`.
     pub fn doc(&mut self, id: u64, src: &str, done: bool) -> &Doc {
-        let doc = self.docs.entry(id).or_default();
+        self.part(id, 0, src, done)
+    }
+
+    /// The up-to-date document for part `part` of entry `id`.
+    pub fn part(&mut self, id: u64, part: usize, src: &str, done: bool) -> &Doc {
+        let parts = self.docs.entry(id).or_default();
+        if parts.len() <= part {
+            parts.resize_with(part + 1, Doc::default);
+        }
+        // in bounds: just resized to cover `part`
+        let doc = &mut parts[part];
         doc.update(src, done);
         doc
     }

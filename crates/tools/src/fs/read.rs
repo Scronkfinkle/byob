@@ -45,6 +45,15 @@ impl Tool for ReadFile {
         format!("Read {}", short_name(arg_str(args, "path").unwrap_or("a file")))
     }
 
+    fn pending_title(&self, args: &Value) -> String {
+        self.title(args)
+    }
+
+    /// The title says it all.
+    fn preview(&self, _args: &Value, _workspace: &std::path::Path) -> Option<crate::Preview> {
+        None
+    }
+
     fn access(&self, _args: &Value) -> Access {
         Access::Read
     }
@@ -316,5 +325,6 @@ mod tests {
     fn title() {
         assert_eq!(ReadFile.title(&json!({"path": "docs/notes.md"})), "Read notes.md");
         assert_eq!(ReadFile.title(&json!(42)), "Read a file");
+        assert_eq!(ReadFile.pending_title(&json!({"path": "docs/notes.md"})), "Read notes.md");
     }
 }

@@ -14,6 +14,7 @@ mod limits;
 #[cfg(test)]
 mod loop_tests;
 pub mod permissions;
+mod steps;
 mod turn;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -147,6 +148,8 @@ struct Engine {
     /// Approval requests by step id.
     pending: BTreeMap<u64, Pending>,
     step_ids: Arc<AtomicU64>,
+    /// Undo journals of replies that changed files.
+    journals: steps::Journals,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -176,13 +179,14 @@ impl Engine {
             always: BTreeSet::new(),
             pending: BTreeMap::new(),
             step_ids: Arc::default(),
+            journals: steps::Journals::default(),
         }
     }
 
     fn push_entry(&mut self, role: EntryRole, content: String, done: bool) -> u64 {
         let id = self.next_entry;
         self.next_entry = self.next_entry.saturating_add(1);
-        let entry = Entry { id, role, content, reasoning: String::new(), done, error: None, stats: None, steps: Vec::new() };
+        let entry = Entry { id, role, content, reasoning: String::new(), done, error: None, stats: None, steps: Vec::new(), undoable: false, undone: false };
         self.transcript.push(entry.clone());
         self.broadcast(ServerMsg::EntryAdded(entry));
         id
@@ -247,6 +251,7 @@ impl Engine {
                 self.deny_all_pending("stopped");
             }
             ClientMsg::Approve { step, answer } => self.answer(step, answer),
+            ClientMsg::Undo { entry } => self.undo(id, entry),
         }
     }
 
@@ -361,6 +366,7 @@ impl Engine {
                 }
             }
             turn::TurnEvent::Gate { id, step, reply } => self.gate(id, step, reply),
+            turn::TurnEvent::Undo { id, ops, complete } => self.add_undo(id, ops, complete),
             turn::TurnEvent::Finished { id, error, stats } => {
                 self.deny_all_pending("stopped");
                 // Nothing may stay "running" or "waiting" in a finished entry.

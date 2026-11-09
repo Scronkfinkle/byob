@@ -8,9 +8,13 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod fs;
+pub mod preview;
 pub mod sandbox;
+pub mod undo;
 
 pub use fs::{DEFAULT_TRASH_DIR, DeleteFile, ListFiles, MoveFile, MoveFiles, ReadFile, WriteFile};
+pub use preview::Preview;
+pub use undo::{Journal, UndoOp};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -48,11 +52,33 @@ pub struct ToolContext<'a> {
     /// Root folder the tool may touch. File tools must refuse paths outside it.
     pub workspace: &'a Path,
     cancel: &'a AtomicBool,
+    journal: Option<&'a Journal>,
 }
 
 impl<'a> ToolContext<'a> {
     pub fn new(workspace: &'a Path, cancel: &'a AtomicBool) -> Self {
-        Self { workspace, cancel }
+        Self { workspace, cancel, journal: None }
+    }
+
+    /// Record undo information for this call's file changes in `journal`.
+    #[must_use]
+    pub fn with_journal(mut self, journal: &'a Journal) -> Self {
+        self.journal = Some(journal);
+        self
+    }
+
+    /// The turn's undo journal, if it keeps one. Tools that change files record an
+    /// [`UndoOp`] per change, and back up a file with [`Journal::backup`] before
+    /// overwriting it.
+    pub fn journal(&self) -> Option<&'a Journal> {
+        self.journal
+    }
+
+    /// Shorthand: record `op` if there is a journal.
+    pub fn record(&self, op: UndoOp) {
+        if let Some(j) = self.journal {
+            j.record(op);
+        }
     }
 
     pub fn cancelled(&self) -> bool {
@@ -96,8 +122,20 @@ impl ToolOutput {
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
 
-    /// Short human title for this call, e.g. "Read notes.md". `args` is untrusted.
+    /// Short human title for the finished call, e.g. "Wrote notes.md". `args` is untrusted.
     fn title(&self, args: &Value) -> String;
+
+    /// Title for the call before and while it runs, and on approval cards, e.g.
+    /// "Write notes.md". Defaults to "Run <tool name>".
+    fn pending_title(&self, _args: &Value) -> String {
+        format!("Run {}", self.spec().name)
+    }
+
+    /// A readable account of what the call would do, for approval cards: e.g. a diff for a
+    /// file write. Reads only, no side effects; bounded. Defaults to the key arguments.
+    fn preview(&self, args: &Value, _workspace: &Path) -> Option<Preview> {
+        Some(preview::args(args))
+    }
 
     /// What this call would do; drives the permission gate. Must not have side effects.
     fn access(&self, args: &Value) -> Access;
@@ -213,6 +251,13 @@ mod tests {
             let expected = if matches!(spec.name.as_str(), "list_files" | "read_file") { Access::Read } else { Access::Write };
             assert_eq!(tool.access(&serde_json::json!({})), expected, "{}", spec.name);
         }
+    }
+
+    #[test]
+    fn default_pending_title_and_preview() {
+        assert_eq!(Echo.pending_title(&serde_json::json!({})), "Run echo");
+        let p = Echo.preview(&serde_json::json!({"text": "hi"}), Path::new("/tmp"));
+        assert_eq!(p, Some(Preview::Args { fields: vec![("text".into(), "hi".into())], code: None, more: 0 }));
     }
 
     #[test]
