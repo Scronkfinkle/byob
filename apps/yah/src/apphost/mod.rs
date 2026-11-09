@@ -8,12 +8,18 @@
 //! Lifecycle per app version (one process each):
 //! - started lazily when its card or the pane draws it on screen;
 //! - the pane owns it when both show it (the card then mirrors the last frame);
-//! - not drawn on screen for [`HIDE_AFTER`]: the last frame stays as a snapshot and the
+//! - not drawn on screen for [`life::HIDE_AFTER`]: the last frame stays as a snapshot and the
 //!   process exits; drawing it again starts a fresh one (page state is lost);
+//! - minimized, in a background tab or behind the collapsed pane ([`AppView::hold`]): the
+//!   process keeps running but is told to stop painting (`Request::Visible(false)`, for
+//!   helpers that announce it) and no frames are uploaded; restoring within
+//!   [`life::BACKGROUND_PAUSE_AFTER`] picks up where it was, later it is paused as above
+//!   (see [`life`]);
 //! - no pong for [`helper::PONG_TIMEOUT`], the process exiting, or Stop: killed, shown as
 //!   "Stopped" with Reload.
 
 mod helper;
+mod life;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -21,11 +27,9 @@ use std::time::{Duration, Instant};
 
 use egui::{RichText, Stroke, vec2};
 use yah_artifact_wire::{self as wire, Input, Request, Viewport};
-use yah_ui_egui::appview::{AppDoc, AppView, AppViewResponse};
+use yah_ui_egui::appview::{AppDoc, AppStatus, AppView, AppViewResponse};
 use yah_ui_egui::theme::Tokens;
 
-/// Out of view this long: snapshot and stop the process.
-pub const HIDE_AFTER: Duration = Duration::from_secs(3);
 /// On screen this long before a card's app starts.
 const SETTLE: Duration = Duration::from_millis(200);
 /// Card height before the app reports its own, and the range it may pick.
@@ -60,7 +64,11 @@ struct App {
     cursor: wire::Cursor,
     focused: bool,
     hovered: bool,
-    last_seen: Instant,
+    life: life::Life,
+    /// In the background: frames stay in the helper's slot (only the newest is kept).
+    hidden: bool,
+    /// `Visible(false)` went to the helper.
+    hidden_sent: bool,
     /// On screen continuously since.
     visible_since: Option<Instant>,
 }
@@ -80,7 +88,9 @@ impl App {
             cursor: wire::Cursor::Default,
             focused: false,
             hovered: false,
-            last_seen: Instant::now(),
+            life: life::Life::new(Instant::now()),
+            hidden: false,
+            hidden_sent: false,
             visible_since: None,
         }
     }
@@ -103,6 +113,9 @@ pub struct ServoView {
     pane_now: Option<Key>,
     /// Drawn live by a card this frame (a second card for the same version mirrors it).
     cards_now: HashSet<Key>,
+    /// Drawn on screen by their owner / held in the background, this frame.
+    drawn_now: HashSet<Key>,
+    held_now: HashSet<Key>,
 }
 
 impl ServoView {
@@ -110,7 +123,21 @@ impl ServoView {
     pub fn new(ctx: &egui::Context) -> Option<Self> {
         let path = helper::locate()?;
         log::info!("HTML apps render inline with {}", path.display());
-        Some(Self { path, ctx: ctx.clone(), apps: HashMap::new(), theme: wire::Theme::default(), pane: None, pane_now: None, cards_now: HashSet::new() })
+        Some(Self::with_helper(ctx, path))
+    }
+
+    fn with_helper(ctx: &egui::Context, path: PathBuf) -> Self {
+        Self {
+            path,
+            ctx: ctx.clone(),
+            apps: HashMap::new(),
+            theme: wire::Theme::default(),
+            pane: None,
+            pane_now: None,
+            cards_now: HashSet::new(),
+            drawn_now: HashSet::new(),
+            held_now: HashSet::new(),
+        }
     }
 
     fn launch(&mut self, key: &Key, viewport: Viewport) {
@@ -123,6 +150,8 @@ impl ServoView {
                 h.send(Request::Focus(app.focused));
                 app.sent = Some(viewport);
                 app.errors.clear();
+                app.hidden = false;
+                app.hidden_sent = false;
                 app.helper = Some(h);
             }
             Err(e) => app.state = State::Stopped(format!("Couldn't start the renderer: {e}")),
@@ -155,7 +184,6 @@ impl ServoView {
             let Some(app) = self.apps.get_mut(&key) else { return rect };
             let now = Instant::now();
             if visible {
-                app.last_seen = now;
                 app.visible_since.get_or_insert(now);
             } else {
                 app.visible_since = None;
@@ -171,6 +199,9 @@ impl ServoView {
         };
         if start {
             self.launch(&key, viewport);
+        }
+        if owner && visible {
+            self.drawn_now.insert(key.clone());
         }
         let Some(app) = self.apps.get_mut(&key) else { return rect };
         if owner
@@ -250,11 +281,14 @@ impl ServoView {
         resp
     }
 
-    /// Per frame, after drawing: frames and events in, liveness, snapshot what went out of view.
+    /// Per frame, after drawing: frames and events in, liveness, background or snapshot
+    /// what went out of view.
     fn pump(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
         let mut any_live = false;
+        let (drawn, held) = (std::mem::take(&mut self.drawn_now), std::mem::take(&mut self.held_now));
         for (key, app) in &mut self.apps {
+            let verdict = app.life.frame(now, drawn.contains(key), held.contains(key));
             let Some(h) = &mut app.helper else { continue };
             for e in h.poll() {
                 match e {
@@ -266,10 +300,34 @@ impl ServoView {
                     }
                     wire::Event::ContentHeight(height) => app.content_height = Some(height),
                     wire::Event::Cursor(c) => app.cursor = c,
-                    wire::Event::Title(_) | wire::Event::Ready | wire::Event::Pong(_) | wire::Event::Frame(_) => {}
+                    wire::Event::Title(_) | wire::Event::Ready | wire::Event::Pong(_) | wire::Event::Frame(_) | wire::Event::Features(_) => {}
                 }
             }
-            if let Some(f) = h.take_frame() {
+            // Background: no painting in the helper (if it can), no uploads here; the newest
+            // frame waits in its slot for the restore.
+            match verdict {
+                life::Verdict::Background if !app.hidden => {
+                    log::info!("artifact {}/v{}: in the background; rendering paused", key.0, key.1);
+                    app.hidden = true;
+                    app.focused = false;
+                }
+                life::Verdict::Show if app.hidden => {
+                    log::info!("artifact {}/v{}: back in view", key.0, key.1);
+                    app.hidden = false;
+                    if app.hidden_sent {
+                        h.send(Request::Visible(true));
+                        app.hidden_sent = false;
+                    }
+                }
+                _ => {}
+            }
+            if app.hidden && !app.hidden_sent && h.supports(wire::Features::VISIBILITY) {
+                h.send(Request::Visible(false));
+                app.hidden_sent = true;
+            }
+            if !app.hidden
+                && let Some(f) = h.take_frame()
+            {
                 let started = Instant::now();
                 let (w, hgt) = (usize::try_from(f.width).unwrap_or(0), usize::try_from(f.height).unwrap_or(0));
                 let image = egui::ColorImage::from_rgba_premultiplied([w, hgt], &f.rgba);
@@ -295,13 +353,16 @@ impl ServoView {
                     app.helper = None;
                     app.focused = false;
                 }
-                None if now.saturating_duration_since(app.last_seen) > HIDE_AFTER => {
-                    log::info!("artifact {}/v{}: out of view; keeping a snapshot and stopping the renderer", key.0, key.1);
+                None if verdict == life::Verdict::Pause => {
+                    let why = if app.life.in_background() { "in the background too long" } else { "out of view" };
+                    log::info!("artifact {}/v{}: {why}; keeping a snapshot and stopping the renderer", key.0, key.1);
                     if let Some(h) = app.helper.take() {
                         h.send(Request::Shutdown);
                     }
                     app.focused = false;
                     app.sent = None;
+                    app.hidden = false;
+                    app.hidden_sent = false;
                 }
                 None => any_live = true,
             }
@@ -311,7 +372,7 @@ impl ServoView {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
         if self.apps.len() > MAX_APPS {
-            let mut idle: Vec<(Instant, Key)> = self.apps.iter().filter(|(_, a)| a.helper.is_none()).map(|(k, a)| (a.last_seen, k.clone())).collect();
+            let mut idle: Vec<(Instant, Key)> = self.apps.iter().filter(|(_, a)| a.helper.is_none()).map(|(k, a)| (a.life.last_active(), k.clone())).collect();
             idle.sort();
             for (_, k) in idle.into_iter().take(self.apps.len().saturating_sub(MAX_APPS)) {
                 self.apps.remove(&k);
@@ -352,6 +413,25 @@ impl AppView for ServoView {
 
     fn runs_inline(&self) -> bool {
         true
+    }
+
+    fn hold(&mut self, id: &str, version: u32) {
+        let key: Key = (id.to_owned(), version);
+        if self.apps.contains_key(&key) {
+            self.held_now.insert(key);
+        }
+    }
+
+    fn status(&self, id: &str, version: u32) -> AppStatus {
+        match self.apps.get(&(id.to_owned(), version)) {
+            None => AppStatus::Unknown,
+            Some(a) => match (&a.state, &a.helper) {
+                (State::Stopped(_), _) => AppStatus::Stopped,
+                (State::Live, Some(_)) => AppStatus::Running,
+                (State::Live, None) if a.texture.is_some() => AppStatus::Paused,
+                (State::Live, None) => AppStatus::Unknown,
+            },
+        }
     }
 
     fn set_theme(&mut self, vars: &[(&'static str, String)]) {
@@ -510,6 +590,70 @@ mod tests {
         assert_eq!(named_key(egui::Key::A), None);
         let m = mods(egui::Modifiers { shift: true, ctrl: true, ..Default::default() });
         assert!(m.has(wire::Mods::SHIFT) && m.has(wire::Mods::CTRL) && !m.has(wire::Mods::ALT));
+    }
+
+    /// Minimized (held, not drawn): the helper is told to stop painting, and to start again
+    /// on restore; a helper that never announced the feature isn't sent the new message.
+    #[cfg(unix)]
+    #[test]
+    fn background_and_restore_reach_the_helper() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let run = |features: bool| -> (Vec<Request>, Vec<AppStatus>) {
+            let log = dir.path().join(format!("in-{features}.bin"));
+            let path = dir.path().join(format!("helper-{features}"));
+            // Ready, maybe Features(VISIBILITY), then record every request (the shell keeps
+            // stdout open meanwhile).
+            let hello = if features { r"\001\000\000\000\000\005\000\000\000\007\001\000\000\000" } else { r"\001\000\000\000\000" };
+            std::fs::write(&path, format!("#!/bin/sh\nprintf '{hello}'\ncat > '{}'\n", log.display())).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let ctx = egui::Context::default();
+            let mut v = ServoView::with_helper(&ctx, path);
+            let key: Key = ("app".into(), 1);
+            v.apps.insert(key.clone(), App::new("<p>hi</p>"));
+            v.launch(&key, Viewport { width: 10, height: 10, scale: 1.0 });
+            let mut statuses = vec![v.status("app", 1)];
+            // On screen until the helper has said hello.
+            let start = Instant::now();
+            let said_hello = |v: &ServoView| !features || v.apps[&key].helper.as_ref().is_some_and(|h| h.supports(wire::Features::VISIBILITY));
+            while (start.elapsed() < Duration::from_millis(300) || !said_hello(&v)) && start.elapsed() < Duration::from_secs(5) {
+                v.drawn_now.insert(key.clone());
+                v.pump(&ctx);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            for drawn in [true, false, false, true] {
+                if drawn {
+                    v.drawn_now.insert(key.clone());
+                } else {
+                    v.hold("app", 1);
+                }
+                v.pump(&ctx);
+                statuses.push(v.status("app", 1));
+                assert_eq!(v.apps[&key].hidden, !drawn);
+            }
+            if let Some(mut h) = v.apps.get_mut(&key).and_then(|a| a.helper.take()) {
+                h.send(Request::Shutdown);
+                std::thread::sleep(Duration::from_millis(100));
+                h.kill();
+            }
+            let bytes = std::fs::read(&log).unwrap();
+            let mut r = bytes.as_slice();
+            let mut reqs = Vec::new();
+            while let Ok(Some(req)) = wire::recv::<Request>(&mut r) {
+                if !matches!(req, Request::Ping(_)) {
+                    reqs.push(req);
+                }
+            }
+            (reqs, statuses)
+        };
+        let (reqs, statuses) = run(true);
+        let vis: Vec<&Request> = reqs.iter().filter(|r| matches!(r, Request::Visible(_))).collect();
+        assert_eq!(vis, [&Request::Visible(false), &Request::Visible(true)], "{reqs:?}");
+        assert!(matches!(reqs.first(), Some(Request::Load(_))), "{reqs:?}");
+        assert!(statuses.iter().all(|s| *s == AppStatus::Running), "minimized still runs: {statuses:?}");
+        let (reqs, _) = run(false);
+        assert!(!reqs.iter().any(|r| matches!(r, Request::Visible(_))), "old helpers only get what they know: {reqs:?}");
     }
 
     /// Without a helper on disk the view isn't offered (the placeholder stays).

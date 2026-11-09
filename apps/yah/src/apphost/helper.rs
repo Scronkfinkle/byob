@@ -57,6 +57,8 @@ pub struct Helper {
     next_ping: Instant,
     seq: u64,
     frames: u64,
+    /// What it announced with `Event::Features` (none until then).
+    features: wire::Features,
     gone: Option<Gone>,
 }
 
@@ -99,6 +101,7 @@ impl Helper {
             next_ping: Instant::now(),
             seq: 0,
             frames: 0,
+            features: wire::Features::default(),
             gone: None,
         })
     }
@@ -158,6 +161,7 @@ impl Helper {
             match self.events.try_recv() {
                 Ok(Event::Pong(_)) => self.last_pong = Some(Instant::now()),
                 Ok(Event::Ready) => self.ready_at = Some(Instant::now()),
+                Ok(Event::Features(f)) => self.features = f,
                 Ok(e) => list.push(e),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -170,6 +174,11 @@ impl Helper {
             }
         }
         list
+    }
+
+    /// It announced `bit` (a [`wire::Features`] constant).
+    pub fn supports(&self, bit: u32) -> bool {
+        self.features.has(bit)
     }
 
     /// The newest frame, if one arrived since the last call.

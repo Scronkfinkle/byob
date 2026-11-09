@@ -28,6 +28,11 @@ fn main() {
                     if let Some(prefs) = cc.storage.and_then(|s| eframe::get_value::<yah_ui_egui::theme::Prefs>(s, yah_ui_egui::theme::Prefs::STORAGE_KEY)) {
                         ui.set_prefs(prefs);
                     }
+                    // So is the artifact pane: width, collapsed, open tabs per chat.
+                    if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<yah_ui_egui::pane::PanePrefs>(s, yah_ui_egui::pane::PanePrefs::STORAGE_KEY))
+                    {
+                        ui.artifacts_mut().set_pane_prefs(pane);
+                    }
                     Ok(Box::new(App { ui, link }))
                 }),
             )
@@ -74,6 +79,7 @@ impl eframe::App for App {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, yah_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
+        eframe::set_value(storage, yah_ui_egui::pane::PanePrefs::STORAGE_KEY, &self.ui.pane_prefs());
     }
 }
 

@@ -4,6 +4,13 @@
 //! Preview/Source switch, charts natively, images, text as source with Copy, and HTML apps
 //! through the [`AppView`] seam.
 //!
+//! The pane has tabs (closing one keeps the artifact) and collapses to a rail of icons on
+//! the right (a floating button with a count on phones); Ctrl+Backslash (Cmd on macOS) toggles it. Any
+//! artifact can be minimized to a one-line chip, in the chat and the pane; "Collapse all"
+//! in the header does that for the whole chat. Minimized apps, background tabs and apps
+//! behind the rail are [held](AppView::hold): they keep running without rendering for a
+//! while, then pause. What is open and minimized is kept per chat ([`crate::pane`]).
+//!
 //! The engine sends the chat's artifacts with the transcript and an update whenever a
 //! version is added; version bytes are fetched once with `GetArtifact` and kept here (they
 //! are also what Export saves).
@@ -14,9 +21,10 @@ use egui::{RichText, Stroke, vec2};
 use yah_protocol::media::{self, ChartSpec};
 use yah_protocol::{Artifact, ArtifactKind, ArtifactRef, ClientMsg, NoticeLevel, ServerMsg};
 
-use crate::appview::{self, AppDoc, AppView};
+use crate::appview::{self, AppDoc, AppStatus, AppView};
 use crate::export::Exports;
 use crate::markdown;
+use crate::pane::{Pane, PanePrefs, Shown as PaneShown};
 use crate::theme::Tokens;
 
 /// Tallest an image or chart preview is drawn in a card.
@@ -25,6 +33,14 @@ const CARD_PREVIEW_HEIGHT: f32 = 260.0;
 const CARD_LINES: usize = 4;
 /// Versions kept in memory before old ones are dropped (they are fetched again if needed).
 const MAX_FILES: usize = 64;
+/// Width of the collapsed pane's rail.
+const RAIL_WIDTH: f32 = 46.0;
+/// Size of a rail icon.
+const RAIL_ICON: f32 = 32.0;
+/// Characters of a title shown on a tab.
+const TAB_CHARS: usize = 22;
+/// Toggles the pane.
+pub const PANE_SHORTCUT: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Backslash);
 
 /// Produces the base URL (`http://127.0.0.1:PORT`) the desktop app serves artifacts at,
 /// starting a server if needed. The browser client uses its own origin.
@@ -45,11 +61,34 @@ enum File {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Action {
-    Select { id: String, version: Option<u32> },
-    Open { id: String, version: u32 },
-    Export { id: String, version: u32 },
-    SendError { id: String, version: u32, error: String },
+    Select {
+        id: String,
+        version: Option<u32>,
+    },
+    Open {
+        id: String,
+        version: u32,
+    },
+    Export {
+        id: String,
+        version: u32,
+    },
+    SendError {
+        id: String,
+        version: u32,
+        error: String,
+    },
+    /// Collapse the pane to the rail (on phones: back to the chat).
     Close,
+    Expand,
+    Toggle,
+    Activate(String),
+    CloseTab(String),
+    Minimize {
+        id: String,
+        minimized: bool,
+    },
+    MinimizeAll(bool),
 }
 
 pub struct Artifacts {
@@ -58,9 +97,14 @@ pub struct Artifacts {
     files: HashMap<(String, u32), File>,
     /// Insertion order of `files`, for dropping the oldest.
     order: Vec<(String, u32)>,
-    /// Shown in the pane: id, and a version (`None`: the latest).
-    selected: Option<(String, Option<u32>)>,
-    open: bool,
+    /// Tabs, minimized artifacts, open/collapsed.
+    pane: Pane,
+    /// A version picked for a tab (else the latest).
+    versions: HashMap<String, u32>,
+    /// This frame is narrow (phones).
+    narrow: bool,
+    /// The HTML app the pane drew this frame (the other tabs are held in the background).
+    drawn_app: Option<String>,
     /// Markdown shows its source instead of the preview.
     source: bool,
     /// Open the pane on this artifact at the next frame (if there is room).
@@ -85,8 +129,10 @@ impl Default for Artifacts {
             list: Vec::new(),
             files: HashMap::new(),
             order: Vec::new(),
-            selected: None,
-            open: false,
+            pane: Pane::default(),
+            versions: HashMap::new(),
+            narrow: false,
+            drawn_app: None,
             source: false,
             reveal: None,
             pending_export: Vec::new(),
@@ -111,6 +157,38 @@ impl Artifacts {
         self.link_base = Some(base);
     }
 
+    /// What this device remembers about the pane (to store).
+    pub fn pane_prefs(&self) -> PanePrefs {
+        self.pane.prefs()
+    }
+
+    pub fn set_pane_prefs(&mut self, prefs: PanePrefs) {
+        self.pane.set_prefs(prefs);
+        let list = &self.list;
+        self.pane.retain(|id| list.iter().any(|a| a.id == id));
+    }
+
+    /// Show or collapse the pane (as the shortcut does).
+    pub fn toggle_pane(&mut self) {
+        self.actions.push(Action::Toggle);
+    }
+
+    /// Minimize (or restore) every artifact in this chat, as "Collapse all" does.
+    pub fn minimize_all(&mut self, minimized: bool) {
+        self.actions.push(Action::MinimizeAll(minimized));
+    }
+
+    /// Open a tab for every artifact in this chat, the first in front (scripted runs).
+    pub fn open_all(&mut self) {
+        for a in self.list.clone() {
+            self.pane.add_tab(&a.id);
+        }
+        if let Some(first) = self.list.first() {
+            self.pane.activate(&first.id);
+        }
+        self.pane.expand(self.narrow);
+    }
+
     /// Apply a server message; returns whether it was one of ours.
     pub fn apply(&mut self, msg: &ServerMsg) -> bool {
         match msg {
@@ -119,11 +197,13 @@ impl Artifacts {
                     self.chat.clone_from(chat);
                     self.files.clear();
                     self.order.clear();
-                    self.selected = None;
-                    self.open = false;
+                    self.versions.clear();
+                    self.pane.switch_chat(chat.as_deref());
                     self.pending_export.clear();
                 }
                 self.list.clone_from(artifacts);
+                let list = &self.list;
+                self.pane.retain(|id| list.iter().any(|a| a.id == id));
             }
             ServerMsg::ArtifactUpdated(a) => {
                 match self.list.iter_mut().find(|x| x.id == a.id) {
@@ -160,8 +240,9 @@ impl Artifacts {
         self.files.values().any(|f| matches!(f, File::Requested))
     }
 
+    /// The pane is open (full screen on phones).
     pub fn is_open(&self) -> bool {
-        self.open && self.selected_artifact().is_some()
+        self.pane.shown(self.narrow) == PaneShown::Open && self.selected_artifact().is_some()
     }
 
     /// Messages to send and notices to show, collected while drawing.
@@ -180,10 +261,19 @@ impl Artifacts {
     }
 
     fn selected_artifact(&self) -> Option<(Artifact, u32)> {
-        let (id, v) = self.selected.as_ref()?;
+        self.tab_artifact(self.pane.active()?)
+    }
+
+    /// A tab's artifact and the version it shows.
+    fn tab_artifact(&self, id: &str) -> Option<(Artifact, u32)> {
         let a = self.get(id)?;
-        let n = v.filter(|n| a.version(*n).is_some()).or_else(|| a.latest().map(|l| l.n))?;
+        let n = self.versions.get(id).copied().filter(|n| a.version(*n).is_some()).or_else(|| a.latest().map(|l| l.n))?;
         Some((a.clone(), n))
+    }
+
+    /// Running / paused, for HTML apps the view runs.
+    fn app_status(&self, a: &Artifact, version: u32) -> AppStatus {
+        if a.kind == ArtifactKind::Html { self.view.status(&a.id, version) } else { AppStatus::Unknown }
     }
 
     /// The file of a version, asking for it the first time.
@@ -244,10 +334,31 @@ impl Artifacts {
     fn handle(&mut self, ctx: &egui::Context, action: Action) {
         match action {
             Action::Select { id, version } => {
-                self.selected = Some((id, version));
-                self.open = true;
+                match version {
+                    Some(n) => self.versions.insert(id.clone(), n),
+                    None => self.versions.remove(&id),
+                };
+                self.pane.show(&id, self.narrow);
             }
-            Action::Close => self.open = false,
+            Action::Close => self.pane.collapse(self.narrow),
+            Action::Expand => self.pane.expand(self.narrow),
+            Action::Toggle => {
+                let newest = self.list.last().map(|a| a.id.clone());
+                self.pane.toggle(self.narrow, newest.as_deref());
+            }
+            Action::Activate(id) => {
+                self.pane.activate(&id);
+                self.pane.expand(self.narrow);
+            }
+            Action::CloseTab(id) => {
+                self.pane.close(&id);
+                self.versions.remove(&id);
+            }
+            Action::Minimize { id, minimized } => self.pane.set_minimized(&id, minimized),
+            Action::MinimizeAll(minimized) => {
+                let ids: Vec<String> = self.list.iter().map(|a| a.id.clone()).collect();
+                self.pane.set_all_minimized(ids.iter().map(String::as_str), minimized);
+            }
             Action::Export { id, version } => self.export(&id, version),
             Action::Open { id, version } => match self.app_url(&id, version) {
                 Ok(url) => self.exports.open(ctx, &url),
@@ -266,26 +377,147 @@ impl Artifacts {
     /// Per frame, before drawing: theme for apps, and a just-updated artifact to reveal.
     pub fn begin_frame(&mut self, ctx: &egui::Context, t: &Tokens, narrow: bool) {
         self.ctx.clone_from(ctx);
+        self.narrow = narrow;
+        self.drawn_app = None;
         let theme = appview::theme_vars(t);
         if theme != self.theme {
             self.view.set_theme(&theme);
             self.theme = theme;
         }
         if let Some(id) = self.reveal.take() {
-            // On a phone the pane would cover the chat mid-reply; there the card has Show.
-            if !narrow || self.open {
-                self.selected = Some((id, None));
-                self.open = true;
-            }
+            // A tab in front showing the latest; on a phone the pane would cover the chat
+            // mid-reply, so it stays closed there (the floating button counts it).
+            self.versions.remove(&id);
+            self.pane.reveal(&id, narrow);
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&PANE_SHORTCUT)) {
+            self.handle(ctx, Action::Toggle);
         }
     }
 
-    /// Per frame, after drawing: run what the user asked for, sync the app overlay.
+    /// Per frame, after drawing: run what the user asked for, keep background tabs alive,
+    /// sync the app overlay.
     pub fn end_frame(&mut self, ctx: &egui::Context) {
         for a in std::mem::take(&mut self.actions) {
             self.handle(ctx, a);
         }
+        // Apps in tabs the pane didn't draw (behind another tab, or the rail) keep running
+        // for a while without rendering.
+        for id in self.pane.tabs().to_vec() {
+            if self.drawn_app.as_deref() == Some(id.as_str()) {
+                continue;
+            }
+            if let Some((a, v)) = self.tab_artifact(&id).filter(|(a, _)| a.kind == ArtifactKind::Html) {
+                self.view.hold(&a.id, v);
+            }
+        }
         self.view.end_frame(ctx);
+    }
+
+    // ---- header, rail, floating button ---------------------------------------------------
+
+    /// Header buttons (in a right-to-left layout): the pane toggle and "Collapse all".
+    pub fn header_buttons(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        if self.list.is_empty() {
+            return;
+        }
+        if !self.narrow {
+            let open = self.pane.shown(false) == PaneShown::Open;
+            let label = format!("Artifacts {}", self.list.len());
+            let shortcut = ui.ctx().format_shortcut(&PANE_SHORTCUT);
+            if ui.selectable_label(open, label).on_hover_text(format!("Show or hide the artifact pane ({shortcut})")).clicked() {
+                self.actions.push(Action::Toggle);
+            }
+        }
+        let all = self.list.iter().all(|a| self.pane.is_minimized(&a.id));
+        // Phones: short labels, the header is crowded there.
+        let (label, tip) = match (all, self.narrow) {
+            (true, false) => ("Expand all", "Show every artifact in this chat in full"),
+            (true, true) => ("Expand", "Show every artifact in this chat in full"),
+            (false, false) => ("Collapse all", "Minimize every artifact in this chat to one line"),
+            (false, true) => ("Collapse", "Minimize every artifact in this chat to one line"),
+        };
+        if ui.button(RichText::new(label).color(t.text_dim)).on_hover_text(tip).clicked() {
+            self.actions.push(Action::MinimizeAll(!all));
+        }
+    }
+
+    /// The pane or its rail on the right (wide windows; call before the central panel).
+    pub fn side_panel(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        match self.pane.shown(false) {
+            PaneShown::Open if self.selected_artifact().is_some() => {
+                let width = ui.available_width();
+                let max = (width * 0.75).max(320.0);
+                let stored = self.pane.width();
+                let r = egui::Panel::right("artifact-pane")
+                    .resizable(true)
+                    .default_size(stored.unwrap_or((width * 0.48).max(320.0)).min(max))
+                    .size_range(crate::pane::MIN_WIDTH..=max)
+                    .show(ui, |ui| self.pane(ui, t, false));
+                // Remember what the user dragged it to (not what a smaller window squeezed it to).
+                let w = r.response.rect.width();
+                if ui.input(|i| i.pointer.any_down()) && stored.is_none_or(|s| (s - w).abs() > 0.5) {
+                    self.pane.set_width(w);
+                }
+            }
+            PaneShown::Rail if self.selected_artifact().is_some() => {
+                egui::Panel::right("artifact-rail").resizable(false).exact_size(RAIL_WIDTH).show(ui, |ui| self.rail(ui, t));
+            }
+            _ => {}
+        }
+    }
+
+    /// The collapsed pane: an icon per tab with a live/paused dot; click to open it there.
+    fn rail(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        ui.add_space(6.0);
+        ui.vertical_centered(|ui| {
+            let shortcut = ui.ctx().format_shortcut(&PANE_SHORTCUT);
+            if ui.add(egui::Button::new(RichText::new("«").size(16.0)).frame(false)).on_hover_text(format!("Show the pane ({shortcut})")).clicked() {
+                self.actions.push(Action::Expand);
+            }
+            ui.add_space(4.0);
+            let active = self.pane.active().map(str::to_owned);
+            for id in self.pane.tabs().to_vec() {
+                let Some((a, v)) = self.tab_artifact(&id) else { continue };
+                let status = self.app_status(&a, v);
+                let resp = rail_icon(ui, t, &a, Some(&id) == active.as_ref(), status);
+                let tip = match status.label() {
+                    Some(s) => format!("{} · v{v} · {s}", a.title),
+                    None => format!("{} · v{v}", a.title),
+                };
+                let resp = resp.on_hover_text(tip);
+                if resp.clicked() {
+                    self.actions.push(Action::Activate(id.clone()));
+                }
+                if resp.middle_clicked() {
+                    self.actions.push(Action::CloseTab(id.clone()));
+                }
+                resp.context_menu(|ui| {
+                    if ui.button("Close tab").clicked() {
+                        self.actions.push(Action::CloseTab(id.clone()));
+                    }
+                });
+                ui.add_space(4.0);
+            }
+        });
+    }
+
+    /// Phones, pane closed: a floating button with the number of open tabs.
+    pub fn floating_button(&mut self, ctx: &egui::Context, t: &Tokens) {
+        if self.pane.shown(true) != PaneShown::Rail {
+            return;
+        }
+        let n = self.pane.tabs().len();
+        egui::Area::new(egui::Id::unique("artifact-fab")).anchor(egui::Align2::RIGHT_BOTTOM, vec2(-14.0, -96.0)).order(egui::Order::Foreground).show(
+            ctx,
+            |ui| {
+                let text = RichText::new(format!("Artifacts  {n}")).strong().color(t.on_accent);
+                let b = egui::Button::new(text).fill(t.accent).corner_radius(18.0).min_size(vec2(44.0, 36.0));
+                if ui.add(b).on_hover_text("Show the open artifacts").clicked() {
+                    self.actions.push(Action::Expand);
+                }
+            },
+        );
     }
 
     // ---- card ---------------------------------------------------------------------------
@@ -303,18 +535,29 @@ impl Artifacts {
             return;
         };
         let version = a.version(r.version).map_or(r.version, |v| v.n);
+        let selected = self.is_open() && self.pane.active() == Some(a.id.as_str());
+        if self.pane.is_minimized(&a.id) {
+            self.chip(ui, t, &a, version, selected, true);
+            return;
+        }
         let note = a.version(version).map(|v| v.note.clone()).unwrap_or_default();
-        let selected = self.open && self.selected.as_ref().is_some_and(|(id, _)| *id == a.id);
         let stroke = if selected { t.accent } else { t.border };
         egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, stroke)).corner_radius(8.0).inner_margin(vec2(10.0, 8.0)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                kind_badge(ui, t, a.kind);
-                ui.label(RichText::new(&a.title).strong().color(t.text_strong));
-                ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
-                if !note.is_empty() {
-                    ui.add(egui::Label::new(RichText::new(&note).small().color(t.text_dim)).truncate()).on_hover_text(&note);
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if minimize_button(ui, t, a.kind).clicked() {
+                        self.actions.push(Action::Minimize { id: a.id.clone(), minimized: true });
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        kind_badge(ui, t, a.kind);
+                        ui.add(egui::Label::new(RichText::new(&a.title).strong().color(t.text_strong)).truncate());
+                        ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
+                        if !note.is_empty() {
+                            ui.add(egui::Label::new(RichText::new(&note).small().color(t.text_dim)).truncate()).on_hover_text(&note);
+                        }
+                    });
+                });
             });
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Show").on_hover_text("Show it beside the chat").clicked() {
@@ -344,6 +587,38 @@ impl Artifacts {
                 }
             });
             self.card_preview(ui, t, &a, version);
+        });
+    }
+
+    /// A minimized artifact: one line with its kind, title, version and (apps) whether it
+    /// still runs, and Restore. Keeps a running app alive in the background.
+    fn chip(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32, selected: bool, in_chat: bool) {
+        if a.kind == ArtifactKind::Html {
+            self.view.hold(&a.id, version);
+        }
+        let status = self.app_status(a, version);
+        let stroke = if selected { t.accent } else { t.border };
+        egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, stroke)).corner_radius(16.0).inner_margin(vec2(8.0, 3.0)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Restore").on_hover_text("Show it in full again").clicked() {
+                        self.actions.push(Action::Minimize { id: a.id.clone(), minimized: false });
+                    }
+                    if in_chat && ui.small_button("Show").on_hover_text("Show it beside the chat").clicked() {
+                        self.actions.push(Action::Select { id: a.id.clone(), version: Some(version) });
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        kind_badge(ui, t, a.kind);
+                        ui.add(egui::Label::new(RichText::new(&a.title).color(t.text_strong)).truncate()).on_hover_text(&a.filename);
+                        ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
+                        if let Some(label) = status.label() {
+                            status_dot(ui, t, status);
+                            ui.label(RichText::new(label).small().color(t.text_dim));
+                        }
+                    });
+                });
+            });
         });
     }
 
@@ -403,12 +678,25 @@ impl Artifacts {
 
     /// The pane's contents (the caller decides where it goes).
     pub fn pane(&mut self, ui: &mut egui::Ui, t: &Tokens, narrow: bool) {
+        self.tab_strip(ui, t, narrow);
         let Some((a, version)) = self.selected_artifact() else {
-            self.open = false;
             return;
         };
-        self.pane_header(ui, t, &a, version, narrow);
+        let minimized = self.pane.is_minimized(&a.id);
+        self.pane_header(ui, t, &a, version, minimized);
         ui.separator();
+        if minimized {
+            ui.add_space(6.0);
+            self.chip(ui, t, &a, version, false, false);
+            ui.add_space(6.0);
+            let hint = if a.kind == ArtifactKind::Html {
+                "Minimized: the app keeps running in the background for a minute, then pauses (a snapshot is kept; restoring it after that starts it afresh)."
+            } else {
+                "Minimized. Restore shows it in full here and in the chat."
+            };
+            ui.label(RichText::new(hint).small().color(t.text_faint));
+            return;
+        }
         let ctx = ui.ctx().clone();
         let id = egui::Id::unique(("artifact-pane", &a.id, version));
         if a.kind == ArtifactKind::Html {
@@ -444,16 +732,69 @@ impl Artifacts {
         }
     }
 
-    fn pane_header(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32, narrow: bool) {
+    /// Back (phones) · the tabs … collapse to the rail.
+    fn tab_strip(&mut self, ui: &mut egui::Ui, t: &Tokens, narrow: bool) {
         ui.add_space(4.0);
-        // Title row: back (phones) · kind · title … close.
         ui.horizontal(|ui| {
             if narrow && ui.button("← Chat").clicked() {
                 self.actions.push(Action::Close);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !narrow && ui.button("×").on_hover_text("Close").clicked() {
-                    self.actions.push(Action::Close);
+                if !narrow {
+                    let shortcut = ui.ctx().format_shortcut(&PANE_SHORTCUT);
+                    if ui
+                        .add(egui::Button::new(RichText::new("»").size(16.0)).frame(false))
+                        .on_hover_text(format!("Collapse to the rail ({shortcut})"))
+                        .clicked()
+                    {
+                        self.actions.push(Action::Close);
+                    }
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    egui::ScrollArea::horizontal().id_salt("artifact-tabs").auto_shrink([false, true]).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let active = self.pane.active().map(str::to_owned);
+                            for id in self.pane.tabs().to_vec() {
+                                let Some((a, v)) = self.tab_artifact(&id) else { continue };
+                                let status = self.app_status(&a, v);
+                                self.tab(ui, t, &a, Some(&id) == active.as_ref(), status);
+                            }
+                        });
+                    });
+                });
+            });
+        });
+    }
+
+    fn tab(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, active: bool, status: AppStatus) {
+        let fill = if active { t.assistant_bubble } else { t.code_bg };
+        let stroke = if active { t.accent } else { t.border };
+        let title: String =
+            if a.title.chars().count() > TAB_CHARS { a.title.chars().take(TAB_CHARS - 1).chain(std::iter::once('…')).collect() } else { a.title.clone() };
+        egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke)).corner_radius(6.0).inner_margin(vec2(6.0, 2.0)).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if status.label().is_some() {
+                status_dot(ui, t, status);
+            }
+            let color = if active { t.text_strong } else { t.text_dim };
+            let resp = ui.add(egui::Label::new(RichText::new(title).color(color)).sense(egui::Sense::click())).on_hover_text(&a.title);
+            if resp.clicked() {
+                self.actions.push(Action::Activate(a.id.clone()));
+            }
+            let close =
+                ui.add(egui::Button::new(RichText::new("×").color(t.text_dim)).frame(false).small()).on_hover_text("Close the tab (the artifact stays)");
+            if close.clicked() || resp.middle_clicked() {
+                self.actions.push(Action::CloseTab(a.id.clone()));
+            }
+        });
+    }
+
+    fn pane_header(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32, minimized: bool) {
+        // Title row: kind · title … minimize.
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !minimized && minimize_button(ui, t, a.kind).clicked() {
+                    self.actions.push(Action::Minimize { id: a.id.clone(), minimized: true });
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     kind_badge(ui, t, a.kind);
@@ -461,6 +802,9 @@ impl Artifacts {
                 });
             });
         });
+        if minimized {
+            return;
+        }
         // Tool row: versions, view switch, actions.
         ui.horizontal_wrapped(|ui| {
             let current = a.version(version).map(version_label).unwrap_or_default();
@@ -524,6 +868,7 @@ impl Artifacts {
         }
         let size = a.version(version).map_or(0, |v| v.size);
         let doc = AppDoc { id: &a.id, url: url.as_deref(), title: &a.title, version, size, source: source.as_deref() };
+        self.drawn_app = Some(a.id.clone());
         if self.view.show(ui, t, &doc).open {
             self.actions.push(Action::Open { id: a.id.clone(), version });
         }
@@ -542,6 +887,62 @@ fn versioned_name(filename: &str, version: u32) -> String {
 fn version_label(v: &yah_protocol::ArtifactVersion) -> String {
     let note: String = v.note.chars().take(40).collect();
     if note.is_empty() { format!("v{}", v.n) } else { format!("v{} · {note}", v.n) }
+}
+
+/// The "–" that minimizes a card or the pane's artifact.
+fn minimize_button(ui: &mut egui::Ui, t: &Tokens, kind: ArtifactKind) -> egui::Response {
+    let tip = if kind == ArtifactKind::Html { "Minimize (it keeps running for a minute, then pauses)" } else { "Minimize to one line" };
+    ui.add(egui::Button::new(RichText::new("–").strong().color(t.text_dim)).frame(false)).on_hover_text(tip)
+}
+
+fn status_color(t: &Tokens, status: AppStatus) -> Option<egui::Color32> {
+    match status {
+        AppStatus::Unknown => None,
+        AppStatus::Running => Some(t.success),
+        AppStatus::Paused => Some(t.text_faint),
+        AppStatus::Stopped => Some(t.danger),
+    }
+}
+
+/// A small live (green) / paused (grey) / stopped (red) dot.
+fn status_dot(ui: &mut egui::Ui, t: &Tokens, status: AppStatus) {
+    let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), egui::Sense::hover());
+    if let Some(c) = status_color(t, status) {
+        ui.painter().circle_filled(rect.center(), 3.5, c);
+    }
+}
+
+/// Up to two letters standing for a title ("Loan calculator" → "LC").
+fn initials(title: &str) -> String {
+    let words: Vec<&str> = title.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let first = |w: &str| w.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+    match words.as_slice() {
+        [] => "?".into(),
+        [one] => one.chars().take(2).collect::<String>().to_uppercase(),
+        [a, b, ..] => format!("{}{}", first(a), first(b)),
+    }
+}
+
+/// One artifact on the rail: its initials on a rounded square, a status dot in the corner.
+fn rail_icon(ui: &mut egui::Ui, t: &Tokens, a: &Artifact, active: bool, status: AppStatus) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(RAIL_ICON, RAIL_ICON), egui::Sense::click());
+    let p = ui.painter();
+    let fill = if active {
+        crate::theme::mix(t.accent, t.code_bg, 0.75)
+    } else if resp.hovered() {
+        t.assistant_bubble
+    } else {
+        t.code_bg
+    };
+    p.rect_filled(rect, 8.0, fill);
+    p.rect_stroke(rect, 8.0, Stroke::new(1.0, if active { t.accent } else { t.border }), egui::StrokeKind::Inside);
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, initials(&a.title), egui::FontId::proportional(12.0), if active { t.text_strong } else { t.text });
+    if let Some(c) = status_color(t, status) {
+        let at = rect.right_bottom() - vec2(5.0, 5.0);
+        p.circle_filled(at, 4.5, t.panel_bg);
+        p.circle_filled(at, 3.2, c);
+    }
+    resp
 }
 
 fn kind_badge(ui: &mut egui::Ui, t: &Tokens, kind: ArtifactKind) {
@@ -671,6 +1072,106 @@ mod tests {
             s.begin_frame(&ctx, &Tokens::dark(), false);
             assert!(s.app_url("app", 2).unwrap().starts_with("http://127.0.0.1:9/artifact/c/app/2#--yah-bg="));
         }
+    }
+
+    /// Records what the artifact UI asks of the app view.
+    #[derive(Default)]
+    struct Recorder {
+        log: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    }
+
+    impl AppView for Recorder {
+        fn show(&mut self, _ui: &mut egui::Ui, _t: &Tokens, doc: &AppDoc<'_>) -> appview::AppViewResponse {
+            self.log.borrow_mut().push(format!("show {}", doc.id));
+            appview::AppViewResponse::default()
+        }
+        fn runs_inline(&self) -> bool {
+            true
+        }
+        fn hold(&mut self, id: &str, version: u32) {
+            self.log.borrow_mut().push(format!("hold {id}/{version}"));
+        }
+        fn status(&self, _id: &str, _version: u32) -> AppStatus {
+            AppStatus::Running
+        }
+    }
+
+    fn drain(log: &std::rc::Rc<std::cell::RefCell<Vec<String>>>) -> Vec<String> {
+        let mut v = std::mem::take(&mut *log.borrow_mut());
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    #[test]
+    fn tabs_rail_minimize_and_background_apps() {
+        let mut s = Artifacts::default();
+        let rec = Recorder::default();
+        let log = std::rc::Rc::clone(&rec.log);
+        s.set_app_view(Box::new(rec));
+        let list = vec![
+            artifact("calc", ArtifactKind::Html, "calc.html", &[1]),
+            artifact("clock", ArtifactKind::Html, "clock.html", &[1, 2]),
+            artifact("notes", ArtifactKind::Markdown, "notes.md", &[1]),
+        ];
+        s.apply(&ServerMsg::Artifacts { chat: Some("c".into()), artifacts: list });
+        let ctx = egui::Context::default();
+        let t = Tokens::dark();
+        let refs = [ArtifactRef { id: "calc".into(), version: 1 }, ArtifactRef { id: "clock".into(), version: 2 }];
+        let run = |s: &mut Artifacts, input: egui::RawInput| {
+            let mut out = ctx.run_ui(input, |ui| {
+                s.begin_frame(ui.ctx(), &t, false);
+                s.side_panel(ui, &t);
+                egui::CentralPanel::default().show(ui, |ui| s.cards(ui, &t, &refs));
+            });
+            out.textures_delta.clear();
+            s.end_frame(&ctx);
+        };
+        // Two apps opened: tabs, the one in front drawn, the other held in the background.
+        s.handle(&ctx, Action::Select { id: "calc".into(), version: None });
+        s.handle(&ctx, Action::Select { id: "clock".into(), version: Some(2) });
+        for _ in 0..2 {
+            run(&mut s, egui::RawInput::default());
+        }
+        assert_eq!(s.pane.tabs(), ["calc", "clock"]);
+        assert!(s.is_open());
+        let l = drain(&log);
+        assert!(l.contains(&"show clock".to_owned()) && l.contains(&"hold calc/1".to_owned()), "{l:?}");
+        // Minimizing a card: a chip that keeps the app alive in the background.
+        s.handle(&ctx, Action::Minimize { id: "clock".into(), minimized: true });
+        run(&mut s, egui::RawInput::default());
+        let l = drain(&log);
+        assert!(!l.iter().any(|e| e.starts_with("show")), "a minimized artifact isn't drawn: {l:?}");
+        assert!(l.contains(&"hold clock/2".to_owned()), "{l:?}");
+        // Collapse to the rail with the shortcut: every app tab held.
+        s.handle(&ctx, Action::Minimize { id: "clock".into(), minimized: false });
+        let key = egui::Event::Key { key: egui::Key::Backslash, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        run(&mut s, egui::RawInput { events: vec![key], ..Default::default() });
+        assert!(!s.is_open() && s.pane.collapsed());
+        run(&mut s, egui::RawInput::default());
+        assert_eq!(drain(&log), ["hold calc/1", "hold clock/2"]);
+        // Clicking a rail icon (as its action) opens the pane on it.
+        s.handle(&ctx, Action::Activate("calc".into()));
+        assert!(s.is_open() && s.pane.active() == Some("calc"));
+        // Closing a tab keeps the artifact.
+        s.handle(&ctx, Action::CloseTab("calc".into()));
+        assert_eq!((s.pane.tabs(), s.pane.active()), (&["clock".to_owned()][..], Some("clock")));
+        assert!(s.get("calc").is_some());
+        // Collapse all: every artifact of the chat minimized, kept in the pane prefs.
+        s.handle(&ctx, Action::MinimizeAll(true));
+        let prefs = s.pane_prefs();
+        assert_eq!(prefs.chats[0].minimized, ["calc", "clock", "notes"]);
+        run(&mut s, egui::RawInput::default());
+        // Restored on a fresh start, for this chat.
+        let mut again = Artifacts::default();
+        again.set_pane_prefs(prefs);
+        again.apply(&ServerMsg::Artifacts { chat: Some("c".into()), artifacts: s.list.clone() });
+        assert!(again.pane.is_minimized("notes") && again.pane.tabs() == ["clock"]);
+        // Toggle with nothing open opens the newest artifact.
+        let mut fresh = Artifacts::default();
+        fresh.apply(&ServerMsg::Artifacts { chat: Some("d".into()), artifacts: s.list.clone() });
+        fresh.handle(&ctx, Action::Toggle);
+        assert_eq!(fresh.pane.active(), Some("notes"));
     }
 
     #[test]

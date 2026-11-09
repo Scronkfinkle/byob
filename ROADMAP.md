@@ -20,6 +20,9 @@ Last updated: 2026-11-09
   browser client (sandboxed iframe) and on the desktop (Servo in a helper process per live
   app, `host/artifact-host`; live in cards and the pane, liveness pings, Stop/Reload,
   snapshots when out of view).
+- Artifact pane tabs, collapse to a rail (floating button on phones, Ctrl+Backslash),
+  minimize to chips in chat and pane, "Collapse all"; minimized/background apps stop
+  rendering (`Visible` wire message) and pause after 60 s.
 
 ## Next
 1. **Artifact host follow-ups**: GPU rendering (surfman hardware context) instead of

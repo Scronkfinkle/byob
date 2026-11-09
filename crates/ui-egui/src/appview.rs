@@ -37,6 +37,30 @@ pub struct AppViewResponse {
     pub open: bool,
 }
 
+/// Whether an app version is running, for chips and the rail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppStatus {
+    /// This view doesn't run apps, or hasn't seen this one.
+    Unknown,
+    /// Running (on screen, or minimized and still alive).
+    Running,
+    /// Not running: a snapshot (or nothing) is kept; showing it starts it afresh.
+    Paused,
+    /// Killed or crashed; waits for Reload.
+    Stopped,
+}
+
+impl AppStatus {
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Unknown => None,
+            Self::Running => Some("running"),
+            Self::Paused => Some("paused"),
+            Self::Stopped => Some("stopped"),
+        }
+    }
+}
+
 /// Renders an HTML app artifact inside the pane.
 pub trait AppView {
     /// Draw `doc` into the space `ui` has left.
@@ -69,6 +93,13 @@ pub trait AppView {
     fn runs_inline(&self) -> bool;
     /// The theme changed; running apps should restyle.
     fn set_theme(&mut self, _vars: &[(&'static str, String)]) {}
+    /// This frame `id`/`version` isn't drawn but is wanted in the background (minimized, a
+    /// background tab, the collapsed pane): keep it running without rendering for a while,
+    /// then pause it. Never starts an app.
+    fn hold(&mut self, _id: &str, _version: u32) {}
+    fn status(&self, _id: &str, _version: u32) -> AppStatus {
+        AppStatus::Unknown
+    }
 }
 
 /// The default view for this platform.
@@ -159,11 +190,18 @@ mod web {
     use wasm_bindgen::JsCast as _;
     use wasm_bindgen::prelude::*;
 
-    use super::{AppDoc, AppView, AppViewResponse};
+    use super::{AppDoc, AppStatus, AppView, AppViewResponse};
     use crate::theme::Tokens;
 
     /// Errors kept from one app.
     const MAX_ERRORS: usize = 20;
+    /// Not shown (minimized, another tab, pane collapsed) this long, in seconds: the frame is
+    /// emptied so the app stops and its memory goes; showing it again reloads it.
+    const PAUSE_AFTER: f64 = 60.0;
+    /// Paused apps remembered for their chip status.
+    const MAX_PAUSED: usize = 32;
+    /// Out of view: `display:none` (the document stays loaded and keeps its state).
+    const HIDDEN: &str = "display:none";
 
     /// A sandboxed iframe over the canvas.
     #[derive(Default)]
@@ -174,6 +212,11 @@ mod web {
         /// Where to put it this frame (`None`: not drawn this frame, hide it).
         rect: Option<(egui::Rect, egui::Rect)>,
         last_style: String,
+        /// The app version loaded in the frame, and when (egui time) it was last shown.
+        loaded: Option<(String, u32)>,
+        last_shown: f64,
+        /// Versions that ran here and were unloaded since.
+        paused: Vec<(String, u32)>,
         errors: Rc<RefCell<Vec<String>>>,
         _on_message: Option<Closure<dyn FnMut(web_sys::MessageEvent)>>,
     }
@@ -181,6 +224,15 @@ mod web {
     impl IframeView {
         pub fn new() -> Self {
             Self::default()
+        }
+
+        fn pause_mark(&mut self, key: (String, u32)) {
+            if !self.paused.contains(&key) {
+                if self.paused.len() >= MAX_PAUSED {
+                    self.paused.remove(0);
+                }
+                self.paused.push(key);
+            }
         }
 
         fn frame(&mut self) -> Option<web_sys::HtmlIFrameElement> {
@@ -196,7 +248,7 @@ mod web {
                 "allow",
                 "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; display-capture 'none'; fullscreen 'none'; payment 'none'; usb 'none'; serial 'none'; bluetooth 'none'",
             );
-            let _ = f.set_attribute("style", "position:fixed;left:0;top:0;width:1px;height:1px;border:0;visibility:hidden");
+            let _ = f.set_attribute("style", HIDDEN);
             document.body()?.append_child(&f).ok()?;
             // Errors come back by postMessage; only from our frame's window, read as text.
             let errors = Rc::clone(&self.errors);
@@ -242,16 +294,41 @@ mod web {
                 && let Some(f) = self.frame()
             {
                 self.src = page.to_owned();
+                let key = (doc.id.to_owned(), doc.version);
+                self.paused.retain(|k| *k != key);
+                if let Some(old) = self.loaded.replace(key) {
+                    self.pause_mark(old);
+                }
                 self.errors.borrow_mut().clear();
                 f.set_src(url);
                 let _ = f.set_attribute("title", doc.title);
             }
             self.rect = Some((rect, ui.clip_rect()));
+            self.last_shown = ui.input(|i| i.time);
             AppViewResponse::default()
+        }
+
+        fn status(&self, id: &str, version: u32) -> AppStatus {
+            let key = (id.to_owned(), version);
+            if self.loaded.as_ref() == Some(&key) {
+                AppStatus::Running
+            } else if self.paused.contains(&key) {
+                AppStatus::Paused
+            } else {
+                AppStatus::Unknown
+            }
         }
 
         fn end_frame(&mut self, ctx: &egui::Context) {
             let Some(f) = self.frame.clone() else { return };
+            if self.rect.is_none() && self.loaded.is_some() && ctx.input(|i| i.time) - self.last_shown > PAUSE_AFTER {
+                f.set_src("about:blank");
+                self.src.clear();
+                self.errors.borrow_mut().clear();
+                if let Some(old) = self.loaded.take() {
+                    self.pause_mark(old);
+                }
+            }
             let style = match self.rect.take() {
                 Some((rect, clip)) => {
                     let visible = clip.intersect(rect);
@@ -283,7 +360,7 @@ mod web {
                 }
                 None => None,
             };
-            let style = style.unwrap_or_else(|| "position:fixed;left:0;top:0;width:1px;height:1px;border:0;visibility:hidden".to_owned());
+            let style = style.unwrap_or_else(|| HIDDEN.to_owned());
             if style != self.last_style {
                 let _ = f.set_attribute("style", &style);
                 self.last_style = style;

@@ -35,6 +35,8 @@ use yah_artifact_wire::{self as wire, Event, Input, Request};
 const MEASURE_EVERY: Duration = Duration::from_millis(300);
 /// At most this many frames per second go to yah.
 const MIN_FRAME_GAP: Duration = Duration::from_millis(16);
+/// Longest the loop sleeps while hidden.
+const HIDDEN_WAIT: Duration = Duration::from_millis(500);
 /// What the page's error reports start with (see yah-server's artifact shim).
 const ERROR_MARK: &str = "\u{1}yah-error ";
 
@@ -265,6 +267,9 @@ struct Host {
     sent_height: f32,
     measuring: Rc<Cell<bool>>,
     next_measure: Instant,
+    /// Minimized or in the background (`Request::Visible(false)`): the page keeps running,
+    /// nothing is painted, read back or measured.
+    hidden: bool,
     quit: bool,
 }
 
@@ -308,6 +313,23 @@ impl Host {
                 None => self.page.push(Event::Pong(n)),
             },
             Request::Shutdown => self.quit = true,
+            Request::Visible(visible) => self.set_visible(visible),
+        }
+    }
+
+    fn set_visible(&mut self, visible: bool) {
+        if self.hidden != visible {
+            return;
+        }
+        self.hidden = !visible;
+        let Some(v) = &self.view else { return };
+        if visible {
+            v.webview.show();
+            // Paint now: yah dropped nothing, but the page may have changed meanwhile.
+            self.page.frame_ready.set(true);
+            self.next_measure = Instant::now();
+        } else {
+            v.webview.hide();
         }
     }
 
@@ -343,6 +365,9 @@ impl Host {
         };
         let webview = WebViewBuilder::new(&self.servo, rc.clone()).url(url).hidpi_scale_factor(Scale::new(scale)).delegate(self.page.clone()).build();
         webview.set_focused(self.focused);
+        if self.hidden {
+            webview.hide();
+        }
         self.view = Some(View { rc, webview, scale });
         self.apply_theme();
     }
@@ -350,6 +375,9 @@ impl Host {
     /// After spinning Servo: send a new frame if there is one, measure the height.
     fn tick(&mut self) {
         let Some(v) = &self.view else { return };
+        if self.hidden {
+            return;
+        }
         if self.page.frame_ready.get() && self.last_paint.elapsed() >= MIN_FRAME_GAP {
             self.page.frame_ready.set(false);
             self.last_paint = Instant::now();
@@ -404,6 +432,10 @@ impl Host {
 
     /// How long the loop may sleep.
     fn wait(&self) -> Duration {
+        if self.hidden {
+            // Requests (pings included) and Servo's own wake-ups still end the wait early.
+            return HIDDEN_WAIT;
+        }
         if self.page.frame_ready.get() {
             return MIN_FRAME_GAP.saturating_sub(self.last_paint.elapsed());
         }
@@ -460,7 +492,7 @@ fn main() {
     let servo = ServoBuilder::default().preferences(prefs()).event_loop_waker(Box::new(waker)).build();
     servo.setup_logging();
     let mut out = BufWriter::new(io::stdout().lock());
-    if wire::send(&mut out, &Event::Ready).is_err() {
+    if wire::send(&mut out, &Event::Ready).is_err() || wire::send(&mut out, &Event::Features(wire::Features::ALL)).is_err() {
         return;
     }
     let mut host = Host {
@@ -475,6 +507,7 @@ fn main() {
         sent_height: 0.0,
         measuring: Rc::default(),
         next_measure: Instant::now(),
+        hidden: false,
         quit: false,
     };
     loop {
