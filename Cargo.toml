@@ -57,6 +57,8 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 egui = "0.37"
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "accesskit", "clipboard", "wayland", "x11"] }
 rfd = "0.18"
+# Markdown for assistant messages. No default features: skips the HTML renderer and getopts.
+pulldown-cmark = { version = "0.13", default-features = false }
 
 # Headless test screenshots (`yah --screenshot`).
 png = "0.18"

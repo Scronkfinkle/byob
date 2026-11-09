@@ -13,9 +13,12 @@ egui.workspace = true
 ewebsock.workspace = true
 log.workspace = true
 web-time.workspace = true
+serde.workspace = true
+pulldown-cmark.workspace = true
 
 [dev-dependencies]
 tungstenite.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
