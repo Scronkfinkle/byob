@@ -1,6 +1,8 @@
 //! HTTP + WebSocket front door for remote clients (e.g. a browser over Tailscale).
 //!
 //! - `GET /ws` upgrades to a WebSocket carrying [`yah_protocol`] JSON frames.
+//! - `GET /artifact/<chat>/<id>/<version>` serves an artifact version under its own strict
+//!   CSP (see [`artifact`]).
 //! - Any other `GET` serves the static web bundle (`apps/yah-web`, built by `cargo xtask web`).
 //!
 //! Deliberately simple and blocking: one thread per connection. Binds to loopback by
@@ -8,6 +10,7 @@
 //! your tailnet. Never bind it to a public interface.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod artifact;
 mod auth;
 mod http;
 
@@ -46,6 +49,8 @@ pub struct ServerConfig {
     pub ping_interval: Duration,
     /// Drop a WebSocket that has sent nothing (not even a pong) for this long.
     pub idle_timeout: Duration,
+    /// Serve only `/artifact/…` (the desktop app's on-demand server for "Open in browser").
+    pub artifacts_only: bool,
 }
 
 impl Default for ServerConfig {
@@ -59,6 +64,7 @@ impl Default for ServerConfig {
             write_timeout: Duration::from_secs(10),
             ping_interval: Duration::from_secs(20),
             idle_timeout: Duration::from_secs(60),
+            artifacts_only: false,
         }
     }
 }
@@ -153,6 +159,13 @@ fn handle(mut stream: TcpStream, engine: &EngineHandle, config: &ServerConfig) -
             };
         }
     };
+    if req.path.starts_with("/artifact/") {
+        log::debug!("GET {} by {who} from {peer}", req.path);
+        return artifact::serve(&mut stream, engine, &req);
+    }
+    if config.artifacts_only {
+        return http::respond(&mut stream, 404, "text/plain", b"not found");
+    }
     if req.path == "/ws" && req.is_websocket_upgrade() {
         if !req.origin_allowed(peer.ip().to_canonical().is_loopback()) {
             log::warn!("rejected cross-origin WebSocket from {:?} ({who}, {peer})", req.header("origin"));
@@ -392,6 +405,74 @@ mod tests {
         let _ = silent.read_to_end(&mut sink);
         let took = started.elapsed();
         assert!(took >= Duration::from_millis(400) && took < Duration::from_secs(3), "took {took:?}");
+    }
+
+    /// An engine whose store has chats `c1` and `c2` working in `ws`, with an HTML
+    /// artifact in `c1` (returned: its id).
+    fn with_artifact(ws: &std::path::Path, home: &std::path::Path, config: ServerConfig) -> (SocketAddr, String) {
+        let paths = yah_store::Paths::at(home);
+        paths.ensure().unwrap();
+        let store = yah_store::Store::open(paths.db()).unwrap();
+        store.create_chat("c1", "one", ws).unwrap();
+        store.create_chat("c2", "two", ws).unwrap();
+        drop(store);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let ctx = yah_tools::ToolContext::new(ws, &cancel).with_chat("c1");
+        let args = serde_json::json!({"title": "Calc", "filename": "calc.html", "content": "<!doctype html><button>Go</button>"});
+        let out = yah_tools::Tool::run(&yah_tools::CreateArtifact, &args, &ctx);
+        assert!(!out.failed, "{}", out.text);
+        let id = yah_agent::artifact::list(ws, "c1")[0].id.clone();
+        let mut engine_config = yah_agent::EngineConfig::new(yah_types::InferenceConfig::default());
+        engine_config.paths = Some(paths);
+        engine_config.workspace = ws.to_path_buf();
+        let engine = EngineHandle::spawn_with(engine_config).unwrap();
+        (spawn(engine, ServerConfig { addr: SocketAddr::from(([127, 0, 0, 1], 0)), ..config }).unwrap(), id)
+    }
+
+    #[test]
+    fn artifacts_are_served_sandboxed_and_only_in_their_chat() {
+        let (ws, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (addr, id) = with_artifact(ws.path(), home.path(), ServerConfig::default());
+        let ok = get(addr, &format!("/artifact/c1/{id}/1"), "");
+        assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+        assert!(ok.contains("Content-Type: text/html; charset=utf-8"), "{ok}");
+        let csp = ok.lines().find_map(|l| l.strip_prefix("Content-Security-Policy: ")).unwrap();
+        for part in ["sandbox allow-scripts allow-forms", "default-src 'none'", "connect-src 'none'", "frame-ancestors 'self'", "script-src 'unsafe-inline'"] {
+            assert!(csp.contains(part), "{csp}");
+        }
+        assert!(!csp.contains("allow-same-origin"));
+        assert!(ok.contains("Cache-Control: no-store") && ok.contains("X-Content-Type-Options: nosniff"), "{ok}");
+        assert!(ok.contains("<button>Go</button>") && ok.contains("RTCPeerConnection"), "the helper is injected: {ok}");
+        let dl = get(addr, &format!("/artifact/c1/{id}/1?download"), "");
+        assert!(dl.contains("Content-Disposition: attachment; filename=\"calc.html\"") && dl.ends_with("<!doctype html><button>Go</button>"), "{dl}");
+        // Another chat, a missing version, an unknown chat or id: all 404.
+        for path in [
+            format!("/artifact/c2/{id}/1"),
+            format!("/artifact/c1/{id}/2"),
+            format!("/artifact/nope/{id}/1"),
+            "/artifact/c1/nope/1".into(),
+            "/artifact/c1/../1".into(),
+        ] {
+            let out = get(addr, &path, "");
+            assert!(out.starts_with("HTTP/1.1 404"), "{path}: {out}");
+        }
+        // The allowlist applies to artifacts too.
+        let (addr, id) = with_artifact(
+            tempfile::tempdir().unwrap().path(),
+            tempfile::tempdir().unwrap().path(),
+            ServerConfig { allowed_users: vec!["ann@example.com".into()], ..Default::default() },
+        );
+        let other = get(addr, &format!("/artifact/c1/{id}/1"), &format!("X-Forwarded-Host: {addr}\r\nTailscale-User-Login: bob@example.com\r\n"));
+        assert!(other.starts_with("HTTP/1.1 403"), "{other}");
+    }
+
+    #[test]
+    fn artifacts_only_server_serves_nothing_else() {
+        let (ws, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (addr, id) = with_artifact(ws.path(), home.path(), ServerConfig { artifacts_only: true, ..Default::default() });
+        assert!(get(addr, &format!("/artifact/c1/{id}/1"), "").starts_with("HTTP/1.1 200"));
+        assert!(raw(addr, &upgrade(addr, "")).starts_with("HTTP/1.1 404"));
+        assert!(get(addr, "/", "").starts_with("HTTP/1.1 404"));
     }
 
     #[test]

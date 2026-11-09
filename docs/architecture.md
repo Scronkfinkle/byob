@@ -91,7 +91,34 @@ Funnel (public internet) requests get `Tailscale-Funnel-Request: ?1` and no iden
   (0.5 s doubling to 10 s; reset once a link has stayed up 5 s), replays `Hello` so the engine
   resends `State` + `Transcript`, and queues messages typed while offline (up to 64). The tab
   shows one "reconnecting…" banner rather than a notice per retry.
+- **Artifacts.** `GET /artifact/<chat>/<id>/<version>` serves a version only if it belongs to
+  that chat (same auth as page loads). Every response carries its own CSP: `sandbox
+  allow-scripts allow-forms` (opaque origin even as a top-level tab, so no access to yah's
+  storage, and its `Origin: null` fails the `/ws` check), `default-src 'none'`, inline
+  script/style only, `connect-src 'none'`, `frame-ancestors 'self'`. HTML gets a helper script
+  first (theme variables from the URL hash, error reports to the host page, WebRTC removed).
+  The browser frames it with `sandbox="allow-scripts allow-forms"`. The desktop app starts a
+  loopback server that serves only `/artifact/` (random port) the first time you Open one,
+  unless `--serve` already runs.
 - Not yet: read-only clients.
+
+## Artifacts
+
+Files the model makes to keep, beside the conversation, versioned and exportable. The kind
+follows the file name: `.md` (rendered, Preview/Source), `.html` (single-file app), `.chart.json`
+(native chart), PNG/JPEG, anything else as text. `create_artifact` / `update_artifact` (find/
+replace edits, each `find` must occur exactly once) / `read_artifact` write only new files
+under `.yah/artifacts/<id>/` in the chat's workspace — `artifact.json` (chat, kind, title, file
+name, versions) and `v<n>.<ext>` per version — so they are auto-allowed. Charts and images
+other tools make are adopted (an index pointing at the file where it is). A version an undo
+removed drops out of the list; numbers are never reused.
+
+Steps carry `ArtifactRef`s (rebuilt from stored file changes after a restart); clients get the
+chat's list with the transcript (`Artifacts`), `ArtifactUpdated` on new versions, and bytes via
+`GetArtifact` (for display and Export). Each turn's system prompt lists the chat's artifacts by
+id. HTML apps render through the `AppView` seam in `yah-ui-egui`: an iframe overlay in the
+browser (positioned from Rust each frame, egui popups cut out with a clip-path), a summary card
+with Open/Export on the desktop until an inline renderer lands.
 
 ## Running code (sandbox)
 

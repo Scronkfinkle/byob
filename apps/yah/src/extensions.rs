@@ -1,4 +1,4 @@
-//! Load what the model can use: built-in file tools, the code-running tools (sandboxed),
+//! Load what the model can use: built-in file and artifact tools, the code-running tools (sandboxed),
 //! then plugins (skills, Python tools, MCP connectors) from the config folder,
 //! `settings.json` `plugin_dirs`, and `--plugin`.
 
@@ -73,7 +73,7 @@ pub fn load(tools: &mut Registry, linked: Vec<PathBuf>, workspace: &Path) -> Str
     }
 
     let skills = found.skills();
-    let mut prompt = found.prompt();
+    let mut prompt = format!("{}\n\n{}", yah_tools::artifact::PROMPT, found.prompt());
     if !skills.is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(&yah_plugins::skills_prompt(&skills));

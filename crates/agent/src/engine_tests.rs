@@ -48,16 +48,19 @@ struct Hello {
     entries: Vec<Entry>,
 }
 
-/// Say hello and collect the answer: chat list, State, ChatOpened, Transcript.
+/// Say hello and collect the answer: chat list, State, ChatOpened, Transcript, Artifacts.
 fn hello(conn: &mut LocalConnection) -> Hello {
     conn.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
-    let (mut state, mut chats, mut chat) = (None, Vec::new(), None);
+    let (mut state, mut chats, mut chat, mut transcript) = (None, Vec::new(), None, None);
     loop {
         match recv(conn) {
             ServerMsg::State(s) => state = Some(s),
             ServerMsg::Chats { pinned, recent, .. } => chats = pinned.into_iter().chain(recent).collect(),
             ServerMsg::ChatOpened { chat: c } => chat = c,
-            ServerMsg::Transcript { entries } => return Hello { state: state.unwrap(), chats, chat, entries },
+            ServerMsg::Transcript { entries } => transcript = Some(entries),
+            ServerMsg::Artifacts { .. } if transcript.is_some() => {
+                return Hello { state: state.unwrap(), chats, chat, entries: transcript.unwrap_or_default() };
+            }
             _ => {} // e.g. updates about chats from before the hello
         }
     }
@@ -67,6 +70,7 @@ fn hello(conn: &mut LocalConnection) -> Hello {
 fn opened(conn: &mut LocalConnection) -> (Option<ChatSummary>, Vec<Entry>) {
     let (ServerMsg::ChatOpened { chat }, _) = recv_until(conn, |m| matches!(m, ServerMsg::ChatOpened { .. })) else { unreachable!() };
     let (ServerMsg::Transcript { entries }, _) = recv_until(conn, |m| matches!(m, ServerMsg::Transcript { .. })) else { unreachable!() };
+    recv_until(conn, |m| matches!(m, ServerMsg::Artifacts { .. }));
     (chat, entries)
 }
 

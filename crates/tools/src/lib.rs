@@ -7,12 +7,14 @@
 //! poll [`ToolContext::cancelled`].
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod artifact;
 pub mod chart;
 mod fs;
 pub mod preview;
 pub mod sandbox;
 pub mod undo;
 
+pub use artifact::{CreateArtifact, ReadArtifact, UpdateArtifact};
 pub use chart::MakeChart;
 pub use fs::{DEFAULT_TRASH_DIR, DeleteFile, ListFiles, MoveFile, MoveFiles, ReadFile, WriteFile};
 pub use preview::Preview;
@@ -55,11 +57,23 @@ pub struct ToolContext<'a> {
     pub workspace: &'a Path,
     cancel: &'a AtomicBool,
     journal: Option<&'a Journal>,
+    chat: Option<&'a str>,
 }
 
 impl<'a> ToolContext<'a> {
     pub fn new(workspace: &'a Path, cancel: &'a AtomicBool) -> Self {
-        Self { workspace, cancel, journal: None }
+        Self { workspace, cancel, journal: None, chat: None }
+    }
+
+    /// The chat this call runs in (artifacts belong to a chat).
+    #[must_use]
+    pub fn with_chat(mut self, chat: &'a str) -> Self {
+        self.chat = Some(chat);
+        self
+    }
+
+    pub fn chat(&self) -> Option<&'a str> {
+        self.chat
     }
 
     /// Record undo information for this call's file changes in `journal`.
@@ -181,7 +195,7 @@ impl Registry {
 }
 
 /// Add the built-in file tools (`list_files`, `read_file`, `write_file`, `move_file`,
-/// `move_files`, `delete_file`) and `make_chart`. Deleted files go to [`DEFAULT_TRASH_DIR`].
+/// `move_files`, `delete_file`), `make_chart` and the artifact tools. Deleted files go to [`DEFAULT_TRASH_DIR`].
 pub fn register_builtins(reg: &mut Registry) {
     reg.register(Arc::new(ListFiles));
     reg.register(Arc::new(ReadFile));
@@ -190,6 +204,9 @@ pub fn register_builtins(reg: &mut Registry) {
     reg.register(Arc::new(MoveFiles));
     reg.register(Arc::new(DeleteFile::default()));
     reg.register(Arc::new(MakeChart));
+    reg.register(Arc::new(CreateArtifact));
+    reg.register(Arc::new(UpdateArtifact));
+    reg.register(Arc::new(ReadArtifact));
 }
 
 /// A registry with just the built-in file tools.
@@ -246,12 +263,17 @@ mod tests {
     #[test]
     fn builtins_are_valid() {
         let reg = builtin();
-        assert_eq!(reg.len(), 7);
+        assert_eq!(reg.len(), 10);
         for spec in reg.specs() {
             assert!(spec.name.len() <= 64 && spec.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
             assert_eq!(spec.parameters["type"], "object");
             let tool = reg.get(&spec.name).unwrap();
-            let expected = if matches!(spec.name.as_str(), "list_files" | "read_file" | "make_chart") { Access::Read } else { Access::Write };
+            let expected = if matches!(spec.name.as_str(), "list_files" | "read_file" | "make_chart" | "create_artifact" | "update_artifact" | "read_artifact")
+            {
+                Access::Read
+            } else {
+                Access::Write
+            };
             assert_eq!(tool.access(&serde_json::json!({})), expected, "{}", spec.name);
         }
     }

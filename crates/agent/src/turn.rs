@@ -90,6 +90,8 @@ pub struct Setup {
     pub inbox: Sender<Input>,
     pub tools: Registry,
     pub workspace: Arc<PathBuf>,
+    /// The chat the turn runs in (artifacts belong to it).
+    pub chat: String,
     pub step_ids: Arc<AtomicU64>,
     /// Tool-calling mode, history budget and vision for this endpoint.
     pub plan: adapt::Plan,
@@ -317,6 +319,7 @@ impl Turn {
             at: self.content_len,
             preview,
             media: Vec::new(),
+            artifacts: Vec::new(),
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step: step.clone() });
         if let Verdict::Deny(reason) = self.gate(&step) {
@@ -328,7 +331,7 @@ impl Turn {
             }
             return format!("Not run: {reason}. Don't retry this call; tell the user what you would have done.");
         }
-        let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel).with_journal(&self.journal);
+        let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel).with_journal(&self.journal).with_chat(&self.s.chat);
         let output = catch_unwind(AssertUnwindSafe(|| tool.run(args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
         let (ops, complete) = crate::steps::undo_ops(self.journal.take(), &output.changes);
         if !ops.is_empty() || !complete {
@@ -346,6 +349,9 @@ impl Turn {
         step.detail = one_line(&text, DETAIL_CHARS);
         step.changes = output.changes.iter().map(|c| display_change(c, &self.s.workspace)).collect();
         step.media = crate::attachments::media_for_changes(&output.changes, &self.s.workspace);
+        if !output.failed {
+            step.artifacts = yah_tools::artifact::for_call(&self.s.workspace, &self.s.chat, &output.changes, &step.media);
+        }
         self.emit(TurnEvent::Step { id: self.s.entry, step });
         if output.failed && !text.starts_with("Error") {
             text.insert_str(0, "Error: ");
@@ -373,6 +379,7 @@ impl Turn {
             at: self.content_len,
             preview: None,
             media: Vec::new(),
+            artifacts: Vec::new(),
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step });
     }

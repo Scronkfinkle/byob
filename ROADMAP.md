@@ -14,10 +14,14 @@ Last updated: 2026-11-09
   managed Python via uv; hob-compatible plugins (skills, Python tools, MCP connectors).
 - Charts (hob ChartSpec v1, `make_chart` incl. CSV aggregation), inline images, uploads (desktop+web).
 - Themes, markdown, remote-access hardening, Tailscale identity allowlist.
+- Artifacts: versioned markdown / HTML app / chart / image / text files beside the chat
+  (`create_artifact`, `update_artifact` with find/replace edits, `read_artifact`; charts and
+  images adopted), cards + side pane, Export, Open in browser; HTML apps run inline in the
+  browser client (sandboxed iframe), desktop shows a summary until an inline renderer lands.
 
 ## Next
-1. **Artifacts**: versioned charts/images/documents/mini-apps with a side pane; mini-app runtime
-   chosen from the two investigations (scripted egui widgets vs HTML).
+1. **Desktop inline HTML apps**: plug the Servo-offscreen renderer into `AppView`
+   (`crates/ui-egui/src/appview.rs`); until then the pane offers Open/Export.
 2. **Plugins UI**: list/enable plugins, settings values (secrets), add connector by pasting config.
 3. Persist undo journals, attachments and step media; "denied" step status in the store.
 4. Media shown where the step happened (currently after the reply); header overflow on narrow widths.

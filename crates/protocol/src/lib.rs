@@ -5,14 +5,16 @@
 //! text frames over a WebSocket, or through channels when in-process.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod artifact;
 pub mod media;
 
 use serde::{Deserialize, Serialize};
 
+pub use artifact::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion};
 pub use media::{MediaContent, MediaKind, MediaRef};
 
 /// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -93,6 +95,12 @@ pub enum ClientMsg {
     GetMedia {
         path: String,
     },
+    /// Ask for the bytes of version `version` of artifact `id` in the chat this client looks
+    /// at; answered with [`ServerMsg::ArtifactFile`].
+    GetArtifact {
+        id: String,
+        version: u32,
+    },
 }
 
 /// Engine -> client(s).
@@ -129,6 +137,13 @@ pub enum ServerMsg {
     Uploaded { upload: u64, attachment: Option<MediaRef>, error: Option<String> },
     /// Answer to [`ClientMsg::GetMedia`].
     Media { path: String, content: MediaContent },
+    /// Every artifact of the chat this client looks at (`chat`, `None` for a new chat).
+    /// Sent after [`ServerMsg::Transcript`]; replaces the client's list.
+    Artifacts { chat: Option<String>, artifacts: Vec<Artifact> },
+    /// An artifact of the chat in view was created or got a new version.
+    ArtifactUpdated(Artifact),
+    /// Answer to [`ClientMsg::GetArtifact`]: the file, base64 (see [`media::encode`]), or why not.
+    ArtifactFile { id: String, version: u32, data: Option<String>, error: Option<String> },
 }
 
 /// A chat as shown in the sidebar.
@@ -298,6 +313,9 @@ pub struct Step {
     /// What the call will do, readable, for the approval card and the expanded row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<Preview>,
+    /// Artifact versions this call made, shown as cards where it happened.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactRef>,
 }
 
 /// Most lines in a [`Preview`]'s line lists.
@@ -523,6 +541,7 @@ mod tests {
             at: 0,
             preview: None,
             media: vec![],
+            artifacts: vec![],
         }
     }
 
@@ -624,6 +643,32 @@ mod tests {
         s.media = vec![MediaRef::new("charts/x.chart.json", 10)];
         let m = ServerMsg::StepUpdated { entry: 1, step: s };
         assert_eq!(ServerMsg::from_json(&m.to_json()).unwrap(), m);
+    }
+
+    #[test]
+    fn artifact_messages_round_trip() {
+        let v = ArtifactVersion { n: 2, path: ".yah/artifacts/calc/v2.html".into(), created_at: 1, note: "blue button".into(), size: 10 };
+        let a = Artifact { id: "calc".into(), kind: ArtifactKind::Html, title: "Calc".into(), filename: "calc.html".into(), versions: vec![v] };
+        let msgs = vec![
+            ServerMsg::Artifacts { chat: Some("c1".into()), artifacts: vec![a.clone()] },
+            ServerMsg::Artifacts { chat: None, artifacts: vec![] },
+            ServerMsg::ArtifactUpdated(a),
+            ServerMsg::ArtifactFile { id: "calc".into(), version: 2, data: Some(media::encode(b"<p>")), error: None },
+            ServerMsg::ArtifactFile { id: "calc".into(), version: 9, data: None, error: Some("no such version".into()) },
+        ];
+        for m in msgs {
+            assert_eq!(ServerMsg::from_json(&m.to_json()).unwrap(), m);
+        }
+        let m = ClientMsg::GetArtifact { id: "calc".into(), version: 2 };
+        assert_eq!(m.to_json(), r#"{"type":"get_artifact","id":"calc","version":2}"#);
+        assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m);
+        let mut s = step(1, StepStatus::Done);
+        s.artifacts = vec![ArtifactRef { id: "calc".into(), version: 2 }];
+        let m = ServerMsg::StepUpdated { entry: 1, step: s };
+        assert_eq!(ServerMsg::from_json(&m.to_json()).unwrap(), m);
+        // A step from an older engine has no artifacts.
+        let json = r#"{"id":1,"tool":"t","title":"T","access":"read","status":"done","detail":""}"#;
+        assert!(serde_json::from_str::<Step>(json).unwrap().artifacts.is_empty());
     }
 
     #[test]

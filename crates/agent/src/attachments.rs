@@ -276,6 +276,19 @@ pub fn answer(transcript: &[Entry], workspace: &Path, path: &str) -> MediaConten
     if referenced(transcript, path) { load(workspace, path) } else { MediaContent::Error { message: "not part of this conversation".into() } }
 }
 
+/// One artifact version's bytes for a client: as saved, except an image too big for one
+/// message, which is downscaled. Runs off the engine thread.
+pub fn artifact_for_client(workspace: &Path, chat: &str, id: &str, version: u32) -> Result<Vec<u8>, String> {
+    let (artifact, bytes) = yah_tools::artifact::read_version(workspace, chat, id, version, yah_tools::artifact::MAX_FILE_BYTES)?;
+    if bytes.len() <= yah_protocol::artifact::MAX_ARTIFACT_SEND_BYTES {
+        return Ok(bytes);
+    }
+    if artifact.kind == yah_protocol::ArtifactKind::Image {
+        return fit_image(bytes, CLIENT_IMAGE_SIDE, yah_protocol::artifact::MAX_ARTIFACT_SEND_BYTES).map(|(_, b)| b);
+    }
+    Err(format!("{} is too big to show here ({}); it's in the workspace", artifact.filename, media::size_label(bytes.len() as u64)))
+}
+
 fn read_capped(path: &Path, max: u64) -> Result<Vec<u8>, String> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let meta = std::fs::metadata(path).map_err(|e| format!("{name}: {e}"))?;
@@ -539,6 +552,7 @@ mod tests {
             at: 0,
             preview: None,
             media,
+            artifacts: vec![],
         };
         let entry = Entry {
             id: 0,

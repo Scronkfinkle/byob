@@ -23,7 +23,7 @@ image.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true
-web-sys = { workspace = true, features = ["File", "FileList", "Blob", "Element", "HtmlElement", "HtmlInputElement"] }
+web-sys = { workspace = true, features = ["File", "FileList", "Blob", "BlobPropertyBag", "Url", "Element", "HtmlElement", "HtmlInputElement", "HtmlAnchorElement", "HtmlIFrameElement", "MessageEvent", "Node"] }
 
 [dev-dependencies]
 tungstenite.workspace = true

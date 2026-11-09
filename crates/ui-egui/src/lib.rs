@@ -2,7 +2,10 @@
 //! over a [`Connection`] and sends user intents back. It never touches the engine directly.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod appview;
+pub mod artifact;
 pub mod chart;
+pub mod export;
 pub mod markdown;
 pub mod media;
 mod settings;
@@ -37,6 +40,8 @@ pub struct YahApp {
     media: media::Cache,
     /// Files attached in the composer.
     uploads: upload::Uploads,
+    /// The chat's artifacts: cards, the pane, export.
+    artifacts: artifact::Artifacts,
 }
 
 impl YahApp {
@@ -59,7 +64,19 @@ impl YahApp {
             form_key: String::new(),
             media: media::Cache::default(),
             uploads: upload::Uploads::default(),
+            artifacts: artifact::Artifacts::default(),
         }
+    }
+
+    /// Plug in how HTML app artifacts are shown (default: an iframe in the browser, a
+    /// summary with Open on the desktop).
+    pub fn set_app_view(&mut self, view: Box<dyn appview::AppView>) {
+        self.artifacts.set_app_view(view);
+    }
+
+    /// Where the desktop app serves artifacts for "Open in browser" (may start a server).
+    pub fn set_link_base(&mut self, base: artifact::LinkBase) {
+        self.artifacts.set_link_base(base);
     }
 
     fn notice(&mut self, level: NoticeLevel, text: String) {
@@ -82,7 +99,7 @@ impl YahApp {
 
     fn pump(&mut self) {
         while let Some(msg) = self.conn.try_recv() {
-            if self.sidebar.apply(&msg) {
+            if self.sidebar.apply(&msg) || self.artifacts.apply(&msg) {
                 continue;
             }
             match msg {
@@ -120,6 +137,8 @@ impl YahApp {
                     }
                 }
                 ServerMsg::Media { path, content } => self.media.received(&path, &content),
+                // Handled by the artifacts above.
+                ServerMsg::Artifacts { .. } | ServerMsg::ArtifactUpdated(_) | ServerMsg::ArtifactFile { .. } => {}
             }
         }
     }
@@ -168,7 +187,7 @@ impl YahApp {
     pub fn settled(&self) -> bool {
         self.state.is_some()
             && (steps::awaiting_approval(&self.entries)
-                || (!self.busy() && self.entries.iter().all(|e| e.done) && !self.uploads.busy() && !self.media.loading()))
+                || (!self.busy() && self.entries.iter().all(|e| e.done) && !self.uploads.busy() && !self.media.loading() && !self.artifacts.loading()))
     }
 
     fn busy(&self) -> bool {
@@ -183,6 +202,7 @@ impl YahApp {
         }
         self.apply_theme(ui.ctx());
         let narrow = ui.available_width() < sidebar::NARROW;
+        self.artifacts.begin_frame(ui.ctx(), &self.tokens, narrow);
         let list_open = self.sidebar.is_open(narrow);
         self.header(ui, narrow);
         upload::drop_overlay(ui.ctx(), &self.tokens);
@@ -194,6 +214,13 @@ impl YahApp {
             // Phones: the chat list takes the whole screen until a chat is picked.
             let sent = egui::CentralPanel::default().show(ui, |ui| self.sidebar.show(ui, &t, true)).inner;
             self.send_all(sent);
+            self.end_frame(ui.ctx());
+            return;
+        }
+        if narrow && self.artifacts.is_open() {
+            // Phones: the artifact takes the whole screen; "← Chat" goes back.
+            egui::CentralPanel::default().show(ui, |ui| self.artifacts.pane(ui, &t, true));
+            self.end_frame(ui.ctx());
             return;
         }
         if list_open {
@@ -205,8 +232,27 @@ impl YahApp {
                 .inner;
             self.send_all(sent);
         }
+        if self.artifacts.is_open() {
+            let width = ui.available_width();
+            egui::Panel::right("artifact-pane")
+                .resizable(true)
+                .default_size((width * 0.48).max(320.0))
+                .size_range(300.0..=(width * 0.75).max(320.0))
+                .show(ui, |ui| self.artifacts.pane(ui, &t, false));
+        }
         egui::Panel::bottom("composer").show(ui, |ui| self.composer(ui));
         egui::CentralPanel::default().show(ui, |ui| self.transcript(ui));
+        self.end_frame(ui.ctx());
+    }
+
+    /// After drawing: artifact actions and overlays, and what they want sent or shown.
+    fn end_frame(&mut self, ctx: &egui::Context) {
+        self.artifacts.end_frame(ctx);
+        let (msgs, notices) = self.artifacts.take_output();
+        self.send_all(msgs);
+        for (level, text) in notices {
+            self.notice(level, text);
+        }
     }
 
     fn send_all(&mut self, msgs: Vec<ClientMsg>) {
@@ -303,11 +349,12 @@ impl YahApp {
         }
         let markdown = &mut self.markdown;
         let media = &mut self.media;
+        let artifacts = &mut self.artifacts;
         let mut answers = Vec::new();
         egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(8.0);
             for entry in &self.entries {
-                answers.extend(entry_view(ui, &t, entry, markdown, media));
+                answers.extend(entry_view(ui, &t, entry, markdown, media, artifacts));
                 ui.add_space(8.0);
             }
         });
@@ -319,7 +366,14 @@ impl YahApp {
 }
 
 /// Draws one entry; returns a message to send if the user answered an approval card.
-fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry, markdown: &mut markdown::Cache, media: &mut media::Cache) -> Option<ClientMsg> {
+fn entry_view(
+    ui: &mut egui::Ui,
+    t: &theme::Tokens,
+    entry: &Entry,
+    markdown: &mut markdown::Cache,
+    media: &mut media::Cache,
+    artifacts: &mut artifact::Artifacts,
+) -> Option<ClientMsg> {
     let mut answer = None;
     let (who, fill) = match entry.role {
         EntryRole::User => ("You", t.user_bubble),
@@ -344,7 +398,7 @@ fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry, markdown: &mu
         }
         match entry.role {
             // reply text with its tool steps where they happened, approval cards, undo
-            EntryRole::Assistant => answer = steps::body(ui, t, entry, markdown),
+            EntryRole::Assistant => answer = steps::body(ui, t, entry, markdown, &mut |ui, step| artifacts.cards(ui, t, &step.artifacts)),
             EntryRole::User if !entry.content.is_empty() => {
                 ui.add(egui::Label::new(egui::RichText::new(&entry.content).color(t.text)).selectable(true));
             }

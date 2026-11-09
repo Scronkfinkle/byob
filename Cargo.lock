@@ -5150,9 +5150,13 @@ version = "0.1.0"
 dependencies = [
  "httparse",
  "log",
+ "serde_json",
+ "tempfile",
  "tungstenite 0.30.0",
  "yah-agent",
  "yah-protocol",
+ "yah-store",
+ "yah-tools",
  "yah-types",
 ]
 

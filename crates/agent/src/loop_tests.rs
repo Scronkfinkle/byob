@@ -566,3 +566,97 @@ fn always_allow_is_per_chat_or_global_and_survives_restarts() {
     let view = run_turn(&mut c2, "four", |_, _| panic!("granted everywhere"));
     assert_eq!(view.reply().content, "ok4");
 }
+
+fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: yah_store::Paths) -> (EngineHandle, Requests) {
+    let (url, requests) = fake_llm(script, "final answer");
+    let mut tools = Registry::default();
+    tools.register(Arc::new(yah_tools::CreateArtifact));
+    tools.register(Arc::new(yah_tools::UpdateArtifact));
+    let config = EngineConfig {
+        inference: InferenceConfig { base_url: url, ..Default::default() },
+        workspace: workspace.to_path_buf(),
+        tools,
+        policy: Policy::default(),
+        system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
+        paths: Some(paths),
+        auto_title: false,
+        adapt: crate::AdaptOptions::default(),
+    };
+    (EngineHandle::spawn_with(config).unwrap(), requests)
+}
+
+/// Run a turn, also collecting the artifact updates that came with it.
+fn artifact_turn(c: &mut LocalConnection, text: &str) -> (View, Vec<yah_protocol::Artifact>) {
+    let mut view = View::default();
+    let mut updated = Vec::new();
+    c.send(ClientMsg::SendMessage { text: text.into(), attachments: vec![] });
+    while view.error.is_none() {
+        match recv(c) {
+            ServerMsg::ArtifactUpdated(a) => updated.push(a),
+            other => view.apply(other),
+        }
+    }
+    (view, updated)
+}
+
+fn artifact_file(c: &mut LocalConnection) -> ServerMsg {
+    loop {
+        let m = recv(c);
+        if matches!(m, ServerMsg::ArtifactFile { .. }) {
+            return m;
+        }
+    }
+}
+
+#[test]
+fn artifacts_are_created_versioned_served_and_restored() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = tempfile::tempdir().unwrap();
+    let paths = yah_store::Paths::at(dir.path());
+    let html = r#"{"title":"Calc","filename":"calc.html","content":"<button style=\"color:red\">Go</button>"}"#;
+    let (engine, _) = artifact_engine(vec![call("create_artifact", html), Reply::Text("Made it")], ws.path(), paths.clone());
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    while !matches!(recv(&mut c), ServerMsg::Artifacts { .. }) {}
+    // Auto-allowed: no approval card.
+    let (view, updated) = artifact_turn(&mut c, "make a calculator");
+    let step = &view.reply().steps[0];
+    assert_eq!(step.status, StepStatus::Done, "{}", step.detail);
+    assert_eq!(updated.len(), 1);
+    let a = &updated[0];
+    assert_eq!((a.kind, a.versions.len()), (yah_protocol::ArtifactKind::Html, 1));
+    assert_eq!(step.artifacts, vec![yah_protocol::ArtifactRef { id: a.id.clone(), version: 1 }]);
+    // The client can fetch it; unknown ids are refused.
+    c.send(ClientMsg::GetArtifact { id: a.id.clone(), version: 1 });
+    let ServerMsg::ArtifactFile { data: Some(data), .. } = artifact_file(&mut c) else { panic!("no file") };
+    assert_eq!(yah_protocol::media::decode(&data).unwrap(), br#"<button style="color:red">Go</button>"#);
+    c.send(ClientMsg::GetArtifact { id: "nope".into(), version: 1 });
+    assert!(matches!(artifact_file(&mut c), ServerMsg::ArtifactFile { data: None, error: Some(_), .. }));
+    drop(c);
+    drop(engine);
+
+    // After a restart: the step still points at the artifact, the list comes with the
+    // chat, the model is told about it, and an edit makes version 2.
+    let edit = format!(r#"{{"id":"{}","edits":[{{"find":"color:red","replace":"color:blue"}}],"note":"blue"}}"#, a.id);
+    let (engine, requests) = artifact_engine(vec![Reply::Calls(vec![("update_artifact".into(), edit)]), Reply::Text("Done")], ws.path(), paths);
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    let mut entries = Vec::new();
+    let listed = loop {
+        match recv(&mut c) {
+            ServerMsg::Transcript { entries: e } => entries = e,
+            ServerMsg::Artifacts { artifacts, .. } => break artifacts,
+            _ => {}
+        }
+    };
+    assert_eq!(listed, vec![a.clone()]);
+    assert_eq!(entries[1].steps[0].artifacts, vec![yah_protocol::ArtifactRef { id: a.id.clone(), version: 1 }]);
+    let (view, updated) = artifact_turn(&mut c, "make the button blue");
+    assert_eq!(view.reply().steps[0].status, StepStatus::Done, "{}", view.reply().steps[0].detail);
+    assert_eq!(updated[0].versions.iter().map(|v| v.n).collect::<Vec<_>>(), vec![1, 2]);
+    let system = requests.lock().unwrap()[0]["messages"][0]["content"].as_str().unwrap_or_default().to_owned();
+    assert!(system.contains(&format!("{}: \"Calc\" (app, v1, calc.html)", a.id)), "{system}");
+    c.send(ClientMsg::GetArtifact { id: a.id.clone(), version: 2 });
+    let ServerMsg::ArtifactFile { data: Some(data), .. } = artifact_file(&mut c) else { panic!("no file") };
+    assert_eq!(yah_protocol::media::decode(&data).unwrap(), br#"<button style="color:blue">Go</button>"#);
+}
