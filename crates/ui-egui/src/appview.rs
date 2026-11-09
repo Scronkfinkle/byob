@@ -6,9 +6,10 @@
 //!   the page's). egui windows and popups above it are cut out with an even-odd
 //!   `clip-path`. The theme goes in the URL hash and, when it changes, by `postMessage`;
 //!   errors the app reports come back the same way.
-//! - Desktop: [`Placeholder`] shows a summary and points at Open (system browser) and
-//!   Export until an inline renderer (Servo into an egui texture) plugs in here via
-//!   [`crate::YahApp::set_app_view`].
+//! - Desktop: the app binary plugs in a renderer that runs each app in a Servo helper
+//!   process (`apps/yah/src/apphost`) via [`crate::YahApp::set_app_view`]; it also shows
+//!   apps live in chat cards ([`AppView::card`]). Without the helper, [`Placeholder`] shows a
+//!   summary and points at Open (system browser) and Export.
 
 use egui::{RichText, Stroke};
 use yah_protocol::artifact::THEME_VARS;
@@ -17,12 +18,15 @@ use crate::theme::Tokens;
 
 /// One HTML app version to show.
 pub struct AppDoc<'a> {
-    /// Where the app is served (with the theme in the hash), if a server is reachable.
+    /// The artifact's id (with `version`, identifies the document).
+    pub id: &'a str,
+    /// Where the app is served (with the theme in the hash), if a server is reachable and
+    /// the view [wants it](AppView::wants_url).
     pub url: Option<&'a str>,
     pub title: &'a str,
     pub version: u32,
     pub size: u64,
-    /// The HTML, when loaded (for a summary or a source view).
+    /// The HTML, when loaded and the view [wants it](AppView::wants_source).
     pub source: Option<&'a str>,
 }
 
@@ -37,6 +41,23 @@ pub struct AppViewResponse {
 pub trait AppView {
     /// Draw `doc` into the space `ui` has left.
     fn show(&mut self, ui: &mut egui::Ui, t: &Tokens, doc: &AppDoc<'_>) -> AppViewResponse;
+    /// Draw a live preview of `doc` in a chat card (full width, the app's own height).
+    /// `None`: this view has no card previews (see [`AppView::live_cards`]).
+    fn card(&mut self, _ui: &mut egui::Ui, _t: &Tokens, _doc: &AppDoc<'_>) -> Option<AppViewResponse> {
+        None
+    }
+    /// Cards should fetch the source and call [`AppView::card`].
+    fn live_cards(&self) -> bool {
+        false
+    }
+    /// [`AppDoc::source`] is needed (fetched with `GetArtifact`).
+    fn wants_source(&self) -> bool {
+        true
+    }
+    /// [`AppDoc::url`] is needed (on the desktop that starts a loopback server).
+    fn wants_url(&self) -> bool {
+        false
+    }
     /// Once per frame, after everything else is drawn (overlays sync to their rect here,
     /// and hide when [`AppView::show`] wasn't called this frame).
     fn end_frame(&mut self, _ctx: &egui::Context) {}
@@ -277,6 +298,14 @@ mod web {
             true
         }
 
+        fn wants_source(&self) -> bool {
+            false
+        }
+
+        fn wants_url(&self) -> bool {
+            true
+        }
+
         fn set_theme(&mut self, vars: &[(&'static str, String)]) {
             let Some(win) = self.frame.as_ref().and_then(web_sys::HtmlIFrameElement::content_window) else { return };
             let msg = js_sys::Object::new();
@@ -316,11 +345,12 @@ mod tests {
     fn placeholder_draws_and_offers_open() {
         let ctx = egui::Context::default();
         let mut view = Placeholder;
-        let doc = AppDoc { url: None, title: "Calc", version: 2, size: 1200, source: Some("<title>Calc</title>") };
+        let doc = AppDoc { id: "calc", url: None, title: "Calc", version: 2, size: 1200, source: Some("<title>Calc</title>") };
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             assert!(!view.show(ui, &Tokens::dark(), &doc).open);
+            assert!(view.card(ui, &Tokens::dark(), &doc).is_none());
         });
         out.textures_delta.clear();
-        assert!(!view.runs_inline());
+        assert!(!view.runs_inline() && view.wants_source() && !view.wants_url() && !view.live_cards());
     }
 }

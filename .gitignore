@@ -6,3 +6,4 @@ plan/
 *.swp
 .DS_Store
 .claude/worktrees/
+/host/artifact-host/target

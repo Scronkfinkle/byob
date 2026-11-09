@@ -43,13 +43,14 @@ L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
 L4  agent: engine, turns, tool loop, permissions, approvals
 L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python)
 L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
-L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store
+L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store · artifact-wire (helper protocol)
 L0  types
 ```
 
 `cargo xtask layers` enforces: dependencies point down; only `ui-egui`, `yah`, `yah-web`
 may use GUI crates; browser crates (`types`, `protocol`, `ui-egui`, `yah-web`) may only
-depend on each other; banned async runtimes. `cargo xtask wasm` checks the browser crates
+depend on each other; banned async runtimes; no Servo/SpiderMonkey (they live only in the
+separate `host/artifact-host` workspace). `cargo xtask wasm` checks the browser crates
 build for `wasm32-unknown-unknown`.
 
 ## Remote access & security
@@ -117,8 +118,40 @@ Steps carry `ArtifactRef`s (rebuilt from stored file changes after a restart); c
 chat's list with the transcript (`Artifacts`), `ArtifactUpdated` on new versions, and bytes via
 `GetArtifact` (for display and Export). Each turn's system prompt lists the chat's artifacts by
 id. HTML apps render through the `AppView` seam in `yah-ui-egui`: an iframe overlay in the
-browser (positioned from Rust each frame, egui popups cut out with a clip-path), a summary card
-with Open/Export on the desktop until an inline renderer lands.
+browser (positioned from Rust each frame, egui popups cut out with a clip-path); on the
+desktop, Servo in a helper process (below), or a summary card with Open/Export when the
+helper isn't installed.
+
+### Desktop HTML apps: the Servo helper
+
+`apps/yah/src/apphost` implements `AppView` for the desktop. Each live app version runs in
+its own `yah-artifact-host` process (`host/artifact-host/`, a separate Cargo workspace so
+Servo's MPL-2.0 code and tokio never enter yah; see AGENTS.md §3). The helper is found via
+`$YAH_ARTIFACT_HOST` or next to the `yah` executable.
+
+- **Protocol** (`yah-artifact-wire`, stdin/stdout): frames of `u32` length + tag + fields.
+  yah → helper: `Load{html, theme, viewport}`, `Resize`, `Input` (mouse, wheel, keys, text),
+  `Focus`, `Theme`, `Ping`, `Shutdown`. Helper → yah: `Ready`, `Frame{w,h,rgba}` (only when
+  the pixels changed), `ContentHeight`, `Error{message,line}`, `Title`, `Cursor`, `Pong`.
+  Bodies are capped at 64 MiB and validated before use.
+- **Rendering**: Servo with a software GL context (Mesa llvmpipe via surfman), `paint()`,
+  `glReadPixels`, compare with the last frame, send. yah uploads the newest frame into an
+  egui texture; a reader thread keeps only the latest frame, a writer thread means a stuck
+  helper never blocks the UI.
+- **Document**: the same wrapper the server uses (theme defaults + helper script) as a
+  `data:` URL with the theme in the hash; theme changes are applied live by script. Script
+  errors come back as marked `console.error` lines and feed "Send error to yah".
+- **Sandbox**: `data:` origin is opaque (no storage outlives the process); every
+  navigation after the document and every non-`data:`/`blob:` load is refused in
+  `load_web_resource`; Servo's HTTP(S) proxy points at a dead port as a second layer;
+  windows, permissions and dialogs are denied.
+- **Lifecycle**: started lazily when a card or the pane draws the app on screen (the pane
+  owns it when both do; the card then mirrors the last frame). Click focuses it (arrows and
+  Tab go to the app), Esc gives focus back. Out of view for 3 s: the last frame stays as a
+  snapshot and the process exits; back in view: a fresh process (page state is lost).
+- **Liveness**: a ping every 500 ms, answered by evaluating a no-op on the page's script
+  thread. No pong for 3 s (a runaway script), the process exiting, or Stop on the card:
+  the process group is SIGKILLed and the app shows "Stopped" with Reload / Open in browser.
 
 ## Running code (sandbox)
 

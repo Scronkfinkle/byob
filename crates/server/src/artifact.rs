@@ -8,8 +8,10 @@
 //! 'self'` means only yah may frame it. Only artifacts that belong to that chat are served.
 //!
 //! HTML apps get a small helper script injected first: it applies theme variables passed in
-//! the URL hash (or posted later by the host), reports script errors to the host page, and
-//! removes WebRTC (which can reach the network around `connect-src`).
+//! the URL hash (or posted later by the host), reports script errors to the host page (or,
+//! when it is the top-level page as in the desktop's Servo renderer, as a marked
+//! `console.error` that `yah-artifact-host` picks up), and removes WebRTC (which can reach
+//! the network around `connect-src`).
 //! `?download` serves any version as an attachment instead.
 
 use std::io::{self, Write};
@@ -35,7 +37,7 @@ const DEFAULT_THEME: &str = ":root{--yah-bg:#16171a;--yah-surface:#1f2125;--yah-
 /// (the host treats them as untrusted text).
 const SHIM: &str = r"<script>(()=>{
 for(const k of['RTCPeerConnection','webkitRTCPeerConnection','RTCDataChannel','RTCSessionDescription','RTCIceCandidate'])try{Object.defineProperty(window,k,{value:undefined,writable:false,configurable:false})}catch(e){}
-const P=m=>{try{if(parent!==window)parent.postMessage(m,'*')}catch(e){}};
+const P=m=>{try{if(parent!==window)parent.postMessage(m,'*');else if(m.t==='error')console.error('\x01yah-error '+(m.line|0)+' '+m.msg)}catch(e){}};
 const S=(v,n)=>String(v==null?'':v).slice(0,n);
 const setv=o=>{if(!o||typeof o!=='object')return;for(const[k,v]of Object.entries(o))if(/^--yah-[a-z-]{1,30}$/.test(k)&&/^[#a-zA-Z0-9(),. %-]{0,60}$/.test(String(v)))document.documentElement.style.setProperty(k,String(v))};
 try{setv(Object.fromEntries(new URLSearchParams(location.hash.slice(1))))}catch(e){}

@@ -5040,9 +5040,11 @@ dependencies = [
  "egui",
  "env_logger",
  "log",
+ "nix",
  "png",
  "tempfile",
  "yah-agent",
+ "yah-artifact-wire",
  "yah-exec",
  "yah-plugins",
  "yah-sandbox",
@@ -5070,6 +5072,10 @@ dependencies = [
  "yah-tools",
  "yah-types",
 ]
+
+[[package]]
+name = "yah-artifact-wire"
+version = "0.1.0"
 
 [[package]]
 name = "yah-exec"

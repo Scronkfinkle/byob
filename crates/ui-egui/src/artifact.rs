@@ -350,6 +350,22 @@ impl Artifacts {
     fn card_preview(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32) {
         if a.kind == ArtifactKind::Html {
             let size = a.version(version).map_or(0, |v| v.size);
+            if self.view.live_cards() {
+                let source = match self.file(&a.id, version) {
+                    File::Ready { bytes, .. } => Some(String::from_utf8_lossy(bytes).into_owned()),
+                    _ => None,
+                };
+                if let Some(source) = source {
+                    ui.add_space(4.0);
+                    let doc = AppDoc { id: &a.id, url: None, title: &a.title, version, size, source: Some(&source) };
+                    if let Some(resp) = self.view.card(ui, t, &doc) {
+                        if resp.open {
+                            self.actions.push(Action::Open { id: a.id.clone(), version });
+                        }
+                        return;
+                    }
+                }
+            }
             ui.label(RichText::new(format!("Interactive app · {}", media::size_label(size))).small().color(t.text_dim));
             return;
         }
@@ -479,16 +495,15 @@ impl Artifacts {
     }
 
     fn app(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32) {
-        let inline = self.view.runs_inline();
-        // Inline views load the app by URL; the placeholder shows a summary of the source.
-        let url = if inline { self.app_url(&a.id, version).ok() } else { None };
-        let source = if inline {
-            None
-        } else {
+        // The iframe loads the app by URL; the desktop renderer and the placeholder take the source.
+        let url = if self.view.wants_url() { self.app_url(&a.id, version).ok() } else { None };
+        let source = if self.view.wants_source() {
             match self.file(&a.id, version) {
                 File::Ready { bytes, .. } => Some(String::from_utf8_lossy(bytes).into_owned()),
                 _ => None,
             }
+        } else {
+            None
         };
         let errors = self.view.errors();
         if !errors.is_empty() {
@@ -508,7 +523,7 @@ impl Artifacts {
             ui.add_space(4.0);
         }
         let size = a.version(version).map_or(0, |v| v.size);
-        let doc = AppDoc { url: url.as_deref(), title: &a.title, version, size, source: source.as_deref() };
+        let doc = AppDoc { id: &a.id, url: url.as_deref(), title: &a.title, version, size, source: source.as_deref() };
         if self.view.show(ui, t, &doc).open {
             self.actions.push(Action::Open { id: a.id.clone(), version });
         }

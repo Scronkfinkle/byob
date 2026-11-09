@@ -28,7 +28,8 @@ Conventions are adapted from filmcraft. When this file and other docs disagree, 
   Use `std::thread` + channels; blocking I/O is fine.
 - Remote access is a security boundary: keep the Origin check, input caps, and loopback
   default bind. Secrets never go to clients.
-- Native apps are Rust only: no Tauri, Electron, webviews or handwritten JS/TS.
+- Native apps are Rust only: no Tauri, Electron, webviews or handwritten JS/TS. (HTML
+  artifacts the model writes run in the Servo helper process, see §3.)
 
 ## 2. Workflow
 - Dev environment: `nix develop` (or `direnv allow`). Toolchain is pinned by `rust-toolchain.toml`.
@@ -45,3 +46,21 @@ Conventions are adapted from filmcraft. When this file and other docs disagree, 
 - Keep fixes narrow; add a test that fails without the fix. Report only what actually ran.
 - Dependencies must be permissively licensed (MIT, Apache-2.0, BSD, ISC, Zlib, OFL, CC0).
 - `plan/` is a gitignored scratch notebook.
+
+## 3. Exemption: the artifact host (`host/artifact-host` only)
+The desktop renders HTML app artifacts with Servo in a **separate helper process**,
+`yah-artifact-host`. Only that directory is exempt from the rules above:
+- It is its own Cargo workspace (own `Cargo.toml` with `[workspace]`, own `Cargo.lock`),
+  listed in the root `exclude`. It may use Servo/SpiderMonkey (MPL-2.0) and whatever they
+  pull in (tokio included). Its own code stays MIT OR Apache-2.0, forbids `unsafe`, and
+  avoids `unwrap`/`expect`/`panic!`.
+- It is **never linked into yah**: yah only spawns the binary and talks to it over
+  stdin/stdout with `yah-artifact-wire` (`crates/artifact-wire`, no dependencies, no
+  workspace-inherited fields so the helper can path-depend on it). `cargo xtask layers`
+  fails if `servo`, `mozjs`/`mozjs_sys` or the helper enter yah's dependency graph, or the
+  `exclude` goes missing.
+- Binaries that include it ship `host/artifact-host/NOTICE` (the MPL notice and where the
+  Servo/SpiderMonkey source is). Don't add other MPL or async-runtime code anywhere else.
+- Build it with `cd host/artifact-host && cargo build --release` in `nix develop` (set
+  `MOZJS_ARCHIVE` to a downloaded SpiderMonkey archive to stay offline); `nix build
+  .#yah-artifact-host` packages it. Without it, yah falls back to Open in browser.

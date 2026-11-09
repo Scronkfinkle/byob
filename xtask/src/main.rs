@@ -10,6 +10,7 @@ use std::process::{Command, ExitCode};
 const LAYERS: &[(&str, u8)] = &[
     ("yah-types", 0),
     ("yah-protocol", 1),
+    ("yah-artifact-wire", 1),
     ("yah-llm", 1),
     ("yah-store", 1),
     ("yah-tools", 2),
@@ -34,6 +35,10 @@ const WASM_CRATES: &[&str] = &["yah-types", "yah-protocol", "yah-ui-egui", "yah-
 
 /// Async runtimes are banned: yah is std::thread + channels throughout.
 const BANNED: &[&str] = &["tokio", "async-std", "smol"];
+
+/// Servo and SpiderMonkey (MPL-2.0, and they bring tokio) live only in the separate
+/// `host/artifact-host` workspace, which yah runs as a child process; never link them here.
+const HELPER_ONLY: &[&str] = &["servo", "libservo", "mozjs", "mozjs_sys", "servo-script", "servo-constellation", "yah-artifact-host"];
 
 fn main() -> ExitCode {
     let cmd = std::env::args().nth(1).unwrap_or_default();
@@ -114,16 +119,35 @@ fn banned_deps() -> Result<Vec<String>, String> {
             return Err(String::from_utf8_lossy(&out.stderr).into_owned());
         }
         let tree = String::from_utf8_lossy(&out.stdout);
-        found.extend(
-            tree.lines()
-                .filter_map(|l| l.split_whitespace().next())
-                .filter(|name| BANNED.contains(name))
-                .map(|name| format!("banned async runtime `{name}` in dependency graph for {} (see `cargo tree -i {name}`)", target.unwrap_or("host"))),
-        );
+        for name in tree.lines().filter_map(|l| l.split_whitespace().next()) {
+            let on = target.unwrap_or("host");
+            if BANNED.contains(&name) {
+                found.push(format!("banned async runtime `{name}` in dependency graph for {on} (see `cargo tree -i {name}`)"));
+            }
+            if HELPER_ONLY.contains(&name) {
+                found.push(format!("`{name}` in yah's dependency graph for {on}: Servo/SpiderMonkey belong only in host/artifact-host (see AGENTS.md)"));
+            }
+        }
     }
+    found.extend(helper_excluded()?);
     found.sort();
     found.dedup();
     Ok(found)
+}
+
+/// The helper workspace must stay out of this one (its own lock file and feature resolution).
+fn helper_excluded() -> Result<Vec<String>, String> {
+    let root = std::fs::read_to_string("Cargo.toml").map_err(|e| format!("read Cargo.toml: {e}"))?;
+    let excluded = root.lines().any(|l| l.trim_start().starts_with("exclude") && l.contains("\"host/artifact-host\""));
+    let own = std::fs::read_to_string("host/artifact-host/Cargo.toml").map_or(true, |t| t.lines().any(|l| l.trim() == "[workspace]"));
+    let mut errors = Vec::new();
+    if !excluded {
+        errors.push("Cargo.toml must `exclude = [\"host/artifact-host\"]` from the workspace".to_owned());
+    }
+    if !own {
+        errors.push("host/artifact-host/Cargo.toml must be its own `[workspace]`".to_owned());
+    }
+    Ok(errors)
 }
 
 fn wasm() -> Result<(), String> {
