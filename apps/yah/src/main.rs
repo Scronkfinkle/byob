@@ -116,6 +116,11 @@ fn parse_args() -> Result<Args, String> {
             "--send" => args.script.send.push(it.next().ok_or("--send needs text")?),
             "--attach" => args.script.attach.push(it.next().ok_or("--attach needs a file")?.into()),
             "--screenshot" => args.script.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into()),
+            // Hidden, for testing: act on the artifacts once the conversation settles.
+            "--then" => {
+                let v = it.next().ok_or("--then needs a command")?;
+                args.script.then.push(testing::Command::parse(&v).ok_or_else(|| format!("unknown command {v:?} ({})", testing::Command::NAMES))?);
+            }
             "--screenshot-after" => {
                 let v = it.next().ok_or("--screenshot-after needs seconds")?;
                 let secs: f64 = v.parse().map_err(|e| format!("bad seconds {v:?}: {e}"))?;
@@ -147,6 +152,7 @@ impl eframe::App for App {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, yah_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
+        eframe::set_value(storage, yah_ui_egui::pane::PanePrefs::STORAGE_KEY, &self.ui.pane_prefs());
     }
 }
 
@@ -322,6 +328,9 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::The
                 prefs.theme = theme;
             }
             ui.set_prefs(prefs);
+            if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<yah_ui_egui::pane::PanePrefs>(s, yah_ui_egui::pane::PanePrefs::STORAGE_KEY)) {
+                ui.artifacts_mut().set_pane_prefs(pane);
+            }
             ui.set_settings_open(open_settings);
             Ok(Box::new(App { ui, script }))
         }),

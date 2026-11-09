@@ -15,8 +15,50 @@ pub struct Script {
     pub attach: Vec<PathBuf>,
     pub send: Vec<String>,
     pub screenshot: Option<PathBuf>,
-    /// Minimum time before the screenshot (lets the window settle).
+    /// Minimum time before the screenshot (lets the window settle); counted from the
+    /// commands when there are any.
     pub after: Duration,
+    /// Done once the conversation has settled (`--then`).
+    pub then: Vec<Command>,
+}
+
+/// Something done to the artifacts in a scripted run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    OpenAll,
+    TogglePane,
+    CollapseAll,
+    ExpandAll,
+    /// Let this many seconds pass before the next command.
+    Wait(u64),
+}
+
+impl Command {
+    pub const NAMES: &'static str = "open-all, toggle-pane, collapse-all, expand-all, wait:SECONDS";
+
+    pub fn parse(s: &str) -> Option<Self> {
+        if let Some(n) = s.strip_prefix("wait:") {
+            return n.parse().ok().map(Self::Wait);
+        }
+        Some(match s {
+            "open-all" => Self::OpenAll,
+            "toggle-pane" => Self::TogglePane,
+            "collapse-all" => Self::CollapseAll,
+            "expand-all" => Self::ExpandAll,
+            _ => return None,
+        })
+    }
+
+    fn run(self, app: &mut yah_ui_egui::YahApp) {
+        let a = app.artifacts_mut();
+        match self {
+            Self::OpenAll => a.open_all(),
+            Self::TogglePane => a.toggle_pane(),
+            Self::CollapseAll => a.minimize_all(true),
+            Self::ExpandAll => a.minimize_all(false),
+            Self::Wait(_) => {}
+        }
+    }
 }
 
 pub struct Runner {
@@ -24,13 +66,16 @@ pub struct Runner {
     started: Instant,
     sent: bool,
     requested: bool,
+    /// When the last `then` command ran; the next one runs no earlier than `next_at`.
+    then_at: Option<Instant>,
+    next_at: Option<Instant>,
     done: Arc<AtomicBool>,
     result: Arc<Mutex<Option<String>>>,
 }
 
 impl Runner {
     pub fn new(script: Script) -> Self {
-        Self { script, started: Instant::now(), sent: false, requested: false, done: Arc::default(), result: Arc::default() }
+        Self { script, started: Instant::now(), sent: false, requested: false, then_at: None, next_at: None, done: Arc::default(), result: Arc::default() }
     }
 
     pub fn frame(&mut self, app: &mut yah_ui_egui::YahApp, ctx: &egui::Context) {
@@ -57,7 +102,22 @@ impl Runner {
             return;
         }
         let elapsed = self.started.elapsed();
-        let ready = elapsed >= self.script.after && (app.settled() || elapsed >= SETTLE_TIMEOUT);
+        let settled = app.settled() || elapsed >= SETTLE_TIMEOUT;
+        if !self.script.then.is_empty() {
+            // Give the chat a moment after settling so artifacts and apps have loaded.
+            if !settled || elapsed < Duration::from_secs(2) || self.next_at.is_some_and(|t| Instant::now() < t) {
+                return;
+            }
+            let c = self.script.then.remove(0);
+            eprintln!("yah: {:.1}s: {c:?}", elapsed.as_secs_f64());
+            c.run(app);
+            let now = Instant::now();
+            self.next_at = if let Command::Wait(s) = c { Some(now + Duration::from_secs(s)) } else { None };
+            self.then_at = Some(now);
+            return;
+        }
+        let waited = self.then_at.map_or(elapsed, |t| t.elapsed());
+        let ready = waited >= self.script.after && settled;
         if ready && !self.requested {
             self.requested = true;
             let (done, result) = (Arc::clone(&self.done), Arc::clone(&self.result));

@@ -8,6 +8,7 @@ pub mod chart;
 pub mod export;
 pub mod markdown;
 pub mod media;
+pub mod pane;
 mod settings;
 pub mod sidebar;
 pub mod steps;
@@ -86,6 +87,16 @@ impl YahApp {
     /// summary with Open on the desktop).
     pub fn set_app_view(&mut self, view: Box<dyn appview::AppView>) {
         self.artifacts.set_app_view(view);
+    }
+
+    /// The artifacts (pane prefs to store and restore, scripted runs).
+    pub fn artifacts_mut(&mut self) -> &mut artifact::Artifacts {
+        &mut self.artifacts
+    }
+
+    /// Per-device artifact pane state (width, collapsed, tabs per chat), for the app to persist.
+    pub fn pane_prefs(&self) -> pane::PanePrefs {
+        self.artifacts.pane_prefs()
     }
 
     /// Where the desktop app serves artifacts for "Open in browser" (may start a server).
@@ -246,16 +257,15 @@ impl YahApp {
                 .inner;
             self.send_all(sent);
         }
-        if self.artifacts.is_open() {
-            let width = ui.available_width();
-            egui::Panel::right("artifact-pane")
-                .resizable(true)
-                .default_size((width * 0.48).max(320.0))
-                .size_range(300.0..=(width * 0.75).max(320.0))
-                .show(ui, |ui| self.artifacts.pane(ui, &t, false));
+        if !narrow {
+            // The pane, or its rail when collapsed.
+            self.artifacts.side_panel(ui, &t);
         }
         egui::Panel::bottom("composer").show(ui, |ui| self.composer(ui));
         egui::CentralPanel::default().show(ui, |ui| self.transcript(ui));
+        if narrow {
+            self.artifacts.floating_button(ui.ctx(), &t);
+        }
         self.end_frame(ui.ctx());
     }
 
@@ -304,6 +314,7 @@ impl YahApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.toggle_value(&mut self.show_settings, "Settings");
+                    self.artifacts.header_buttons(ui, &t);
                 });
             });
         });

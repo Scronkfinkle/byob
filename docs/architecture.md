@@ -117,7 +117,12 @@ removed drops out of the list; numbers are never reused.
 Steps carry `ArtifactRef`s (rebuilt from stored file changes after a restart); clients get the
 chat's list with the transcript (`Artifacts`), `ArtifactUpdated` on new versions, and bytes via
 `GetArtifact` (for display and Export). Each turn's system prompt lists the chat's artifacts by
-id. HTML apps render through the `AppView` seam in `yah-ui-egui`: an iframe overlay in the
+id. The pane has tabs (per chat), collapses to a rail of icons with live/paused dots (a
+floating button with a count on phones; Ctrl+Backslash toggles), and any artifact can be
+minimized to a one-line chip in the chat and the pane ("Collapse all" in the header). Pane
+width, open/collapsed, and tabs + minimized artifacts per chat are device prefs
+(`yah-ui-egui::pane`, stored like the appearance prefs). HTML apps render through the
+`AppView` seam in `yah-ui-egui`: an iframe overlay in the
 browser (positioned from Rust each frame, egui popups cut out with a clip-path); on the
 desktop, Servo in a helper process (below), or a summary card with Open/Export when the
 helper isn't installed.
@@ -131,9 +136,11 @@ Servo's MPL-2.0 code and tokio never enter yah; see AGENTS.md §3). The helper i
 
 - **Protocol** (`yah-artifact-wire`, stdin/stdout): frames of `u32` length + tag + fields.
   yah → helper: `Load{html, theme, viewport}`, `Resize`, `Input` (mouse, wheel, keys, text),
-  `Focus`, `Theme`, `Ping`, `Shutdown`. Helper → yah: `Ready`, `Frame{w,h,rgba}` (only when
-  the pixels changed), `ContentHeight`, `Error{message,line}`, `Title`, `Cursor`, `Pong`.
-  Bodies are capped at 64 MiB and validated before use.
+  `Focus`, `Theme`, `Ping`, `Shutdown`, `Visible(bool)`. Helper → yah: `Ready`, `Features`
+  (bits, right after `Ready`), `Frame{w,h,rgba}` (only when the pixels changed),
+  `ContentHeight`, `Error{message,line}`, `Title`, `Cursor`, `Pong`. Additions are new tags
+  only; yah sends `Visible` only to helpers that announced it in `Features` (an older helper
+  would refuse the tag). Bodies are capped at 64 MiB and validated before use.
 - **Rendering**: Servo with a software GL context (Mesa llvmpipe via surfman), `paint()`,
   `glReadPixels`, compare with the last frame, send. yah uploads the newest frame into an
   egui texture; a reader thread keeps only the latest frame, a writer thread means a stuck
@@ -149,6 +156,13 @@ Servo's MPL-2.0 code and tokio never enter yah; see AGENTS.md §3). The helper i
   owns it when both do; the card then mirrors the last frame). Click focuses it (arrows and
   Tab go to the app), Esc gives focus back. Out of view for 3 s: the last frame stays as a
   snapshot and the process exits; back in view: a fresh process (page state is lost).
+- **Minimized / background** (a minimized chip, a background tab, the pane collapsed to its
+  rail): the process keeps running but gets `Visible(false)` — Servo hides the webview and
+  the helper stops painting, reading back and measuring — and yah uploads nothing. Restore
+  sends `Visible(true)` and the page carries on where it was. After 60 s in the background
+  (`BACKGROUND_PAUSE_AFTER`, `apps/yah/src/apphost/life.rs`) it is paused like an
+  out-of-view app: snapshot kept, process gone (~300 MB RSS freed per app in a headless
+  run). In the browser the iframe goes `display:none` and is emptied after 60 s unseen.
 - **Liveness**: a ping every 500 ms, answered by evaluating a no-op on the page's script
   thread. No pong for 3 s (a runaway script), the process exiting, or Stop on the card:
   the process group is SIGKILLed and the app shows "Stopped" with Reload / Open in browser.

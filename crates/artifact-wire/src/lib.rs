@@ -116,6 +116,25 @@ pub enum Request {
     /// runaway script shows up as missing pongs.
     Ping(u64),
     Shutdown,
+    /// `false`: the app is minimized or in the background — keep the page running but stop
+    /// painting and reading back frames; `true`: show it again (a frame follows). Only sent
+    /// to helpers that announced [`Features::VISIBILITY`] (older ones would refuse the tag).
+    Visible(bool),
+}
+
+/// What a helper supports beyond the base protocol, as bits (see [`Event::Features`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Features(pub u32);
+
+impl Features {
+    /// Understands [`Request::Visible`].
+    pub const VISIBILITY: u32 = 1;
+    /// Everything this version of the protocol knows.
+    pub const ALL: Self = Self(Self::VISIBILITY);
+
+    pub fn has(self, bit: u32) -> bool {
+        self.0 & bit != 0
+    }
 }
 
 /// Mouse cursor the page asks for.
@@ -163,6 +182,9 @@ pub enum Event {
     Pong(u64),
     Title(String),
     Cursor(Cursor),
+    /// Sent right after [`Event::Ready`] by helpers that support more than the base
+    /// protocol (a helper that never sends it supports none of it).
+    Features(Features),
 }
 
 /// A malformed frame.
@@ -453,6 +475,10 @@ impl Message for Request {
                 e.u64(*n);
             }
             Self::Shutdown => e.u8(6),
+            Self::Visible(v) => {
+                e.u8(7);
+                e.bool(*v);
+            }
         }
     }
 
@@ -465,6 +491,7 @@ impl Message for Request {
             4 => Self::Theme(Theme::decode(d)?),
             5 => Self::Ping(d.u64()?),
             6 => Self::Shutdown,
+            7 => Self::Visible(d.bool()?),
             t => return bad_tag("request", t),
         })
     }
@@ -504,6 +531,10 @@ impl Message for Event {
                 e.u8(6);
                 e.u8(CURSORS.iter().position(|x| x == c).and_then(|i| u8::try_from(i).ok()).unwrap_or(0));
             }
+            Self::Features(f) => {
+                e.u8(7);
+                e.u32(f.0);
+            }
         }
     }
 
@@ -526,6 +557,8 @@ impl Message for Event {
                 let t = d.u8()?;
                 Self::Cursor(*CURSORS.get(usize::from(t)).ok_or_else(|| WireError(format!("unknown cursor {t}")))?)
             }
+            // Unknown bits are kept (and ignored): a newer helper may know more.
+            7 => Self::Features(Features(d.u32()?)),
             t => return bad_tag("event", t),
         })
     }
@@ -556,6 +589,8 @@ mod tests {
         round_trip(Request::Theme(Theme::default()));
         round_trip(Request::Ping(u64::MAX));
         round_trip(Request::Shutdown);
+        round_trip(Request::Visible(false));
+        round_trip(Request::Visible(true));
         for input in [
             Input::MouseMove { x: 1.5, y: -2.0 },
             Input::MouseButton { button: Button::Secondary, down: true, x: 3.0, y: 4.0 },
@@ -576,6 +611,8 @@ mod tests {
         round_trip(Event::Error { message: "x is not defined".into(), line: 12 });
         round_trip(Event::Pong(7));
         round_trip(Event::Title("Loan".into()));
+        round_trip(Event::Features(Features::ALL));
+        round_trip(Event::Features(Features(u32::MAX)));
         for c in CURSORS {
             round_trip(Event::Cursor(c));
         }
@@ -604,6 +641,18 @@ mod tests {
         }
         assert!(Request::from_bytes(&[2, 4, 7]).is_err(), "bad bool");
         assert!(Request::from_bytes(&[]).is_err());
+    }
+
+    /// The additions are new tags only: every frame the base protocol had decodes as before.
+    #[test]
+    fn visibility_is_additive() {
+        assert_eq!(Request::Shutdown.to_bytes(), vec![6]);
+        assert_eq!(Request::Visible(true).to_bytes(), vec![7, 1]);
+        assert_eq!(Event::Features(Features::ALL).to_bytes(), vec![7, 1, 0, 0, 0]);
+        assert!(Request::from_bytes(&[7]).is_err(), "Visible needs its flag");
+        assert!(Request::from_bytes(&[7, 2]).is_err(), "bad bool");
+        assert!(Event::from_bytes(&[7, 1, 0]).is_err(), "short features");
+        assert!(Features(Features::VISIBILITY | 8).has(Features::VISIBILITY) && !Features::default().has(Features::VISIBILITY));
     }
 
     #[test]
