@@ -163,7 +163,9 @@ fn list_is_recent_first_and_paginates() {
     for i in 0..25 {
         chat(&s, &format!("c{i:02}"));
     }
-    // Activity moves a chat to the top.
+    // Activity moves a chat to the top. (Timestamps are in ms: make sure the bump is
+    // strictly later than the last creation, or the id tie-break decides.)
+    std::thread::sleep(std::time::Duration::from_millis(3));
     s.append_message("c03", &NewMessage::user("bump")).unwrap();
 
     let mut seen = Vec::new();

@@ -31,7 +31,7 @@ pub use connectors::{Connector, ConnectorContent, ConnectorDraft, ConnectorResul
 pub use discover::{Discovery, Plugin, PluginSources, discover, load_plugin};
 pub use manifest::{MANIFEST, MANIFEST_ALIAS, Manifest, ManifestError, McpServerConfig, parse_manifest};
 pub use names::ToolNames;
-pub use python::{PythonTool, default_python, python_tools, run_script_unsandboxed};
+pub use python::{PythonTool, default_python, python_tools, python_tools_in, run_script_sandboxed, run_script_unsandboxed};
 pub use skills::{SaveSkillTool, Skill, UseSkillTool, load_skills_dir, skills_prompt};
 
 /// Something that couldn't load, for the user (`path`: the plugin or skill folder).

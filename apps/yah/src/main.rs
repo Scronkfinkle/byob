@@ -145,6 +145,10 @@ impl eframe::App for App {
 }
 
 fn main() -> ExitCode {
+    // `yah __sandbox-exec …`: the sandbox helper. Must run before anything starts threads.
+    if let Some(code) = yah_sandbox::dispatch_helper() {
+        return code;
+    }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -227,7 +231,7 @@ fn run() -> Result<(), String> {
     }
     let saved_theme = theme_kind(saved.settings.theme);
     let plugins = args.plugins.clone();
-    let extra = extensions::load(&mut config.tools, plugins);
+    let extra = extensions::load(&mut config.tools, plugins, &config.workspace);
     if !extra.is_empty() {
         config.system_prompt = format!("{}\n\n{extra}", config.system_prompt);
     }

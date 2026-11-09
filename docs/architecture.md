@@ -41,8 +41,8 @@ graph of a shipped target.
 L6  apps/yah (desktop, --serve, --headless) · apps/yah-web (wasm)
 L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
 L4  agent: engine, turns, tool loop, permissions, approvals
-L3  plugins: manifests, skills, connectors → adapted into Tools
-L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client)
+L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python)
+L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
 L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store
 L0  types
 ```
@@ -93,6 +93,22 @@ Funnel (public internet) requests get `Tailscale-Funnel-Request: ?1` and no iden
   shows one "reconnecting…" banner rather than a notice per retry.
 - Not yet: read-only clients.
 
+## Running code (sandbox)
+
+`run_command`, `run_python`, plugin Python tools and stdio MCP servers start through
+`yah-sandbox`. No `unsafe` means no `pre_exec`, so the app binary doubles as a helper:
+`yah __sandbox-exec <policy-json> -- cmd args…` (dispatched first thing in `main`) confines
+itself, then runs the command. On Linux: Landlock filesystem allow-list (system dirs
+read-only; workspace + a private temp dir writable), `no_new_privs`, rlimits, and — where
+unprivileged user namespaces work — an empty network namespace (network off by default)
+and a PID namespace whose init (the helper again, `--init`) takes every descendant down
+with it. Without namespaces: Landlock TCP deny only (UDP open) and process-group kill.
+Commands get a minimal environment (no API keys), `HOME`/`TMPDIR` in the temp dir,
+`MPLBACKEND=Agg`. Parent side: wall-clock timeout, head+tail output caps, Stop, killpg.
+macOS uses a `sandbox-exec` profile (compile-checked only); elsewhere, and where Landlock is
+missing, commands run unsandboxed with a warning. `YAH_SANDBOX=off` turns it off.
+MCP servers get a looser policy (read anything, network on, writes confined).
+
 ## Inference
 
 `InferenceConfig { base_url, model, api_key }`. `yah-llm` posts to
@@ -113,7 +129,7 @@ will run the tool-calling rounds itself (cap 30 per turn, as hob did).
 | `main/tools/*`                                     | `yah-tools`                          |
 | `main/store.ts`, `settings.ts`, `paths.ts`         | `yah-store`                          |
 | `main/plugins/*` (skills, MCP, mcpb)               | future `yah-plugins`, `yah-mcp` (hand-rolled JSON-RPC, no tokio) |
-| `main/python/*`, `search/*`                        | future `yah-sandbox`                 |
+| `main/python/*`                                    | `yah-sandbox` + `yah-exec`           |
 | `main/accounts/*`                                  | future `yah-accounts`                |
 | renderer (React)                                   | `yah-ui-egui`                        |
 

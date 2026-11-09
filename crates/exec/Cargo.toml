@@ -1,0 +1,26 @@
+[package]
+name = "yah-exec"
+description = "Tools that run code in the sandbox: run_command, run_python, install_python_packages (L3)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+yah-tools.workspace = true
+yah-sandbox.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# The integration tests double as the sandbox helper, so they need a custom `main`.
+[[test]]
+name = "tools"
+harness = false
+
+[lints]
+workspace = true

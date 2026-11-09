@@ -14,6 +14,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("yah-store", 1),
     ("yah-tools", 2),
     ("yah-mcp", 2),
+    ("yah-sandbox", 2),
+    ("yah-exec", 3),
     ("yah-plugins", 3),
     ("yah-agent", 4),
     ("yah-server", 5),

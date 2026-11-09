@@ -1,0 +1,32 @@
+[package]
+name = "yah-sandbox"
+description = "Run untrusted commands confined: Landlock + namespaces on Linux, sandbox-exec on macOS; timeouts, output caps, process-tree kill (L2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+# The integration tests are their own sandbox helper (like the app binary), so they
+# need a custom `main`.
+[[test]]
+name = "enforce"
+harness = false
+
+[lints]
+workspace = true
