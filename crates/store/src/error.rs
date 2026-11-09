@@ -15,6 +15,9 @@ pub enum StoreError {
     /// A row we were asked to change does not exist.
     #[error("{0} not found")]
     NotFound(String),
+    /// Something we were asked to create already exists (e.g. a chat id).
+    #[error("{0} already exists")]
+    Exists(String),
     /// A stored value could not be decoded (bad JSON, unknown enum text, …).
     #[error("bad stored value in {column}: {detail}")]
     BadValue { column: &'static str, detail: String },

@@ -143,3 +143,23 @@ fn ensure_creates_dirs() {
     assert!(paths.config_dir.is_dir() && paths.data_dir.is_dir() && paths.undo_dir().is_dir());
     assert_eq!(paths.db(), dir.path().join("d/yah.db"));
 }
+
+#[test]
+fn storage_settings_parse_and_default_to_sqlite() {
+    let dir = TempDir::new();
+    let p = dir.path().join("settings.json");
+    assert_eq!(Settings::default().storage, StorageKind::Sqlite);
+    std::fs::write(&p, r#"{"storage": "folder", "chats_folder": "~/yah"}"#).unwrap();
+    let s = Settings::load(&p).value;
+    assert_eq!(s.storage, StorageKind::Folder);
+    let root = folder_root(&s, &Paths::at(dir.path()));
+    assert!(root.ends_with("yah") && !root.starts_with("~"), "{}", root.display());
+    assert_eq!(folder_root(&Settings::default(), &Paths::at(dir.path())), dir.path().join("chats-folder"));
+    // An unknown backend falls back to the default rather than resetting everything.
+    std::fs::write(&p, r#"{"storage": "mongo", "theme": "dark"}"#).unwrap();
+    let s = Settings::load(&p).value;
+    assert_eq!((s.storage, s.theme), (StorageKind::Sqlite, Theme::Dark));
+    // The default isn't written out.
+    Settings::default().save(&p).unwrap();
+    assert!(!std::fs::read_to_string(&p).unwrap().contains("storage"));
+}

@@ -43,7 +43,7 @@ L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
 L4  agent: engine, turns, tool loop, permissions, approvals
 L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python)
 L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
-L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store · artifact-wire (helper protocol)
+L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store (SQLite or folder) · artifact-wire (helper protocol)
 L0  types
 ```
 
@@ -176,6 +176,58 @@ MCP servers get a looser policy (read anything, network on, writes confined).
 (`reasoning_content`/`reasoning`, or inline `<think>` tags) and streamed `tool_calls`,
 and reports usage. Because there's no grammar-constrained local engine anymore, the agent
 will run the tool-calling rounds itself (cap 30 per turn, as hob did).
+
+## Storage
+
+The engine talks to `yah_store::ChatStore` (chats, messages incl. streamed deltas, steps,
+grants, undo journal); `open_backend(&Settings, &Paths)` picks the implementation from
+`"storage"` in settings.json. Both are `Send`, owned by the engine thread, and run the same
+contract test suite (`crates/store/src/tests/backends.rs`). `export(from, to)` copies
+everything between them (timestamps, flags, steps, grants, undo journals; chats the target
+already has are skipped), so switching backends is a copy, not a migration.
+
+- **`"sqlite"`** (default): `<data>/yah.db`, WAL, versioned schema (`schema.rs`).
+- **`"folder"`**: plain files under `"chats_folder"` (default `<data>/chats-folder`, `~/`
+  allowed), meant to be grepped and synced (Syncthing, Dropbox, git):
+
+  ```
+  <root>/chats/<YYYY-MM-DD>-<slug>-<shortid>/   (UTC creation date, ASCII slug, 6 hex of the id)
+      events.jsonl   canonical, append-only, one {"v":1,"ts":ms,"e":kind,…} per line
+      chat.md        generated view: YAML frontmatter + transcript; never read back
+  <root>/grants.json global grants          <root>/undo.jsonl  undo entries of tasks no message names
+  <root>/.index.json listing cache (derived) <root>/.trash/      deleted chat folders
+  ```
+
+  Event kinds: `chat_created`, `renamed`, `workspace_set`, `pinned`, `touched`,
+  `message_added`, `message_delta` (one per ~250 ms batch), `message_updated`,
+  `message_finished` (error, stats, and the final text lengths), `message_interrupted`,
+  `message_undone`, `messages_deleted`, `step_added`/`step_finished`/`steps_deleted`,
+  `grant`, `undo_op`/`undo_cleared`, `deleted`. Messages are numbered per chat (`m`, never
+  reused). The folder name never changes after a rename; the title lives in the events and
+  the frontmatter.
+
+  **Crash safety.** Each write is whole lines in one `write` + flush; `fsync` on chat
+  creation, finished/complete messages and chat-level changes, not per delta. On load a last
+  line without `\n` (a cut-short write) is ignored with a warning, and the next append starts
+  a fresh line; unparsable lines are skipped with a warning — except a damaged `undo_op`,
+  which makes that task's journal an error (half an undo is worse than none). Replies are
+  rebuilt by concatenating deltas; `message_finished` records only the final lengths rather
+  than repeating the text, so a streamed reply costs its size once on disk and over sync, and
+  a lost delta is still detected (warning). `chat.md` and `.index.json` are written via temp
+  file + rename.
+
+  **State.** Startup builds an in-memory index of chat summaries from `.index.json`, checking
+  each `events.jsonl`'s size + mtime and replaying only folders that changed (2,000 chats:
+  ~60 ms cold, ~15 ms warm, ~4 ms per first-page listing incl. rescan; debug build). A chat's
+  full state is replayed lazily when first used (64 kept in memory). Message ids encode a
+  per-session chat slot + `m`, so they are valid only for the life of the store.
+
+  **External changes.** `list_chats` (first page) rescans `chats/` (one `stat` per folder):
+  new folders appear, changed ones are replayed, vanished ones disappear. A write that finds
+  the file grew behind our back replays it first. No file-watcher thread yet, so an open chat
+  updates on the next listing or write. Not supported: two yah processes writing one root at
+  once (lines would interleave), and true concurrent edits of one chat on two machines (the
+  sync tool's conflict copy is ignored as a duplicate). Undo backups stay machine-local.
 
 ## hob → yah mapping
 

@@ -21,7 +21,15 @@ Last updated: 2026-11-09
   app, `host/artifact-host`; live in cards and the pane, liveness pings, Stop/Reload,
   snapshots when out of view).
 
+- Pluggable chat storage in `yah-store`: `ChatStore` trait, SQLite (default) or a plain-files
+  folder backend (`events.jsonl` per chat + generated `chat.md`; `storage = "folder"`),
+  `export` between them, one contract test suite for both.
+
 ## Next
+0. **Folder storage follow-ups**: switch the engine to `Box<dyn ChatStore>` via
+   `open_backend`; settings UI for `storage`/`chats_folder` + "copy my chats" (`export`);
+   pass the model so `chat.md` frontmatter can name it; a file watcher so open chats update
+   live; a lock file against two yah processes on one folder.
 1. **Artifact host follow-ups**: GPU rendering (surfman hardware context) instead of
    llvmpipe; `<select>`/date pickers (Servo embedder controls) and IME; a fully offline
    `nix build .#yah-artifact-host` check in CI; macOS/Windows helper builds.
