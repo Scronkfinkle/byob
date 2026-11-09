@@ -15,6 +15,7 @@
 //! ```
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+mod gpu;
 mod testing;
 
 use std::net::SocketAddr;
@@ -116,7 +117,11 @@ fn run() -> Result<(), String> {
         }
     }
 
-    let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 750.0]).with_title("yah"), ..Default::default() };
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 750.0]).with_title("yah"),
+        wgpu_options: gpu::options(),
+        ..Default::default()
+    };
     let script = testing::Runner::new(args.script);
     eframe::run_native(
         "yah",
