@@ -179,6 +179,22 @@ Servo's MPL-2.0 code and tokio never enter yah; see AGENTS.md §3). The helper i
   thread. No pong for 3 s (a runaway script), the process exiting, or Stop on the card:
   the process group is SIGKILLed and the app shows "Stopped" with Reload / Open in browser.
 
+## Context compaction and usage
+
+Before every model request (so also between tool rounds) a turn estimates the request; above
+the threshold (`settings.json` `compaction.threshold_percent`, default 80% of the window, never
+above window − reply reserve; hidden `--compact-at TOKENS` for testing) it first asks the model,
+off-stream, for a dense summary (goals, decisions, facts, files/artifact ids, key tool results,
+open tasks) of the conversation written out as text. Before the first request the newest
+`keep_turns` turns stay verbatim; inside a tool loop everything is summarised and the request is
+repeated after it. The request continues as system prompt + summary pair + verbatim tail.
+Compactions are stored (`compactions` table: summary, last message covered) and the next
+request (also after a restart) is built from the latest one plus later messages; the transcript
+keeps every message and clients draw a divider. `ClientMsg::Compact` / `/compact [focus]`
+compacts on demand. A failed or longer-than-before summary changes nothing and
+`fit_history` stays the safety net. `ServerMsg::Usage` feeds the header meter: context in use
+(the server's last prompt + completion, else an estimate), window, threshold, chat totals.
+
 ## Running code (sandbox)
 
 `run_command`, `run_python`, plugin Python tools and stdio MCP servers start through

@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use yah_llm::{ChatMessage, LlmError, StreamEvent, ToolCall, ToolCallFilter, Usage, toolprompt};
-use yah_protocol::{Entry, EntryRole, FileChange, Step, StepStatus, ToolAccess, TurnStats};
+use yah_protocol::{FileChange, Step, StepStatus, ToolAccess, TurnStats};
 use yah_tools::{Access, Journal, Registry, Tool, ToolContext, ToolOutput, UndoOp};
 
-use crate::{Input, adapt};
+use crate::{Input, adapt, compact};
 
 use crate::limits::{DETAIL_CHARS, MAX_CALLS, MAX_OUTPUT, MAX_REPEATS, MAX_ROUNDS, REPEAT_QUOTE, TURN_OUTPUT_BUDGET, cap, one_line, prefix};
 
@@ -64,20 +64,50 @@ pub enum TurnEvent {
         ops: Vec<UndoOp>,
         complete: bool,
     },
+    /// A model request of entry `id` finished (a compaction's summary request included).
+    /// `context` is what the chat's context holds now; `estimated` if that is our estimate.
+    Usage {
+        id: u64,
+        prompt: u64,
+        completion: u64,
+        context: u64,
+        estimated: bool,
+    },
+    /// A compaction started (`true`) or ended in entry `id`'s turn.
+    Compacting {
+        id: u64,
+        on: bool,
+    },
+    /// Entry `id`'s turn compacted the context; the engine stores it.
+    Compacted {
+        id: u64,
+        made: Compacted,
+    },
+    /// Something the user should know that is not an error of the turn.
+    Notice {
+        id: u64,
+        text: String,
+    },
 }
 
-/// Build the request transcript from finished entries plus the new user message.
-/// Reasoning and earlier tool steps are not sent back; failed or empty replies are skipped.
-pub fn history(transcript: &[Entry], new_user_text: &str, system_prompt: &str) -> Vec<ChatMessage> {
-    let mut out = vec![ChatMessage::system(system_prompt)];
-    for e in transcript.iter().filter(|e| e.done && e.error.is_none() && (!e.content.is_empty() || !e.attachments.is_empty())) {
-        out.push(match e.role {
-            EntryRole::User => ChatMessage::user(crate::attachments::with_names(&e.content, &e.attachments)),
-            EntryRole::Assistant => ChatMessage::assistant(e.content.clone()),
-        });
-    }
-    out.push(ChatMessage::user(new_user_text));
-    out
+/// A compaction a turn made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compacted {
+    /// Last entry the summary covers (0: none of the stored ones).
+    pub through: u64,
+    pub summary: String,
+    pub tokens_before: u64,
+    pub tokens_after: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+/// Automatic compaction settings of one turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoCompact {
+    /// Compact when a request is estimated above this many tokens.
+    pub at: usize,
+    pub keep_turns: usize,
 }
 
 /// Everything a turn thread needs.
@@ -95,6 +125,13 @@ pub struct Setup {
     pub step_ids: Arc<AtomicU64>,
     /// Tool-calling mode, history budget and vision for this endpoint.
     pub plan: adapt::Plan,
+    /// The entry each `history` message came from (0: none), see [`compact::history`].
+    pub ids: Vec<u64>,
+    /// The chat's last entry before this turn (0: none); a compaction in the middle of the
+    /// tool loop covers up to it.
+    pub prior: u64,
+    /// Compact automatically (`None`: never).
+    pub compact: Option<AutoCompact>,
 }
 
 pub fn spawn(setup: Setup) -> std::io::Result<()> {
@@ -105,7 +142,8 @@ pub fn spawn(setup: Setup) -> std::io::Result<()> {
         let mut turn = Turn::new(setup);
         let result = catch_unwind(AssertUnwindSafe(|| turn.run()));
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let stats = TurnStats { prompt_tokens: turn.usage.prompt_tokens, completion_tokens: turn.usage.completion_tokens, elapsed_ms };
+        let stats =
+            TurnStats { prompt_tokens: turn.usage.prompt_tokens, completion_tokens: turn.usage.completion_tokens, elapsed_ms, model_calls: turn.model_calls };
         let (error, stats) = match result {
             Ok(Ok(())) => (None, Some(stats)),
             Ok(Err(End::Stopped)) => (Some("stopped".to_owned()), Some(stats)),
@@ -141,6 +179,13 @@ struct Turn {
     repeats: usize,
     /// Undo journal for the file changes of this turn.
     journal: Journal,
+    /// Model requests made (compactions included).
+    model_calls: u64,
+    /// Compactions made, and whether one failed (then this turn stops trying).
+    compactions: usize,
+    compact_failed: bool,
+    /// Estimated request tokens right after this turn's last compaction.
+    compacted_to: usize,
 }
 
 impl Turn {
@@ -160,6 +205,10 @@ impl Turn {
             seen: BTreeMap::new(),
             repeats: 0,
             journal,
+            model_calls: 0,
+            compactions: 0,
+            compact_failed: false,
+            compacted_to: 0,
         }
     }
 
@@ -176,9 +225,10 @@ impl Turn {
     }
 
     fn run(&mut self) -> Result<(), End> {
-        for _ in 0..MAX_ROUNDS {
+        for round in 0..MAX_ROUNDS {
             let tools_on = self.tools_on();
             let specs = if tools_on { specs(&self.s.tools) } else { Vec::new() };
+            self.maybe_compact(&specs, round)?;
             let out = self.model_call(&specs)?;
             if out.cancelled {
                 return Err(End::Stopped);
@@ -260,11 +310,101 @@ impl Turn {
         self.tail_newlines = shown.tail_newlines;
         let out = result?;
         self.rounds_done = true;
-        if let Some(u) = out.usage {
-            self.usage.prompt_tokens = self.usage.prompt_tokens.saturating_add(u.prompt_tokens);
-            self.usage.completion_tokens = self.usage.completion_tokens.saturating_add(u.completion_tokens);
-        }
+        self.model_calls = self.model_calls.saturating_add(1);
+        let (prompt_tokens, completion, context, estimated) = match out.usage {
+            Some(u) => (u.prompt_tokens, u.completion_tokens, u.prompt_tokens.saturating_add(u.completion_tokens), false),
+            None => {
+                let reply = yah_llm::estimate_tokens(&out.content).saturating_add(yah_llm::estimate_tokens(&out.reasoning));
+                let sent = yah_llm::estimate_history_tokens(&request).saturating_add(yah_llm::budget::estimate_tools_tokens(wire_specs));
+                (0, 0, to_u64(sent.saturating_add(reply)), true)
+            }
+        };
+        self.add_usage(prompt_tokens, completion);
+        self.emit(TurnEvent::Usage { id, prompt: prompt_tokens, completion, context, estimated });
         Ok(out)
+    }
+
+    fn add_usage(&mut self, prompt: u64, completion: u64) {
+        self.usage.prompt_tokens = self.usage.prompt_tokens.saturating_add(prompt);
+        self.usage.completion_tokens = self.usage.completion_tokens.saturating_add(completion);
+    }
+
+    /// Before a model request: if it would pass the threshold, summarise the conversation
+    /// and continue from the summary. Before the first request the newest turns stay
+    /// verbatim; later (inside the tool loop) everything is summarised and the request is
+    /// repeated after the summary. A failed summary leaves the messages alone (fit_history
+    /// still shortens them) and turns compaction off for the rest of the turn.
+    fn maybe_compact(&mut self, specs: &[yah_llm::ToolSpec], round: usize) -> Result<(), End> {
+        let Some(auto) = self.s.compact else { return Ok(()) };
+        if self.compact_failed || self.compactions >= compact::MAX_PER_TURN {
+            return Ok(());
+        }
+        let before = self.s.plan.raw_tokens(&self.messages, specs);
+        // After a compaction in this turn, wait until the request has grown again by a
+        // quarter of the threshold (a threshold just above the fixed prompt would churn).
+        if before <= auto.at || before < self.compacted_to.saturating_add(auto.at / 4) {
+            return Ok(());
+        }
+        let start = compact::content_start(&self.messages);
+        let (covered, tail, through) = if round == 0 {
+            let end = self.messages.len().saturating_sub(1);
+            let Some(split) = compact::split_point(&self.messages, end, auto.keep_turns, auto.at / 4) else { return Ok(()) };
+            let through = self.s.ids.get(..split).and_then(|ids| ids.iter().rev().find(|id| **id > 0)).copied().unwrap_or(0);
+            (self.messages.get(start..split).unwrap_or_default().to_vec(), self.messages.get(split..).unwrap_or_default().to_vec(), through)
+        } else {
+            let Some(resume) = compact::resume_message(&self.messages) else { return Ok(()) };
+            (self.messages.get(start..).unwrap_or_default().to_vec(), vec![resume], self.s.prior)
+        };
+        // Not worth a model call if little but an earlier summary would be summarised (the
+        // threshold may sit just above the system prompt and tool definitions).
+        if compact::fresh_tokens(&covered) < auto.at / 4 {
+            return Ok(());
+        }
+        log::info!("compacting the context of entry {} (~{before} tokens, threshold {})", self.s.entry, auto.at);
+        let id = self.s.entry;
+        self.emit(TurnEvent::Compacting { id, on: true });
+        let result = compact::summarize(&self.s.llm, &covered, None, &self.s.plan, &self.s.cancel);
+        self.emit(TurnEvent::Compacting { id, on: false });
+        let summary = match result {
+            Ok(s) => s,
+            Err(compact::Failure::Stopped) => return Err(End::Stopped),
+            Err(compact::Failure::Error(e)) => {
+                log::warn!("compaction failed: {e}");
+                self.compact_failed = true;
+                let text = format!("Couldn't summarise the conversation to free context ({e}); older messages were shortened instead.");
+                self.emit(TurnEvent::Notice { id, text });
+                return Ok(());
+            }
+        };
+        self.model_calls = self.model_calls.saturating_add(1);
+        self.compactions = self.compactions.saturating_add(1);
+        let (prompt, completion) = summary.usage.map_or((0, 0), |u| (u.prompt_tokens, u.completion_tokens));
+        self.add_usage(prompt, completion);
+        let mut messages: Vec<ChatMessage> = self.messages.get(..start).unwrap_or_default().to_vec();
+        messages.extend(compact::summary_messages(&summary.text));
+        messages.extend(tail);
+        let after = self.s.plan.raw_tokens(&messages, specs);
+        if after >= before {
+            // A summary longer than what it replaces: keep the messages, stop trying.
+            self.compact_failed = true;
+            self.emit(TurnEvent::Usage { id, prompt, completion, context: to_u64(before), estimated: true });
+            let text = "The conversation summary came out longer than the conversation; older messages were shortened instead.".to_owned();
+            self.emit(TurnEvent::Notice { id, text });
+            return Ok(());
+        }
+        self.messages = messages;
+        self.compacted_to = after;
+        self.emit(TurnEvent::Usage { id, prompt, completion, context: to_u64(after), estimated: true });
+        let made = Compacted {
+            through,
+            summary: summary.text,
+            tokens_before: to_u64(before),
+            tokens_after: to_u64(after),
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+        };
+        self.emit(TurnEvent::Compacted { id, made });
+        Ok(())
     }
 
     /// Run one call and return what the model sees.
@@ -430,7 +570,11 @@ fn wait_verdict(answer: &Receiver<Verdict>, cancel: &AtomicBool) -> Verdict {
     }
 }
 
-fn specs(tools: &Registry) -> Vec<yah_llm::ToolSpec> {
+fn to_u64(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+pub(crate) fn specs(tools: &Registry) -> Vec<yah_llm::ToolSpec> {
     tools.specs().into_iter().map(|s| yah_llm::ToolSpec { name: s.name, description: s.description, parameters: s.parameters }).collect()
 }
 

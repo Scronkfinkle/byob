@@ -70,6 +70,30 @@ impl StorageKind {
     }
 }
 
+/// When the engine summarises a conversation to free context (see `yah-agent`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompactionSettings {
+    /// Compact automatically when a request would pass the threshold.
+    pub auto: bool,
+    /// Threshold, in percent of the context window (clamped to 10..=95).
+    pub threshold_percent: u8,
+    /// Most recent turns kept word for word after a compaction.
+    pub keep_turns: u8,
+}
+
+impl Default for CompactionSettings {
+    fn default() -> Self {
+        Self { auto: true, threshold_percent: 80, keep_turns: 2 }
+    }
+}
+
+impl CompactionSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "InferenceSettings::is_empty")]
@@ -89,6 +113,9 @@ pub struct Settings {
     /// Defaults to [`crate::Paths::chats_folder`].
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub chats_folder: Option<PathBuf>,
+    /// Automatic context compaction.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "CompactionSettings::is_default")]
+    pub compaction: CompactionSettings,
     /// Fields this build doesn't know; preserved across load/save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

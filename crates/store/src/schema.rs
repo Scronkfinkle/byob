@@ -64,7 +64,25 @@ CREATE TABLE grants (
 CREATE UNIQUE INDEX grants_unique ON grants (ifnull(chat_id, ''), tool);
 ";
 
-pub(crate) const MIGRATIONS: &[&str] = &[V1, V2];
+/// v3: context compactions (a summary that stands in for the messages up to `through_id`).
+const V3: &str = "
+CREATE TABLE compactions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id           TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
+    through_id        INTEGER NOT NULL,
+    summary           TEXT NOT NULL,
+    tokens_before     INTEGER NOT NULL DEFAULT 0,
+    tokens_after      INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    focus             TEXT,
+    manual            INTEGER NOT NULL DEFAULT 0,
+    created_at        INTEGER NOT NULL
+);
+CREATE INDEX compactions_chat ON compactions (chat_id, id);
+";
+
+pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3];
 
 /// Schema version this build reads and writes.
 pub const LATEST: i64 = MIGRATIONS.len() as i64;

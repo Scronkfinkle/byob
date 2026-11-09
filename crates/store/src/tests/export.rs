@@ -47,7 +47,7 @@ fn populate(s: &dyn ChatStore) {
     s.finish_step(a, run, &StepResult { output: "error[E0425]".into(), failed: true, changes: vec![] }).unwrap();
     s.add_step(a, &NewStep { tool: "fetch".into(), title: "Fetch docs".into(), access: StepAccess::Network, args: json!({}) }).unwrap();
     s.append_message_text(a, "\n\nFixed: a missing `use`.", "").unwrap();
-    s.finish_message(a, None, Some(&MessageStats { prompt_tokens: 1200, completion_tokens: 87, elapsed_ms: 4321 })).unwrap();
+    s.finish_message(a, None, Some(&MessageStats { prompt_tokens: 1200, completion_tokens: 87, elapsed_ms: 4321, model_calls: 1 })).unwrap();
 
     s.append_message("c-main", &NewMessage::user("Undo that please")).unwrap();
     let b = s.append_message("c-main", &NewMessage::assistant_streaming(Some("task-2".into()))).unwrap();

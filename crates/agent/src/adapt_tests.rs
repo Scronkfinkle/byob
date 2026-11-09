@@ -181,6 +181,8 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
         adapt,
         paths: None,
         auto_title: false,
+        // These tests are about fit_history; compaction has its own (compact_tests).
+        compaction: crate::CompactOptions { auto: false, ..Default::default() },
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), seen, runs }
 }

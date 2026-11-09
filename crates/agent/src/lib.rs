@@ -19,6 +19,9 @@ mod adapt;
 mod adapt_tests;
 pub mod attachments;
 mod chats;
+mod compact;
+#[cfg(test)]
+mod compact_tests;
 pub mod dev_tools;
 #[cfg(test)]
 mod engine_tests;
@@ -39,6 +42,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub use adapt::{AdaptOptions, ToolMode};
+pub use compact::CompactOptions;
 pub use permissions::{Policy, Rule};
 use yah_protocol::{
     ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, EngineState, Entry, EntryRole, MediaRef, NoticeLevel,
@@ -73,6 +77,8 @@ pub struct EngineConfig {
     pub auto_title: bool,
     /// Endpoint probing and tool-calling mode.
     pub adapt: AdaptOptions,
+    /// When to summarise a conversation that outgrows the context window.
+    pub compaction: CompactOptions,
 }
 
 impl EngineConfig {
@@ -88,6 +94,7 @@ impl EngineConfig {
             paths: None,
             auto_title: true,
             adapt: AdaptOptions::default(),
+            compaction: CompactOptions::default(),
         }
     }
 }
@@ -122,6 +129,20 @@ enum Input {
         chat: String,
         reply: Sender<Option<PathBuf>>,
     },
+    /// A manual compaction (`ClientMsg::Compact`) finished.
+    Compacted(Box<ManualDone>),
+}
+
+/// The outcome of a manual compaction.
+struct ManualDone {
+    chat: String,
+    /// Last entry covered.
+    through: u64,
+    focus: Option<String>,
+    tokens_before: usize,
+    elapsed_ms: u64,
+    /// The summary and the estimated tokens after.
+    result: Result<(compact::Summary, usize), compact::Failure>,
 }
 
 /// Cheap, cloneable handle used to attach clients to a running engine.
@@ -225,6 +246,10 @@ struct Live {
     workspace: Arc<PathBuf>,
     /// The chat's artifacts (see [`yah_tools::artifact`]).
     artifacts: Vec<Artifact>,
+    /// The chat's compactions, oldest first; the next request builds on the last one.
+    compactions: Vec<yah_store::Compaction>,
+    /// Token use, for the header meter.
+    tally: compact::Tally,
 }
 
 /// A running turn, keyed by its reply entry.
@@ -267,6 +292,9 @@ struct Engine {
     endpoints: adapt::Endpoints,
     /// Files being uploaded, and finished uploads that may be attached.
     uploads: attachments::Uploads,
+    compaction: CompactOptions,
+    /// Manual compactions running, by chat (the flag stops them).
+    compacting: BTreeMap<String, Arc<AtomicBool>>,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -316,13 +344,15 @@ impl Engine {
             uploads: attachments::Uploads::default(),
             auto_title: config.auto_title,
             provisional: BTreeMap::new(),
+            compaction: config.compaction,
+            compacting: BTreeMap::new(),
         }
     }
 
     // ---- chats ------------------------------------------------------------------------
 
     fn chat_busy(&self, chat: &str) -> bool {
-        self.turns.values().any(|t| t.chat == chat)
+        self.turns.values().any(|t| t.chat == chat) || self.compacting.contains_key(chat)
     }
 
     fn summary(&self, chat: &str) -> Option<ChatSummary> {
@@ -355,17 +385,24 @@ impl Engine {
         if !self.live.contains_key(chat) {
             let row = self.store.chat(chat).map_err(|e| e.to_string())?.ok_or_else(|| "that chat no longer exists".to_owned())?;
             let messages = self.store.messages(chat).map_err(|e| format!("couldn't load the chat: {e}"))?;
+            // A damaged compaction list only costs context: the full history is used then.
+            let compactions = self.store.compactions(chat).unwrap_or_else(|e| {
+                log::error!("reading the compactions of {chat}: {e}");
+                Vec::new()
+            });
+            let tally = compact::Tally::from_store(&messages, &compactions);
             let mut entries: Vec<Entry> = messages.into_iter().filter_map(|m| chats::entry(m, &self.step_ids)).collect();
             let artifacts = artifact::list(&row.workspace, chat);
             chats::restore_step_files(&mut entries, &artifacts);
-            self.live.insert(chat.to_owned(), Live { entries, workspace: Arc::new(row.workspace), artifacts });
+            self.live.insert(chat.to_owned(), Live { entries, workspace: Arc::new(row.workspace), artifacts, compactions, tally });
         }
         self.live.get_mut(chat).ok_or_else(|| "that chat no longer exists".to_owned())
     }
 
     /// Forget transcripts nobody looks at and nothing runs in.
     fn gc(&mut self) {
-        let keep: BTreeSet<&String> = self.clients.values().filter_map(|c| c.chat.as_ref()).chain(self.turns.values().map(|t| &t.chat)).collect();
+        let keep: BTreeSet<&String> =
+            self.clients.values().filter_map(|c| c.chat.as_ref()).chain(self.turns.values().map(|t| &t.chat)).chain(self.compacting.keys()).collect();
         self.live.retain(|k, _| keep.contains(k));
     }
 
@@ -375,15 +412,15 @@ impl Engine {
     }
 
     fn show_chat_with(&mut self, id: ClientId, chat: Option<String>, send_state: bool) {
-        let (entries, artifacts) = match &chat {
+        let (entries, artifacts, compactions) = match &chat {
             Some(c) => match self.live(c) {
-                Ok(live) => (live.entries.clone(), live.artifacts.clone()),
+                Ok(live) => (live.entries.clone(), live.artifacts.clone(), live.compactions.iter().map(chats::compaction).collect()),
                 Err(text) => {
                     self.send_to(id, ServerMsg::Notice { level: NoticeLevel::Error, text });
                     return;
                 }
             },
-            None => (Vec::new(), Vec::new()),
+            None => (Vec::new(), Vec::new(), Vec::new()),
         };
         let summary = chat.as_deref().and_then(|c| self.summary(c));
         if let Some(client) = self.clients.get_mut(&id) {
@@ -394,6 +431,11 @@ impl Engine {
         }
         self.send_to(id, ServerMsg::ChatOpened { chat: summary });
         self.send_to(id, ServerMsg::Transcript { entries });
+        self.send_to(id, ServerMsg::Compactions { chat: chat.clone(), items: compactions });
+        if let Some(usage) = chat.as_deref().and_then(|c| self.usage(c)) {
+            self.send_to(id, ServerMsg::Usage(usage));
+        }
+        // Artifacts come last: clients take it as the end of opening a chat.
         self.send_to(id, ServerMsg::Artifacts { chat, artifacts });
         self.gc();
     }
@@ -430,7 +472,14 @@ impl Engine {
             }
         };
         self.provisional.insert(chat.id.clone(), title);
-        self.live.insert(chat.id.clone(), Live { entries: Vec::new(), workspace: Arc::new(chat.workspace.clone()), artifacts: Vec::new() });
+        let live = Live {
+            entries: Vec::new(),
+            workspace: Arc::new(chat.workspace.clone()),
+            artifacts: Vec::new(),
+            compactions: Vec::new(),
+            tally: compact::Tally::default(),
+        };
+        self.live.insert(chat.id.clone(), live);
         self.broadcast(ServerMsg::ChatUpdated(chats::summary(&chat, false)));
         Ok(chat.id)
     }
@@ -543,10 +592,16 @@ impl Engine {
             Input::Adapt(event) => {
                 self.endpoints.handle(event);
                 self.broadcast_state();
+                // The window (and so the threshold) may have changed.
+                let viewed: BTreeSet<String> = self.clients.values().filter_map(|c| c.chat.clone()).collect();
+                for chat in viewed {
+                    self.send_usage(&chat);
+                }
             }
             Input::ChatWorkspace { chat, reply } => {
                 let _ = reply.send(self.chat_workspace(&chat));
             }
+            Input::Compacted(done) => self.manual_compacted(*done),
         }
     }
 
@@ -581,6 +636,9 @@ impl Engine {
                     for t in self.turns.values().filter(|t| t.chat == chat) {
                         t.cancel.store(true, Ordering::Relaxed);
                     }
+                    if let Some(flag) = self.compacting.get(&chat) {
+                        flag.store(true, Ordering::Relaxed);
+                    }
                     self.deny_pending(|_, t| t.is_some_and(|t| t.chat == chat), "stopped");
                 }
             }
@@ -601,6 +659,7 @@ impl Engine {
             }
             ClientMsg::GetMedia { path } => self.serve_media(id, path),
             ClientMsg::GetArtifact { id: artifact, version } => self.serve_artifact(id, artifact, version),
+            ClientMsg::Compact { focus } => self.compact_chat(id, focus),
         }
     }
 
@@ -856,6 +915,10 @@ impl Engine {
 
     fn start_turn(&mut self, client: ClientId, text: String, attached: &[String]) {
         let text = text.trim().to_owned();
+        if let Some(focus) = compact::command(&text) {
+            self.compact_chat(client, focus);
+            return;
+        }
         let attached = match self.uploads.claim(attached) {
             Ok(a) => a,
             Err(text) => {
@@ -892,12 +955,12 @@ impl Engine {
             return;
         }
         let base_prompt = self.system_prompt.clone();
-        let (history, workspace, first) = match self.live(&chat) {
+        let (history, ids, prior, workspace, first) = match self.live(&chat) {
             Ok(live) => {
-                // Later turns must know the chat's artifacts by id to update them.
-                let listed = artifact::prompt_list(&live.artifacts);
-                let system_prompt = if listed.is_empty() { base_prompt } else { format!("{base_prompt}\n\n{listed}") };
-                (turn::history(&live.entries, &text, &system_prompt), Arc::clone(&live.workspace), live.entries.is_empty())
+                let system_prompt = system_prompt(&base_prompt, live);
+                let (history, ids) = compact::history(&live.entries, latest(live), Some(&text), &system_prompt);
+                let prior = live.entries.last().map_or(0, |e| e.id);
+                (history, ids, prior, Arc::clone(&live.workspace), live.entries.is_empty())
             }
             Err(e) => {
                 self.notice(client, e);
@@ -933,6 +996,7 @@ impl Engine {
         );
         self.chat_changed(&chat);
         self.viewer_states(&chat);
+        let plan = self.endpoints.plan(&self.config);
         let setup = turn::Setup {
             llm,
             history,
@@ -943,7 +1007,10 @@ impl Engine {
             workspace,
             chat: chat.clone(),
             step_ids: Arc::clone(&self.step_ids),
-            plan: self.endpoints.plan(&self.config),
+            compact: self.compaction.auto.then(|| turn::AutoCompact { at: self.compaction.threshold(&plan), keep_turns: self.compaction.keep_turns }),
+            plan,
+            ids,
+            prior,
         };
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });
@@ -971,6 +1038,211 @@ impl Engine {
             turn::TurnEvent::Gate { id, step, reply } => self.gate(id, step, reply),
             turn::TurnEvent::Undo { id, ops, complete } => self.add_undo(id, ops, complete),
             turn::TurnEvent::Finished { id, error, stats } => self.finish_turn(id, error, stats),
+            turn::TurnEvent::Usage { id, prompt, completion, context, estimated } => {
+                let Some(chat) = self.turns.get(&id).map(|t| t.chat.clone()) else { return };
+                if let Some(live) = self.live.get_mut(&chat) {
+                    live.tally.call(prompt, completion);
+                    live.tally.context = Some((context, estimated));
+                }
+                self.send_usage(&chat);
+            }
+            turn::TurnEvent::Compacting { id, on } => {
+                let Some(chat) = self.turns.get(&id).map(|t| t.chat.clone()) else { return };
+                if let Some(live) = self.live.get_mut(&chat) {
+                    live.tally.compacting = on;
+                }
+                self.send_usage(&chat);
+            }
+            turn::TurnEvent::Compacted { id, made } => {
+                let Some(chat) = self.turns.get(&id).map(|t| t.chat.clone()) else { return };
+                let new = yah_store::NewCompaction {
+                    through: chats::message_id(made.through),
+                    summary: made.summary,
+                    tokens_before: made.tokens_before,
+                    tokens_after: made.tokens_after,
+                    prompt_tokens: made.prompt_tokens,
+                    completion_tokens: made.completion_tokens,
+                    focus: None,
+                    manual: false,
+                };
+                self.record_compaction(&chat, &new);
+            }
+            turn::TurnEvent::Notice { id, text } => {
+                let Some(chat) = self.turns.get(&id).map(|t| t.chat.clone()) else { return };
+                self.send_viewers(&chat, ServerMsg::Notice { level: NoticeLevel::Info, text });
+            }
+        }
+    }
+
+    // ---- compaction and usage -----------------------------------------------------------
+
+    /// Store a compaction, make it the base of later requests, tell the chat's viewers.
+    fn record_compaction(&mut self, chat: &str, new: &yah_store::NewCompaction) {
+        let stored = match self.store.add_compaction(chat, new) {
+            Ok(c) => c,
+            Err(e) => {
+                // Not fatal: this turn still goes on from the summary; later ones use the full history.
+                log::error!("saving a compaction of {chat}: {e}");
+                return;
+            }
+        };
+        let msg = ServerMsg::Compacted(chats::compaction(&stored));
+        if let Some(live) = self.live.get_mut(chat) {
+            live.tally.compactions = live.tally.compactions.saturating_add(1);
+            live.tally.context = Some((new.tokens_after, true));
+            live.compactions.push(stored);
+        }
+        self.send_viewers(chat, msg);
+        self.send_usage(chat);
+    }
+
+    /// `ClientMsg::Compact` / `/compact [focus]`: summarise the chat in view now, on a
+    /// background thread. The chat counts as busy until it is done.
+    fn compact_chat(&mut self, client: ClientId, focus: Option<String>) {
+        let Some(chat) = self.client_chat(client) else {
+            self.send_to(client, ServerMsg::Notice { level: NoticeLevel::Info, text: "Nothing to compact yet.".into() });
+            return;
+        };
+        if self.chat_busy(&chat) {
+            self.notice(client, "a reply is still running in this chat; stop it first".into());
+            return;
+        }
+        let llm = match &self.llm {
+            Ok(llm) => llm.clone(),
+            Err(e) => {
+                self.notice(client, format!("inference URL is invalid: {e}"));
+                return;
+            }
+        };
+        let plan = self.endpoints.plan(&self.config);
+        let specs = turn::specs(&self.tools);
+        let base_prompt = self.system_prompt.clone();
+        let (messages, through) = match self.live(&chat) {
+            Ok(live) => {
+                let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base_prompt, live));
+                (messages, live.entries.last().map_or(0, |e| e.id))
+            }
+            Err(e) => {
+                self.notice(client, e);
+                return;
+            }
+        };
+        let start = compact::content_start(&messages);
+        let fresh = messages.iter().skip(start).filter(|m| m.content.as_deref() != Some(compact::SUMMARY_ACK)).count();
+        let has_summary = messages.get(start).is_some_and(|m| m.content.as_deref().is_some_and(|c| c.starts_with(compact::SUMMARY_HEADER)));
+        if fresh <= usize::from(has_summary) {
+            self.send_to(client, ServerMsg::Notice { level: NoticeLevel::Info, text: "Nothing new to compact.".into() });
+            return;
+        }
+        let tokens_before = plan.raw_tokens(&messages, &specs);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (flag, inbox) = (Arc::clone(&cancel), self.inbox.clone());
+        let (c, f) = (chat.clone(), focus.clone());
+        let spawned = thread::Builder::new().name("yah-compact".into()).spawn(move || {
+            let started = Instant::now();
+            let covered = messages.get(start..).unwrap_or_default();
+            let result = catch_unwind(AssertUnwindSafe(|| compact::summarize(&llm, covered, f.as_deref(), &plan, &flag)))
+                .unwrap_or_else(|_| Err(compact::Failure::Error("internal error while summarising".into())))
+                .map(|summary| {
+                    let mut after: Vec<yah_llm::ChatMessage> = messages.get(..start).unwrap_or_default().to_vec();
+                    after.extend(compact::summary_messages(&summary.text));
+                    let tokens = plan.raw_tokens(&after, &specs);
+                    (summary, tokens)
+                });
+            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let _ = inbox.send(Input::Compacted(Box::new(ManualDone { chat: c, through, focus: f, tokens_before, elapsed_ms, result })));
+        });
+        if let Err(e) = spawned {
+            self.notice(client, format!("could not start the compaction: {e}"));
+            return;
+        }
+        self.compacting.insert(chat.clone(), cancel);
+        if let Some(live) = self.live.get_mut(&chat) {
+            live.tally.compacting = true;
+        }
+        self.chat_changed(&chat);
+        self.viewer_states(&chat);
+        self.send_usage(&chat);
+    }
+
+    fn manual_compacted(&mut self, done: ManualDone) {
+        let ManualDone { chat, through, focus, tokens_before, elapsed_ms, result } = done;
+        self.compacting.remove(&chat);
+        if let Some(live) = self.live.get_mut(&chat) {
+            live.tally.compacting = false;
+            live.tally.elapsed_ms = live.tally.elapsed_ms.saturating_add(elapsed_ms);
+        }
+        match result {
+            Ok((summary, tokens_after)) => {
+                let (prompt, completion) = summary.usage.map_or((0, 0), |u| (u.prompt_tokens, u.completion_tokens));
+                if let Some(live) = self.live.get_mut(&chat) {
+                    live.tally.call(prompt, completion);
+                }
+                if tokens_after >= tokens_before {
+                    let text = "The summary came out longer than the conversation it would replace, so nothing changed.".to_owned();
+                    self.send_viewers(&chat, ServerMsg::Notice { level: NoticeLevel::Info, text });
+                    self.chat_changed(&chat);
+                    self.viewer_states(&chat);
+                    self.send_usage(&chat);
+                    self.gc();
+                    return;
+                }
+                let new = yah_store::NewCompaction {
+                    through: chats::message_id(through),
+                    summary: summary.text,
+                    tokens_before: u64::try_from(tokens_before).unwrap_or(u64::MAX),
+                    tokens_after: u64::try_from(tokens_after).unwrap_or(u64::MAX),
+                    prompt_tokens: prompt,
+                    completion_tokens: completion,
+                    focus,
+                    manual: true,
+                };
+                self.record_compaction(&chat, &new);
+            }
+            Err(failure) => {
+                let (level, text) = match failure {
+                    compact::Failure::Stopped => (NoticeLevel::Info, "Compaction stopped.".to_owned()),
+                    compact::Failure::Error(e) => (NoticeLevel::Error, format!("couldn't compact the conversation: {e}")),
+                };
+                self.send_viewers(&chat, ServerMsg::Notice { level, text });
+            }
+        }
+        self.chat_changed(&chat);
+        self.viewer_states(&chat);
+        self.send_usage(&chat);
+        self.gc();
+    }
+
+    /// The header meter of `chat`, if it is loaded.
+    fn usage(&self, chat: &str) -> Option<yah_protocol::ChatUsage> {
+        let live = self.live.get(chat)?;
+        let plan = self.endpoints.plan(&self.config);
+        let (context_used, estimated) = live.tally.context.unwrap_or_else(|| {
+            let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&self.system_prompt, live));
+            (u64::try_from(plan.raw_tokens(&messages, &turn::specs(&self.tools))).unwrap_or(u64::MAX), true)
+        });
+        let t = &live.tally;
+        let n = |v: usize| u64::try_from(v).unwrap_or(u64::MAX);
+        Some(yah_protocol::ChatUsage {
+            chat: chat.to_owned(),
+            context_used,
+            estimated,
+            context_window: n(plan.context),
+            compact_at: if self.compaction.auto { n(self.compaction.threshold(&plan)) } else { 0 },
+            last_prompt_tokens: t.last_prompt,
+            last_completion_tokens: t.last_completion,
+            prompt_tokens: t.prompt_tokens,
+            completion_tokens: t.completion_tokens,
+            model_calls: t.model_calls,
+            compactions: t.compactions,
+            elapsed_ms: t.elapsed_ms,
+            compacting: t.compacting,
+        })
+    }
+
+    fn send_usage(&mut self, chat: &str) {
+        if let Some(u) = self.usage(chat) {
+            self.send_viewers(chat, ServerMsg::Usage(u));
         }
     }
 
@@ -994,9 +1266,14 @@ impl Engine {
             entry.content.clone()
         });
         let Some(run) = self.turns.remove(&id) else { return };
+        if let Some(live) = self.live.get_mut(&run.chat) {
+            live.tally.compacting = false;
+            live.tally.elapsed_ms = live.tally.elapsed_ms.saturating_add(stats.map_or(0, |s| s.elapsed_ms));
+        }
         self.send_viewers(&run.chat, ServerMsg::EntryFinished { id, error: error.clone(), stats });
         self.chat_changed(&run.chat);
         self.viewer_states(&run.chat);
+        self.send_usage(&run.chat);
         if let (Some(user), Some(reply), None, Ok(llm)) = (run.title_from, content, &error, &self.llm) {
             chats::spawn_titler(llm.clone(), run.chat.clone(), user, reply, self.inbox.clone());
         }
@@ -1049,6 +1326,17 @@ impl Engine {
         let state = self.state(Some(chat));
         self.send_viewers(chat, ServerMsg::State(state));
     }
+}
+
+/// The system prompt of a chat's turns: later turns must know its artifacts by id.
+fn system_prompt(base: &str, live: &Live) -> String {
+    let listed = artifact::prompt_list(&live.artifacts);
+    if listed.is_empty() { base.to_owned() } else { format!("{base}\n\n{listed}") }
+}
+
+/// The compaction the next request builds on: (last entry covered, summary).
+fn latest(live: &Live) -> Option<(u64, &str)> {
+    live.compactions.last().map(|c| (chats::entry_id(c.through), c.summary.as_str()))
 }
 
 fn deliver(client: &Client, msg: ServerMsg) -> Result<(), ()> {

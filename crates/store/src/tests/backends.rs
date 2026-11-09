@@ -72,7 +72,7 @@ fn everything_survives_reopen() {
         s.add_step(a, &NewStep { tool: "write_file".into(), title: "Write a.txt".into(), access: StepAccess::Write, args: json!({"path": "a.txt"}) }).unwrap();
         s.finish_step(a, 1, &StepResult { output: "ok".into(), failed: false, changes: vec![StepChange::Created { path: "/w/a.txt".into() }] }).unwrap();
         s.add_undo_op("t1", &UndoOp::Created { path: "/w/a.txt".into() }).unwrap();
-        s.finish_message(a, None, Some(&MessageStats { prompt_tokens: 1, completion_tokens: 2, elapsed_ms: 3 })).unwrap();
+        s.finish_message(a, None, Some(&MessageStats { prompt_tokens: 1, completion_tokens: 2, elapsed_ms: 3, model_calls: 1 })).unwrap();
         s.set_message_undone(u, true).unwrap();
         s.grant(&GrantScope::Chat("c".into()), "write_file").unwrap();
         s.grant(&GrantScope::Global, "read_file").unwrap();
@@ -151,7 +151,7 @@ fn import_keeps_everything(s: &dyn ChatStore) {
     reply.reasoning = "think".into();
     reply.task_id = Some("imp-t".into());
     reply.error = Some("partial".into());
-    reply.stats = Some(MessageStats { prompt_tokens: 5, completion_tokens: 6, elapsed_ms: 7 });
+    reply.stats = Some(MessageStats { prompt_tokens: 5, completion_tokens: 6, elapsed_ms: 7, model_calls: 1 });
     reply.undone = true;
     reply.steps = vec![step(1, Some(StepResult { output: "a\nb".into(), failed: true, changes: vec![] })), step(2, None)];
     let mut streaming = msg("half", Role::Assistant, 1_700_000_003_000);
@@ -261,7 +261,7 @@ fn streaming_reply_lifecycle(s: &dyn ChatStore) {
     let m = s.message(a).unwrap().unwrap();
     assert_eq!((m.content.as_str(), m.reasoning.as_str(), m.done), ("Hello", "thinking more", false));
 
-    let stats = MessageStats { prompt_tokens: 10, completion_tokens: 3, elapsed_ms: 420 };
+    let stats = MessageStats { prompt_tokens: 10, completion_tokens: 3, elapsed_ms: 420, model_calls: 1 };
     s.finish_message(a, None, Some(&stats)).unwrap();
     let m = s.message(a).unwrap().unwrap();
     assert!(m.done);

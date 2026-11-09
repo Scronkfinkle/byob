@@ -1,5 +1,5 @@
-//! yah's persistence: chats, messages, tool steps, always-allow grants and the undo journal
-//! behind the [`ChatStore`] trait, plus `settings.json` and `secrets.json`.
+//! yah's persistence: chats, messages, tool steps, context compactions, always-allow grants
+//! and the undo journal behind the [`ChatStore`] trait, plus `settings.json` and `secrets.json`.
 //!
 //! - [`Paths`] finds the directories (`YAH_HOME` overrides them).
 //! - [`ChatStore`] is what the engine talks to; [`open_backend`] picks the implementation
@@ -30,6 +30,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod backend;
+mod compactions;
 mod error;
 mod files;
 mod folder;
@@ -52,11 +53,11 @@ pub use error::{Result, StoreError};
 pub use files::Loaded;
 pub use folder::FolderStore;
 pub use model::{
-    Chat, ChatCursor, ChatPage, GrantScope, MessageId, MessageStats, Millis, NewMessage, NewStep, Role, Step, StepAccess, StepChange, StepResult,
-    StoredMessage, UndoOp,
+    Chat, ChatCursor, ChatPage, Compaction, GrantScope, MessageId, MessageStats, Millis, NewCompaction, NewMessage, NewStep, Role, Step, StepAccess,
+    StepChange, StepResult, StoredMessage, UndoOp,
 };
 pub use paths::{HOME_ENV, Paths};
 pub use schema::LATEST as SCHEMA_VERSION;
-pub use settings::{InferenceSettings, SECRETS_MODE, Secrets, Settings, StorageKind, Theme};
+pub use settings::{CompactionSettings, InferenceSettings, SECRETS_MODE, Secrets, Settings, StorageKind, Theme};
 pub use steps::MAX_STEP_OUTPUT;
 pub use store::{BUSY_TIMEOUT, MAX_PAGE, Store};

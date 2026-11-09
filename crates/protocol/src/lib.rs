@@ -7,14 +7,16 @@
 
 pub mod artifact;
 pub mod media;
+pub mod usage;
 
 use serde::{Deserialize, Serialize};
 
 pub use artifact::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion};
 pub use media::{MediaContent, MediaKind, MediaRef};
+pub use usage::{ChatUsage, Compaction};
 
 /// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -101,6 +103,12 @@ pub enum ClientMsg {
         id: String,
         version: u32,
     },
+    /// Summarise the conversation in view now, so later requests start from the summary
+    /// (also typed as `/compact [focus]`). `focus` says what the summary must keep.
+    Compact {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        focus: Option<String>,
+    },
 }
 
 /// Engine -> client(s).
@@ -144,6 +152,13 @@ pub enum ServerMsg {
     ArtifactUpdated(Artifact),
     /// Answer to [`ClientMsg::GetArtifact`]: the file, base64 (see [`media::encode`]), or why not.
     ArtifactFile { id: String, version: u32, data: Option<String>, error: Option<String> },
+    /// Context usage of the chat in view; sent after the transcript and whenever it changes.
+    Usage(ChatUsage),
+    /// Every compaction of the chat in view, oldest first (`chat`, `None` for a new chat).
+    /// Sent after [`ServerMsg::Transcript`] (before `Artifacts`); replaces the client's list.
+    Compactions { chat: Option<String>, items: Vec<Compaction> },
+    /// The chat in view was just compacted.
+    Compacted(Compaction),
 }
 
 /// A chat as shown in the sidebar.
@@ -380,6 +395,9 @@ pub struct TurnStats {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub elapsed_ms: u64,
+    /// Model requests the reply took (tool rounds and compactions included).
+    #[serde(default)]
+    pub model_calls: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -676,6 +694,30 @@ mod tests {
         let m = ClientMsg::from_json(r#"{"type":"send_message","text":"hi"}"#).unwrap();
         assert_eq!(m, ClientMsg::SendMessage { text: "hi".into(), attachments: vec![] });
         assert_eq!(m.to_json(), r#"{"type":"send_message","text":"hi"}"#);
+    }
+
+    #[test]
+    fn compaction_messages_round_trip() {
+        let c = Compaction {
+            id: 1,
+            after_entry: 7,
+            tokens_before: 182_000,
+            tokens_after: 9_000,
+            summary: "## Goals".into(),
+            manual: true,
+            focus: Some("CSV".into()),
+            created_at: 5,
+        };
+        let u = ChatUsage { chat: "c1".into(), context_used: 34_000, context_window: 262_144, compact_at: 209_715, model_calls: 3, ..Default::default() };
+        for m in [ServerMsg::Usage(u), ServerMsg::Compactions { chat: Some("c1".into()), items: vec![c.clone()] }, ServerMsg::Compacted(c)] {
+            assert_eq!(ServerMsg::from_json(&m.to_json()).unwrap(), m);
+        }
+        assert_eq!(ClientMsg::Compact { focus: None }.to_json(), r#"{"type":"compact"}"#);
+        let m = ClientMsg::from_json(r#"{"type":"compact","focus":"keep the CSV"}"#).unwrap();
+        assert_eq!(m, ClientMsg::Compact { focus: Some("keep the CSV".into()) });
+        // Stats from an older engine have no call count.
+        let s: TurnStats = serde_json::from_str(r#"{"prompt_tokens":1,"completion_tokens":2,"elapsed_ms":3}"#).unwrap();
+        assert_eq!(s.model_calls, 0);
     }
 
     #[test]

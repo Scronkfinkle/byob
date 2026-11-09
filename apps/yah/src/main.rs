@@ -25,6 +25,8 @@
 //!     --settings-section NAME open the settings at an appearance section (knobs, advanced)
 //!     --window-size WxH       window size in points (default 1100x750)
 //!     --tool-mode MODE        auto | native | prompt: force how tools are passed to the model
+//!     --compact-at TOKENS     compact the context when a request passes TOKENS (default:
+//!                             settings.json `compaction`, 80% of the window)
 //! ```
 //!
 //! Chats live in `yah.db`; preferences in `settings.json` and the API key in `secrets.json`
@@ -65,6 +67,7 @@ struct Args {
     settings_section: Option<String>,
     window_size: Option<[f32; 2]>,
     tool_mode: yah_agent::ToolMode,
+    compact_at: Option<usize>,
     script: testing::Script,
 }
 
@@ -87,6 +90,7 @@ fn parse_args() -> Result<Args, String> {
         settings_section: None,
         window_size: None,
         tool_mode: yah_agent::ToolMode::Auto,
+        compact_at: None,
         script: testing::Script { after: std::time::Duration::from_secs(2), ..Default::default() },
     };
     let mut it = std::env::args().skip(1).peekable();
@@ -129,6 +133,11 @@ fn parse_args() -> Result<Args, String> {
             "--tool-mode" => {
                 let v = it.next().ok_or("--tool-mode needs auto, native or prompt")?;
                 args.tool_mode = yah_agent::ToolMode::parse(&v).ok_or_else(|| format!("unknown tool mode {v:?} (auto, native, prompt)"))?;
+            }
+            // Hidden, for testing: a low compaction threshold in tokens.
+            "--compact-at" => {
+                let v = it.next().ok_or("--compact-at needs a token count")?;
+                args.compact_at = Some(v.parse().map_err(|e| format!("bad token count {v:?}: {e}"))?);
             }
             "--send" => args.script.send.push(it.next().ok_or("--send needs text")?),
             "--attach" => args.script.attach.push(it.next().ok_or("--attach needs a file")?.into()),
@@ -255,6 +264,13 @@ fn run() -> Result<(), String> {
     let mut config = EngineConfig::new(inference_config(&args, &saved.settings, &saved.secrets));
     config.paths = saved.paths;
     config.adapt.tool_mode = args.tool_mode;
+    let c = saved.settings.compaction;
+    config.compaction = yah_agent::CompactOptions {
+        auto: c.auto || args.compact_at.is_some(),
+        threshold_percent: c.threshold_percent,
+        at_tokens: args.compact_at,
+        keep_turns: usize::from(c.keep_turns),
+    };
     if args.auto_approve {
         log::warn!("--auto-approve: every tool call runs without asking");
         let allow = yah_agent::Rule::Allow;

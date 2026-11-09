@@ -11,7 +11,7 @@ pub use yah_types::Role;
 pub type Millis = i64;
 
 /// Row id of a message. Monotonic within a database, so it also orders a chat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct MessageId(pub i64);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +59,9 @@ pub struct MessageStats {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub elapsed_ms: u64,
+    /// Model requests the reply took (tool rounds and compactions included); 0 in rows
+    /// written before this was recorded.
+    pub model_calls: u64,
 }
 
 /// What to insert. Assistant replies usually start empty with `done: false` and are then
@@ -174,6 +177,39 @@ pub struct Step {
     pub args: Value,
     /// `None` while the call is still running (or yah stopped during it).
     pub result: Option<StepResult>,
+}
+
+/// A context compaction to record: `summary` stands in for every message of the chat up to
+/// and including `through` (`MessageId(0)`: none of the stored messages).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NewCompaction {
+    pub through: MessageId,
+    pub summary: String,
+    /// Estimated tokens of the request before and after compacting.
+    pub tokens_before: u64,
+    pub tokens_after: u64,
+    /// Usage of the summary request itself.
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    /// What the user asked the summary to keep (`/compact <focus>`).
+    pub focus: Option<String>,
+    /// Asked for by the user rather than triggered by the context threshold.
+    pub manual: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compaction {
+    pub id: i64,
+    pub chat_id: String,
+    pub through: MessageId,
+    pub summary: String,
+    pub tokens_before: u64,
+    pub tokens_after: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub focus: Option<String>,
+    pub manual: bool,
+    pub created_at: Millis,
 }
 
 /// Who an always-allow grant applies to.

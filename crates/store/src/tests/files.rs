@@ -52,6 +52,18 @@ fn unknown_fields_are_preserved() {
 }
 
 #[test]
+fn compaction_settings_default_and_partial() {
+    let dir = TempDir::new();
+    let p = dir.path().join("settings.json");
+    Settings::default().save(&p).unwrap();
+    assert!(read_json(&p).get("compaction").is_none(), "defaults are not written");
+    std::fs::write(&p, r#"{"compaction":{"threshold_percent":60}}"#).unwrap();
+    assert_eq!(Settings::load(&p).value.compaction, CompactionSettings { auto: true, threshold_percent: 60, keep_turns: 2 });
+    std::fs::write(&p, r#"{"compaction":"off"}"#).unwrap();
+    assert_eq!(Settings::load(&p).value.compaction, CompactionSettings::default());
+}
+
+#[test]
 fn wrong_typed_fields_fall_back_individually() {
     let dir = TempDir::new();
     let p = dir.path().join("settings.json");
