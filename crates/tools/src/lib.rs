@@ -7,6 +7,11 @@
 //! poll [`ToolContext::cancelled`].
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+mod fs;
+pub mod sandbox;
+
+pub use fs::{DEFAULT_TRASH_DIR, DeleteFile, ListFiles, MoveFile, MoveFiles, ReadFile, WriteFile};
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -130,6 +135,24 @@ impl Registry {
     }
 }
 
+/// Add the built-in file tools (`list_files`, `read_file`, `write_file`, `move_file`,
+/// `move_files`, `delete_file`). Deleted files go to [`DEFAULT_TRASH_DIR`].
+pub fn register_builtins(reg: &mut Registry) {
+    reg.register(Arc::new(ListFiles));
+    reg.register(Arc::new(ReadFile));
+    reg.register(Arc::new(WriteFile));
+    reg.register(Arc::new(MoveFile));
+    reg.register(Arc::new(MoveFiles));
+    reg.register(Arc::new(DeleteFile::default()));
+}
+
+/// A registry with just the built-in file tools.
+pub fn builtin() -> Registry {
+    let mut reg = Registry::default();
+    register_builtins(&mut reg);
+    reg
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +195,19 @@ mod tests {
         assert_eq!(tool.run(&serde_json::json!({"text":"hi"}), &ctx), ToolOutput::ok("hi"));
         assert!(tool.run(&serde_json::json!({"nope":1}), &ctx).failed);
         assert_eq!(reg.specs().len(), 1);
+    }
+
+    #[test]
+    fn builtins_are_valid() {
+        let reg = builtin();
+        assert_eq!(reg.len(), 6);
+        for spec in reg.specs() {
+            assert!(spec.name.len() <= 64 && spec.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+            assert_eq!(spec.parameters["type"], "object");
+            let tool = reg.get(&spec.name).unwrap();
+            let expected = if matches!(spec.name.as_str(), "list_files" | "read_file") { Access::Read } else { Access::Write };
+            assert_eq!(tool.access(&serde_json::json!({})), expected, "{}", spec.name);
+        }
     }
 
     #[test]

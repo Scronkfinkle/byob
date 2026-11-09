@@ -61,6 +61,7 @@ png = "0.18"
 
 # Testing.
 proptest = "1"
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
