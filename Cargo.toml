@@ -20,6 +20,8 @@ yah-store = { path = "crates/store" }
 yah-tools = { path = "crates/tools" }
 yah-mcp = { path = "crates/mcp" }
 yah-plugins = { path = "crates/plugins" }
+yah-sandbox = { path = "crates/sandbox" }
+yah-exec = { path = "crates/exec" }
 yah-agent = { path = "crates/agent" }
 yah-ui-egui = { path = "crates/ui-egui" }
 
@@ -62,6 +64,11 @@ pulldown-cmark = { version = "0.13", default-features = false }
 
 # Headless test screenshots (`yah --screenshot`).
 png = "0.18"
+
+# Sandbox (yah-sandbox). Safe Landlock bindings; `nix` for unshare/killpg/setrlimit
+# (rustix's `unshare` is `unsafe`, and the workspace forbids unsafe code).
+landlock = "0.4"
+nix = { version = "0.31", default-features = false, features = ["sched", "signal", "resource", "user", "process"] }
 
 # Testing.
 proptest = "1"

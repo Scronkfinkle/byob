@@ -21,7 +21,7 @@ Last updated: 2026-11-09
 4. **Plugins UI**: list/enable plugins, settings values (secrets), add connector by pasting config.
 5. **Use the probe**: pick native vs prompt-based tool calling, budget history from context size.
 6. Legacy HTTP+SSE MCP transport; OAuth for MCP; process-group kill for stdio servers/scripts.
-7. Sandbox for Python tools and stdio MCP servers (Landlock on Linux).
+7. ~~Sandbox for Python tools and stdio MCP servers~~ (done: yah-sandbox); macOS profile untested.
 8. Syntax highlighting; table alignment; markdown for thinking text.
 
 ## Ideas worth deciding early

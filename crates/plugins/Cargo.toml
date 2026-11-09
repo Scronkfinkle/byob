@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 yah-tools.workspace = true
 yah-mcp.workspace = true
+yah-sandbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

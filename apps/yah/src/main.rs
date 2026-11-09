@@ -128,6 +128,10 @@ impl eframe::App for App {
 }
 
 fn main() -> ExitCode {
+    // `yah __sandbox-exec …`: the sandbox helper. Must run before anything starts threads.
+    if let Some(code) = yah_sandbox::dispatch_helper() {
+        return code;
+    }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -147,7 +151,7 @@ fn run() -> Result<(), String> {
         }
         config.workspace = std::fs::canonicalize(&dir).map_err(|e| format!("workspace {}: {e}", dir.display()))?;
     }
-    let extra = extensions::load(&mut config.tools, args.plugins);
+    let extra = extensions::load(&mut config.tools, args.plugins, &config.workspace);
     if !extra.is_empty() {
         config.system_prompt = format!("{}\n\n{extra}", config.system_prompt);
     }
