@@ -18,6 +18,7 @@
 pub mod connectors;
 pub mod discover;
 pub mod manifest;
+pub mod mcp;
 pub mod names;
 pub mod python;
 pub mod skills;

@@ -58,6 +58,11 @@ impl<'a> ToolContext<'a> {
     pub fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
+
+    /// The turn's cancel flag, for APIs that poll it themselves (e.g. MCP calls).
+    pub fn cancel_flag(&self) -> &AtomicBool {
+        self.cancel
+    }
 }
 
 /// A file-system effect of a call, reported for the UI and the undo journal.
