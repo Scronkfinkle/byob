@@ -48,6 +48,7 @@ web-time = "1"
 # Web frontend (wasm32 only).
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Window", "Document", "Location", "HtmlCanvasElement"] }
 
 # Persistence. `bundled` compiles SQLite in, so no system lib is needed.
@@ -59,6 +60,11 @@ eframe = { version = "0.37", default-features = false, features = ["default_font
 rfd = "0.18"
 # Markdown for assistant messages. No default features: skips the HTML renderer and getopts.
 pulldown-cmark = { version = "0.13", default-features = false }
+
+# Charts, images and uploads. `image` decodes PNG/JPEG only (also in the browser);
+# base64 carries upload chunks and images inside the JSON protocol.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+base64 = "0.22"
 
 # Headless test screenshots (`yah --screenshot`).
 png = "0.18"

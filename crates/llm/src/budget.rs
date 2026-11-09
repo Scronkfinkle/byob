@@ -36,8 +36,12 @@ pub fn estimate_message_tokens(m: &ChatMessage) -> usize {
         .iter()
         .map(|c| estimate_tokens(&c.function.name).saturating_add(estimate_tokens(&c.function.arguments)).saturating_add(MESSAGE_OVERHEAD))
         .fold(0, usize::saturating_add);
-    MESSAGE_OVERHEAD.saturating_add(m.content.as_deref().map(estimate_tokens).unwrap_or(0)).saturating_add(calls)
+    let images = m.images.len().saturating_mul(IMAGE_TOKENS);
+    MESSAGE_OVERHEAD.saturating_add(m.content.as_deref().map(estimate_tokens).unwrap_or(0)).saturating_add(calls).saturating_add(images)
 }
+
+/// Rough cost of one image part (vision encoders use ~256–1600 tokens per image).
+const IMAGE_TOKENS: usize = 1_200;
 
 /// Estimated tokens for a transcript.
 pub fn estimate_history_tokens(messages: &[ChatMessage]) -> usize {

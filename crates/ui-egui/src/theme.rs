@@ -389,6 +389,22 @@ impl Tokens {
     }
 }
 
+impl Tokens {
+    /// Categorical colours for chart series (and pie slices), in a fixed order: series `i`
+    /// always gets slot `i`. Eight hues, each stepped separately for dark and light
+    /// surfaces, ordered so neighbours stay apart under the common colour-vision
+    /// deficiencies. Text never uses these; labels stay in the text tokens.
+    pub fn chart_palette(&self) -> [Color32; 8] {
+        let hex = |v: u32| Color32::from_rgb(((v >> 16) & 0xff) as u8, ((v >> 8) & 0xff) as u8, (v & 0xff) as u8);
+        let slots: [u32; 8] = if self.dark {
+            [0x3987e5, 0xd95926, 0x199e70, 0xc98500, 0xd55181, 0x008300, 0x9085e9, 0xe66767]
+        } else {
+            [0x2a78d6, 0xeb6834, 0x1baf7a, 0xeda100, 0xe87ba4, 0x008300, 0x6250d6, 0xe34948]
+        };
+        slots.map(hex)
+    }
+}
+
 /// WCAG relative luminance of an sRGB colour (alpha ignored).
 pub fn luminance(c: Color32) -> f32 {
     let lin = |x: u8| {

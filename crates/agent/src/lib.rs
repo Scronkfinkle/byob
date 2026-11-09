@@ -9,6 +9,7 @@
 //! client answers the approval card, or the turn is stopped.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod attachments;
 pub mod dev_tools;
 mod limits;
 #[cfg(test)]
@@ -25,7 +26,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
 pub use permissions::{Policy, Rule};
-use yah_protocol::{ApprovalAnswer, ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, Step, StepStatus};
+use yah_protocol::{
+    ApprovalAnswer, ClientMsg, Connection, EngineState, Entry, EntryRole, MediaRef, NoticeLevel, PROTOCOL_VERSION, ServerMsg, Step, StepStatus,
+};
 use yah_tools::Registry;
 use yah_types::InferenceConfig;
 
@@ -147,6 +150,8 @@ struct Engine {
     /// Approval requests by step id.
     pending: BTreeMap<u64, Pending>,
     step_ids: Arc<AtomicU64>,
+    /// Files being uploaded, and finished uploads that may be attached.
+    uploads: attachments::Uploads,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -176,13 +181,14 @@ impl Engine {
             always: BTreeSet::new(),
             pending: BTreeMap::new(),
             step_ids: Arc::default(),
+            uploads: attachments::Uploads::default(),
         }
     }
 
-    fn push_entry(&mut self, role: EntryRole, content: String, done: bool) -> u64 {
+    fn push_entry(&mut self, role: EntryRole, content: String, done: bool, attachments: Vec<MediaRef>) -> u64 {
         let id = self.next_entry;
         self.next_entry = self.next_entry.saturating_add(1);
-        let entry = Entry { id, role, content, reasoning: String::new(), done, error: None, stats: None, steps: Vec::new() };
+        let entry = Entry { id, role, content, reasoning: String::new(), done, error: None, stats: None, steps: Vec::new(), attachments };
         self.transcript.push(entry.clone());
         self.broadcast(ServerMsg::EntryAdded(entry));
         id
@@ -210,6 +216,7 @@ impl Engine {
             }
             Input::Disconnect { id } => {
                 self.clients.remove(&id);
+                self.uploads.forget(id);
             }
             Input::Client { id, msg } => self.handle_client(id, msg),
             Input::Turn(event) => self.handle_turn(event),
@@ -239,7 +246,7 @@ impl Engine {
                     Err(e) => self.send_to(id, ServerMsg::Notice { level: NoticeLevel::Error, text: e.to_string() }),
                 }
             }
-            ClientMsg::SendMessage { text } => self.start_turn(id, text),
+            ClientMsg::SendMessage { text, attachments } => self.start_turn(id, text, &attachments),
             ClientMsg::Cancel => {
                 if let Some(flag) = &self.running {
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -247,6 +254,35 @@ impl Engine {
                 self.deny_all_pending("stopped");
             }
             ClientMsg::Approve { step, answer } => self.answer(step, answer),
+            ClientMsg::Upload { upload, name, size, offset, data, done } => {
+                let chunk = attachments::Chunk { upload, name: &name, size, offset, data: &data, done };
+                if let Some(reply) = self.uploads.chunk(&self.workspace, id, &chunk) {
+                    self.send_to(id, reply);
+                }
+            }
+            ClientMsg::GetMedia { path } => self.serve_media(id, path),
+        }
+    }
+
+    /// Load a chart or image for one client off the engine thread (decoding can take a while).
+    fn serve_media(&mut self, id: ClientId, path: String) {
+        let Some(client) = self.clients.get(&id) else { return };
+        let (tx, wake) = (client.tx.clone(), Arc::clone(&client.wake));
+        if !attachments::referenced(&self.transcript, &path) {
+            let content = yah_protocol::MediaContent::Error { message: "not part of this conversation".into() };
+            self.send_to(id, ServerMsg::Media { path, content });
+            return;
+        }
+        let workspace = Arc::clone(&self.workspace);
+        let spawned = thread::Builder::new().name("yah-media".into()).spawn(move || {
+            let content = catch_unwind(AssertUnwindSafe(|| attachments::load(&workspace, &path)))
+                .unwrap_or_else(|_| yah_protocol::MediaContent::Error { message: "internal error while loading".into() });
+            if tx.send(ServerMsg::Media { path, content }).is_ok() {
+                wake();
+            }
+        });
+        if let Err(e) = spawned {
+            log::error!("could not start a media thread: {e}");
         }
     }
 
@@ -308,9 +344,16 @@ impl Engine {
         self.broadcast(ServerMsg::StepUpdated { entry, step });
     }
 
-    fn start_turn(&mut self, client: ClientId, text: String) {
+    fn start_turn(&mut self, client: ClientId, text: String, attached: &[String]) {
         let text = text.trim().to_owned();
-        if text.is_empty() {
+        let attached = match self.uploads.claim(attached) {
+            Ok(a) => a,
+            Err(text) => {
+                self.send_to(client, ServerMsg::Notice { level: NoticeLevel::Error, text });
+                return;
+            }
+        };
+        if text.is_empty() && attached.is_empty() {
             return;
         }
         if self.running.is_some() {
@@ -325,9 +368,12 @@ impl Engine {
                 return;
             }
         };
-        let history = turn::history(&self.transcript, &text, &self.system_prompt);
-        self.push_entry(EntryRole::User, text, true);
-        let reply = self.push_entry(EntryRole::Assistant, String::new(), false);
+        let mut history = turn::history(&self.transcript, &text, &self.system_prompt);
+        if let Some(last) = history.last_mut().filter(|_| !attached.is_empty()) {
+            *last = attachments::user_message(&self.workspace, &text, &attached);
+        }
+        self.push_entry(EntryRole::User, text, true, attached);
+        let reply = self.push_entry(EntryRole::Assistant, String::new(), false, Vec::new());
         let cancel = Arc::new(AtomicBool::new(false));
         self.running = Some(Arc::clone(&cancel));
         self.broadcast(ServerMsg::State(self.state()));
@@ -451,7 +497,7 @@ mod tests {
         let mut phone = engine.connect(Arc::new(|| {}));
         hello(&mut desktop);
         hello(&mut phone);
-        desktop.send(ClientMsg::SendMessage { text: "hi".into() });
+        desktop.send(ClientMsg::SendMessage { text: "hi".into(), attachments: vec![] });
 
         let mut reply = String::new();
         let mut finished = false;
@@ -483,7 +529,7 @@ mod tests {
         let engine = EngineHandle::spawn(InferenceConfig { base_url: "http://127.0.0.1:9/v1".into(), ..Default::default() }).unwrap();
         let mut c = engine.connect(Arc::new(|| {}));
         hello(&mut c);
-        c.send(ClientMsg::SendMessage { text: "hi".into() });
+        c.send(ClientMsg::SendMessage { text: "hi".into(), attachments: vec![] });
         loop {
             if let ServerMsg::EntryFinished { error, .. } = recv(&mut c) {
                 assert!(error.is_some());

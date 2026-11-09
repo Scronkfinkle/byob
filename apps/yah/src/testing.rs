@@ -11,6 +11,8 @@ const SETTLE_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Default)]
 pub struct Script {
+    /// Files attached (uploaded) before the first message is sent.
+    pub attach: Vec<PathBuf>,
     pub send: Vec<String>,
     pub screenshot: Option<PathBuf>,
     /// Minimum time before the screenshot (lets the window settle).
@@ -32,7 +34,14 @@ impl Runner {
     }
 
     pub fn frame(&mut self, app: &mut yah_ui_egui::YahApp, ctx: &egui::Context) {
-        if !self.sent {
+        for path in std::mem::take(&mut self.script.attach) {
+            match yah_ui_egui::upload::read_path(&path) {
+                Ok((name, bytes)) => app.attach(&name, &bytes),
+                Err(e) => eprintln!("yah: --attach {}: {e}", path.display()),
+            }
+        }
+        // Messages go out once the attachments have uploaded, so they ride along.
+        if !self.sent && !app.uploading() {
             self.sent = true;
             for text in std::mem::take(&mut self.script.send) {
                 app.submit(text);

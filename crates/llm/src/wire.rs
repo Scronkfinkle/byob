@@ -4,18 +4,51 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A message in the request transcript.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub tool_calls: Vec<WireToolCall>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Images (`data:` or `http(s)` URLs) sent with the text as OpenAI `image_url` content
+    /// parts, for vision models. Empty for plain text messages.
+    #[serde(skip)]
+    pub images: Vec<String>,
+}
+
+impl Serialize for ChatMessage {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(None)?;
+        m.serialize_entry("role", &self.role)?;
+        if self.images.is_empty() {
+            if let Some(c) = &self.content {
+                m.serialize_entry("content", c)?;
+            }
+        } else {
+            let mut parts = Vec::with_capacity(self.images.len().saturating_add(1));
+            if let Some(c) = self.content.as_ref().filter(|c| !c.is_empty()) {
+                parts.push(serde_json::json!({"type": "text", "text": c}));
+            }
+            parts.extend(self.images.iter().map(|url| serde_json::json!({"type": "image_url", "image_url": {"url": url}})));
+            m.serialize_entry("content", &parts)?;
+        }
+        if !self.tool_calls.is_empty() {
+            m.serialize_entry("tool_calls", &self.tool_calls)?;
+        }
+        if let Some(id) = &self.tool_call_id {
+            m.serialize_entry("tool_call_id", id)?;
+        }
+        m.end()
+    }
 }
 
 impl ChatMessage {
+    /// A user message with images (see [`ChatMessage::images`]).
+    pub fn user_with_images(text: impl Into<String>, images: Vec<String>) -> Self {
+        Self { images, ..Self::user(text) }
+    }
     pub fn system(text: impl Into<String>) -> Self {
         Self::text("system", text)
     }
@@ -26,7 +59,7 @@ impl ChatMessage {
         Self::text("assistant", text)
     }
     fn text(role: &str, text: impl Into<String>) -> Self {
-        Self { role: role.into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: None }
+        Self { role: role.into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: None, images: Vec::new() }
     }
     /// An assistant turn that requested tool calls.
     pub fn assistant_tool_calls(text: Option<String>, calls: &[ToolCall]) -> Self {
@@ -38,11 +71,11 @@ impl ChatMessage {
                 function: WireFunction { name: c.name.clone(), arguments: c.arguments.clone() },
             })
             .collect();
-        Self { role: "assistant".into(), content: text, tool_calls, tool_call_id: None }
+        Self { role: "assistant".into(), content: text, tool_calls, tool_call_id: None, images: Vec::new() }
     }
     /// The result of a tool call.
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: "tool".into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: Some(call_id.into()) }
+        Self { role: "tool".into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: Some(call_id.into()), images: Vec::new() }
     }
 }
 

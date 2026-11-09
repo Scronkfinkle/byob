@@ -1,6 +1,8 @@
 //! Shared serde types used across every yah layer.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod chart;
+
 use serde::{Deserialize, Serialize};
 
 /// Who authored a chat message.

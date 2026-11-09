@@ -15,6 +15,7 @@
 //!
 //! Testing (see scripts/headless.sh):
 //!     --send TEXT             send a message on startup (repeatable)
+//!     --attach FILE           attach (upload) a file to the first message (repeatable)
 //!     --screenshot FILE       PNG of the window once the conversation settles, then exit
 //!     --screenshot-after SECS minimum wait before the screenshot (default 2)
 //!     --open-settings         start with the settings panel open
@@ -92,6 +93,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--open-settings" => args.open_settings = true,
             "--send" => args.script.send.push(it.next().ok_or("--send needs text")?),
+            "--attach" => args.script.attach.push(it.next().ok_or("--attach needs a file")?.into()),
             "--screenshot" => args.script.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into()),
             "--screenshot-after" => {
                 let v = it.next().ok_or("--screenshot-after needs seconds")?;

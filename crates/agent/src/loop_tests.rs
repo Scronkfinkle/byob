@@ -216,7 +216,7 @@ impl View {
 /// Run a turn to the end; `on_wait` answers each approval card as it appears.
 fn run_turn(c: &mut LocalConnection, text: &str, mut on_wait: impl FnMut(&Step, &mut LocalConnection)) -> View {
     let mut view = View::default();
-    c.send(ClientMsg::SendMessage { text: text.into() });
+    c.send(ClientMsg::SendMessage { text: text.into(), attachments: vec![] });
     while view.error.is_none() {
         let msg = recv(c);
         if let ServerMsg::StepUpdated { step, .. } = &msg

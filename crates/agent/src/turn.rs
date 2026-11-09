@@ -62,9 +62,9 @@ pub enum TurnEvent {
 /// Reasoning and earlier tool steps are not sent back; failed or empty replies are skipped.
 pub fn history(transcript: &[Entry], new_user_text: &str, system_prompt: &str) -> Vec<ChatMessage> {
     let mut out = vec![ChatMessage::system(system_prompt)];
-    for e in transcript.iter().filter(|e| e.done && e.error.is_none() && !e.content.is_empty()) {
+    for e in transcript.iter().filter(|e| e.done && e.error.is_none() && (!e.content.is_empty() || !e.attachments.is_empty())) {
         out.push(match e.role {
-            EntryRole::User => ChatMessage::user(e.content.clone()),
+            EntryRole::User => ChatMessage::user(crate::attachments::with_names(&e.content, &e.attachments)),
             EntryRole::Assistant => ChatMessage::assistant(e.content.clone()),
         });
     }
@@ -249,6 +249,7 @@ impl Turn {
             detail: one_line(&args.to_string(), DETAIL_CHARS),
             changes: Vec::new(),
             at: self.content_len,
+            media: Vec::new(),
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step: step.clone() });
         if let Verdict::Deny(reason) = self.gate(&step) {
@@ -269,6 +270,7 @@ impl Turn {
         step.status = if output.failed { StepStatus::Failed } else { StepStatus::Done };
         step.detail = one_line(&text, DETAIL_CHARS);
         step.changes = output.changes.iter().map(|c| display_change(c, &self.s.workspace)).collect();
+        step.media = crate::attachments::media_for_changes(&output.changes, &self.s.workspace);
         self.emit(TurnEvent::Step { id: self.s.entry, step });
         if output.failed && !text.starts_with("Error") {
             text.insert_str(0, "Error: ");
@@ -294,6 +296,7 @@ impl Turn {
             detail: one_line(detail, DETAIL_CHARS),
             changes: Vec::new(),
             at: self.content_len,
+            media: Vec::new(),
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step });
     }

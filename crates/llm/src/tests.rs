@@ -460,3 +460,20 @@ fn live_server_streams() {
     eprintln!("content={:?} reasoning_len={} usage={:?} events={n}", out.content, out.reasoning.len(), out.usage);
     assert!(out.content.to_lowercase().contains("pong"));
 }
+
+#[test]
+fn images_become_content_parts_and_text_stays_a_string() {
+    let plain = serde_json::to_value(ChatMessage::user("hi")).unwrap();
+    assert_eq!(plain, serde_json::json!({"role": "user", "content": "hi"}));
+    let m = ChatMessage::user_with_images("what is this?", vec!["data:image/png;base64,AAAA".into()]);
+    assert_eq!(
+        serde_json::to_value(&m).unwrap(),
+        serde_json::json!({"role": "user", "content": [
+            {"type": "text", "text": "what is this?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        ]})
+    );
+    assert!(crate::budget::estimate_message_tokens(&m) > crate::budget::estimate_message_tokens(&ChatMessage::user("what is this?")) + 500);
+    let tool = serde_json::to_value(ChatMessage::tool_result("c1", "ok")).unwrap();
+    assert_eq!(tool, serde_json::json!({"role": "tool", "content": "ok", "tool_call_id": "c1"}));
+}

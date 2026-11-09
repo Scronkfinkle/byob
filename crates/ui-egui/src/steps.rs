@@ -117,11 +117,31 @@ mod tests {
     use yah_protocol::EntryRole;
 
     fn entry(steps: Vec<Step>) -> Entry {
-        Entry { id: 1, role: EntryRole::Assistant, content: String::new(), reasoning: String::new(), done: false, error: None, stats: None, steps }
+        Entry {
+            id: 1,
+            role: EntryRole::Assistant,
+            content: String::new(),
+            reasoning: String::new(),
+            done: false,
+            error: None,
+            stats: None,
+            steps,
+            attachments: vec![],
+        }
     }
 
     fn step(id: u64, status: StepStatus) -> Step {
-        Step { id, tool: "write_file".into(), title: "Write a.txt".into(), access: ToolAccess::Write, status, detail: "{}".into(), changes: vec![], at: 0 }
+        Step {
+            id,
+            tool: "write_file".into(),
+            title: "Write a.txt".into(),
+            access: ToolAccess::Write,
+            status,
+            detail: "{}".into(),
+            changes: vec![],
+            at: 0,
+            media: vec![],
+        }
     }
 
     #[test]

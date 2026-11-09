@@ -5,10 +5,14 @@
 //! text frames over a WebSocket, or through channels when in-process.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod media;
+
 use serde::{Deserialize, Serialize};
 
+pub use media::{MediaContent, MediaKind, MediaRef};
+
 /// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -21,13 +25,25 @@ pub enum ClientMsg {
     Hello { protocol: u32, client: String },
     /// Point the engine at a different inference endpoint.
     SetInference { base_url: String, model: String, api_key: Option<String> },
-    /// Send a user message and start a turn.
-    SendMessage { text: String },
+    /// Send a user message and start a turn. `attachments` are paths the engine returned
+    /// in [`ServerMsg::Uploaded`].
+    SendMessage {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<String>,
+    },
     /// Stop the running turn. Pending approvals are denied.
     Cancel,
     /// Answer a pending approval (a [`Step`] with status [`StepStatus::Waiting`]). Any
     /// client may answer; the first answer wins and later ones are ignored.
     Approve { step: u64, answer: ApprovalAnswer },
+    /// One chunk of a file the user attaches. `upload` is chosen by the client (unique per
+    /// connection); chunks arrive in order, `offset` is where `data` (base64, at most
+    /// [`media::UPLOAD_CHUNK_BYTES`] raw) starts; `size` is the whole file's size. The engine
+    /// answers the last chunk (`done`) or the first problem with [`ServerMsg::Uploaded`].
+    Upload { upload: u64, name: String, size: u64, offset: u64, data: String, done: bool },
+    /// Ask for the content of a [`MediaRef`] in the transcript; answered with [`ServerMsg::Media`].
+    GetMedia { path: String },
 }
 
 /// Engine -> client(s).
@@ -48,6 +64,10 @@ pub enum ServerMsg {
     EntryFinished { id: u64, error: Option<String>, stats: Option<TurnStats> },
     /// A tool step of entry `entry` was added or changed (replace by `step.id`).
     StepUpdated { entry: u64, step: Step },
+    /// An upload finished (`attachment`) or failed (`error`). Only sent to the uploader.
+    Uploaded { upload: u64, attachment: Option<MediaRef>, error: Option<String> },
+    /// Answer to [`ClientMsg::GetMedia`].
+    Media { path: String, content: MediaContent },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +92,9 @@ pub struct Entry {
     /// client that connects late sees them and can answer pending approvals.
     #[serde(default)]
     pub steps: Vec<Step>,
+    /// Files the user attached to this message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MediaRef>,
 }
 
 impl Entry {
@@ -173,6 +196,9 @@ pub struct Step {
     /// Byte offset into the entry's `content` when the step started, for interleaving.
     #[serde(default)]
     pub at: usize,
+    /// Charts and images this call made, shown inline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<MediaRef>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -267,13 +293,22 @@ mod tests {
     }
 
     fn step(id: u64, status: StepStatus) -> Step {
-        Step { id, tool: "t".into(), title: "T".into(), access: ToolAccess::Write, status, detail: String::new(), changes: vec![], at: 0 }
+        Step { id, tool: "t".into(), title: "T".into(), access: ToolAccess::Write, status, detail: String::new(), changes: vec![], at: 0, media: vec![] }
     }
 
     #[test]
     fn steps_upsert_and_round_trip() {
-        let mut e =
-            Entry { id: 1, role: EntryRole::Assistant, content: String::new(), reasoning: String::new(), done: false, error: None, stats: None, steps: vec![] };
+        let mut e = Entry {
+            id: 1,
+            role: EntryRole::Assistant,
+            content: String::new(),
+            reasoning: String::new(),
+            done: false,
+            error: None,
+            stats: None,
+            steps: vec![],
+            attachments: vec![],
+        };
         e.upsert_step(step(3, StepStatus::Running));
         e.upsert_step(step(4, StepStatus::Waiting));
         e.upsert_step(step(3, StepStatus::Done));
@@ -291,6 +326,39 @@ mod tests {
         let json = r#"{"id":1,"role":"user","content":"hi","reasoning":"","done":true,"error":null,"stats":null}"#;
         let e: Entry = serde_json::from_str(json).unwrap();
         assert!(e.steps.is_empty());
+    }
+
+    #[test]
+    fn media_messages_round_trip() {
+        let msgs = vec![
+            ClientMsg::SendMessage { text: "chart it".into(), attachments: vec!["uploads/sales.csv".into()] },
+            ClientMsg::Upload { upload: 1, name: "a.csv".into(), size: 3, offset: 0, data: media::encode(b"a,b"), done: true },
+            ClientMsg::GetMedia { path: "charts/x.chart.json".into() },
+        ];
+        for m in msgs {
+            assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m);
+        }
+        let spec = yah_types::chart::validate(&serde_json::json!({"type": "bar", "x": "m", "series": ["v"], "data": [{"m": "a", "v": 1}]})).unwrap();
+        let msgs = vec![
+            ServerMsg::Uploaded { upload: 1, attachment: Some(MediaRef::new("uploads/a.csv", 3)), error: None },
+            ServerMsg::Media { path: "c.chart.json".into(), content: MediaContent::Chart { spec } },
+            ServerMsg::Media { path: "p.png".into(), content: MediaContent::Image { mime: "image/png".into(), data: "AA==".into() } },
+            ServerMsg::Media { path: "p.png".into(), content: MediaContent::Error { message: "gone".into() } },
+        ];
+        for m in msgs {
+            assert_eq!(ServerMsg::from_json(&m.to_json()).unwrap(), m);
+        }
+        let mut s = step(1, StepStatus::Done);
+        s.media = vec![MediaRef::new("charts/x.chart.json", 10)];
+        let m = ServerMsg::StepUpdated { entry: 1, step: s };
+        assert_eq!(ServerMsg::from_json(&m.to_json()).unwrap(), m);
+    }
+
+    #[test]
+    fn older_send_message_without_attachments_parses() {
+        let m = ClientMsg::from_json(r#"{"type":"send_message","text":"hi"}"#).unwrap();
+        assert_eq!(m, ClientMsg::SendMessage { text: "hi".into(), attachments: vec![] });
+        assert_eq!(m.to_json(), r#"{"type":"send_message","text":"hi"}"#);
     }
 
     #[test]
