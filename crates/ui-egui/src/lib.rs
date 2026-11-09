@@ -2,11 +2,14 @@
 //! over a [`Connection`] and sends user intents back. It never touches the engine directly.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod chart;
 pub mod markdown;
+pub mod media;
 mod settings;
 pub mod sidebar;
 pub mod steps;
 pub mod theme;
+pub mod upload;
 pub mod ws;
 
 use yah_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, StepStatus};
@@ -30,6 +33,10 @@ pub struct YahApp {
     form_url: String,
     form_model: String,
     form_key: String,
+    /// Charts and images shown in the transcript.
+    media: media::Cache,
+    /// Files attached in the composer.
+    uploads: upload::Uploads,
 }
 
 impl YahApp {
@@ -50,7 +57,27 @@ impl YahApp {
             form_url: String::new(),
             form_model: String::new(),
             form_key: String::new(),
+            media: media::Cache::default(),
+            uploads: upload::Uploads::default(),
         }
+    }
+
+    fn notice(&mut self, level: NoticeLevel, text: String) {
+        self.notices.push((level, text));
+        let excess = self.notices.len().saturating_sub(MAX_NOTICES);
+        self.notices.drain(..excess);
+    }
+
+    /// Attach a file to the next message, as if picked in the composer (scripted runs).
+    pub fn attach(&mut self, name: &str, bytes: &[u8]) {
+        if let Err(e) = self.uploads.add(self.conn.as_mut(), name, bytes) {
+            self.notice(NoticeLevel::Error, e);
+        }
+    }
+
+    /// Attachments are still uploading.
+    pub fn uploading(&self) -> bool {
+        self.uploads.busy()
     }
 
     fn pump(&mut self) {
@@ -87,6 +114,12 @@ impl YahApp {
                 ServerMsg::EntryUndo { id, undoable, undone } => steps::apply_undo(&mut self.entries, id, undoable, undone),
                 // Handled by the sidebar above.
                 ServerMsg::Chats { .. } | ServerMsg::ChatUpdated(_) | ServerMsg::ChatDeleted { .. } | ServerMsg::ChatOpened { .. } => {}
+                ServerMsg::Uploaded { upload, attachment, error } => {
+                    if let Some(e) = self.uploads.uploaded(upload, attachment, error) {
+                        self.notice(NoticeLevel::Error, e);
+                    }
+                }
+                ServerMsg::Media { path, content } => self.media.received(&path, &content),
             }
         }
     }
@@ -125,13 +158,17 @@ impl YahApp {
 
     /// Send a user message, as if typed into the composer.
     pub fn submit(&mut self, text: String) {
-        self.conn.send(ClientMsg::SendMessage { text });
+        let attachments = self.uploads.take();
+        self.conn.send(ClientMsg::SendMessage { text, attachments });
     }
 
     /// Connected, and nothing will change without the user: no turn running and every
-    /// entry finished streaming, or a turn is waiting on an approval card.
+    /// entry finished streaming (and its charts/images loaded), or a turn is waiting on an
+    /// approval card.
     pub fn settled(&self) -> bool {
-        self.state.is_some() && (steps::awaiting_approval(&self.entries) || (!self.busy() && self.entries.iter().all(|e| e.done)))
+        self.state.is_some()
+            && (steps::awaiting_approval(&self.entries)
+                || (!self.busy() && self.entries.iter().all(|e| e.done) && !self.uploads.busy() && !self.media.loading()))
     }
 
     fn busy(&self) -> bool {
@@ -141,10 +178,14 @@ impl YahApp {
     /// Draw one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.pump();
+        for e in self.uploads.poll(ui.ctx(), self.conn.as_mut()) {
+            self.notice(NoticeLevel::Error, e);
+        }
         self.apply_theme(ui.ctx());
         let narrow = ui.available_width() < sidebar::NARROW;
         let list_open = self.sidebar.is_open(narrow);
         self.header(ui, narrow);
+        upload::drop_overlay(ui.ctx(), &self.tokens);
         if self.show_settings {
             egui::Panel::top("settings").show(ui, |ui| self.settings(ui));
         }
@@ -220,7 +261,9 @@ impl YahApp {
         let enter = ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let busy = self.busy();
         let mut send = enter && !busy;
+        self.uploads.chips(ui, &t);
         ui.horizontal(|ui| {
+            self.uploads.button(ui);
             let width = (ui.available_width() - 72.0).max(100.0);
             ui.add(
                 egui::TextEdit::multiline(&mut self.input)
@@ -237,9 +280,10 @@ impl YahApp {
                 send |= ui.button("Send").clicked();
             }
         });
-        if send && !self.input.trim().is_empty() {
+        // Wait for attachments to finish uploading before sending.
+        if send && (!self.input.trim().is_empty() || self.uploads.has_ready()) && !self.uploads.busy() {
             let text = std::mem::take(&mut self.input);
-            self.conn.send(ClientMsg::SendMessage { text });
+            self.submit(text);
             ui.memory_mut(|m| m.request_focus(id));
         }
         ui.add_space(6.0);
@@ -258,14 +302,16 @@ impl YahApp {
             self.markdown.retain(|id| entries.iter().any(|e| e.id == id));
         }
         let markdown = &mut self.markdown;
+        let media = &mut self.media;
         let mut answers = Vec::new();
         egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(8.0);
             for entry in &self.entries {
-                answers.extend(entry_view(ui, &t, entry, markdown));
+                answers.extend(entry_view(ui, &t, entry, markdown, media));
                 ui.add_space(8.0);
             }
         });
+        answers.extend(self.media.take_requests());
         for msg in answers {
             self.conn.send(msg);
         }
@@ -273,7 +319,7 @@ impl YahApp {
 }
 
 /// Draws one entry; returns a message to send if the user answered an approval card.
-fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry, markdown: &mut markdown::Cache) -> Option<ClientMsg> {
+fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry, markdown: &mut markdown::Cache, media: &mut media::Cache) -> Option<ClientMsg> {
     let mut answer = None;
     let (who, fill) = match entry.role {
         EntryRole::User => ("You", t.user_bubble),
@@ -304,6 +350,7 @@ fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry, markdown: &mu
             }
             EntryRole::User => {}
         }
+        media.show_entry(ui, t, entry);
         if let Some(err) = &entry.error {
             ui.label(egui::RichText::new(err).color(t.danger));
         }

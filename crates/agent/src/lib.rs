@@ -17,6 +17,7 @@
 mod adapt;
 #[cfg(test)]
 mod adapt_tests;
+pub mod attachments;
 mod chats;
 pub mod dev_tools;
 #[cfg(test)]
@@ -40,7 +41,8 @@ use std::time::{Duration, Instant};
 pub use adapt::{AdaptOptions, ToolMode};
 pub use permissions::{Policy, Rule};
 use yah_protocol::{
-    ApprovalAnswer, ChatCursor, ChatSummary, ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, Step, StepStatus,
+    ApprovalAnswer, ChatCursor, ChatSummary, ClientMsg, Connection, EngineState, Entry, EntryRole, MediaRef, NoticeLevel, PROTOCOL_VERSION, ServerMsg, Step,
+    StepStatus,
 };
 use yah_store::{GrantScope, NewMessage, Paths, Role, Secrets, Settings, Store, StoreError};
 use yah_tools::Registry;
@@ -247,6 +249,8 @@ struct Engine {
     provisional: BTreeMap<String, String>,
     /// Probed endpoint capabilities (see [`adapt`]).
     endpoints: adapt::Endpoints,
+    /// Files being uploaded, and finished uploads that may be attached.
+    uploads: attachments::Uploads,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -293,6 +297,7 @@ impl Engine {
             pending: BTreeMap::new(),
             step_ids: Arc::default(),
             journals: steps::Journals::default(),
+            uploads: attachments::Uploads::default(),
             auto_title: config.auto_title,
             provisional: BTreeMap::new(),
         }
@@ -511,6 +516,7 @@ impl Engine {
             Input::Disconnect { id } => {
                 self.clients.remove(&id);
                 self.gc();
+                self.uploads.forget(id);
             }
             Input::Client { id, msg } => self.handle_client(id, msg),
             Input::Turn(event) => self.handle_turn(event),
@@ -547,7 +553,7 @@ impl Engine {
                 self.show_chat_with(id, chat, false);
             }
             ClientMsg::SetInference { base_url, model, api_key } => self.set_inference(id, base_url, model, api_key),
-            ClientMsg::SendMessage { text } => self.start_turn(id, text),
+            ClientMsg::SendMessage { text, attachments } => self.start_turn(id, text, &attachments),
             ClientMsg::Cancel => {
                 if let Some(chat) = self.client_chat(id) {
                     for t in self.turns.values().filter(|t| t.chat == chat) {
@@ -564,6 +570,43 @@ impl Engine {
             ClientMsg::RenameChat { id: chat, title } => self.rename_chat(id, &chat, &title),
             ClientMsg::DeleteChat { id: chat } => self.delete_chat(id, &chat),
             ClientMsg::PinChat { id: chat, pinned } => self.pin_chat(id, &chat, pinned),
+            ClientMsg::Upload { upload, name, size, offset, data, done } => {
+                let workspace = self.client_workspace(id);
+                let chunk = attachments::Chunk { upload, name: &name, size, offset, data: &data, done };
+                if let Some(reply) = self.uploads.chunk(&workspace, id, &chunk) {
+                    self.send_to(id, reply);
+                }
+            }
+            ClientMsg::GetMedia { path } => self.serve_media(id, path),
+        }
+    }
+
+    /// The workspace of the chat `client` looks at (the default one for a new chat).
+    fn client_workspace(&mut self, client: ClientId) -> Arc<PathBuf> {
+        let chat = self.client_chat(client);
+        chat.and_then(|c| self.live(&c).ok().map(|l| Arc::clone(&l.workspace))).unwrap_or_else(|| Arc::new(self.default_workspace.clone()))
+    }
+
+    /// Load a chart or image for one client off the engine thread (decoding can take a while).
+    fn serve_media(&mut self, id: ClientId, path: String) {
+        let referenced = self.client_chat(id).and_then(|c| self.live.get(&c)).is_some_and(|l| attachments::referenced(&l.entries, &path));
+        if !referenced {
+            let content = yah_protocol::MediaContent::Error { message: "not part of this conversation".into() };
+            self.send_to(id, ServerMsg::Media { path, content });
+            return;
+        }
+        let workspace = self.client_workspace(id);
+        let Some(client) = self.clients.get(&id) else { return };
+        let (tx, wake) = (client.tx.clone(), Arc::clone(&client.wake));
+        let spawned = thread::Builder::new().name("yah-media".into()).spawn(move || {
+            let content = catch_unwind(AssertUnwindSafe(|| attachments::load(&workspace, &path)))
+                .unwrap_or_else(|_| yah_protocol::MediaContent::Error { message: "internal error while loading".into() });
+            if tx.send(ServerMsg::Media { path, content }).is_ok() {
+                wake();
+            }
+        });
+        if let Err(e) = spawned {
+            log::error!("could not start a media thread: {e}");
         }
     }
 
@@ -705,7 +748,7 @@ impl Engine {
     }
 
     /// Append a message to a chat (store, transcript, viewers). Returns its entry id.
-    fn add_message(&mut self, chat: &str, m: &NewMessage) -> Result<u64, StoreError> {
+    fn add_message(&mut self, chat: &str, m: &NewMessage, attachments: Vec<MediaRef>) -> Result<u64, StoreError> {
         let id = chats::entry_id(self.store.append_message(chat, m)?);
         let role = if m.role == Role::User { EntryRole::User } else { EntryRole::Assistant };
         let entry = Entry {
@@ -719,6 +762,7 @@ impl Engine {
             steps: Vec::new(),
             undoable: false,
             undone: false,
+            attachments,
         };
         if let Some(live) = self.live.get_mut(chat) {
             live.entries.push(entry.clone());
@@ -727,9 +771,16 @@ impl Engine {
         Ok(id)
     }
 
-    fn start_turn(&mut self, client: ClientId, text: String) {
+    fn start_turn(&mut self, client: ClientId, text: String, attached: &[String]) {
         let text = text.trim().to_owned();
-        if text.is_empty() {
+        let attached = match self.uploads.claim(attached) {
+            Ok(a) => a,
+            Err(text) => {
+                self.send_to(client, ServerMsg::Notice { level: NoticeLevel::Error, text });
+                return;
+            }
+        };
+        if text.is_empty() && attached.is_empty() {
             return;
         }
         let llm = match &self.llm {
@@ -765,7 +816,9 @@ impl Engine {
                 return;
             }
         };
-        let added = self.add_message(&chat, &NewMessage::user(text.clone())).and_then(|_| self.add_message(&chat, &NewMessage::assistant_streaming(None)));
+        let added = self
+            .add_message(&chat, &NewMessage::user(text.clone()), attached.clone())
+            .and_then(|_| self.add_message(&chat, &NewMessage::assistant_streaming(None), Vec::new()));
         let reply = match added {
             Ok(reply) => reply,
             Err(e) => {
@@ -773,6 +826,10 @@ impl Engine {
                 return;
             }
         };
+        let mut history = history;
+        if let Some(last) = history.last_mut().filter(|_| !attached.is_empty()) {
+            *last = attachments::user_message(&workspace, &text, &attached);
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         let title_from = (first && self.auto_title && self.provisional.contains_key(&chat)).then(|| text.clone());
         self.turns.insert(

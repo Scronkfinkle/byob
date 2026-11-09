@@ -80,6 +80,8 @@ pub fn entry(m: StoredMessage, step_ids: &AtomicU64) -> Option<Entry> {
         steps,
         undoable: false,
         undone: false,
+        // Attachments and step media aren't stored yet (ROADMAP).
+        attachments: Vec::new(),
     })
 }
 
@@ -104,6 +106,7 @@ fn step(s: yah_store::Step, step_ids: &AtomicU64) -> Step {
         changes,
         at,
         preview: None,
+        media: Vec::new(),
     }
 }
 
@@ -247,6 +250,7 @@ mod tests {
             changes: vec![FileChange::Moved { from: "a".into(), to: "b".into() }],
             at: 12,
             preview: None,
+            media: vec![],
         };
         let new = new_step(&s);
         let stored = yah_store::Step {

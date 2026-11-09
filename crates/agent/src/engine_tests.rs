@@ -142,7 +142,7 @@ fn turn_streams_and_late_clients_get_the_chat() {
     let mut desktop = engine.connect(Arc::new(|| {}));
     let first = hello(&mut desktop);
     assert!(first.chat.is_none() && first.entries.is_empty() && first.chats.is_empty());
-    desktop.send(ClientMsg::SendMessage { text: "hi\nmore".into() });
+    desktop.send(ClientMsg::SendMessage { text: "hi\nmore".into(), attachments: vec![] });
     let (error, msgs) = finish(&mut desktop);
     assert_eq!(error, None);
     assert_eq!(text_of(&msgs), "hello there friend");
@@ -163,7 +163,7 @@ fn unreachable_endpoint_finishes_with_error() {
     let engine = engine("http://127.0.0.1:9/v1".into());
     let mut c = engine.connect(Arc::new(|| {}));
     hello(&mut c);
-    c.send(ClientMsg::SendMessage { text: "hi".into() });
+    c.send(ClientMsg::SendMessage { text: "hi".into(), attachments: vec![] });
     assert!(finish(&mut c).0.is_some());
 }
 
@@ -222,11 +222,11 @@ fn restart_restores_chats_and_transcripts() {
         let engine = EngineHandle::spawn_with(config(url.clone(), Some(paths.clone()))).unwrap();
         let mut c = engine.connect(Arc::new(|| {}));
         hello(&mut c);
-        c.send(ClientMsg::SendMessage { text: "remember me".into() });
+        c.send(ClientMsg::SendMessage { text: "remember me".into(), attachments: vec![] });
         assert_eq!(finish(&mut c).0, None);
         c.send(ClientMsg::NewChat);
         opened(&mut c);
-        c.send(ClientMsg::SendMessage { text: "second chat".into() });
+        c.send(ClientMsg::SendMessage { text: "second chat".into(), attachments: vec![] });
         assert_eq!(finish(&mut c).0, None);
     }
     let engine = EngineHandle::spawn_with(config(url, Some(paths))).unwrap();
@@ -268,7 +268,7 @@ fn streamed_text_is_saved_in_batches_while_running() {
     let engine = EngineHandle::spawn_with(config(url, Some(paths.clone()))).unwrap();
     let mut c = engine.connect(Arc::new(|| {}));
     hello(&mut c);
-    c.send(ClientMsg::SendMessage { text: "go".into() });
+    c.send(ClientMsg::SendMessage { text: "go".into(), attachments: vec![] });
     recv_until(&mut c, |m| matches!(m, ServerMsg::EntryDelta { .. }));
     // Within a flush interval or two, the partial reply is on disk (as a crash would leave it).
     let store = Store::open(paths.db()).unwrap();
@@ -295,7 +295,7 @@ fn clients_have_their_own_chat_and_deltas_go_only_to_viewers() {
     let mut b = engine.connect(Arc::new(|| {}));
     hello(&mut a);
     hello(&mut b);
-    a.send(ClientMsg::SendMessage { text: "running chat".into() });
+    a.send(ClientMsg::SendMessage { text: "running chat".into(), attachments: vec![] });
     let (ServerMsg::ChatOpened { chat: Some(chat) }, _) = recv_until(&mut a, |m| matches!(m, ServerMsg::ChatOpened { .. })) else { panic!() };
     recv_until(&mut a, |m| matches!(m, ServerMsg::EntryDelta { .. }));
     // B still looks at its own new chat: it hears about the chat, not its entries.
@@ -336,7 +336,7 @@ fn chats_can_be_renamed_pinned_listed_and_deleted() {
     for text in ["one", "two", "three"] {
         a.send(ClientMsg::NewChat);
         opened(&mut a);
-        a.send(ClientMsg::SendMessage { text: text.into() });
+        a.send(ClientMsg::SendMessage { text: text.into(), attachments: vec![] });
         finish(&mut a);
     }
     let h = hello(&mut b);
@@ -378,7 +378,7 @@ fn running_chats_cannot_be_deleted_and_other_chats_run_in_parallel() {
     let engine = engine(url);
     let mut a = engine.connect(Arc::new(|| {}));
     hello(&mut a);
-    a.send(ClientMsg::SendMessage { text: "slow".into() });
+    a.send(ClientMsg::SendMessage { text: "slow".into(), attachments: vec![] });
     let (ServerMsg::ChatOpened { chat: Some(chat) }, _) = recv_until(&mut a, |m| matches!(m, ServerMsg::ChatOpened { .. })) else { panic!() };
     recv_until(&mut a, |m| matches!(m, ServerMsg::EntryDelta { .. }));
     a.send(ClientMsg::DeleteChat { id: chat.id.clone() });
@@ -387,7 +387,7 @@ fn running_chats_cannot_be_deleted_and_other_chats_run_in_parallel() {
     // A second chat can run while the first one waits.
     a.send(ClientMsg::NewChat);
     opened(&mut a);
-    a.send(ClientMsg::SendMessage { text: "fast".into() });
+    a.send(ClientMsg::SendMessage { text: "fast".into(), attachments: vec![] });
     recv_until(&mut a, |m| matches!(m, ServerMsg::EntryDelta { .. }));
     release.send(()).unwrap();
     release.send(()).unwrap();
@@ -401,7 +401,7 @@ fn first_reply_names_the_chat() {
     let engine = EngineHandle::spawn_with(c).unwrap();
     let mut a = engine.connect(Arc::new(|| {}));
     hello(&mut a);
-    a.send(ClientMsg::SendMessage { text: "plan a trip".into() });
+    a.send(ClientMsg::SendMessage { text: "plan a trip".into(), attachments: vec![] });
     finish(&mut a);
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

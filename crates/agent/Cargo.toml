@@ -18,10 +18,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 log.workspace = true
 chrono.workspace = true
-
-
-[lints]
-workspace = true
+image.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true

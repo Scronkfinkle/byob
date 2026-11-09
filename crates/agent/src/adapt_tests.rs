@@ -218,7 +218,7 @@ fn wait_state(c: &mut LocalConnection, want: impl Fn(&EngineState) -> bool) -> E
 
 /// Send `text` and collect the reply entry; also returns the last State seen.
 fn turn(c: &mut LocalConnection, text: &str) -> (Entry, Option<EngineState>) {
-    c.send(ClientMsg::SendMessage { text: text.into() });
+    c.send(ClientMsg::SendMessage { text: text.into(), attachments: vec![] });
     let mut entries: Vec<Entry> = Vec::new();
     let mut state = None;
     loop {
@@ -328,7 +328,7 @@ fn rejected_native_tools_fall_back_to_prompt_mode_and_stick() {
 fn forced_native_mode_does_not_fall_back() {
     let h = harness(Server { reject_tools: true, ..Default::default() }, no_probe(ToolMode::Native), 0);
     let (mut c, _) = connect(&h);
-    c.send(ClientMsg::SendMessage { text: "hi".into() });
+    c.send(ClientMsg::SendMessage { text: "hi".into(), attachments: vec![] });
     loop {
         if let ServerMsg::EntryFinished { error, .. } = recv(&mut c) {
             assert!(error.unwrap().contains("jinja"));

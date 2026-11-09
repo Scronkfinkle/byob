@@ -492,6 +492,7 @@ mod tests {
             steps,
             undoable: false,
             undone: false,
+            attachments: vec![],
         }
     }
 
@@ -506,6 +507,7 @@ mod tests {
             changes: vec![],
             at: 0,
             preview: None,
+            media: vec![],
         }
     }
 
