@@ -186,7 +186,9 @@
           # The full suite runs via `cargo xtask ci` in the dev shell.
           doCheck = false;
           nativeBuildInputs = [ pkgs.pkg-config ] ++ lib.optionals isLinux [ pkgs.makeWrapper ];
-          inherit buildInputs;
+          # nixpkgs' cargo hooks point libsqlite3-sys at the system SQLite (overriding
+          # rusqlite's `bundled`), so it has to be an input here.
+          buildInputs = buildInputs ++ [ pkgs.sqlite ];
           postFixup = lib.optionalString isLinux ''
             wrapProgram $out/bin/yah --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs} \
               --set-default YAH_WEB_DIR ${yah-web} ${lib.optionalString hasHost "--set-default YAH_ARTIFACT_HOST ${yah-artifact-host}/bin/yah-artifact-host"}
