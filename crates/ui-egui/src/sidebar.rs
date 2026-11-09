@@ -130,7 +130,7 @@ impl Sidebar {
             if let Some(after) = self.next.clone() {
                 ui.add_space(4.0);
                 if self.loading {
-                    ui.spinner();
+                    crate::theme::spinner(ui, t, None);
                 } else if ui.button("Show more").clicked() {
                     self.loading = true;
                     out.push(ClientMsg::ListChats { after: Some(after), limit: PAGE });

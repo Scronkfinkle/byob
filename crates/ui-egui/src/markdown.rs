@@ -555,8 +555,9 @@ fn code_block(ui: &mut egui::Ui, t: &Tokens, lang: &str, code: &str, id: egui::I
                 });
             });
             egui::ScrollArea::horizontal().id_salt(id.with("scroll")).auto_shrink([false, true]).show(ui, |ui| {
-                let text = egui::RichText::new(code).family(FontFamily::Monospace).color(t.code_text);
-                ui.add(egui::Label::new(text).extend().selectable(true));
+                let font = egui::TextStyle::Monospace.resolve(ui.style());
+                let job = crate::highlight::job(t, lang, code, &font);
+                ui.add(egui::Label::new(job).extend().selectable(true));
             });
         });
 }
@@ -594,7 +595,8 @@ pub fn layout_job(t: &Tokens, inline: &Inline, font: &FontId, bold: &FontFamily,
     let mut chars = 0usize;
     let mut links = Vec::new();
     let mut start = 0usize;
-    let mono = FontId::new(font.size * 0.92, FontFamily::Monospace);
+    // Inline code follows the code size knob relative to the UI text size.
+    let mono = FontId::new(font.size * 0.92 * (t.knobs.code_scale / t.knobs.font_scale.max(0.1)), FontFamily::Monospace);
     for run in &inline.runs {
         let Some(text) = inline.text.get(start..run.end) else { break };
         start = run.end;
@@ -799,7 +801,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut doc = Doc::default();
         doc.update(SAMPLE, true);
-        crate::theme::install_fonts(&ctx);
+        crate::theme::install_fonts(&ctx, crate::theme::UiFont::Inter, crate::theme::MonoFont::Hack);
         for _ in 0..2 {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| show(ui, &Tokens::light(), &doc, egui::Id::unique("t")));
             out.textures_delta.clear();

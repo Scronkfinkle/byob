@@ -28,9 +28,15 @@ pub const CSP: &str = "sandbox allow-scripts allow-forms; default-src 'none'; sc
 
 /// Theme defaults (dark, and light for light-mode browsers), overridden by the URL hash.
 const DEFAULT_THEME: &str = ":root{--yah-bg:#16171a;--yah-surface:#1f2125;--yah-fg:#e4e4e7;--yah-muted:#9a9aa3;--yah-accent:#6d8cff;--yah-on-accent:#ffffff;\
-    --yah-border:#34363c;--yah-danger:#f06a6a;--yah-success:#4cc38a;color-scheme:light dark}\
+    --yah-border:#34363c;--yah-danger:#f06a6a;--yah-success:#4cc38a;--yah-warning:#e8b75a;--yah-link:#6d8cff;--yah-strong:#ffffff;--yah-faint:#75787f;\
+    --yah-panel:#1c1d21;--yah-field:#121316;--yah-code-bg:#141518;--yah-code-fg:#e4e5e8;--yah-radius:6px;\
+    --yah-chart-a:#3987e5;--yah-chart-b:#d95926;--yah-chart-c:#199e70;--yah-chart-d:#c98500;--yah-chart-e:#d55181;--yah-chart-f:#008300;\
+    --yah-chart-g:#9085e9;--yah-chart-h:#e66767;color-scheme:light dark}\
     @media (prefers-color-scheme: light){:root{--yah-bg:#ffffff;--yah-surface:#f4f4f6;--yah-fg:#1d1d22;--yah-muted:#686872;--yah-accent:#3f5fe0;\
-    --yah-on-accent:#ffffff;--yah-border:#d9d9de;--yah-danger:#c53030;--yah-success:#1f8a55}}\
+    --yah-on-accent:#ffffff;--yah-border:#d9d9de;--yah-danger:#c53030;--yah-success:#1f8a55;--yah-warning:#8a5600;--yah-link:#3f5fe0;--yah-strong:#000000;\
+    --yah-faint:#80838a;--yah-panel:#efefec;--yah-field:#ffffff;--yah-code-bg:#eeeff0;--yah-code-fg:#1d1e21;\
+    --yah-chart-a:#2a78d6;--yah-chart-b:#eb6834;--yah-chart-c:#1baf7a;--yah-chart-d:#eda100;--yah-chart-e:#e87ba4;--yah-chart-f:#008300;\
+    --yah-chart-g:#6250d6;--yah-chart-h:#e34948}}\
     html,body{background:var(--yah-bg);color:var(--yah-fg)}";
 
 /// Runs inside the sandboxed app before its own code. Messages to the host are plain data

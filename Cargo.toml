@@ -65,6 +65,8 @@ eframe = { version = "0.37", default-features = false, features = ["default_font
 # File dialogs (desktop). GTK3 backend on Linux: works without a desktop portal service.
 rfd = { version = "0.18", default-features = false, features = ["gtk3"] }
 pollster = "1"
+# The format eframe persists app state in (tests check preference migration with it).
+ron = "0.12"
 # Markdown for assistant messages. No default features: skips the HTML renderer and getopts.
 pulldown-cmark = { version = "0.13", default-features = false }
 

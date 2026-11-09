@@ -58,6 +58,11 @@ impl Paths {
         self.data_dir.join("chats-folder")
     }
 
+    /// User theme files (`*.json`), listed in the appearance settings.
+    pub fn themes_dir(&self) -> PathBuf {
+        self.config_dir.join("themes")
+    }
+
     /// Backups the undo journal points at, one folder per task.
     pub fn undo_dir(&self) -> PathBuf {
         self.data_dir.join("undo")
@@ -84,6 +89,7 @@ mod tests {
         assert_eq!(p.secrets(), Path::new("/tmp/yah-x/secrets.json"));
         assert_eq!(p.undo_dir(), Path::new("/tmp/yah-x/undo"));
         assert_eq!(p.chats_folder(), Path::new("/tmp/yah-x/chats-folder"));
+        assert_eq!(p.themes_dir(), Path::new("/tmp/yah-x/themes"));
     }
 
     #[test]

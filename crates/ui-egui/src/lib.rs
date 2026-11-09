@@ -6,6 +6,7 @@ pub mod appview;
 pub mod artifact;
 pub mod chart;
 pub mod export;
+mod highlight;
 pub mod markdown;
 pub mod media;
 pub mod pane;
@@ -39,8 +40,20 @@ pub struct YahApp {
     conn: Box<dyn Connection>,
     tokens: theme::Tokens,
     prefs: theme::Prefs,
-    /// What `tokens` were last built from and pushed into egui.
-    applied: Option<(theme::Prefs, Option<egui::Theme>)>,
+    /// Bumped whenever `prefs` or the user's themes change.
+    prefs_gen: u64,
+    /// What `tokens` were last built from (generation, OS theme) and pushed into egui.
+    applied: Option<(u64, Option<egui::Theme>)>,
+    /// Fonts installed (UI, code).
+    fonts: Option<(theme::UiFont, theme::MonoFont)>,
+    /// Theme files: the desktop themes folder and the browser's imported ones.
+    user_themes: Vec<theme::ThemeDef>,
+    /// Problems found in theme files, shown in the appearance settings.
+    theme_warnings: Vec<String>,
+    /// Desktop: `<config>/themes`.
+    themes_dir: Option<std::path::PathBuf>,
+    /// Appearance settings UI state (import/export, open sections).
+    appearance: settings::AppearanceUi,
     markdown: markdown::Cache,
     sidebar: sidebar::Sidebar,
     state: Option<EngineState>,
@@ -66,7 +79,13 @@ impl YahApp {
             conn,
             tokens: theme::Tokens::dark(),
             prefs: theme::Prefs::default(),
+            prefs_gen: 0,
             applied: None,
+            fonts: None,
+            user_themes: Vec::new(),
+            theme_warnings: Vec::new(),
+            themes_dir: None,
+            appearance: settings::AppearanceUi::default(),
             markdown: markdown::Cache::default(),
             sidebar: sidebar::Sidebar::default(),
             state: None,
@@ -173,24 +192,63 @@ impl YahApp {
     }
 
     /// Per-device appearance preferences, for the app to persist.
-    pub fn prefs(&self) -> theme::Prefs {
-        self.prefs
+    pub fn prefs(&self) -> &theme::Prefs {
+        &self.prefs
     }
 
     /// Restore (or change) appearance preferences; applied on the next frame.
     pub fn set_prefs(&mut self, prefs: theme::Prefs) {
-        self.prefs = prefs.sanitized();
+        let prefs = prefs.sanitized();
+        let reload = prefs.imported != self.prefs.imported;
+        self.prefs = prefs;
+        self.prefs_gen = self.prefs_gen.wrapping_add(1);
+        if reload {
+            self.reload_themes();
+        }
+    }
+
+    /// Desktop: where user theme files live (`<config>/themes`); loaded now and on Reload.
+    pub fn set_themes_dir(&mut self, dir: std::path::PathBuf) {
+        self.themes_dir = Some(dir);
+        self.reload_themes();
+    }
+
+    /// The user's themes (themes folder or imported), for scripted runs and the CLI.
+    pub fn user_themes(&self) -> &[theme::ThemeDef] {
+        &self.user_themes
+    }
+
+    /// Re-read theme files: the themes folder (desktop) and imported ones (browser).
+    fn reload_themes(&mut self) {
+        let (mut defs, mut warnings) = theme::file::imported(&self.prefs);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(dir) = &self.themes_dir {
+            let (folder, w) = theme::file::load_dir(dir);
+            warnings.extend(w);
+            for d in folder {
+                if defs.iter().any(|o| o.id == d.id) {
+                    warnings.push(format!("two themes are called {:?}; showing the first", d.name));
+                } else {
+                    defs.push(d);
+                }
+            }
+        }
+        self.user_themes = defs;
+        self.theme_warnings = warnings;
+        self.prefs_gen = self.prefs_gen.wrapping_add(1);
     }
 
     /// Rebuild the tokens when the preferences or the OS/browser theme changed.
     fn apply_theme(&mut self, ctx: &egui::Context) {
-        let key = (self.prefs, ctx.system_theme());
-        if self.applied.is_none() {
-            theme::install_fonts(ctx);
+        let key = (self.prefs_gen, ctx.system_theme());
+        let fonts = (self.prefs.knobs.ui_font, self.prefs.knobs.mono_font);
+        if self.fonts != Some(fonts) {
+            theme::install_fonts(ctx, fonts.0, fonts.1);
+            self.fonts = Some(fonts);
         }
         if self.applied != Some(key) {
-            self.tokens = theme::Tokens::for_prefs(&self.prefs, key.1);
-            self.tokens.apply(ctx, self.prefs.font_scale);
+            self.tokens = theme::Tokens::for_prefs(&self.prefs, key.1, &self.user_themes);
+            self.tokens.apply(ctx);
             self.applied = Some(key);
         }
     }
@@ -198,6 +256,12 @@ impl YahApp {
     /// Open or close the settings panel (used by scripted screenshot runs).
     pub fn set_settings_open(&mut self, open: bool) {
         self.show_settings = open;
+    }
+
+    /// Scripted runs: open the settings at an appearance section (`knobs`, `advanced`).
+    pub fn reveal_settings(&mut self, section: &str) {
+        self.show_settings = true;
+        self.appearance.reveal = Some(section.to_owned());
     }
 
     /// Send a user message, as if typed into the composer.
@@ -225,6 +289,7 @@ impl YahApp {
         for e in self.uploads.poll(ui.ctx(), self.conn.as_mut()) {
             self.notice(NoticeLevel::Error, e);
         }
+        self.poll_appearance();
         self.apply_theme(ui.ctx());
         let narrow = ui.available_width() < sidebar::NARROW;
         self.artifacts.begin_frame(ui.ctx(), &self.tokens, narrow);
@@ -232,7 +297,16 @@ impl YahApp {
         self.header(ui, narrow);
         upload::drop_overlay(ui.ctx(), &self.tokens);
         if self.show_settings {
-            egui::Panel::top("settings").show(ui, |ui| self.settings(ui));
+            // Tall on purpose (gallery, knobs, every colour role): scrolls within most of the window.
+            let max = (ui.available_height() * 0.72).max(200.0);
+            egui::Panel::top("settings").show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("settings-scroll")
+                    .max_height(max)
+                    .min_scrolled_height(max)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| self.settings(ui));
+            });
         }
         let t = self.tokens;
         if narrow && list_open {
@@ -249,10 +323,14 @@ impl YahApp {
             return;
         }
         if list_open {
-            let sent = egui::Panel::left("sidebar")
+            // The id carries the width knob so changing it resizes the panel (egui remembers dragged sizes per id).
+            let w = t.knobs.sidebar_width;
+            #[allow(clippy::cast_possible_truncation)] // a few hundred points
+            let sent = egui::Panel::left(("sidebar", w as i32))
                 .resizable(true)
-                .default_size(240.0)
+                .default_size(w)
                 .size_range(180.0..=420.0)
+                .frame(egui::Frame::side_top_panel(ui.style()).fill(t.sidebar_bg))
                 .show(ui, |ui| self.sidebar.show(ui, &t, false))
                 .inner;
             self.send_all(sent);
@@ -292,7 +370,7 @@ impl YahApp {
                 if ui.button("Chats").on_hover_text("Show or hide the chat list").clicked() {
                     self.sidebar.toggle();
                 }
-                ui.label(egui::RichText::new("yah").strong().size(18.0).color(t.accent));
+                ui.label(egui::RichText::new("yah").strong().size(t.text_size(18.0)).color(t.accent));
                 let title = self.sidebar.current().map_or("New chat", |c| c.title.as_str());
                 let max = if narrow { 18 } else { 48 };
                 let short: String =
@@ -310,7 +388,7 @@ impl YahApp {
                 if steps::awaiting_approval(&self.entries) {
                     steps::waiting_badge(ui, &t);
                 } else if self.busy() {
-                    ui.spinner();
+                    theme::spinner(ui, &t, None);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.toggle_value(&mut self.show_settings, "Settings");
@@ -377,11 +455,13 @@ impl YahApp {
         let artifacts = &mut self.artifacts;
         let mut answers = Vec::new();
         egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
-            ui.add_space(8.0);
-            for entry in &self.entries {
-                answers.extend(entry_view(ui, &t, entry, markdown, media, artifacts));
-                ui.add_space(8.0);
-            }
+            readable_column(ui, &t, |ui| {
+                ui.add_space(t.pad(8.0));
+                for entry in &self.entries {
+                    answers.extend(entry_view(ui, &t, entry, markdown, media, artifacts));
+                    ui.add_space(t.pad(8.0));
+                }
+            });
         });
         answers.extend(self.media.take_requests());
         for msg in answers {
@@ -400,55 +480,93 @@ fn entry_view(
     artifacts: &mut artifact::Artifacts,
 ) -> Option<ClientMsg> {
     let mut answer = None;
-    let (who, fill) = match entry.role {
-        EntryRole::User => ("You", t.user_bubble),
-        EntryRole::Assistant => ("yah", t.assistant_bubble),
+    let user = entry.role == EntryRole::User;
+    let (who, fill, style) = if user { ("You", t.user_bubble, t.knobs.user_bubble) } else { ("yah", t.assistant_bubble, t.knobs.assistant_bubble) };
+    let (fill, stroke, margin) = match style {
+        theme::BubbleStyle::Filled => (fill, egui::Stroke::NONE, t.pad(10.0)),
+        theme::BubbleStyle::Outlined => {
+            (egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, if user { theme::mix(t.border, t.accent, 0.6) } else { t.border }), t.pad(10.0))
+        }
+        theme::BubbleStyle::Minimal => (egui::Color32::TRANSPARENT, egui::Stroke::NONE, t.pad(4.0)),
     };
-    egui::Frame::new().fill(fill).corner_radius(8.0).inner_margin(10.0).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(who).strong().color(t.accent));
-            if entry.pending_approvals().next().is_some() {
-                steps::waiting_badge(ui, t);
-            } else if !entry.done {
-                ui.spinner();
-            }
-        });
-        if !entry.reasoning.is_empty() {
-            let thinking = !entry.done && entry.content.is_empty() && entry.steps.iter().all(|s| s.status == StepStatus::Running);
-            let title = format!("{} · {}", if thinking { "Thinking…" } else { "Thought" }, size_label(entry.reasoning.chars().count()));
-            egui::CollapsingHeader::new(egui::RichText::new(title).color(t.text_dim)).id_salt(("thinking", entry.id)).show(ui, |ui| {
-                // Reasoning can run to many thousands of words: keep it in its own scroll box,
-                // following the newest text while the model is still thinking.
-                egui::ScrollArea::vertical()
-                    .id_salt(("thinking-scroll", entry.id))
-                    .max_height(THINKING_MAX_HEIGHT)
-                    .auto_shrink([false, true])
-                    .stick_to_bottom(thinking)
-                    .show(ui, |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(&entry.reasoning).color(t.text_dim).small()).selectable(true).wrap());
+    // Chat alignment: your messages on the right, as wide as they need up to 80 %.
+    let full = ui.available_width();
+    let width = if user && t.knobs.align == theme::Align::Chat {
+        let natural = ui.painter().layout_no_wrap(entry.content.clone(), egui::TextStyle::Body.resolve(ui.style()), t.text).size().x;
+        (natural + 2.0 * margin + 4.0).clamp(140.0_f32.min(full), (full * 0.8).max(140.0_f32.min(full)))
+    } else {
+        full
+    };
+    let layout = if width < full { egui::Layout::right_to_left(egui::Align::Min) } else { egui::Layout::top_down(egui::Align::Min) };
+    ui.with_layout(layout, |ui| {
+        egui::Frame::new().fill(fill).stroke(stroke).corner_radius(t.round(8.0)).inner_margin(margin).show(ui, |ui| {
+            ui.set_width(width - 2.0 * margin);
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(who).strong().color(t.accent));
+                    if entry.pending_approvals().next().is_some() {
+                        steps::waiting_badge(ui, t);
+                    } else if !entry.done {
+                        theme::spinner(ui, t, None);
+                    }
+                });
+                if !entry.reasoning.is_empty() {
+                    let thinking = !entry.done && entry.content.is_empty() && entry.steps.iter().all(|s| s.status == StepStatus::Running);
+                    let title = format!("{} · {}", if thinking { "Thinking…" } else { "Thought" }, size_label(entry.reasoning.chars().count()));
+                    egui::CollapsingHeader::new(egui::RichText::new(title).color(t.text_dim)).id_salt(("thinking", entry.id)).show(ui, |ui| {
+                        // Reasoning can run to many thousands of words: keep it in its own scroll box,
+                        // following the newest text while the model is still thinking.
+                        egui::ScrollArea::vertical()
+                            .id_salt(("thinking-scroll", entry.id))
+                            .max_height(THINKING_MAX_HEIGHT)
+                            .auto_shrink([false, true])
+                            .stick_to_bottom(thinking)
+                            .show(ui, |ui| {
+                                ui.add(egui::Label::new(egui::RichText::new(&entry.reasoning).color(t.text_dim).small()).selectable(true).wrap());
+                            });
                     });
+                }
+                match entry.role {
+                    // reply text with its tool steps where they happened, approval cards, undo
+                    EntryRole::Assistant => answer = steps::body(ui, t, entry, markdown, &mut |ui, step| artifacts.cards(ui, t, &step.artifacts)),
+                    EntryRole::User if !entry.content.is_empty() => {
+                        ui.add(egui::Label::new(egui::RichText::new(&entry.content).color(t.text)).selectable(true));
+                    }
+                    EntryRole::User => {}
+                }
+                media.show_entry(ui, t, entry);
+                if let Some(err) = &entry.error {
+                    ui.label(egui::RichText::new(err).color(t.danger));
+                }
+                if let Some(s) = entry.stats.filter(|_| entry.role == EntryRole::Assistant) {
+                    #[allow(clippy::cast_precision_loss)] // display only
+                    let secs = s.elapsed_ms as f64 / 1000.0;
+                    ui.label(
+                        egui::RichText::new(format!("{} in · {} out tokens · {secs:.1}s", s.prompt_tokens, s.completion_tokens)).small().color(t.text_dim),
+                    );
+                }
             });
-        }
-        match entry.role {
-            // reply text with its tool steps where they happened, approval cards, undo
-            EntryRole::Assistant => answer = steps::body(ui, t, entry, markdown, &mut |ui, step| artifacts.cards(ui, t, &step.artifacts)),
-            EntryRole::User if !entry.content.is_empty() => {
-                ui.add(egui::Label::new(egui::RichText::new(&entry.content).color(t.text)).selectable(true));
-            }
-            EntryRole::User => {}
-        }
-        media.show_entry(ui, t, entry);
-        if let Some(err) = &entry.error {
-            ui.label(egui::RichText::new(err).color(t.danger));
-        }
-        if let Some(s) = entry.stats.filter(|_| entry.role == EntryRole::Assistant) {
-            #[allow(clippy::cast_precision_loss)] // display only
-            let secs = s.elapsed_ms as f64 / 1000.0;
-            ui.label(egui::RichText::new(format!("{} in · {} out tokens · {secs:.1}s", s.prompt_tokens, s.completion_tokens)).small().color(t.text_dim));
-        }
+        });
     });
     answer
+}
+
+/// The transcript in a centred column no wider than the user's readable width.
+fn readable_column(ui: &mut egui::Ui, t: &theme::Tokens, add: impl FnOnce(&mut egui::Ui)) {
+    let full = ui.available_width();
+    let max = t.knobs.max_width;
+    if max <= 0.0 || full <= max {
+        add(ui);
+        return;
+    }
+    let pad = ((full - max) / 2.0).floor();
+    ui.horizontal_top(|ui| {
+        ui.add_space(pad - ui.spacing().item_spacing.x);
+        ui.vertical(|ui| {
+            ui.set_width(max);
+            add(ui);
+        });
+    });
 }
 
 #[cfg(test)]

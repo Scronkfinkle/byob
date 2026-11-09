@@ -90,7 +90,7 @@ impl Cache {
         match item {
             Item::Requested | Item::Received(_) => {
                 ui.horizontal(|ui| {
-                    ui.spinner();
+                    crate::theme::spinner(ui, t, None);
                     ui.label(egui::RichText::new(format!("Loading {}…", r.name())).small().color(t.text_dim));
                 });
             }
@@ -134,26 +134,29 @@ fn image(ui: &mut egui::Ui, t: &Tokens, tex: &egui::TextureHandle, r: &MediaRef)
     }
     let scale = (ui.available_width() / natural.x).min(MAX_IMAGE_HEIGHT / natural.y).min(1.0);
     let size = natural * scale;
-    egui::Frame::new().stroke(Stroke::new(1.0, t.border)).corner_radius(8.0).inner_margin(4.0).show(ui, |ui| {
-        ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), size)).corner_radius(6.0)).on_hover_text(&r.path);
+    egui::Frame::new().stroke(Stroke::new(1.0, t.border)).corner_radius(t.round(8.0)).inner_margin(4.0).show(ui, |ui| {
+        ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), size)).corner_radius(t.round(6.0))).on_hover_text(&r.path);
         ui.label(egui::RichText::new(r.name()).small().color(t.text_dim));
     });
 }
 
 /// A small file chip: name and size.
 pub fn chip(ui: &mut egui::Ui, t: &Tokens, r: &MediaRef) {
-    egui::Frame::new().fill(t.button_bg).stroke(Stroke::new(1.0, t.border)).corner_radius(6.0).inner_margin(vec2(8.0, 4.0)).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(vec2(10.0, 12.0), Sense::hover());
-            ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.text_dim), egui::StrokeKind::Inside);
-            ui.label(egui::RichText::new(r.name()).small().color(t.text));
-            if r.size > 0 {
-                ui.label(egui::RichText::new(media::size_label(r.size)).small().color(t.text_dim));
-            }
-        })
-        .response
-        .on_hover_text(&r.path);
-    });
+    egui::Frame::new().fill(t.button_bg).stroke(Stroke::new(1.0, t.border)).corner_radius(t.round(6.0)).inner_margin(vec2(t.pad(8.0), t.pad(4.0))).show(
+        ui,
+        |ui| {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(vec2(10.0, 12.0), Sense::hover());
+                ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.text_dim), egui::StrokeKind::Inside);
+                ui.label(egui::RichText::new(r.name()).small().color(t.text));
+                if r.size > 0 {
+                    ui.label(egui::RichText::new(media::size_label(r.size)).small().color(t.text_dim));
+                }
+            })
+            .response
+            .on_hover_text(&r.path);
+        },
+    );
 }
 
 #[cfg(test)]

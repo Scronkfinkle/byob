@@ -12,7 +12,9 @@
 //!     --plugin DIR            load the plugin in DIR (repeatable; also <config>/plugins)
 //!     --auto-approve          allow every tool call without asking (testing)
 //!     --dev-tools             offer trivial test tools (get_time, set_reminder)
-//!     --theme NAME            system | dark | light (overrides the saved preference)
+//!     --theme NAME            system | dark | light, or a theme: a preset id (catppuccin-mocha,
+//!                             gruvbox-dark, nord, …) or the name of a file in <config>/themes
+//!                             (overrides the saved preference)
 //!
 //! Testing (see scripts/headless.sh):
 //!     --send TEXT             send a message on startup (repeatable)
@@ -20,6 +22,8 @@
 //!     --screenshot FILE       PNG of the window once the conversation settles, then exit
 //!     --screenshot-after SECS minimum wait before the screenshot (default 2)
 //!     --open-settings         start with the settings panel open
+//!     --settings-section NAME open the settings at an appearance section (knobs, advanced)
+//!     --window-size WxH       window size in points (default 1100x750)
 //!     --tool-mode MODE        auto | native | prompt: force how tools are passed to the model
 //! ```
 //!
@@ -56,8 +60,10 @@ struct Args {
     /// Allow every tool call without asking (scripted test runs).
     auto_approve: bool,
     plugins: Vec<PathBuf>,
-    theme: Option<yah_ui_egui::theme::ThemeKind>,
+    theme: Option<String>,
     open_settings: bool,
+    settings_section: Option<String>,
+    window_size: Option<[f32; 2]>,
     tool_mode: yah_agent::ToolMode,
     script: testing::Script,
 }
@@ -78,6 +84,8 @@ fn parse_args() -> Result<Args, String> {
         plugins: Vec::new(),
         theme: None,
         open_settings: false,
+        settings_section: None,
+        window_size: None,
         tool_mode: yah_agent::ToolMode::Auto,
         script: testing::Script { after: std::time::Duration::from_secs(2), ..Default::default() },
     };
@@ -104,10 +112,19 @@ fn parse_args() -> Result<Args, String> {
             "--auto-approve" => args.auto_approve = true,
             "--plugin" => args.plugins.push(it.next().ok_or("--plugin needs a folder")?.into()),
             "--theme" => {
-                let v = it.next().ok_or("--theme needs a name")?;
-                args.theme = Some(yah_ui_egui::theme::ThemeKind::from_name(&v).ok_or_else(|| format!("unknown theme {v:?} (system, dark, light)"))?);
+                // Checked once the themes folder is loaded (user themes count too).
+                args.theme = Some(it.next().ok_or("--theme needs a name")?);
             }
             "--open-settings" => args.open_settings = true,
+            "--settings-section" => args.settings_section = Some(it.next().ok_or("--settings-section needs knobs or advanced")?),
+            "--window-size" => {
+                let v = it.next().ok_or("--window-size needs WxH")?;
+                let size = v.split_once('x').and_then(|(w, h)| Some([w.parse::<f32>().ok()?, h.parse::<f32>().ok()?]));
+                args.window_size = Some(
+                    size.filter(|[w, h]| (200.0..=8000.0).contains(w) && (200.0..=8000.0).contains(h))
+                        .ok_or_else(|| format!("bad window size {v:?} (e.g. 400x850)"))?,
+                );
+            }
             // Hidden, for testing: force native or prompt-based tool calling.
             "--tool-mode" => {
                 let v = it.next().ok_or("--tool-mode needs auto, native or prompt")?;
@@ -128,7 +145,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "-h" | "--help" => {
                 return Err(
-                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--plugin DIR]... [--dev-tools] [--theme system|dark|light]"
+                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--plugin DIR]... [--dev-tools] [--theme system|dark|light|THEME]"
                         .into(),
                 );
             }
@@ -247,6 +264,7 @@ fn run() -> Result<(), String> {
         config.workspace = dir;
     }
     let saved_theme = theme_kind(saved.settings.theme);
+    let themes_dir = config.paths.as_ref().map(Paths::themes_dir);
     let plugins = args.plugins.clone();
     let extra = extensions::load(&mut config.tools, plugins, &config.workspace);
     if !extra.is_empty() {
@@ -257,7 +275,7 @@ fn run() -> Result<(), String> {
     }
     log::info!("{} tools available; new chats work in {}", config.tools.len(), config.workspace.display());
     let engine = EngineHandle::spawn_with(config).map_err(|e| format!("starting engine: {e}"))?;
-    run_ui(args, engine, saved_theme)
+    run_ui(args, engine, saved_theme, themes_dir)
 }
 
 /// Where "Open in browser" finds artifacts: the `--serve` server if there is one, else a
@@ -284,7 +302,8 @@ fn link_base(engine: EngineHandle, serving: Option<SocketAddr>) -> yah_ui_egui::
     })
 }
 
-fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::ThemeKind) -> Result<(), String> {
+fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::ThemeKind, themes_dir: Option<PathBuf>) -> Result<(), String> {
+    use yah_ui_egui::theme;
     let mut serving = None;
     if let Some(addr) = args.serve {
         let config = yah_server::ServerConfig { addr, web_dir: Some(args.web_dir), allowed_users: args.allowed_users, ..Default::default() };
@@ -302,13 +321,21 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::The
     // Scripted (screenshot) runs must not read or overwrite the user's saved window/appearance.
     let scratch_state = args.script.screenshot.as_ref().map(|_| std::env::temp_dir().join(format!("yah-headless-{}.ron", std::process::id())));
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 750.0]).with_title("yah"),
+        viewport: egui::ViewportBuilder::default().with_inner_size(args.window_size.unwrap_or([1100.0, 750.0])).with_title("yah"),
         wgpu_options: gpu::options(),
         persistence_path: scratch_state.clone(),
         ..Default::default()
     };
+    // Fail fast on a --theme nothing could match (user themes are checked again below).
+    if let Some(name) = &args.theme {
+        let user = themes_dir.as_deref().map(|d| theme::file::load_dir(d).0).unwrap_or_default();
+        if !theme::file::select(&mut theme::Prefs::default(), name, &user) {
+            let ids: Vec<&str> = theme::presets::PRESETS.iter().map(|p| p.id).collect();
+            return Err(format!("unknown theme {name:?} (system, dark, light, {}, or a file in the themes folder)", ids.join(", ")));
+        }
+    }
     let script = testing::Runner::new(args.script);
-    let (theme, open_settings) = (args.theme, args.open_settings);
+    let (theme_arg, open_settings, section) = (args.theme, args.open_settings, args.settings_section);
     let result = eframe::run_native(
         "yah",
         options,
@@ -321,17 +348,23 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::The
             if let Some(view) = apphost::ServoView::new(&cc.egui_ctx) {
                 ui.set_app_view(Box::new(view));
             }
+            if let Some(dir) = themes_dir {
+                ui.set_themes_dir(dir);
+            }
             // This device's saved appearance, else the theme from settings.json.
-            let stored: Option<yah_ui_egui::theme::Prefs> = cc.storage.and_then(|s| eframe::get_value(s, yah_ui_egui::theme::Prefs::STORAGE_KEY));
-            let mut prefs = stored.unwrap_or(yah_ui_egui::theme::Prefs { theme: saved_theme, ..Default::default() });
-            if let Some(theme) = theme {
-                prefs.theme = theme;
+            let stored: Option<theme::Prefs> = cc.storage.and_then(|s| eframe::get_value(s, theme::Prefs::STORAGE_KEY));
+            let mut prefs = stored.unwrap_or(theme::Prefs { theme: saved_theme, ..Default::default() });
+            if let Some(name) = &theme_arg {
+                theme::file::select(&mut prefs, name, ui.user_themes());
             }
             ui.set_prefs(prefs);
             if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<yah_ui_egui::pane::PanePrefs>(s, yah_ui_egui::pane::PanePrefs::STORAGE_KEY)) {
                 ui.artifacts_mut().set_pane_prefs(pane);
             }
             ui.set_settings_open(open_settings);
+            if let Some(section) = &section {
+                ui.reveal_settings(section);
+            }
             Ok(Box::new(App { ui, script }))
         }),
     )

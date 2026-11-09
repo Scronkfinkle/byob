@@ -451,7 +451,7 @@ impl Artifacts {
                 let stored = self.pane.width();
                 let r = egui::Panel::right("artifact-pane")
                     .resizable(true)
-                    .default_size(stored.unwrap_or((width * 0.48).max(320.0)).min(max))
+                    .default_size(stored.unwrap_or((width * t.knobs.pane_share).max(320.0)).min(max))
                     .size_range(crate::pane::MIN_WIDTH..=max)
                     .show(ui, |ui| self.pane(ui, t, false));
                 // Remember what the user dragged it to (not what a smaller window squeezed it to).
@@ -512,7 +512,7 @@ impl Artifacts {
             ctx,
             |ui| {
                 let text = RichText::new(format!("Artifacts  {n}")).strong().color(t.on_accent);
-                let b = egui::Button::new(text).fill(t.accent).corner_radius(18.0).min_size(vec2(44.0, 36.0));
+                let b = egui::Button::new(text).fill(t.accent).corner_radius(t.round(18.0)).min_size(vec2(44.0, 36.0));
                 if ui.add(b).on_hover_text("Show the open artifacts").clicked() {
                     self.actions.push(Action::Expand);
                 }
@@ -542,52 +542,55 @@ impl Artifacts {
         }
         let note = a.version(version).map(|v| v.note.clone()).unwrap_or_default();
         let stroke = if selected { t.accent } else { t.border };
-        egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, stroke)).corner_radius(8.0).inner_margin(vec2(10.0, 8.0)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if minimize_button(ui, t, a.kind).clicked() {
-                        self.actions.push(Action::Minimize { id: a.id.clone(), minimized: true });
-                    }
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        kind_badge(ui, t, a.kind);
-                        ui.add(egui::Label::new(RichText::new(&a.title).strong().color(t.text_strong)).truncate());
-                        ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
-                        if !note.is_empty() {
-                            ui.add(egui::Label::new(RichText::new(&note).small().color(t.text_dim)).truncate()).on_hover_text(&note);
+        egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, stroke)).corner_radius(t.round(8.0)).inner_margin(vec2(t.pad(10.0), t.pad(8.0))).show(
+            ui,
+            |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if minimize_button(ui, t, a.kind).clicked() {
+                            self.actions.push(Action::Minimize { id: a.id.clone(), minimized: true });
                         }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            kind_badge(ui, t, a.kind);
+                            ui.add(egui::Label::new(RichText::new(&a.title).strong().color(t.text_strong)).truncate());
+                            ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
+                            if !note.is_empty() {
+                                ui.add(egui::Label::new(RichText::new(&note).small().color(t.text_dim)).truncate()).on_hover_text(&note);
+                            }
+                        });
                     });
                 });
-            });
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Show").on_hover_text("Show it beside the chat").clicked() {
-                    self.actions.push(Action::Select { id: a.id.clone(), version: Some(version) });
-                }
-                if a.kind == ArtifactKind::Html && ui.button("Open").on_hover_text("Open the app in a browser tab").clicked() {
-                    self.actions.push(Action::Open { id: a.id.clone(), version });
-                }
-                if ui.button("Export").on_hover_text(format!("Save {}", a.filename)).clicked() {
-                    self.actions.push(Action::Export { id: a.id.clone(), version });
-                }
-                if a.versions.len() > 1 {
-                    let mut pick = None;
-                    egui::ComboBox::from_id_salt(("artifact-versions", &a.id, version)).selected_text(format!("{} versions", a.versions.len())).show_ui(
-                        ui,
-                        |ui| {
-                            for v in a.versions.iter().rev() {
-                                if ui.selectable_label(v.n == version, version_label(v)).clicked() {
-                                    pick = Some(v.n);
-                                }
-                            }
-                        },
-                    );
-                    if let Some(n) = pick {
-                        self.actions.push(Action::Select { id: a.id.clone(), version: Some(n) });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Show").on_hover_text("Show it beside the chat").clicked() {
+                        self.actions.push(Action::Select { id: a.id.clone(), version: Some(version) });
                     }
-                }
-            });
-            self.card_preview(ui, t, &a, version);
-        });
+                    if a.kind == ArtifactKind::Html && ui.button("Open").on_hover_text("Open the app in a browser tab").clicked() {
+                        self.actions.push(Action::Open { id: a.id.clone(), version });
+                    }
+                    if ui.button("Export").on_hover_text(format!("Save {}", a.filename)).clicked() {
+                        self.actions.push(Action::Export { id: a.id.clone(), version });
+                    }
+                    if a.versions.len() > 1 {
+                        let mut pick = None;
+                        egui::ComboBox::from_id_salt(("artifact-versions", &a.id, version)).selected_text(format!("{} versions", a.versions.len())).show_ui(
+                            ui,
+                            |ui| {
+                                for v in a.versions.iter().rev() {
+                                    if ui.selectable_label(v.n == version, version_label(v)).clicked() {
+                                        pick = Some(v.n);
+                                    }
+                                }
+                            },
+                        );
+                        if let Some(n) = pick {
+                            self.actions.push(Action::Select { id: a.id.clone(), version: Some(n) });
+                        }
+                    }
+                });
+                self.card_preview(ui, t, &a, version);
+            },
+        );
     }
 
     /// A minimized artifact: one line with its kind, title, version and (apps) whether it
@@ -598,28 +601,31 @@ impl Artifacts {
         }
         let status = self.app_status(a, version);
         let stroke = if selected { t.accent } else { t.border };
-        egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, stroke)).corner_radius(16.0).inner_margin(vec2(8.0, 3.0)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Restore").on_hover_text("Show it in full again").clicked() {
-                        self.actions.push(Action::Minimize { id: a.id.clone(), minimized: false });
-                    }
-                    if in_chat && ui.small_button("Show").on_hover_text("Show it beside the chat").clicked() {
-                        self.actions.push(Action::Select { id: a.id.clone(), version: Some(version) });
-                    }
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        kind_badge(ui, t, a.kind);
-                        ui.add(egui::Label::new(RichText::new(&a.title).color(t.text_strong)).truncate()).on_hover_text(&a.filename);
-                        ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
-                        if let Some(label) = status.label() {
-                            status_dot(ui, t, status);
-                            ui.label(RichText::new(label).small().color(t.text_dim));
+        egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, stroke)).corner_radius(t.round(16.0)).inner_margin(vec2(t.pad(8.0), t.pad(3.0))).show(
+            ui,
+            |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Restore").on_hover_text("Show it in full again").clicked() {
+                            self.actions.push(Action::Minimize { id: a.id.clone(), minimized: false });
                         }
+                        if in_chat && ui.small_button("Show").on_hover_text("Show it beside the chat").clicked() {
+                            self.actions.push(Action::Select { id: a.id.clone(), version: Some(version) });
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            kind_badge(ui, t, a.kind);
+                            ui.add(egui::Label::new(RichText::new(&a.title).color(t.text_strong)).truncate()).on_hover_text(&a.filename);
+                            ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
+                            if let Some(label) = status.label() {
+                                status_dot(ui, t, status);
+                                ui.label(RichText::new(label).small().color(t.text_dim));
+                            }
+                        });
                     });
                 });
-            });
-        });
+            },
+        );
     }
 
     fn card_preview(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32) {
@@ -648,7 +654,7 @@ impl Artifacts {
         let key = egui::Id::unique(("artifact-card", &a.id, version));
         match self.shown(&ctx, a, version) {
             Err(None) => {
-                ui.add(egui::Spinner::new().size(12.0));
+                crate::theme::spinner(ui, t, Some(12.0));
             }
             Err(Some(e)) => {
                 ui.label(RichText::new(format!("Couldn't show it: {e}")).small().color(t.text_dim));
@@ -706,7 +712,7 @@ impl Artifacts {
         let source = self.source;
         match self.shown(&ctx, &a, version) {
             Err(None) => {
-                ui.centered_and_justified(|ui| ui.spinner());
+                ui.centered_and_justified(|ui| crate::theme::spinner(ui, t, None));
             }
             Err(Some(e)) => {
                 ui.label(RichText::new(format!("Couldn't show {}: {e}", a.filename)).color(t.text_dim));
@@ -771,7 +777,7 @@ impl Artifacts {
         let stroke = if active { t.accent } else { t.border };
         let title: String =
             if a.title.chars().count() > TAB_CHARS { a.title.chars().take(TAB_CHARS - 1).chain(std::iter::once('…')).collect() } else { a.title.clone() };
-        egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke)).corner_radius(6.0).inner_margin(vec2(6.0, 2.0)).show(ui, |ui| {
+        egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke)).corner_radius(t.round(6.0)).inner_margin(vec2(t.pad(6.0), t.pad(2.0))).show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             if status.label().is_some() {
                 status_dot(ui, t, status);
@@ -798,7 +804,8 @@ impl Artifacts {
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     kind_badge(ui, t, a.kind);
-                    ui.add(egui::Label::new(RichText::new(&a.title).strong().size(15.0).color(t.text_strong)).truncate()).on_hover_text(&a.filename);
+                    ui.add(egui::Label::new(RichText::new(&a.title).strong().size(t.text_size(15.0)).color(t.text_strong)).truncate())
+                        .on_hover_text(&a.filename);
                 });
             });
         });
@@ -851,7 +858,7 @@ impl Artifacts {
         };
         let errors = self.view.errors();
         if !errors.is_empty() {
-            egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, t.danger)).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
+            egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, t.danger)).corner_radius(t.round(6.0)).inner_margin(t.pad(8.0)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(
                     RichText::new(if errors.len() == 1 { "The app reported an error".to_owned() } else { format!("The app reported {} errors", errors.len()) })
@@ -946,9 +953,12 @@ fn rail_icon(ui: &mut egui::Ui, t: &Tokens, a: &Artifact, active: bool, status: 
 }
 
 fn kind_badge(ui: &mut egui::Ui, t: &Tokens, kind: ArtifactKind) {
-    egui::Frame::new().fill(crate::theme::mix(t.accent, t.code_bg, 0.8)).corner_radius(4.0).inner_margin(vec2(5.0, 1.0)).show(ui, |ui| {
-        ui.label(RichText::new(kind.label().to_uppercase()).small().color(t.accent));
-    });
+    egui::Frame::new().fill(crate::theme::mix(t.accent, t.code_bg, 0.8)).corner_radius(t.round(4.0)).inner_margin(vec2(t.pad(5.0), t.pad(1.0))).show(
+        ui,
+        |ui| {
+            ui.label(RichText::new(kind.label().to_uppercase()).small().color(t.accent));
+        },
+    );
 }
 
 fn image(ui: &mut egui::Ui, t: &Tokens, tex: &egui::TextureHandle, max_height: f32) {
@@ -957,7 +967,7 @@ fn image(ui: &mut egui::Ui, t: &Tokens, tex: &egui::TextureHandle, max_height: f
         return;
     }
     let scale = (ui.available_width() / natural.x).min(max_height / natural.y).min(1.0);
-    ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), natural * scale)).corner_radius(6.0));
+    ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), natural * scale)).corner_radius(t.round(6.0)));
     let _ = t;
 }
 

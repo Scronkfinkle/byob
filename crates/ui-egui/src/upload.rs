@@ -143,7 +143,7 @@ impl Uploads {
             for p in &self.pending {
                 chip_frame(t).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.spinner();
+                        crate::theme::spinner(ui, t, None);
                         ui.label(egui::RichText::new(&p.name).small().color(t.text_dim));
                     });
                 });
@@ -156,7 +156,7 @@ impl Uploads {
 }
 
 fn chip_frame(t: &Tokens) -> egui::Frame {
-    egui::Frame::new().fill(t.button_bg).stroke(Stroke::new(1.0, t.border)).corner_radius(6.0).inner_margin(vec2(8.0, 3.0))
+    egui::Frame::new().fill(t.button_bg).stroke(Stroke::new(1.0, t.border)).corner_radius(t.round(6.0)).inner_margin(vec2(t.pad(8.0), t.pad(3.0)))
 }
 
 /// Shown while files are dragged over the window.
@@ -168,7 +168,7 @@ pub fn drop_overlay(ctx: &egui::Context, t: &Tokens) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("yah-drop")));
     painter.rect_filled(rect, 0.0, t.app_bg.gamma_multiply(0.85));
     painter.rect_stroke(rect.shrink(24.0), 12.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
-    painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Drop files to attach", egui::FontId::proportional(22.0), t.text_strong);
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Drop files to attach", egui::FontId::proportional(t.text_size(22.0)), t.text_strong);
 }
 
 /// Read a native file with a size cap (never trust a drop to be small).
@@ -216,7 +216,7 @@ fn read_dropped(ctx: &egui::Context, file: egui::DroppedFileHandle, tx: Sender<P
 
 /// Open the platform's file dialog on a thread; each chosen file arrives on `tx`.
 #[cfg(not(target_arch = "wasm32"))]
-fn pick_files(ctx: &egui::Context, tx: Sender<Picked>) {
+pub(crate) fn pick_files(ctx: &egui::Context, tx: Sender<Picked>) {
     let ctx = ctx.clone();
     let _ = std::thread::Builder::new().name("yah-picker".into()).spawn(move || {
         match native_dialog() {
@@ -251,7 +251,7 @@ fn native_dialog() -> Result<Vec<std::path::PathBuf>, String> {
 /// The browser's file dialog: a detached `<input type=file multiple>`, clicked. Each chosen
 /// file is read with `Blob.arrayBuffer()` (size checked first) and arrives on `tx`.
 #[cfg(target_arch = "wasm32")]
-fn pick_files(ctx: &egui::Context, tx: Sender<Picked>) {
+pub(crate) fn pick_files(ctx: &egui::Context, tx: Sender<Picked>) {
     use wasm_bindgen::JsCast as _;
     use wasm_bindgen::closure::Closure;
     let input =

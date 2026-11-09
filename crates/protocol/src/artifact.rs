@@ -128,9 +128,36 @@ pub fn valid_id(id: &str) -> bool {
 }
 
 /// The theme an HTML app is given, as CSS custom properties (`--yah-bg`, …). Apps are told
-/// to style themselves with these so they match the window.
-pub const THEME_VARS: [&str; 9] =
-    ["--yah-bg", "--yah-surface", "--yah-fg", "--yah-muted", "--yah-accent", "--yah-on-accent", "--yah-border", "--yah-danger", "--yah-success"];
+/// to style themselves with these so they match the window. Additive: names are only ever
+/// appended (the artifact helper accepts lowercase letters and dashes only, so no digits).
+pub const THEME_VARS: [&str; 26] = [
+    "--yah-bg",
+    "--yah-surface",
+    "--yah-fg",
+    "--yah-muted",
+    "--yah-accent",
+    "--yah-on-accent",
+    "--yah-border",
+    "--yah-danger",
+    "--yah-success",
+    "--yah-warning",
+    "--yah-link",
+    "--yah-strong",
+    "--yah-faint",
+    "--yah-panel",
+    "--yah-field",
+    "--yah-code-bg",
+    "--yah-code-fg",
+    "--yah-radius",
+    "--yah-chart-a",
+    "--yah-chart-b",
+    "--yah-chart-c",
+    "--yah-chart-d",
+    "--yah-chart-e",
+    "--yah-chart-f",
+    "--yah-chart-g",
+    "--yah-chart-h",
+];
 
 #[cfg(test)]
 mod tests {

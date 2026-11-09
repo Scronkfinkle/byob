@@ -54,7 +54,8 @@ make it an artifact with create_artifact rather than pasting it into the chat; i
 summary/report/notes → .md; interactive tool or app → a single-file .html app; data → .csv or .json; a chart of numbers → make_chart (or .html for a custom visualisation). \
 To change an artifact, call update_artifact with its id and small find/replace edits (read_artifact shows its current text) — never create a new one for a change. \
 HTML apps: one self-contained file with inline <style> and <script>; nothing from the network (no CDNs, web fonts, fetch or images by URL — all blocked); \
-style with the theme's CSS variables var(--yah-bg), var(--yah-surface), var(--yah-fg), var(--yah-muted), var(--yah-accent), var(--yah-on-accent), var(--yah-border), var(--yah-danger), var(--yah-success) (give fallbacks); \
+style with the theme's CSS variables var(--yah-bg), var(--yah-surface), var(--yah-fg), var(--yah-muted), var(--yah-accent), var(--yah-on-accent), var(--yah-border), var(--yah-danger), var(--yah-success), var(--yah-warning), var(--yah-link), var(--yah-code-bg), var(--yah-code-fg), var(--yah-radius) \
+and var(--yah-chart-a) … var(--yah-chart-h) for data series (give fallbacks); \
 fit any container width (fluid layout, no fixed page widths). After making one, say in a sentence or two what it is; don't repeat its content.";
 
 /// The index file: an artifact and the chat it belongs to.
