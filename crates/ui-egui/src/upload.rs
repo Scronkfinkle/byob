@@ -5,9 +5,8 @@
 //! so both report back through a channel polled every frame.
 //! - Browser: a file `<input>` and egui's dropped-file futures, driven by
 //!   `wasm_bindgen_futures::spawn_local` (the browser's own event loop; no runtime).
-//! - Desktop: dropped files are read from their path; the picker runs the platform's dialog
-//!   tool (`zenity`/`kdialog` on Linux, `osascript` on macOS) on a thread. (`rfd`'s native
-//!   backends need an async runtime or GTK, which yah doesn't ship.)
+//! - Desktop: dropped files are read from their path; the picker is `rfd`'s native dialog
+//!   (GTK3 on Linux), on a thread.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -240,42 +239,13 @@ fn pick_files(ctx: &egui::Context, tx: Sender<Picked>) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_dialog() -> Result<Vec<std::path::PathBuf>, String> {
-    use std::process::Command;
-    let tries: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
-        &[(
-            "osascript",
-            &[
-                "-e",
-                "set fs to choose file with multiple selections allowed",
-                "-e",
-                "set out to \"\"",
-                "-e",
-                "repeat with f in fs",
-                "-e",
-                "set out to out & POSIX path of f & linefeed",
-                "-e",
-                "end repeat",
-                "-e",
-                "out",
-            ],
-        )]
-    } else {
-        &[
-            ("zenity", &["--file-selection", "--multiple", "--separator=\n", "--title=Attach files"]),
-            ("kdialog", &["--getopenfilename", "--multiple", "--separate-output", "."]),
-        ]
-    };
-    for (cmd, args) in tries {
-        match Command::new(cmd).args(*args).output() {
-            Ok(out) => {
-                let text = String::from_utf8_lossy(&out.stdout);
-                return Ok(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(std::path::PathBuf::from).collect());
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("Couldn't open a file dialog: {e}")),
-        }
+    if !crate::export::dialogs_available() {
+        return Err("No file dialog is available here (GTK can't find its settings schemas); drop files onto the window instead".into());
     }
-    Err("No file dialog is available here (install zenity or kdialog); drop files onto the window instead".into())
+    // rfd's async dialog runs GTK on its own thread (Linux) and the panel on the main thread
+    // (macOS); we're on a background thread, so blocking on it here is fine.
+    let picked = pollster::block_on(rfd::AsyncFileDialog::new().set_title("Attach files").pick_files());
+    Ok(picked.map(|files| files.into_iter().map(|f| f.path().to_path_buf()).collect()).unwrap_or_default())
 }
 
 /// The browser's file dialog: a detached `<input type=file multiple>`, clicked. Each chosen

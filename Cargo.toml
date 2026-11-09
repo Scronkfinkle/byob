@@ -62,7 +62,9 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 # UI.
 egui = "0.37"
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "accesskit", "clipboard", "wayland", "x11"] }
-rfd = "0.18"
+# File dialogs (desktop). GTK3 backend on Linux: works without a desktop portal service.
+rfd = { version = "0.18", default-features = false, features = ["gtk3"] }
+pollster = "1"
 # Markdown for assistant messages. No default features: skips the HTML renderer and getopts.
 pulldown-cmark = { version = "0.13", default-features = false }
 

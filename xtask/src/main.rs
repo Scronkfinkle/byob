@@ -33,7 +33,8 @@ const UI_DEPS: &[&str] = &["egui", "eframe", "egui-wgpu", "winit", "rfd", "ewebs
 /// Crates that run in the browser. They may only depend on each other (not on the engine).
 const WASM_CRATES: &[&str] = &["yah-types", "yah-protocol", "yah-ui-egui", "yah-web"];
 
-/// Async runtimes are banned: yah is std::thread + channels throughout.
+/// yah's own crates aren't async: none may depend *directly* on an async runtime.
+/// (Libraries that use one internally are fine.)
 const BANNED: &[&str] = &["tokio", "async-std", "smol"];
 
 /// Servo and SpiderMonkey (MPL-2.0, and they bring tokio) live only in the separate
@@ -88,6 +89,9 @@ fn layers() -> Result<(), String> {
             {
                 errors.push(format!("{name} (L{layer}) -> {dep_name} (L{dep_layer}): dependencies must point to a lower layer"));
             }
+            if BANNED.contains(&dep_name) {
+                errors.push(format!("{name} depends directly on async runtime {dep_name}; yah's own code isn't async (AGENTS.md)"));
+            }
             if UI_DEPS.contains(&dep_name) && !UI_CRATES.contains(&name) {
                 errors.push(format!("{name} depends on UI crate {dep_name}; only {UI_CRATES:?} may"));
             }
@@ -105,7 +109,7 @@ fn layers() -> Result<(), String> {
     }
 }
 
-/// Fail if any banned async runtime appears in the dependency graph of a target we ship
+/// Fail if Servo/SpiderMonkey appear in the dependency graph of a target we ship
 /// (host and wasm32-unknown-unknown). `--target all` would flag e.g. emscripten-only deps.
 fn banned_deps() -> Result<Vec<String>, String> {
     let mut found = Vec::new();
@@ -121,9 +125,6 @@ fn banned_deps() -> Result<Vec<String>, String> {
         let tree = String::from_utf8_lossy(&out.stdout);
         for name in tree.lines().filter_map(|l| l.split_whitespace().next()) {
             let on = target.unwrap_or("host");
-            if BANNED.contains(&name) {
-                found.push(format!("banned async runtime `{name}` in dependency graph for {on} (see `cargo tree -i {name}`)"));
-            }
             if HELPER_ONLY.contains(&name) {
                 found.push(format!("`{name}` in yah's dependency graph for {on}: Servo/SpiderMonkey belong only in host/artifact-host (see AGENTS.md)"));
             }

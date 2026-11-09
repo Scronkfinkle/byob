@@ -53,6 +53,10 @@
         ];
 
         hasWorkspace = builtins.pathExists ./Cargo.lock;
+
+        # GTK (rfd's file dialogs) aborts with "No GSettings schemas are installed" unless
+        # it can find GTK3's compiled schemas.
+        gsettingsSchemaDir = "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}/glib-2.0/schemas";
         cargoToml = lib.importTOML ./Cargo.toml;
 
         # The browser UI: yah-web compiled to wasm + wasm-bindgen glue + index.html.
@@ -191,6 +195,7 @@
           buildInputs = buildInputs ++ [ pkgs.sqlite ];
           postFixup = lib.optionalString isLinux ''
             wrapProgram $out/bin/yah --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs} \
+              --set-default GSETTINGS_SCHEMA_DIR ${gsettingsSchemaDir} \
               --set-default YAH_WEB_DIR ${yah-web} ${lib.optionalString hasHost "--set-default YAH_ARTIFACT_HOST ${yah-artifact-host}/bin/yah-artifact-host"}
           '';
           meta = {
@@ -229,6 +234,7 @@
           ];
           LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+          GSETTINGS_SCHEMA_DIR = lib.optionalString isLinux gsettingsSchemaDir;
         };
 
         formatter = pkgs.nixfmt;

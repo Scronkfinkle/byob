@@ -1,7 +1,6 @@
 //! Exporting an artifact (saving its file) and opening one in the system browser.
 //!
-//! - Desktop: a save dialog from the platform's dialog tool (`zenity`/`kdialog`, `osascript`
-//!   on macOS) on a thread; without one, the file goes to the Downloads folder. Opening runs
+//! - Desktop: `rfd`'s native save dialog (GTK3 on Linux) on a thread. Opening runs
 //!   `xdg-open`/`open`/`start` with the artifact's URL.
 //! - Browser: a `Blob` and a clicked `<a download>`; opening is `window.open` in a new tab.
 //!
@@ -54,54 +53,48 @@ fn save_file(ctx: &egui::Context, tx: Sender<Outcome>, filename: &str, _mime: &s
     let ctx = ctx.clone();
     let name = safe_filename(filename);
     let _ = std::thread::Builder::new().name("yah-export".into()).spawn(move || {
+        if !dialogs_available() {
+            let _ = tx.send(Err("No file dialog is available here (GTK can't find its settings schemas)".into()));
+            ctx.request_repaint();
+            return;
+        }
         let outcome = match save_dialog(&name) {
-            Ok(Some(path)) => {
+            Some(path) => {
                 std::fs::write(&path, &bytes).map(|()| format!("Saved {}", path.display())).map_err(|e| format!("Couldn't save {}: {e}", path.display()))
             }
             // cancelled
-            Ok(None) => Ok(String::new()),
-            Err(NoDialog) => match downloads_target(&name) {
-                Some(path) => {
-                    std::fs::write(&path, &bytes).map(|()| format!("Saved to {}", path.display())).map_err(|e| format!("Couldn't save {}: {e}", path.display()))
-                }
-                None => Err("No file dialog is available and there is no Downloads folder to save to".into()),
-            },
+            None => Ok(String::new()),
         };
         let _ = tx.send(outcome);
         ctx.request_repaint();
     });
 }
 
+/// Whether a native file dialog can open without taking the app down. On Linux, GTK
+/// aborts the whole process when it finds no GSettings schemas (e.g. a bare `nix develop`
+/// shell), so look for them first: `GSETTINGS_SCHEMA_DIR`, or
+/// `glib-2.0/schemas/gschemas.compiled` under an `XDG_DATA_DIRS` entry.
 #[cfg(not(target_arch = "wasm32"))]
-struct NoDialog;
-
-/// Ask where to save. `Ok(None)`: cancelled.
-#[cfg(not(target_arch = "wasm32"))]
-fn save_dialog(name: &str) -> Result<Option<std::path::PathBuf>, NoDialog> {
-    use std::process::Command;
-    let start = downloads_dir().map(|d| d.join(name)).unwrap_or_else(|| std::path::PathBuf::from(name));
-    let start = start.to_string_lossy().into_owned();
-    let script = format!("POSIX path of (choose file name with prompt \"Export\" default name \"{}\")", name.replace(['"', '\\'], "_"));
-    let tries: Vec<(&str, Vec<String>)> = if cfg!(target_os = "macos") {
-        vec![("osascript", vec!["-e".into(), script])]
-    } else {
-        vec![
-            ("zenity", vec!["--file-selection".into(), "--save".into(), "--confirm-overwrite".into(), "--title=Export".into(), format!("--filename={start}")]),
-            ("kdialog", vec!["--getsavefilename".into(), start]),
-        ]
-    };
-    for (cmd, args) in tries {
-        match Command::new(cmd).args(&args).output() {
-            Ok(out) => {
-                let text = String::from_utf8_lossy(&out.stdout);
-                let path = text.lines().map(str::trim).find(|l| !l.is_empty());
-                return Ok(path.map(std::path::PathBuf::from));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(NoDialog),
-        }
+pub(crate) fn dialogs_available() -> bool {
+    if !cfg!(target_os = "linux") {
+        return true;
     }
-    Err(NoDialog)
+    let compiled = |dir: &std::path::Path| dir.join("gschemas.compiled").is_file();
+    if std::env::var_os("GSETTINGS_SCHEMA_DIR").is_some_and(|d| compiled(std::path::Path::new(&d))) {
+        return true;
+    }
+    let dirs = std::env::var("XDG_DATA_DIRS").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    dirs.split(':').any(|d| compiled(&std::path::Path::new(d).join("glib-2.0/schemas")))
+}
+
+/// Ask where to save (`rfd`'s native dialog). `None`: cancelled.
+#[cfg(not(target_arch = "wasm32"))]
+fn save_dialog(name: &str) -> Option<std::path::PathBuf> {
+    let mut dialog = rfd::AsyncFileDialog::new().set_title("Export").set_file_name(name);
+    if let Some(dir) = downloads_dir() {
+        dialog = dialog.set_directory(dir);
+    }
+    pollster::block_on(dialog.save_file()).map(|f| f.path().to_path_buf())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,21 +102,6 @@ fn downloads_dir() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from)?;
     let downloads = std::env::var_os("XDG_DOWNLOAD_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| home.join("Downloads"));
     Some(if downloads.is_dir() { downloads } else { home })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn downloads_target(name: &str) -> Option<std::path::PathBuf> {
-    unique_in(&downloads_dir()?, name)
-}
-
-/// `dir/name`, or `name (2)`, … — the first that doesn't exist.
-#[cfg(not(target_arch = "wasm32"))]
-fn unique_in(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    let (stem, ext) = match name.rfind('.') {
-        Some(i) if i > 0 => (name.get(..i).unwrap_or(name), name.get(i..).unwrap_or("")),
-        _ => (name, ""),
-    };
-    (1..1000u32).map(|n| if n == 1 { dir.join(name) } else { dir.join(format!("{stem} ({n}){ext}")) }).find(|p| std::fs::symlink_metadata(p).is_err())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -186,18 +164,5 @@ mod tests {
         assert_eq!(safe_filename("a:b?.md"), "a_b_.md");
         assert_eq!(safe_filename(".."), "artifact");
         assert_eq!(safe_filename(".hidden.md"), "hidden.md");
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn downloads_never_overwrite() {
-        let dir = std::env::temp_dir().join(format!("yah-export-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(unique_in(&dir, "a.md"), Some(dir.join("a.md")));
-        std::fs::write(dir.join("a.md"), "x").unwrap();
-        assert_eq!(unique_in(&dir, "a.md"), Some(dir.join("a (2).md")));
-        assert_eq!(unique_in(&dir, "noext"), Some(dir.join("noext")));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

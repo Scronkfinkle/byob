@@ -24,8 +24,10 @@ Conventions are adapted from filmcraft. When this file and other docs disagree, 
   Clients — the desktop window and browser tabs — talk to it only via `yah-protocol`.
   Never give the UI a direct handle to the engine; add a protocol message instead.
 - `yah-ui-egui` and `yah-protocol` must build for `wasm32-unknown-unknown` (`cargo xtask wasm`).
-- **No async runtimes** (tokio, async-std, smol) anywhere — enforced by `cargo xtask layers`.
-  Use `std::thread` + channels; blocking I/O is fine.
+- **Our own code isn't async.** yah's crates use `std::thread` + channels and blocking I/O;
+  don't structure features around futures or make our crates depend directly on an async
+  runtime (tokio, async-std, smol) — `cargo xtask layers` checks direct dependencies only.
+  Libraries that use a runtime internally are fine; don't contort designs to avoid them.
 - Remote access is a security boundary: keep the Origin check, input caps, and loopback
   default bind. Secrets never go to clients.
 - Native apps are Rust only: no Tauri, Electron, webviews or handwritten JS/TS. (HTML
@@ -60,7 +62,7 @@ The desktop renders HTML app artifacts with Servo in a **separate helper process
   fails if `servo`, `mozjs`/`mozjs_sys` or the helper enter yah's dependency graph, or the
   `exclude` goes missing.
 - Binaries that include it ship `host/artifact-host/NOTICE` (the MPL notice and where the
-  Servo/SpiderMonkey source is). Don't add other MPL or async-runtime code anywhere else.
+  Servo/SpiderMonkey source is). Don't add other MPL code anywhere else.
 - Build it with `cd host/artifact-host && cargo build --release` in `nix develop` (set
   `MOZJS_ARCHIVE` to a downloaded SpiderMonkey archive to stay offline); `nix build
   .#yah-artifact-host` packages it. Without it, yah falls back to Open in browser.
