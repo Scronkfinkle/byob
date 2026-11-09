@@ -157,6 +157,12 @@ fn web() -> Result<(), String> {
         eprintln!("xtask: wasm-opt failed or missing; shipping unoptimized wasm");
     }
     std::fs::copy("apps/yah-web/index.html", format!("{dist}/index.html")).map_err(|e| format!("copy index.html: {e}"))?;
+    // Precompressed copies; yah-server sends `<file>.gz` to clients that accept gzip
+    // (the wasm shrinks ~3x). Optional: without them it serves the plain files.
+    let (wasm_js, wasm_bin) = (format!("{dist}/yah-web.js"), format!("{dist}/yah-web_bg.wasm"));
+    if tool("gzip", &["-9", "--keep", "--force", "--no-name", &wasm_bin, &wasm_js]).is_err() {
+        eprintln!("xtask: gzip failed or missing; the web UI will be served uncompressed");
+    }
     println!("web: built {dist}/ — serve it with `cargo run -p yah -- --serve`");
     Ok(())
 }

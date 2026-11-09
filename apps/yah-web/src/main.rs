@@ -55,7 +55,8 @@ impl eframe::App for App {
         // One quiet banner while the link is down, instead of a notice per retry.
         if let Some(label) = self.link.get().label() {
             egui::Area::new(egui::Id::unique("yah-link-status"))
-                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
+                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 36.0))
+                .fade_in(false)
                 .order(egui::Order::Foreground)
                 .interactable(false)
                 .show(ui.ctx(), |ui| {

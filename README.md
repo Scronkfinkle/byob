@@ -14,6 +14,7 @@ yah --inference-url http://host:8080/v1 --model local
 YAH_API_KEY=sk-... yah                     # for hosted endpoints
 
 tailscale serve 7470                       # reach it from any device on your tailnet
+yah --headless --allow-user you@example.com # only admit that Tailscale login
 ```
 
 ## Develop

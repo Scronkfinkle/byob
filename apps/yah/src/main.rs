@@ -5,6 +5,7 @@
 //! yah --serve [ADDR]          desktop window + browser access (default 127.0.0.1:7470)
 //! yah --headless [ADDR]       browser access only, no window
 //!     --web-dir DIR           built web bundle to serve (default: $YAH_WEB_DIR, else apps/yah-web/dist)
+//!     --allow-user LOGIN      only admit this Tailscale login via `tailscale serve` (repeatable)
 //!     --inference-url URL     OpenAI-compatible base URL
 //!     --model NAME
 //!
@@ -30,6 +31,7 @@ struct Args {
     serve: Option<SocketAddr>,
     headless: bool,
     web_dir: PathBuf,
+    allowed_users: Vec<String>,
     inference: InferenceConfig,
     script: testing::Script,
 }
@@ -39,6 +41,7 @@ fn parse_args() -> Result<Args, String> {
     let mut args = Args {
         serve: None,
         headless: false,
+        allowed_users: Vec::new(),
         web_dir: std::env::var_os("YAH_WEB_DIR").map_or_else(|| PathBuf::from("apps/yah-web/dist"), PathBuf::from),
         inference: InferenceConfig::default(),
         script: testing::Script { after: std::time::Duration::from_secs(2), ..Default::default() },
@@ -61,6 +64,7 @@ fn parse_args() -> Result<Args, String> {
                 args.serve = Some(addr);
             }
             "--web-dir" => args.web_dir = it.next().ok_or("--web-dir needs a path")?.into(),
+            "--allow-user" => args.allowed_users.push(it.next().ok_or("--allow-user needs a Tailscale login")?),
             "--inference-url" => args.inference.base_url = it.next().ok_or("--inference-url needs a URL")?,
             "--model" => args.inference.model = it.next().ok_or("--model needs a name")?,
             "--send" => args.script.send.push(it.next().ok_or("--send needs text")?),
@@ -70,7 +74,11 @@ fn parse_args() -> Result<Args, String> {
                 let secs: f64 = v.parse().map_err(|e| format!("bad seconds {v:?}: {e}"))?;
                 args.script.after = std::time::Duration::try_from_secs_f64(secs).map_err(|e| format!("bad seconds {v:?}: {e}"))?;
             }
-            "-h" | "--help" => return Err("usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--inference-url URL] [--model NAME]".into()),
+            "-h" | "--help" => {
+                return Err(
+                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME]".into()
+                );
+            }
             other => return Err(format!("unknown argument {other:?} (try --help)")),
         }
     }
@@ -106,7 +114,7 @@ fn run() -> Result<(), String> {
     let engine = EngineHandle::spawn(args.inference).map_err(|e| format!("starting engine: {e}"))?;
 
     if let Some(addr) = args.serve {
-        let config = yah_server::ServerConfig { addr, web_dir: Some(args.web_dir) };
+        let config = yah_server::ServerConfig { addr, web_dir: Some(args.web_dir), allowed_users: args.allowed_users, ..Default::default() };
         let bound = yah_server::spawn(engine.clone(), config).map_err(|e| format!("binding {addr}: {e}"))?;
         eprintln!("yah: browser UI at http://{bound}  (expose on your tailnet with: tailscale serve {})", bound.port());
     }
