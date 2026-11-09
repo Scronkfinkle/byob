@@ -2,6 +2,7 @@
 //! over a [`Connection`] and sends user intents back. It never touches the engine directly.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod steps;
 pub mod theme;
 pub mod ws;
 
@@ -67,6 +68,7 @@ impl YahApp {
                         e.stats = stats;
                     }
                 }
+                ServerMsg::StepUpdated { entry, step } => steps::apply(&mut self.entries, entry, step),
             }
         }
     }
@@ -80,9 +82,10 @@ impl YahApp {
         self.conn.send(ClientMsg::SendMessage { text });
     }
 
-    /// Connected, no turn running, and every entry finished streaming.
+    /// Connected, and nothing will change without the user: no turn running and every
+    /// entry finished streaming, or a turn is waiting on an approval card.
     pub fn settled(&self) -> bool {
-        self.state.as_ref().is_some_and(|s| !s.busy) && self.entries.iter().all(|e| e.done)
+        self.state.is_some() && (steps::awaiting_approval(&self.entries) || (!self.busy() && self.entries.iter().all(|e| e.done)))
     }
 
     fn busy(&self) -> bool {
@@ -191,17 +194,23 @@ impl YahApp {
             });
             return;
         }
+        let mut answers = Vec::new();
         egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(8.0);
             for entry in &self.entries {
-                entry_view(ui, &t, entry);
+                answers.extend(entry_view(ui, &t, entry));
                 ui.add_space(8.0);
             }
         });
+        for msg in answers {
+            self.conn.send(msg);
+        }
     }
 }
 
-fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry) {
+/// Draws one entry; returns a message to send if the user answered an approval card.
+fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry) -> Option<ClientMsg> {
+    let mut answer = None;
     let (who, fill) = match entry.role {
         EntryRole::User => ("You", t.user_bubble),
         EntryRole::Assistant => ("yah", t.assistant_bubble),
@@ -220,6 +229,7 @@ fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry) {
                 ui.label(egui::RichText::new(&entry.reasoning).color(t.text_dim).small());
             });
         }
+        answer = steps::show(ui, t, entry);
         if !entry.content.is_empty() {
             ui.add(egui::Label::new(egui::RichText::new(&entry.content).color(t.text)).selectable(true));
         }
@@ -232,4 +242,5 @@ fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry) {
             ui.label(egui::RichText::new(format!("{} in · {} out tokens · {secs:.1}s", s.prompt_tokens, s.completion_tokens)).small().color(t.text_dim));
         }
     });
+    answer
 }
