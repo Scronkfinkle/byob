@@ -200,6 +200,69 @@ pub struct EngineState {
     pub endpoint: Option<String>,
     /// A turn is running.
     pub busy: bool,
+    /// What the engine knows about the inference endpoint (from its capability probe).
+    #[serde(default)]
+    pub endpoint_info: Option<EndpointInfo>,
+}
+
+/// How turns pass tools to the model.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolsMode {
+    /// The server's structured `tools` / `tool_calls`.
+    Native,
+    /// Tools described in the system prompt; calls parsed from the reply text.
+    Prompt,
+    /// Not known yet: native first, switching to prompt mode if the server rejects tools.
+    #[default]
+    Unknown,
+}
+
+/// Capability summary of the inference endpoint, for a small header detail.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EndpointInfo {
+    /// The probe is still running.
+    #[serde(default)]
+    pub probing: bool,
+    /// Server software, e.g. "llama.cpp", "vLLM", "Ollama"; empty if unknown.
+    #[serde(default)]
+    pub server: String,
+    /// Context window in tokens, if the server reports it.
+    #[serde(default)]
+    pub context_tokens: Option<u64>,
+    #[serde(default)]
+    pub tools: ToolsMode,
+    /// Takes image input: `Some(true)` yes, `Some(false)` no, `None` unknown.
+    #[serde(default)]
+    pub vision: Option<bool>,
+}
+
+impl EndpointInfo {
+    /// One short line, e.g. "llama.cpp · 262k ctx · native tools · vision".
+    pub fn summary(&self) -> String {
+        if self.probing {
+            return "checking endpoint…".into();
+        }
+        let mut parts = Vec::new();
+        if !self.server.is_empty() {
+            parts.push(self.server.clone());
+        }
+        if let Some(n) = self.context_tokens {
+            parts.push(if n >= 1000 { format!("{}k ctx", n / 1000) } else { format!("{n} ctx") });
+        }
+        parts.push(
+            match self.tools {
+                ToolsMode::Native => "native tools",
+                ToolsMode::Prompt => "prompt tools",
+                ToolsMode::Unknown => "tools untested",
+            }
+            .into(),
+        );
+        if self.vision == Some(true) {
+            parts.push("vision".into());
+        }
+        parts.join(" · ")
+    }
 }
 
 impl ClientMsg {
@@ -291,6 +354,16 @@ mod tests {
         let json = r#"{"id":1,"role":"user","content":"hi","reasoning":"","done":true,"error":null,"stats":null}"#;
         let e: Entry = serde_json::from_str(json).unwrap();
         assert!(e.steps.is_empty());
+    }
+
+    #[test]
+    fn endpoint_info_is_optional_and_summarised() {
+        let old = r#"{"version":"0","inference_base_url":"u","inference_model":"m","has_api_key":false,"endpoint":null,"busy":false}"#;
+        assert_eq!(serde_json::from_str::<EngineState>(old).unwrap().endpoint_info, None);
+        let info = EndpointInfo { probing: false, server: "llama.cpp".into(), context_tokens: Some(262_144), tools: ToolsMode::Native, vision: Some(true) };
+        assert_eq!(info.summary(), "llama.cpp · 262k ctx · native tools · vision");
+        assert_eq!(EndpointInfo { probing: true, ..info }.summary(), "checking endpoint…");
+        assert_eq!(EndpointInfo::default().summary(), "tools untested");
     }
 
     #[test]

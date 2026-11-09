@@ -153,6 +153,7 @@ fn harness_with(script: Vec<Reply>, tool: &'static str, access: Access, reply: O
         tools,
         policy: Policy::default(),
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
+        adapt: crate::AdaptOptions::default(),
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests, runs }
 }

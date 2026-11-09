@@ -150,6 +150,9 @@ impl YahApp {
                     Some(s) => ui.label(egui::RichText::new(format!("{} · {}", s.inference_model, s.inference_base_url)).color(t.text_dim)),
                     None => ui.label(egui::RichText::new("connecting…").color(t.text_dim)),
                 };
+                if let Some(info) = self.state.as_ref().and_then(|s| s.endpoint_info.as_ref()) {
+                    ui.label(egui::RichText::new(info.summary()).small().color(t.text_dim));
+                }
                 if self.busy() {
                     ui.spinner();
                 }

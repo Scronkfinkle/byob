@@ -9,6 +9,9 @@
 //! client answers the approval card, or the turn is stopped.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+mod adapt;
+#[cfg(test)]
+mod adapt_tests;
 pub mod dev_tools;
 mod limits;
 #[cfg(test)]
@@ -24,6 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
+pub use adapt::{AdaptOptions, ToolMode};
 pub use permissions::{Policy, Rule};
 use yah_protocol::{ApprovalAnswer, ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, Step, StepStatus};
 use yah_tools::Registry;
@@ -40,13 +44,22 @@ pub struct EngineConfig {
     pub policy: Policy,
     /// System prompt for every turn (plugins and skills append to it).
     pub system_prompt: String,
+    /// Endpoint probing and tool-calling mode.
+    pub adapt: AdaptOptions,
 }
 
 impl EngineConfig {
     /// No tools, default policy, the current directory as workspace.
     pub fn new(inference: InferenceConfig) -> Self {
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        Self { inference, workspace, tools: Registry::default(), policy: Policy::default(), system_prompt: turn::DEFAULT_SYSTEM_PROMPT.to_owned() }
+        Self {
+            inference,
+            workspace,
+            tools: Registry::default(),
+            policy: Policy::default(),
+            system_prompt: turn::DEFAULT_SYSTEM_PROMPT.to_owned(),
+            adapt: AdaptOptions::default(),
+        }
     }
 }
 
@@ -60,6 +73,7 @@ enum Input {
     Disconnect { id: ClientId },
     Client { id: ClientId, msg: ClientMsg },
     Turn(turn::TurnEvent),
+    Adapt(adapt::Event),
 }
 
 /// Cheap, cloneable handle used to attach clients to a running engine.
@@ -119,6 +133,8 @@ impl Drop for LocalConnection {
 struct Client {
     tx: Sender<ServerMsg>,
     wake: Waker,
+    /// Said `Hello`: gets broadcasts (before that it has no transcript to apply them to).
+    attached: bool,
 }
 
 /// An approval card waiting for an answer.
@@ -147,6 +163,8 @@ struct Engine {
     /// Approval requests by step id.
     pending: BTreeMap<u64, Pending>,
     step_ids: Arc<AtomicU64>,
+    /// Probed endpoint capabilities (see [`adapt`]).
+    endpoints: adapt::Endpoints,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -161,7 +179,12 @@ fn run(mut engine: Engine, rx: Receiver<Input>) {
 impl Engine {
     fn new(config: EngineConfig, inbox: Sender<Input>) -> Self {
         let llm = yah_llm::Client::new(config.inference.clone()).map_err(|e| e.to_string());
+        let mut endpoints = adapt::Endpoints::new(config.adapt);
+        if let Ok(client) = &llm {
+            endpoints.probe(client, &inbox);
+        }
         Self {
+            endpoints,
             config: config.inference,
             llm,
             clients: BTreeMap::new(),
@@ -200,19 +223,24 @@ impl Engine {
             has_api_key: self.config.api_key.is_some(),
             endpoint: self.llm.as_ref().ok().map(|c| c.endpoint().to_string()),
             busy: self.running.is_some(),
+            endpoint_info: Some(self.endpoints.info(&self.config)),
         }
     }
 
     fn handle(&mut self, input: Input) {
         match input {
             Input::Connect { id, tx, wake } => {
-                self.clients.insert(id, Client { tx, wake });
+                self.clients.insert(id, Client { tx, wake, attached: false });
             }
             Input::Disconnect { id } => {
                 self.clients.remove(&id);
             }
             Input::Client { id, msg } => self.handle_client(id, msg),
             Input::Turn(event) => self.handle_turn(event),
+            Input::Adapt(event) => {
+                self.endpoints.handle(event);
+                self.broadcast(ServerMsg::State(self.state()));
+            }
         }
     }
 
@@ -225,6 +253,9 @@ impl Engine {
                     return;
                 }
                 log::info!("client {id} attached: {client}");
+                if let Some(c) = self.clients.get_mut(&id) {
+                    c.attached = true;
+                }
                 self.send_to(id, ServerMsg::State(self.state()));
                 self.send_to(id, ServerMsg::Transcript { entries: self.transcript.clone() });
             }
@@ -233,6 +264,7 @@ impl Engine {
                 match yah_llm::Client::new(config.clone()) {
                     Ok(client) => {
                         self.config = config;
+                        self.endpoints.probe(&client, &self.inbox);
                         self.llm = Ok(client);
                         self.broadcast(ServerMsg::State(self.state()));
                     }
@@ -340,6 +372,7 @@ impl Engine {
             tools: self.tools.clone(),
             workspace: Arc::clone(&self.workspace),
             step_ids: Arc::clone(&self.step_ids),
+            plan: self.endpoints.plan(&self.config),
         };
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });
@@ -390,7 +423,7 @@ impl Engine {
     }
 
     fn broadcast(&mut self, msg: ServerMsg) {
-        self.clients.retain(|_, c| deliver(c, msg.clone()).is_ok());
+        self.clients.retain(|_, c| !c.attached || deliver(c, msg.clone()).is_ok());
     }
 }
 

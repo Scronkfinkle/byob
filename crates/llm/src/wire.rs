@@ -1,18 +1,60 @@
 //! OpenAI chat-completions wire types (only what we use), parsed defensively.
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
 /// A message in the request transcript.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `images` (URLs or `data:` URLs) turn `content` into OpenAI content parts on the wire:
+/// `[{"type":"text",...}, {"type":"image_url",...}]`. Without images `content` is a plain
+/// string, which every server accepts.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub content: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub tool_calls: Vec<WireToolCall>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub tool_call_id: Option<String>,
+    /// Image inputs, sent as `image_url` parts after the text. Not deserialized.
+    #[serde(skip)]
+    pub images: Vec<String>,
+}
+
+impl Serialize for ChatMessage {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum Part<'a> {
+            Text { text: &'a str },
+            ImageUrl { image_url: Url<'a> },
+        }
+        #[derive(Serialize)]
+        struct Url<'a> {
+            url: &'a str,
+        }
+        let mut map = s.serialize_map(None)?;
+        map.serialize_entry("role", &self.role)?;
+        if self.images.is_empty() {
+            if let Some(c) = &self.content {
+                map.serialize_entry("content", c)?;
+            }
+        } else {
+            let text = self.content.as_deref().filter(|t| !t.is_empty()).map(|text| Part::Text { text });
+            let images = self.images.iter().map(|url| Part::ImageUrl { image_url: Url { url } });
+            let parts: Vec<Part<'_>> = text.into_iter().chain(images).collect();
+            map.serialize_entry("content", &parts)?;
+        }
+        if !self.tool_calls.is_empty() {
+            map.serialize_entry("tool_calls", &self.tool_calls)?;
+        }
+        if let Some(id) = &self.tool_call_id {
+            map.serialize_entry("tool_call_id", id)?;
+        }
+        map.end()
+    }
 }
 
 impl ChatMessage {
@@ -26,7 +68,26 @@ impl ChatMessage {
         Self::text("assistant", text)
     }
     fn text(role: &str, text: impl Into<String>) -> Self {
-        Self { role: role.into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: None }
+        Self { role: role.into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: None, images: Vec::new() }
+    }
+    /// A user message with images (URLs or `data:image/...;base64,` URLs) after the text.
+    pub fn user_with_images(text: impl Into<String>, images: Vec<String>) -> Self {
+        Self { images, ..Self::user(text) }
+    }
+    /// This message without its images; each dropped image leaves `note` in the text.
+    pub fn without_images(&self, note: &str) -> Self {
+        let mut m = Self { images: Vec::new(), ..self.clone() };
+        if !self.images.is_empty() {
+            let mut text = m.content.take().unwrap_or_default();
+            for _ in &self.images {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(note);
+            }
+            m.content = Some(text);
+        }
+        m
     }
     /// An assistant turn that requested tool calls.
     pub fn assistant_tool_calls(text: Option<String>, calls: &[ToolCall]) -> Self {
@@ -38,11 +99,11 @@ impl ChatMessage {
                 function: WireFunction { name: c.name.clone(), arguments: c.arguments.clone() },
             })
             .collect();
-        Self { role: "assistant".into(), content: text, tool_calls, tool_call_id: None }
+        Self { role: "assistant".into(), content: text, tool_calls, tool_call_id: None, images: Vec::new() }
     }
     /// The result of a tool call.
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: "tool".into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: Some(call_id.into()) }
+        Self { role: "tool".into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: Some(call_id.into()), images: Vec::new() }
     }
 }
 

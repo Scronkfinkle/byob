@@ -52,6 +52,26 @@ fn joins_chat_completions_path() {
 }
 
 #[test]
+fn messages_serialize_text_or_image_parts() {
+    let plain = serde_json::to_value(ChatMessage::user("hi")).unwrap();
+    assert_eq!(plain, serde_json::json!({"role": "user", "content": "hi"}));
+    let call = ToolCall { id: "c".into(), name: "f".into(), arguments: "{}".into() };
+    let calls = serde_json::to_value(ChatMessage::assistant_tool_calls(None, &[call])).unwrap();
+    assert_eq!(calls, serde_json::json!({"role": "assistant", "tool_calls": [{"id": "c", "type": "function", "function": {"name": "f", "arguments": "{}"}}]}));
+    let m = ChatMessage::user_with_images("what is this?", vec!["data:image/png;base64,AAAA".into()]);
+    assert_eq!(
+        serde_json::to_value(&m).unwrap(),
+        serde_json::json!({"role": "user", "content": [
+            {"type": "text", "text": "what is this?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]})
+    );
+    let stripped = m.without_images("[image omitted]");
+    assert!(stripped.images.is_empty());
+    assert_eq!(stripped.content.as_deref(), Some("what is this?\n[image omitted]"));
+}
+
+#[test]
 fn rejects_garbage_and_non_http_urls() {
     assert!(Client::new(InferenceConfig { base_url: "not a url".into(), ..Default::default() }).is_err());
     assert!(Client::new(InferenceConfig { base_url: "file:///etc/passwd".into(), ..Default::default() }).is_err());

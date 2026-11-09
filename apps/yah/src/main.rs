@@ -18,6 +18,7 @@
 //!     --screenshot FILE       PNG of the window once the conversation settles, then exit
 //!     --screenshot-after SECS minimum wait before the screenshot (default 2)
 //!     --open-settings         start with the settings panel open
+//!     --tool-mode MODE        auto | native | prompt: force how tools are passed to the model
 //! ```
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -44,6 +45,7 @@ struct Args {
     plugins: Vec<PathBuf>,
     theme: Option<yah_ui_egui::theme::ThemeKind>,
     open_settings: bool,
+    tool_mode: yah_agent::ToolMode,
     script: testing::Script,
 }
 
@@ -60,6 +62,7 @@ fn parse_args() -> Result<Args, String> {
         plugins: Vec::new(),
         theme: None,
         open_settings: false,
+        tool_mode: yah_agent::ToolMode::Auto,
         script: testing::Script { after: std::time::Duration::from_secs(2), ..Default::default() },
     };
     if let Ok(key) = std::env::var("YAH_API_KEY") {
@@ -91,6 +94,11 @@ fn parse_args() -> Result<Args, String> {
                 args.theme = Some(yah_ui_egui::theme::ThemeKind::from_name(&v).ok_or_else(|| format!("unknown theme {v:?} (system, dark, light)"))?);
             }
             "--open-settings" => args.open_settings = true,
+            // Hidden, for testing: force native or prompt-based tool calling.
+            "--tool-mode" => {
+                let v = it.next().ok_or("--tool-mode needs auto, native or prompt")?;
+                args.tool_mode = yah_agent::ToolMode::parse(&v).ok_or_else(|| format!("unknown tool mode {v:?} (auto, native, prompt)"))?;
+            }
             "--send" => args.script.send.push(it.next().ok_or("--send needs text")?),
             "--screenshot" => args.script.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into()),
             "--screenshot-after" => {
@@ -141,6 +149,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let args = parse_args()?;
     let mut config = EngineConfig::new(args.inference);
+    config.adapt.tool_mode = args.tool_mode;
     if let Some(dir) = args.workspace {
         if !dir.is_dir() {
             return Err(format!("workspace {} is not a folder", dir.display()));
