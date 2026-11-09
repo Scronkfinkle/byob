@@ -10,6 +10,7 @@
 //!     --model NAME            (default: settings.json)
 //!     --workspace DIR         folder new chats work in (default: settings.json, else current directory)
 //!     --plugin DIR            load the plugin in DIR (repeatable; also <config>/plugins)
+//!     --auto-approve          allow every tool call without asking (testing)
 //!     --dev-tools             offer trivial test tools (get_time, set_reminder)
 //!     --theme NAME            system | dark | light (overrides the saved preference)
 //!
@@ -51,6 +52,8 @@ struct Args {
     api_key: Option<String>,
     workspace: Option<PathBuf>,
     dev_tools: bool,
+    /// Allow every tool call without asking (scripted test runs).
+    auto_approve: bool,
     plugins: Vec<PathBuf>,
     theme: Option<yah_ui_egui::theme::ThemeKind>,
     open_settings: bool,
@@ -70,6 +73,7 @@ fn parse_args() -> Result<Args, String> {
         api_key: std::env::var("YAH_API_KEY").ok().filter(|k| !k.is_empty()),
         workspace: None,
         dev_tools: false,
+        auto_approve: false,
         plugins: Vec::new(),
         theme: None,
         open_settings: false,
@@ -96,6 +100,7 @@ fn parse_args() -> Result<Args, String> {
             "--model" => args.model = Some(it.next().ok_or("--model needs a name")?),
             "--workspace" => args.workspace = Some(it.next().ok_or("--workspace needs a folder")?.into()),
             "--dev-tools" => args.dev_tools = true,
+            "--auto-approve" => args.auto_approve = true,
             "--plugin" => args.plugins.push(it.next().ok_or("--plugin needs a folder")?.into()),
             "--theme" => {
                 let v = it.next().ok_or("--theme needs a name")?;
@@ -226,6 +231,11 @@ fn run() -> Result<(), String> {
     let mut config = EngineConfig::new(inference_config(&args, &saved.settings, &saved.secrets));
     config.paths = saved.paths;
     config.adapt.tool_mode = args.tool_mode;
+    if args.auto_approve {
+        log::warn!("--auto-approve: every tool call runs without asking");
+        let allow = yah_agent::Rule::Allow;
+        config.policy = yah_agent::Policy { read: allow, write: allow, network: allow, execute: allow };
+    }
     if let Some(dir) = workspace(&args, &saved.settings)? {
         config.workspace = dir;
     }

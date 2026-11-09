@@ -275,6 +275,10 @@ impl Tool for RunCommand {
         with_network(format!("Run `{}`", short(cmd, 60)), args)
     }
 
+    fn pending_title(&self, args: &Value) -> String {
+        self.title(args)
+    }
+
     fn access(&self, _args: &Value) -> Access {
         Access::Execute
     }
@@ -347,6 +351,10 @@ impl Tool for RunPython {
             None => "Run Python code".into(),
         };
         with_network(t, args)
+    }
+
+    fn pending_title(&self, args: &Value) -> String {
+        self.title(args)
     }
 
     fn access(&self, _args: &Value) -> Access {
@@ -439,6 +447,10 @@ impl Tool for InstallPythonPackages {
     fn title(&self, args: &Value) -> String {
         let names: Vec<&str> = args.get("packages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).take(6).collect()).unwrap_or_default();
         format!("Install Python packages: {}", short(&names.join(", "), 80))
+    }
+
+    fn pending_title(&self, args: &Value) -> String {
+        self.title(args)
     }
 
     fn access(&self, _args: &Value) -> Access {

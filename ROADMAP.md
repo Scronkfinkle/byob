@@ -5,24 +5,26 @@ Last updated: 2026-11-09
 ## Done
 - Workspace, nix flake (dev shell + `yah` and `yah-web` packages, gzip web assets), xtask gate.
 - Protocol, engine, server; desktop + browser UI sharing one live session; browser auto-reconnect.
-- Streaming chat against any OpenAI-compatible URL; capability probe; token budgeting.
-- Tool loop (30-call cap, repeat detection), permission gate, approval cards any client can answer.
-- Sandboxed file tools; hob-compatible plugins: skills, Python tools, MCP connectors (blocking client).
-- Themes (system/dark/light, accents, sizes, high contrast), markdown rendering.
-- Remote access hardening: Tailscale identity allowlist, Origin checks, connection caps, timeouts.
-- Persistence: chats/messages/steps in `yah-store` (SQLite), batched stream writes, interrupted-reply
-  recovery; multiple chats with a sidebar (per-client current chat, auto titles); "always allow"
-  per chat or global; settings.json/secrets.json with CLI overrides.
+- Streaming chat against any OpenAI-compatible URL; endpoint probe drives tool-call mode
+  (native / prompt-based fallback / auto-retry), history budget and vision.
+- Tool loop, permission gate, approval cards with previews/diffs, steps inline, per-turn undo.
+- Persistent multiple chats (SQLite), sidebar, per-device current chat, settings/secrets files,
+  always-allow per chat or global.
+- Sandboxed file tools; `run_command` / `run_python` through `yah-sandbox` (Landlock + namespaces);
+  managed Python via uv; hob-compatible plugins (skills, Python tools, MCP connectors).
+- Charts (hob ChartSpec v1, `make_chart` incl. CSV aggregation), inline images, uploads (desktop+web).
+- Themes, markdown, remote-access hardening, Tailscale identity allowlist.
 
 ## Next
-1. **Undo** of file changes using the journal + `.yah/trash`.
-2. **Approval card polish**: present-tense titles ("Write todo.md?"), readable args/diff instead
-   of raw JSON; steps interleaved with text (`Step.at`); stop showing "Thinking…" while waiting.
-3. **Plugins UI**: list/enable plugins, settings values (secrets), add connector by pasting config.
-4. **Use the probe**: pick native vs prompt-based tool calling, budget history from context size.
-5. Legacy HTTP+SSE MCP transport; OAuth for MCP; process-group kill for stdio servers/scripts.
-6. Sandbox for Python tools and stdio MCP servers (Landlock on Linux).
+1. **Artifacts**: versioned charts/images/documents/mini-apps with a side pane; mini-app runtime
+   chosen from the two investigations (scripted egui widgets vs HTML).
+2. **Plugins UI**: list/enable plugins, settings values (secrets), add connector by pasting config.
+3. Persist undo journals, attachments and step media; "denied" step status in the store.
+4. Media shown where the step happened (currently after the reply); header overflow on narrow widths.
+5. Legacy HTTP+SSE MCP transport; OAuth for MCP.
+6. macOS sandbox profile (untested); Windows sandboxing.
 7. Syntax highlighting; table alignment; markdown for thinking text.
+8. Flaky under load: `yah-mcp` `expired_session_is_reported` (passes alone).
 
 ## Ideas worth deciding early
 - **Endpoint capability probe.** Tool calling differs per server (llama-server needs
