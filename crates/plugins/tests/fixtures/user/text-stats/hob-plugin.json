@@ -1,0 +1,13 @@
+{
+  "id": "text-stats",
+  "name": "Text stats",
+  "tools": [{
+    "name": "count_words",
+    "description": "Count the words and sentences in a text file.",
+    "params": { "type": "object", "properties": { "file": { "type": "string" } }, "required": ["file"] },
+    "run": "tools/count.py",
+    "title": "Counted the words in {file}"
+  }],
+  "settings": [{ "key": "GREETING", "label": "Greeting", "default": "hello" }],
+  "prompt": "To count words in a file, use count_words."
+}
