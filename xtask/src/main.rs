@@ -1,0 +1,186 @@
+//! Repo automation. `cargo xtask <cmd>`:
+//!   layers  — enforce the crate layering in docs/architecture.md
+//!   web     — build the browser UI into apps/yah-web/dist (wasm-bindgen + wasm-opt)
+//!   wasm    — check that the browser-side crates build for wasm32
+//!   ci      — fmt, clippy, tests, doc tests, layers, wasm (the full local gate)
+
+use std::process::{Command, ExitCode};
+
+/// Every workspace crate and its layer. Dependencies may only point downward.
+const LAYERS: &[(&str, u8)] = &[
+    ("yah-types", 0),
+    ("yah-protocol", 1),
+    ("yah-llm", 1),
+    ("yah-store", 1),
+    ("yah-tools", 2),
+    ("yah-agent", 3),
+    ("yah-server", 4),
+    ("yah-ui-egui", 4),
+    ("yah", 5),
+    ("yah-web", 5),
+    ("xtask", 9),
+];
+
+/// Only these crates may depend on GUI crates.
+const UI_CRATES: &[&str] = &["yah-ui-egui", "yah", "yah-web"];
+const UI_DEPS: &[&str] = &["egui", "eframe", "egui-wgpu", "winit", "rfd", "ewebsock"];
+
+/// Crates that run in the browser. They may only depend on each other (not on the engine).
+const WASM_CRATES: &[&str] = &["yah-types", "yah-protocol", "yah-ui-egui", "yah-web"];
+
+/// Async runtimes are banned: yah is std::thread + channels throughout.
+const BANNED: &[&str] = &["tokio", "async-std", "smol"];
+
+fn main() -> ExitCode {
+    let cmd = std::env::args().nth(1).unwrap_or_default();
+    let result = match cmd.as_str() {
+        "layers" => layers(),
+        "wasm" => wasm(),
+        "web" => web(),
+        "ci" => ci(),
+        _ => Err(format!("unknown command {cmd:?}; expected one of: layers, wasm, web, ci")),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("xtask: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn layer_of(name: &str) -> Option<u8> {
+    LAYERS.iter().find(|(n, _)| *n == name).map(|(_, l)| *l)
+}
+
+fn layers() -> Result<(), String> {
+    let out = Command::new(env!("CARGO")).args(["metadata", "--format-version=1", "--no-deps"]).output().map_err(|e| format!("cargo metadata: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    let meta: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("parse metadata: {e}"))?;
+    let packages = meta.get("packages").and_then(|p| p.as_array()).ok_or("metadata has no packages")?;
+
+    let mut errors = Vec::new();
+    for pkg in packages {
+        let name = pkg.get("name").and_then(|n| n.as_str()).unwrap_or_default();
+        let Some(layer) = layer_of(name) else {
+            errors.push(format!("{name}: not assigned a layer in xtask LAYERS"));
+            continue;
+        };
+        let deps = pkg.get("dependencies").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+        for dep in deps {
+            if dep.get("kind").and_then(|k| k.as_str()) == Some("dev") {
+                continue;
+            }
+            let dep_name = dep.get("name").and_then(|n| n.as_str()).unwrap_or_default();
+            if let Some(dep_layer) = layer_of(dep_name)
+                && dep_layer >= layer
+            {
+                errors.push(format!("{name} (L{layer}) -> {dep_name} (L{dep_layer}): dependencies must point to a lower layer"));
+            }
+            if UI_DEPS.contains(&dep_name) && !UI_CRATES.contains(&name) {
+                errors.push(format!("{name} depends on UI crate {dep_name}; only {UI_CRATES:?} may"));
+            }
+            if WASM_CRATES.contains(&name) && layer_of(dep_name).is_some() && !WASM_CRATES.contains(&dep_name) {
+                errors.push(format!("{name} runs in the browser and must not depend on {dep_name}"));
+            }
+        }
+    }
+    errors.extend(banned_deps()?);
+    if errors.is_empty() {
+        println!("layers: ok");
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+/// Fail if any banned async runtime appears in the dependency graph of a target we ship
+/// (host and wasm32-unknown-unknown). `--target all` would flag e.g. emscripten-only deps.
+fn banned_deps() -> Result<Vec<String>, String> {
+    let mut found = Vec::new();
+    for target in [None, Some("wasm32-unknown-unknown")] {
+        let mut args = vec!["tree", "--workspace", "-e", "normal,build", "--prefix", "none", "--format", "{p}"];
+        if let Some(t) = target {
+            args.extend(["--target", t]);
+        }
+        let out = Command::new(env!("CARGO")).args(&args).output().map_err(|e| format!("cargo tree: {e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        let tree = String::from_utf8_lossy(&out.stdout);
+        found.extend(
+            tree.lines()
+                .filter_map(|l| l.split_whitespace().next())
+                .filter(|name| BANNED.contains(name))
+                .map(|name| format!("banned async runtime `{name}` in dependency graph for {} (see `cargo tree -i {name}`)", target.unwrap_or("host"))),
+        );
+    }
+    found.sort();
+    found.dedup();
+    Ok(found)
+}
+
+fn wasm() -> Result<(), String> {
+    let mut args = vec!["check", "--target", "wasm32-unknown-unknown"];
+    for krate in WASM_CRATES {
+        args.extend(["-p", krate]);
+    }
+    run(&args)
+}
+
+/// Build the browser bundle: cargo (wasm32, release) -> wasm-bindgen -> wasm-opt -> dist/.
+fn web() -> Result<(), String> {
+    let lock = std::fs::read_to_string("Cargo.lock").map_err(|e| format!("read Cargo.lock: {e}"))?;
+    let want = lock
+        .split("[[package]]")
+        .find(|p| p.contains("name = \"wasm-bindgen\"\n"))
+        .and_then(|p| p.lines().find_map(|l| l.strip_prefix("version = \"")))
+        .map(|v| v.trim_end_matches('"').to_owned())
+        .ok_or("wasm-bindgen not found in Cargo.lock")?;
+    let have = Command::new("wasm-bindgen").arg("--version").output().map_err(|e| format!("wasm-bindgen-cli not found (use `nix develop`): {e}"))?;
+    let have = String::from_utf8_lossy(&have.stdout);
+    if !have.split_whitespace().any(|w| w == want) {
+        return Err(format!("wasm-bindgen-cli is {}, Cargo.lock needs {want}", have.trim()));
+    }
+
+    run(&["build", "--release", "--target", "wasm32-unknown-unknown", "-p", "yah-web"])?;
+    let dist = "apps/yah-web/dist";
+    let _ = std::fs::remove_dir_all(dist);
+    std::fs::create_dir_all(dist).map_err(|e| format!("create {dist}: {e}"))?;
+    tool("wasm-bindgen", &["--target", "web", "--no-typescript", "--out-dir", dist, "target/wasm32-unknown-unknown/release/yah-web.wasm"])?;
+    let wasm = format!("{dist}/yah-web_bg.wasm");
+    if tool("wasm-opt", &["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "-o", &wasm, &wasm]).is_err() {
+        eprintln!("xtask: wasm-opt failed or missing; shipping unoptimized wasm");
+    }
+    std::fs::copy("apps/yah-web/index.html", format!("{dist}/index.html")).map_err(|e| format!("copy index.html: {e}"))?;
+    println!("web: built {dist}/ — serve it with `cargo run -p yah -- --serve`");
+    Ok(())
+}
+
+fn tool(program: &str, args: &[&str]) -> Result<(), String> {
+    println!("==> {program} {}", args.join(" "));
+    let status = Command::new(program).args(args).status().map_err(|e| format!("{program}: {e}"))?;
+    if status.success() { Ok(()) } else { Err(format!("{program} failed")) }
+}
+
+fn run(args: &[&str]) -> Result<(), String> {
+    println!("==> cargo {}", args.join(" "));
+    let status = Command::new(env!("CARGO")).args(args).status().map_err(|e| format!("cargo {}: {e}", args.join(" ")))?;
+    if status.success() { Ok(()) } else { Err(format!("cargo {} failed", args.join(" "))) }
+}
+
+fn ci() -> Result<(), String> {
+    run(&["fmt", "--all", "--check"])?;
+    run(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"])?;
+    let has_nextest = Command::new(env!("CARGO")).args(["nextest", "--version"]).output().is_ok_and(|o| o.status.success());
+    if has_nextest {
+        run(&["nextest", "run", "--workspace", "--no-fail-fast"])?;
+    } else {
+        run(&["test", "--workspace", "--lib", "--bins", "--tests"])?;
+    }
+    run(&["test", "--workspace", "--doc"])?;
+    layers()?;
+    wasm()
+}

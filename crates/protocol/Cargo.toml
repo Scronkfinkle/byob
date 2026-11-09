@@ -1,0 +1,16 @@
+[package]
+name = "yah-protocol"
+description = "Client <-> engine messages shared by the desktop UI, web UI and server. Must compile to wasm32 (L1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+yah-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

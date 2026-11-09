@@ -1,0 +1,21 @@
+[package]
+name = "yah-server"
+description = "Serves the web UI and bridges WebSocket clients to the engine. Thread-per-connection, no async runtime (L4)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+yah-agent.workspace = true
+yah-protocol.workspace = true
+tungstenite.workspace = true
+httparse.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+yah-types.workspace = true
+
+[lints]
+workspace = true

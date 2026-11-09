@@ -1,0 +1,18 @@
+[package]
+name = "yah-tools"
+description = "Agent tools: filesystem, web fetch, charts, python (L2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+yah-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

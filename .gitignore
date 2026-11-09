@@ -1,0 +1,7 @@
+/target
+/result
+/result-*
+.direnv/
+plan/
+*.swp
+.DS_Store

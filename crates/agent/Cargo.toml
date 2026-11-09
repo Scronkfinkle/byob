@@ -1,0 +1,22 @@
+[package]
+name = "yah-agent"
+description = "Headless agent engine: turn loop, tool calling, permissions, undo (L3)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+yah-types.workspace = true
+yah-llm.workspace = true
+yah-store.workspace = true
+yah-tools.workspace = true
+yah-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

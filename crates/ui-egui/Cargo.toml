@@ -1,0 +1,17 @@
+[package]
+name = "yah-ui-egui"
+description = "egui frontend. Talks to the engine only via yah-protocol; must compile to wasm32 (L4)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+yah-protocol.workspace = true
+egui.workspace = true
+ewebsock.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true
