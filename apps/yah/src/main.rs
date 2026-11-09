@@ -253,11 +253,37 @@ fn run() -> Result<(), String> {
     run_ui(args, engine, saved_theme)
 }
 
+/// Where "Open in browser" finds artifacts: the `--serve` server if there is one, else a
+/// loopback server on a random port that serves only artifacts, started on first use.
+fn link_base(engine: EngineHandle, serving: Option<SocketAddr>) -> yah_ui_egui::artifact::LinkBase {
+    let started: std::sync::Mutex<Option<SocketAddr>> = std::sync::Mutex::new(serving.map(|mut a| {
+        if a.ip().is_unspecified() {
+            a.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+        }
+        a
+    }));
+    Box::new(move || {
+        let mut slot = started.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let addr = match *slot {
+            Some(a) => a,
+            None => {
+                let config = yah_server::ServerConfig { addr: SocketAddr::from(([127, 0, 0, 1], 0)), artifacts_only: true, ..Default::default() };
+                let a = yah_server::spawn(engine.clone(), config).map_err(|e| format!("couldn't start the artifact server: {e}"))?;
+                *slot = Some(a);
+                a
+            }
+        };
+        Ok(format!("http://{addr}"))
+    })
+}
+
 fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::ThemeKind) -> Result<(), String> {
+    let mut serving = None;
     if let Some(addr) = args.serve {
         let config = yah_server::ServerConfig { addr, web_dir: Some(args.web_dir), allowed_users: args.allowed_users, ..Default::default() };
         let bound = yah_server::spawn(engine.clone(), config).map_err(|e| format!("binding {addr}: {e}"))?;
         eprintln!("yah: browser UI at http://{bound}  (expose on your tailnet with: tailscale serve {})", bound.port());
+        serving = Some(bound);
     }
 
     if args.headless {
@@ -283,6 +309,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::The
             let ctx = cc.egui_ctx.clone();
             let conn = engine.connect(Arc::new(move || ctx.request_repaint()));
             let mut ui = yah_ui_egui::YahApp::new(Box::new(conn), "desktop");
+            ui.set_link_base(link_base(engine.clone(), serving));
             // This device's saved appearance, else the theme from settings.json.
             let stored: Option<yah_ui_egui::theme::Prefs> = cc.storage.and_then(|s| eframe::get_value(s, yah_ui_egui::theme::Prefs::STORAGE_KEY));
             let mut prefs = stored.unwrap_or(yah_ui_egui::theme::Prefs { theme: saved_theme, ..Default::default() });

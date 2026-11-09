@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use yah_llm::{ChatMessage, StreamEvent};
-use yah_protocol::{ChatSummary, Entry, EntryRole, FileChange, Step, StepStatus, ToolAccess, TurnStats};
+use yah_protocol::{ArtifactRef, ChatSummary, Entry, EntryRole, FileChange, MediaKind, MediaRef, Step, StepStatus, ToolAccess, TurnStats};
 use yah_store::{Chat, MessageStats, NewStep, Role, StepAccess, StepChange, StepResult, StoredMessage};
 
 use crate::Input;
@@ -107,6 +107,7 @@ fn step(s: yah_store::Step, step_ids: &AtomicU64) -> Step {
         at,
         preview: None,
         media: Vec::new(),
+        artifacts: Vec::new(),
     }
 }
 
@@ -163,6 +164,40 @@ fn from_change(c: &StepChange) -> FileChange {
         StepChange::Modified { path } => FileChange::Modified { path: s(path) },
         StepChange::Deleted { path } => FileChange::Deleted { path: s(path) },
         StepChange::Moved { from, to } => FileChange::Moved { from: s(from), to: s(to) },
+    }
+}
+
+/// Steps loaded from the store only have their file changes. Rebuild from those what a
+/// live step carried: the charts and images it made, and the artifact versions.
+pub fn restore_step_files(entries: &mut [Entry], artifacts: &[yah_protocol::Artifact]) {
+    let same = |a: &str, b: &str| {
+        let (a, b) = (a.replace('\\', "/"), b.replace('\\', "/"));
+        a == b || a.ends_with(&format!("/{b}"))
+    };
+    for step in entries.iter_mut().flat_map(|e| e.steps.iter_mut()) {
+        if step.status != StepStatus::Done {
+            continue;
+        }
+        let made: Vec<&str> = step
+            .changes
+            .iter()
+            .filter_map(|c| match c {
+                FileChange::Created { path } | FileChange::Modified { path } | FileChange::Moved { to: path, .. } => Some(path.as_str()),
+                FileChange::Deleted { .. } => None,
+            })
+            .collect();
+        for path in made {
+            let r = MediaRef::new(path, 0);
+            if r.kind != MediaKind::File && !step.media.iter().any(|m| m.path == r.path) {
+                step.media.push(r);
+            }
+            let found = yah_tools::artifact::parse_version_path(path).or_else(|| {
+                artifacts.iter().find_map(|a| a.versions.iter().find(|v| same(path, &v.path)).map(|v| ArtifactRef { id: a.id.clone(), version: v.n }))
+            });
+            if let Some(r) = found.filter(|r| artifacts.iter().any(|a| a.id == r.id) && !step.artifacts.contains(r)) {
+                step.artifacts.push(r);
+            }
+        }
     }
 }
 
@@ -251,6 +286,7 @@ mod tests {
             at: 12,
             preview: None,
             media: vec![],
+            artifacts: vec![],
         };
         let new = new_step(&s);
         let stored = yah_store::Step {

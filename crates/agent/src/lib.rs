@@ -41,11 +41,12 @@ use std::time::{Duration, Instant};
 pub use adapt::{AdaptOptions, ToolMode};
 pub use permissions::{Policy, Rule};
 use yah_protocol::{
-    ApprovalAnswer, ChatCursor, ChatSummary, ClientMsg, Connection, EngineState, Entry, EntryRole, MediaRef, NoticeLevel, PROTOCOL_VERSION, ServerMsg, Step,
-    StepStatus,
+    ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, EngineState, Entry, EntryRole, MediaRef, NoticeLevel,
+    PROTOCOL_VERSION, ServerMsg, Step, StepStatus,
 };
 use yah_store::{GrantScope, NewMessage, Paths, Role, Secrets, Settings, Store, StoreError};
 use yah_tools::Registry;
+pub use yah_tools::artifact;
 use yah_types::InferenceConfig;
 
 /// How often streamed text is written to the database while a reply runs.
@@ -116,6 +117,11 @@ enum Input {
         title: String,
     },
     Adapt(adapt::Event),
+    /// The HTTP server asks where a chat's files are (to serve its artifacts).
+    ChatWorkspace {
+        chat: String,
+        reply: Sender<Option<PathBuf>>,
+    },
 }
 
 /// Cheap, cloneable handle used to attach clients to a running engine.
@@ -139,6 +145,14 @@ impl EngineHandle {
         let engine = Engine::new(config, store, inbox.clone());
         thread::Builder::new().name("yah-engine".into()).spawn(move || run(engine, rx))?;
         Ok(Self { inbox, next_id: Arc::default() })
+    }
+
+    /// The workspace folder of `chat`, or `None` if there is no such chat (or the engine
+    /// doesn't answer within a few seconds). Used to serve artifacts over HTTP.
+    pub fn chat_workspace(&self, chat: &str) -> Option<PathBuf> {
+        let (reply, answer) = channel();
+        self.inbox.send(Input::ChatWorkspace { chat: chat.to_owned(), reply }).ok()?;
+        answer.recv_timeout(Duration::from_secs(5)).ok().flatten()
     }
 
     /// Attach a new client. `wake` is called whenever a message is queued for it.
@@ -209,6 +223,8 @@ struct Pending {
 struct Live {
     entries: Vec<Entry>,
     workspace: Arc<PathBuf>,
+    /// The chat's artifacts (see [`yah_tools::artifact`]).
+    artifacts: Vec<Artifact>,
 }
 
 /// A running turn, keyed by its reply entry.
@@ -339,8 +355,10 @@ impl Engine {
         if !self.live.contains_key(chat) {
             let row = self.store.chat(chat).map_err(|e| e.to_string())?.ok_or_else(|| "that chat no longer exists".to_owned())?;
             let messages = self.store.messages(chat).map_err(|e| format!("couldn't load the chat: {e}"))?;
-            let entries = messages.into_iter().filter_map(|m| chats::entry(m, &self.step_ids)).collect();
-            self.live.insert(chat.to_owned(), Live { entries, workspace: Arc::new(row.workspace) });
+            let mut entries: Vec<Entry> = messages.into_iter().filter_map(|m| chats::entry(m, &self.step_ids)).collect();
+            let artifacts = artifact::list(&row.workspace, chat);
+            chats::restore_step_files(&mut entries, &artifacts);
+            self.live.insert(chat.to_owned(), Live { entries, workspace: Arc::new(row.workspace), artifacts });
         }
         self.live.get_mut(chat).ok_or_else(|| "that chat no longer exists".to_owned())
     }
@@ -357,15 +375,15 @@ impl Engine {
     }
 
     fn show_chat_with(&mut self, id: ClientId, chat: Option<String>, send_state: bool) {
-        let entries = match &chat {
+        let (entries, artifacts) = match &chat {
             Some(c) => match self.live(c) {
-                Ok(live) => live.entries.clone(),
+                Ok(live) => (live.entries.clone(), live.artifacts.clone()),
                 Err(text) => {
                     self.send_to(id, ServerMsg::Notice { level: NoticeLevel::Error, text });
                     return;
                 }
             },
-            None => Vec::new(),
+            None => (Vec::new(), Vec::new()),
         };
         let summary = chat.as_deref().and_then(|c| self.summary(c));
         if let Some(client) = self.clients.get_mut(&id) {
@@ -376,6 +394,7 @@ impl Engine {
         }
         self.send_to(id, ServerMsg::ChatOpened { chat: summary });
         self.send_to(id, ServerMsg::Transcript { entries });
+        self.send_to(id, ServerMsg::Artifacts { chat, artifacts });
         self.gc();
     }
 
@@ -411,7 +430,7 @@ impl Engine {
             }
         };
         self.provisional.insert(chat.id.clone(), title);
-        self.live.insert(chat.id.clone(), Live { entries: Vec::new(), workspace: Arc::new(chat.workspace.clone()) });
+        self.live.insert(chat.id.clone(), Live { entries: Vec::new(), workspace: Arc::new(chat.workspace.clone()), artifacts: Vec::new() });
         self.broadcast(ServerMsg::ChatUpdated(chats::summary(&chat, false)));
         Ok(chat.id)
     }
@@ -525,6 +544,9 @@ impl Engine {
                 self.endpoints.handle(event);
                 self.broadcast_state();
             }
+            Input::ChatWorkspace { chat, reply } => {
+                let _ = reply.send(self.chat_workspace(&chat));
+            }
         }
     }
 
@@ -578,6 +600,7 @@ impl Engine {
                 }
             }
             ClientMsg::GetMedia { path } => self.serve_media(id, path),
+            ClientMsg::GetArtifact { id: artifact, version } => self.serve_artifact(id, artifact, version),
         }
     }
 
@@ -608,6 +631,63 @@ impl Engine {
         if let Err(e) = spawned {
             log::error!("could not start a media thread: {e}");
         }
+    }
+
+    /// Send one artifact version's bytes to a client, read off the engine thread. Only
+    /// artifacts of the chat the client looks at.
+    fn serve_artifact(&mut self, id: ClientId, artifact: String, version: u32) {
+        let chat = self.client_chat(id);
+        let known = chat.as_ref().and_then(|c| self.live.get(c)).is_some_and(|l| l.artifacts.iter().any(|a| a.id == artifact));
+        let Some(chat) = chat.filter(|_| known) else {
+            self.send_to(id, ServerMsg::ArtifactFile { id: artifact, version, data: None, error: Some("not part of this conversation".into()) });
+            return;
+        };
+        let workspace = self.client_workspace(id);
+        let Some(client) = self.clients.get(&id) else { return };
+        let (tx, wake) = (client.tx.clone(), Arc::clone(&client.wake));
+        let spawned = thread::Builder::new().name("yah-artifact".into()).spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| attachments::artifact_for_client(&workspace, &chat, &artifact, version)))
+                .unwrap_or_else(|_| Err("internal error while loading".into()));
+            let (data, error) = match result {
+                Ok(bytes) => (Some(yah_protocol::media::encode(&bytes)), None),
+                Err(e) => (None, Some(e)),
+            };
+            if tx.send(ServerMsg::ArtifactFile { id: artifact, version, data, error }).is_ok() {
+                wake();
+            }
+        });
+        if let Err(e) = spawned {
+            log::error!("could not start an artifact thread: {e}");
+        }
+    }
+
+    /// A step made artifact versions: re-read those artifacts and tell the chat's viewers.
+    fn artifacts_changed(&mut self, chat: &str, refs: &[ArtifactRef]) {
+        let Some(live) = self.live.get_mut(chat) else { return };
+        let mut changed = Vec::new();
+        for r in refs {
+            match artifact::load_in_chat(&live.workspace, chat, &r.id) {
+                Ok(meta) => {
+                    match live.artifacts.iter_mut().find(|a| a.id == meta.artifact.id) {
+                        Some(a) => *a = meta.artifact.clone(),
+                        None => live.artifacts.push(meta.artifact.clone()),
+                    }
+                    changed.push(meta.artifact);
+                }
+                Err(e) => log::warn!("artifact {}: {e}", r.id),
+            }
+        }
+        for a in changed {
+            self.send_viewers(chat, ServerMsg::ArtifactUpdated(a));
+        }
+    }
+
+    /// The workspace of `chat`, for serving its artifacts over HTTP.
+    fn chat_workspace(&mut self, chat: &str) -> Option<PathBuf> {
+        if let Some(live) = self.live.get(chat) {
+            return Some(live.workspace.as_ref().clone());
+        }
+        self.store.chat(chat).ok().flatten().map(|c| c.workspace)
     }
 
     fn set_inference(&mut self, id: ClientId, base_url: String, model: String, api_key: Option<String>) {
@@ -718,6 +798,9 @@ impl Engine {
     fn update_step(&mut self, entry: u64, step: Step) {
         self.persist_step(entry, &step);
         let Some(chat) = self.turns.get(&entry).map(|t| t.chat.clone()) else { return };
+        if step.status.finished() && !step.artifacts.is_empty() {
+            self.artifacts_changed(&chat, &step.artifacts);
+        }
         if let Some(e) = self.reply_mut(entry) {
             e.upsert_step(step.clone());
         }
@@ -808,9 +891,14 @@ impl Engine {
             self.notice(client, "a reply is still running in this chat; stop it first".into());
             return;
         }
-        let system_prompt = self.system_prompt.clone();
+        let base_prompt = self.system_prompt.clone();
         let (history, workspace, first) = match self.live(&chat) {
-            Ok(live) => (turn::history(&live.entries, &text, &system_prompt), Arc::clone(&live.workspace), live.entries.is_empty()),
+            Ok(live) => {
+                // Later turns must know the chat's artifacts by id to update them.
+                let listed = artifact::prompt_list(&live.artifacts);
+                let system_prompt = if listed.is_empty() { base_prompt } else { format!("{base_prompt}\n\n{listed}") };
+                (turn::history(&live.entries, &text, &system_prompt), Arc::clone(&live.workspace), live.entries.is_empty())
+            }
             Err(e) => {
                 self.notice(client, e);
                 return;
@@ -853,6 +941,7 @@ impl Engine {
             inbox: self.inbox.clone(),
             tools: self.tools.clone(),
             workspace,
+            chat: chat.clone(),
             step_ids: Arc::clone(&self.step_ids),
             plan: self.endpoints.plan(&self.config),
         };

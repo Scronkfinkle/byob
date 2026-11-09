@@ -73,7 +73,8 @@ pub fn segments<'a>(content: &'a str, steps: &[Step]) -> Vec<Segment<'a>> {
 
 /// Draw an assistant entry's text and steps, interleaved, plus the undo action. Returns a
 /// message to send if the user answered a card or asked to undo.
-pub fn body(ui: &mut egui::Ui, t: &Tokens, entry: &Entry, cache: &mut markdown::Cache) -> Option<ClientMsg> {
+/// `cards` draws the artifact cards of a step that made any, right below its row.
+pub fn body(ui: &mut egui::Ui, t: &Tokens, entry: &Entry, cache: &mut markdown::Cache, cards: &mut dyn FnMut(&mut egui::Ui, &Step)) -> Option<ClientMsg> {
     let mut msg = None;
     let segs = segments(&entry.content, &entry.steps);
     let last = segs.len().saturating_sub(1);
@@ -90,6 +91,9 @@ pub fn body(ui: &mut egui::Ui, t: &Tokens, entry: &Entry, cache: &mut markdown::
                         msg = msg.or(approval_card(ui, t, step));
                     } else {
                         row(ui, t, step);
+                        if !step.artifacts.is_empty() {
+                            cards(ui, step);
+                        }
                     }
                 }
                 ui.add_space(2.0);
@@ -238,7 +242,8 @@ fn row(ui: &mut egui::Ui, t: &Tokens, step: &Step) {
             if step.status == StepStatus::Denied {
                 title = title.strikethrough();
             }
-            ui.label(title);
+            // One line: a long command must not widen the transcript.
+            ui.add(egui::Label::new(title).truncate()).on_hover_text(&step.title);
             let suffix = match step.status {
                 StepStatus::Denied => Some("not run"),
                 StepStatus::Failed => Some("failed"),
@@ -508,6 +513,7 @@ mod tests {
             at: 0,
             preview: None,
             media: vec![],
+            artifacts: vec![],
         }
     }
 
@@ -618,7 +624,7 @@ mod tests {
         for tokens in [Tokens::dark(), Tokens::light()] {
             let mut answer = Some(ClientMsg::Cancel);
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                answer = body(ui, &tokens, &e, &mut cache);
+                answer = body(ui, &tokens, &e, &mut cache, &mut |_, _| {});
                 waiting_badge(ui, &tokens);
             });
             out.textures_delta.clear();
@@ -627,7 +633,7 @@ mod tests {
         e.done = true;
         e.undoable = true;
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            assert_eq!(body(ui, &Tokens::dark(), &e, &mut cache), None);
+            assert_eq!(body(ui, &Tokens::dark(), &e, &mut cache, &mut |_, _| {}), None);
         });
         out.textures_delta.clear();
     }

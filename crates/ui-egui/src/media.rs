@@ -56,9 +56,11 @@ impl Cache {
         paths.into_iter().map(|path| ClientMsg::GetMedia { path }).collect()
     }
 
-    /// Draw the user's attachments and the media of every step of `entry`.
+    /// Draw the user's attachments and the media of every step of `entry` (except steps
+    /// that made artifacts: their cards show them).
     pub fn show_entry(&mut self, ui: &mut egui::Ui, t: &Tokens, entry: &Entry) {
-        let refs: Vec<&MediaRef> = entry.attachments.iter().chain(entry.steps.iter().flat_map(|s| s.media.iter())).collect();
+        let step_media = entry.steps.iter().filter(|s| s.artifacts.is_empty()).flat_map(|s| s.media.iter());
+        let refs: Vec<&MediaRef> = entry.attachments.iter().chain(step_media).collect();
         if refs.is_empty() {
             return;
         }

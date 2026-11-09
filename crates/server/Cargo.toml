@@ -16,6 +16,10 @@ log.workspace = true
 
 [dev-dependencies]
 yah-types.workspace = true
+yah-store.workspace = true
+yah-tools.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
