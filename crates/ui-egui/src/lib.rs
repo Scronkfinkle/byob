@@ -2,6 +2,8 @@
 //! over a [`Connection`] and sends user intents back. It never touches the engine directly.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod markdown;
+mod settings;
 pub mod theme;
 pub mod ws;
 
@@ -13,6 +15,10 @@ const MAX_NOTICES: usize = 3;
 pub struct YahApp {
     conn: Box<dyn Connection>,
     tokens: theme::Tokens,
+    prefs: theme::Prefs,
+    /// What `tokens` were last built from and pushed into egui.
+    applied: Option<(theme::Prefs, Option<egui::Theme>)>,
+    markdown: markdown::Cache,
     state: Option<EngineState>,
     entries: Vec<Entry>,
     notices: Vec<(NoticeLevel, String)>,
@@ -29,6 +35,9 @@ impl YahApp {
         Self {
             conn,
             tokens: theme::Tokens::dark(),
+            prefs: theme::Prefs::default(),
+            applied: None,
+            markdown: markdown::Cache::default(),
             state: None,
             entries: Vec::new(),
             notices: Vec::new(),
@@ -75,6 +84,34 @@ impl YahApp {
         self.entries.iter_mut().rev().find(|e| e.id == id)
     }
 
+    /// Per-device appearance preferences, for the app to persist.
+    pub fn prefs(&self) -> theme::Prefs {
+        self.prefs
+    }
+
+    /// Restore (or change) appearance preferences; applied on the next frame.
+    pub fn set_prefs(&mut self, prefs: theme::Prefs) {
+        self.prefs = prefs.sanitized();
+    }
+
+    /// Rebuild the tokens when the preferences or the OS/browser theme changed.
+    fn apply_theme(&mut self, ctx: &egui::Context) {
+        let key = (self.prefs, ctx.system_theme());
+        if self.applied.is_none() {
+            theme::install_fonts(ctx);
+        }
+        if self.applied != Some(key) {
+            self.tokens = theme::Tokens::for_prefs(&self.prefs, key.1);
+            self.tokens.apply(ctx, self.prefs.font_scale);
+            self.applied = Some(key);
+        }
+    }
+
+    /// Open or close the settings panel (used by scripted screenshot runs).
+    pub fn set_settings_open(&mut self, open: bool) {
+        self.show_settings = open;
+    }
+
     /// Send a user message, as if typed into the composer.
     pub fn submit(&mut self, text: String) {
         self.conn.send(ClientMsg::SendMessage { text });
@@ -92,7 +129,7 @@ impl YahApp {
     /// Draw one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.pump();
-        self.tokens.apply(ui.ctx());
+        self.apply_theme(ui.ctx());
         self.header(ui);
         if self.show_settings {
             egui::Panel::top("settings").show(ui, |ui| self.settings(ui));
@@ -118,32 +155,6 @@ impl YahApp {
                 });
             });
         });
-    }
-
-    fn settings(&mut self, ui: &mut egui::Ui) {
-        let t = self.tokens;
-        let has_key = self.state.as_ref().is_some_and(|s| s.has_api_key);
-        egui::Grid::new("inference").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            ui.label("Inference URL");
-            ui.add(egui::TextEdit::singleline(&mut self.form_url).desired_width(360.0));
-            ui.end_row();
-            ui.label("Model");
-            ui.add(egui::TextEdit::singleline(&mut self.form_model).desired_width(360.0));
-            ui.end_row();
-            ui.label("API key");
-            let hint = if has_key { "(set — leave blank to keep)" } else { "(optional)" };
-            ui.add(egui::TextEdit::singleline(&mut self.form_key).password(true).hint_text(hint).desired_width(360.0));
-            ui.end_row();
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Apply").clicked() {
-                let api_key = Some(std::mem::take(&mut self.form_key)).filter(|k| !k.is_empty());
-                self.conn.send(ClientMsg::SetInference { base_url: self.form_url.clone(), model: self.form_model.clone(), api_key });
-            }
-            let endpoint = self.state.as_ref().and_then(|s| s.endpoint.clone()).unwrap_or_else(|| "(invalid URL)".into());
-            ui.label(egui::RichText::new(endpoint).color(t.text_dim));
-        });
-        ui.add_space(4.0);
     }
 
     fn composer(&mut self, ui: &mut egui::Ui) {
@@ -191,17 +202,22 @@ impl YahApp {
             });
             return;
         }
+        if self.markdown.len() > self.entries.len() {
+            let entries = &self.entries;
+            self.markdown.retain(|id| entries.iter().any(|e| e.id == id));
+        }
+        let markdown = &mut self.markdown;
         egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(8.0);
             for entry in &self.entries {
-                entry_view(ui, &t, entry);
+                entry_view(ui, &t, entry, markdown);
                 ui.add_space(8.0);
             }
         });
     }
 }
 
-fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry) {
+fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry, markdown: &mut markdown::Cache) {
     let (who, fill) = match entry.role {
         EntryRole::User => ("You", t.user_bubble),
         EntryRole::Assistant => ("yah", t.assistant_bubble),
@@ -221,7 +237,15 @@ fn entry_view(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry) {
             });
         }
         if !entry.content.is_empty() {
-            ui.add(egui::Label::new(egui::RichText::new(&entry.content).color(t.text)).selectable(true));
+            match entry.role {
+                EntryRole::Assistant => {
+                    let doc = markdown.doc(entry.id, &entry.content, entry.done);
+                    markdown::show(ui, t, doc, egui::Id::unique(("md", entry.id)));
+                }
+                EntryRole::User => {
+                    ui.add(egui::Label::new(egui::RichText::new(&entry.content).color(t.text)).selectable(true));
+                }
+            }
         }
         if let Some(err) = &entry.error {
             ui.label(egui::RichText::new(err).color(t.danger));

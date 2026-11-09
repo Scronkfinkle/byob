@@ -7,11 +7,13 @@
 //!     --web-dir DIR           built web bundle to serve (default: $YAH_WEB_DIR, else apps/yah-web/dist)
 //!     --inference-url URL     OpenAI-compatible base URL
 //!     --model NAME
+//!     --theme NAME            system | dark | light (overrides the saved preference)
 //!
 //! Testing (see scripts/headless.sh):
 //!     --send TEXT             send a message on startup (repeatable)
 //!     --screenshot FILE       PNG of the window once the conversation settles, then exit
 //!     --screenshot-after SECS minimum wait before the screenshot (default 2)
+//!     --open-settings         start with the settings panel open
 //! ```
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -31,6 +33,8 @@ struct Args {
     headless: bool,
     web_dir: PathBuf,
     inference: InferenceConfig,
+    theme: Option<yah_ui_egui::theme::ThemeKind>,
+    open_settings: bool,
     script: testing::Script,
 }
 
@@ -41,6 +45,8 @@ fn parse_args() -> Result<Args, String> {
         headless: false,
         web_dir: std::env::var_os("YAH_WEB_DIR").map_or_else(|| PathBuf::from("apps/yah-web/dist"), PathBuf::from),
         inference: InferenceConfig::default(),
+        theme: None,
+        open_settings: false,
         script: testing::Script { after: std::time::Duration::from_secs(2), ..Default::default() },
     };
     if let Ok(key) = std::env::var("YAH_API_KEY") {
@@ -63,6 +69,11 @@ fn parse_args() -> Result<Args, String> {
             "--web-dir" => args.web_dir = it.next().ok_or("--web-dir needs a path")?.into(),
             "--inference-url" => args.inference.base_url = it.next().ok_or("--inference-url needs a URL")?,
             "--model" => args.inference.model = it.next().ok_or("--model needs a name")?,
+            "--theme" => {
+                let v = it.next().ok_or("--theme needs a name")?;
+                args.theme = Some(yah_ui_egui::theme::ThemeKind::from_name(&v).ok_or_else(|| format!("unknown theme {v:?} (system, dark, light)"))?);
+            }
+            "--open-settings" => args.open_settings = true,
             "--send" => args.script.send.push(it.next().ok_or("--send needs text")?),
             "--screenshot" => args.script.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into()),
             "--screenshot-after" => {
@@ -70,7 +81,11 @@ fn parse_args() -> Result<Args, String> {
                 let secs: f64 = v.parse().map_err(|e| format!("bad seconds {v:?}: {e}"))?;
                 args.script.after = std::time::Duration::try_from_secs_f64(secs).map_err(|e| format!("bad seconds {v:?}: {e}"))?;
             }
-            "-h" | "--help" => return Err("usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--inference-url URL] [--model NAME]".into()),
+            "-h" | "--help" => {
+                return Err(
+                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--inference-url URL] [--model NAME] [--theme system|dark|light]".into()
+                );
+            }
             other => return Err(format!("unknown argument {other:?} (try --help)")),
         }
     }
@@ -87,6 +102,10 @@ impl eframe::App for App {
         self.ui.ui(ui);
         let ctx = ui.ctx().clone();
         self.script.frame(&mut self.ui, &ctx);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, yah_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
     }
 }
 
@@ -117,20 +136,36 @@ fn run() -> Result<(), String> {
         }
     }
 
+    // Scripted (screenshot) runs must not read or overwrite the user's saved window/appearance.
+    let scratch_state = args.script.screenshot.as_ref().map(|_| std::env::temp_dir().join(format!("yah-headless-{}.ron", std::process::id())));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 750.0]).with_title("yah"),
         wgpu_options: gpu::options(),
+        persistence_path: scratch_state.clone(),
         ..Default::default()
     };
     let script = testing::Runner::new(args.script);
-    eframe::run_native(
+    let (theme, open_settings) = (args.theme, args.open_settings);
+    let result = eframe::run_native(
         "yah",
         options,
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
             let conn = engine.connect(Arc::new(move || ctx.request_repaint()));
-            Ok(Box::new(App { ui: yah_ui_egui::YahApp::new(Box::new(conn), "desktop"), script }))
+            let mut ui = yah_ui_egui::YahApp::new(Box::new(conn), "desktop");
+            let mut prefs: yah_ui_egui::theme::Prefs =
+                cc.storage.and_then(|s| eframe::get_value(s, yah_ui_egui::theme::Prefs::STORAGE_KEY)).unwrap_or_default();
+            if let Some(theme) = theme {
+                prefs.theme = theme;
+            }
+            ui.set_prefs(prefs);
+            ui.set_settings_open(open_settings);
+            Ok(Box::new(App { ui, script }))
         }),
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string());
+    if let Some(path) = scratch_state {
+        let _ = std::fs::remove_file(path);
+    }
+    result
 }

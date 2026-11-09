@@ -12,6 +12,11 @@ yah-protocol.workspace = true
 egui.workspace = true
 ewebsock.workspace = true
 log.workspace = true
+serde.workspace = true
+pulldown-cmark.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

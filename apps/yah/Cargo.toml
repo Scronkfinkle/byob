@@ -13,7 +13,7 @@ yah-agent.workspace = true
 yah-server.workspace = true
 yah-ui-egui.workspace = true
 egui.workspace = true
-eframe.workspace = true
+eframe = { workspace = true, features = ["persistence"] }
 log.workspace = true
 env_logger.workspace = true
 png.workspace = true

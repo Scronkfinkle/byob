@@ -24,7 +24,12 @@ fn main() {
                     let ctx = cc.egui_ctx.clone();
                     let url = ws_url();
                     let conn = yah_ui_egui::ws::WsConnection::connect(&url, move || ctx.request_repaint())?;
-                    Ok(Box::new(App(yah_ui_egui::YahApp::new(Box::new(conn), "browser"))))
+                    let mut app = yah_ui_egui::YahApp::new(Box::new(conn), "browser");
+                    // Appearance is per device: kept in this browser's localStorage.
+                    if let Some(prefs) = cc.storage.and_then(|s| eframe::get_value::<yah_ui_egui::theme::Prefs>(s, yah_ui_egui::theme::Prefs::STORAGE_KEY)) {
+                        app.set_prefs(prefs);
+                    }
+                    Ok(Box::new(App(app)))
                 }),
             )
             .await;
@@ -50,6 +55,10 @@ struct App(yah_ui_egui::YahApp);
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.0.ui(ui);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, yah_ui_egui::theme::Prefs::STORAGE_KEY, &self.0.prefs());
     }
 }
 
