@@ -128,6 +128,26 @@ pub(crate) enum Event {
     UndoCleared {
         task: String,
     },
+    /// A context compaction: `summary` stands in for messages `1..=through` (`0`: none of
+    /// them). `n` numbers the chat's compactions from 1 (never reused). Dropped again by a
+    /// `messages_deleted` that removes message `through` (or an earlier one).
+    CompactionAdded {
+        n: u32,
+        through: u32,
+        summary: String,
+        #[serde(default)]
+        tokens_before: u64,
+        #[serde(default)]
+        tokens_after: u64,
+        #[serde(default)]
+        prompt_tokens: u64,
+        #[serde(default)]
+        completion_tokens: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        focus: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        manual: bool,
+    },
     /// The chat was deleted (its folder is then moved to `.trash/`).
     Deleted {},
 }

@@ -159,6 +159,8 @@ fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Opt
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
         paths,
         auto_title: false,
+        storage: yah_store::StorageKind::default(),
+        chats_folder: None,
         adapt: crate::AdaptOptions::default(),
         compaction: crate::CompactOptions::default(),
     };
@@ -483,6 +485,8 @@ fn approval_card_then_undo_the_turn() {
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
         paths: None,
         auto_title: false,
+        storage: yah_store::StorageKind::default(),
+        chats_folder: None,
         adapt: crate::AdaptOptions { probe: false, ..Default::default() },
         compaction: crate::CompactOptions::default(),
     };
@@ -582,6 +586,8 @@ fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: yah_s
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
         paths: Some(paths),
         auto_title: false,
+        storage: yah_store::StorageKind::default(),
+        chats_folder: None,
         adapt: crate::AdaptOptions::default(),
         compaction: crate::CompactOptions::default(),
     };
@@ -663,3 +669,24 @@ fn artifacts_are_created_versioned_served_and_restored() {
     let ServerMsg::ArtifactFile { data: Some(data), .. } = artifact_file(&mut c) else { panic!("no file") };
     assert_eq!(yah_protocol::media::decode(&data).unwrap(), br#"<button style="color:blue">Go</button>"#);
 }
+
+// The same tests on the folder backend.
+crate::test_store::folder_too!(
+    tool_call_then_answer,
+    approval_allow_runs_the_tool_and_reports_changes,
+    approval_deny_tells_the_model,
+    always_stops_asking_for_that_tool,
+    cancel_while_waiting_denies_and_finishes,
+    late_client_sees_pending_approval_and_can_answer_it,
+    repeated_identical_calls_are_not_rerun_and_end_the_loop,
+    tool_calls_are_capped_per_turn,
+    malformed_arguments_and_unknown_tools_fail_visibly,
+    big_output_is_capped,
+    turn_output_budget_is_shared_across_calls,
+    panicking_tool_fails_the_call_not_the_turn,
+    text_before_tool_calls_is_kept_and_separated,
+    later_turns_send_only_final_text,
+    approval_card_then_undo_the_turn,
+    always_allow_is_per_chat_or_global_and_survives_restarts,
+    artifacts_are_created_versioned_served_and_restored,
+);

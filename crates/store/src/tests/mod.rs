@@ -68,13 +68,17 @@ pub(crate) fn folder() -> Fixture {
     Fixture::open(crate::StorageKind::Folder, TempDir::new())
 }
 
-/// An export with backend-specific message ids zeroed, for comparing across stores.
+/// An export with backend-specific message and compaction ids zeroed, for comparing across stores.
 pub(crate) fn normalized(mut e: crate::ChatExport) -> crate::ChatExport {
     for m in &mut e.messages {
         m.id = crate::MessageId(0);
         for s in &mut m.steps {
             s.message_id = crate::MessageId(0);
         }
+    }
+    for c in &mut e.compactions {
+        c.compaction.id = 0;
+        c.compaction.through = crate::MessageId(0);
     }
     e
 }

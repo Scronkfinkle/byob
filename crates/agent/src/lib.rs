@@ -30,6 +30,8 @@ mod limits;
 mod loop_tests;
 pub mod permissions;
 mod steps;
+#[cfg(test)]
+mod test_store;
 mod turn;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,7 +50,7 @@ use yah_protocol::{
     ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, EngineState, Entry, EntryRole, MediaRef, NoticeLevel,
     PROTOCOL_VERSION, ServerMsg, Step, StepStatus,
 };
-use yah_store::{GrantScope, NewMessage, Paths, Role, Secrets, Settings, Store, StoreError};
+use yah_store::{ChatStore, GrantScope, NewMessage, Paths, Role, Secrets, Settings, StorageKind, Store, StoreError};
 use yah_tools::Registry;
 pub use yah_tools::artifact;
 use yah_types::InferenceConfig;
@@ -70,8 +72,13 @@ pub struct EngineConfig {
     /// System prompt for every turn (plugins and skills append to it).
     pub system_prompt: String,
     /// Where the database, settings and secrets live. `None` keeps chats in memory and
-    /// saves nothing (tests, throwaway runs).
+    /// saves nothing (tests, throwaway runs) — unless `storage` is a folder with
+    /// `chats_folder` set.
     pub paths: Option<Paths>,
+    /// Chat storage backend (`settings.json` `storage`, or `--storage`).
+    pub storage: StorageKind,
+    /// Root of the folder backend (default `<data>/chats-folder`).
+    pub chats_folder: Option<PathBuf>,
     /// Name each chat with a short model request after its first reply (otherwise the
     /// first line of the first message stays the title).
     pub auto_title: bool,
@@ -92,6 +99,8 @@ impl EngineConfig {
             policy: Policy::default(),
             system_prompt: turn::DEFAULT_SYSTEM_PROMPT.to_owned(),
             paths: None,
+            storage: StorageKind::default(),
+            chats_folder: None,
             auto_title: true,
             adapt: AdaptOptions::default(),
             compaction: CompactOptions::default(),
@@ -161,7 +170,9 @@ impl EngineHandle {
     /// Open the database and start the engine thread. Replies that were still streaming
     /// when yah last stopped are closed with an error first.
     pub fn spawn_with(config: EngineConfig) -> std::io::Result<Self> {
-        let store = open_store(config.paths.as_ref()).map_err(std::io::Error::other)?;
+        #[cfg(test)]
+        let config = test_store::applied(config);
+        let store = open_store(&config).map_err(std::io::Error::other)?;
         let (inbox, rx) = channel();
         let engine = Engine::new(config, store, inbox.clone());
         thread::Builder::new().name("yah-engine".into()).spawn(move || run(engine, rx))?;
@@ -186,14 +197,20 @@ impl EngineHandle {
     }
 }
 
-fn open_store(paths: Option<&Paths>) -> Result<Store, StoreError> {
-    let store = match paths {
-        Some(p) => {
+/// The chat store `config` asks for, via [`yah_store::open_backend`].
+fn open_store(config: &EngineConfig) -> Result<Box<dyn ChatStore>, StoreError> {
+    let store: Box<dyn ChatStore> = match (&config.paths, config.storage, &config.chats_folder) {
+        (Some(p), storage, folder) => {
             p.ensure()?;
-            Store::open(p.db())?
+            let settings = Settings { storage, chats_folder: folder.clone(), ..Settings::default() };
+            yah_store::open_backend(&settings, p)?
         }
-        None => Store::open_in_memory()?,
+        (None, StorageKind::Folder, Some(folder)) => Box::new(yah_store::FolderStore::open(folder)?),
+        (None, _, _) => Box::new(Store::open_in_memory()?),
     };
+    log::info!("chats: {:?} store at {}", store.kind(), store.path().display());
+    #[cfg(test)]
+    test_store::opened(store.kind());
     let cut = store.finish_interrupted(chats::INTERRUPTED)?;
     if cut > 0 {
         log::warn!("{cut} reply(s) were interrupted when yah last stopped");
@@ -271,7 +288,9 @@ struct Engine {
     clients: BTreeMap<ClientId, Client>,
     /// Sender into our own inbox, handed to turn threads.
     inbox: Sender<Input>,
-    store: Store,
+    /// Message ids it issues are only valid while it is open (the folder backend renumbers
+    /// them per run): never persist one, use positions or the store's own references.
+    store: Box<dyn ChatStore>,
     paths: Option<Paths>,
     default_workspace: PathBuf,
     live: BTreeMap<String, Live>,
@@ -318,7 +337,7 @@ fn run(mut engine: Engine, rx: Receiver<Input>) {
 }
 
 impl Engine {
-    fn new(config: EngineConfig, store: Store, inbox: Sender<Input>) -> Self {
+    fn new(config: EngineConfig, store: Box<dyn ChatStore>, inbox: Sender<Input>) -> Self {
         let llm = yah_llm::Client::new(config.inference.clone()).map_err(|e| e.to_string());
         let mut endpoints = adapt::Endpoints::new(config.adapt);
         if let Ok(client) = &llm {

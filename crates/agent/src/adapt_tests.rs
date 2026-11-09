@@ -181,6 +181,8 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
         adapt,
         paths: None,
         auto_title: false,
+        storage: yah_store::StorageKind::default(),
+        chats_folder: None,
         // These tests are about fit_history; compaction has its own (compact_tests).
         compaction: crate::CompactOptions { auto: false, ..Default::default() },
     };
@@ -412,3 +414,6 @@ fn probe_results_only_reach_clients_that_said_hello() {
     wait_state(&mut c, |s| s.endpoint_info.as_ref().is_some_and(|i| !i.probing));
     assert!(quiet.try_recv().is_none(), "a client must say Hello before it gets broadcasts");
 }
+
+// The same tests on the folder backend.
+crate::test_store::folder_too!(prompt_mode_runs_tools_from_reply_text, long_tool_loop_stays_within_probed_context,);

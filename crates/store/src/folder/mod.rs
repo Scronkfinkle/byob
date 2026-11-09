@@ -28,9 +28,12 @@ use serde::{Deserialize, Serialize};
 use self::event::{Event, Line, Stamp};
 use self::state::{ChatState, Journal, Summary, message_id, split_id};
 use crate::backend::{ChatExport, ChatStore};
+use crate::compactions::MAX_SUMMARY;
 use crate::error::{Result, StoreError};
 use crate::files::{load_json, save_json, write_atomic};
-use crate::model::{Chat, ChatCursor, ChatPage, GrantScope, MessageId, MessageStats, NewMessage, NewStep, Step, StepResult, StoredMessage, UndoOp};
+use crate::model::{
+    Chat, ChatCursor, ChatPage, Compaction, GrantScope, MessageId, MessageStats, NewCompaction, NewMessage, NewStep, Step, StepResult, StoredMessage, UndoOp,
+};
 use crate::settings::StorageKind;
 use crate::steps::{MAX_STEP_OUTPUT, bound};
 use crate::store::{MAX_PAGE, now};
@@ -599,6 +602,27 @@ fn import_lines(e: &ChatExport) -> Result<Vec<Line>> {
             lines.push(Line::new(ts, Event::MessageUndone { m: n, undone: true }));
         }
     }
+    let count = e.messages.len();
+    for (i, x) in e.compactions.iter().enumerate() {
+        let k = &x.compaction;
+        let n = u32::try_from(i + 1).map_err(|_| StoreError::BadValue { column: "compactions", detail: "too many compactions".into() })?;
+        // Messages were numbered 1.. above, so covering the first `covers` is `through = covers`.
+        let through = u32::try_from(x.covers.min(count)).unwrap_or(u32::MAX);
+        lines.push(Line::new(
+            k.created_at,
+            Event::CompactionAdded {
+                n,
+                through,
+                summary: bound(&k.summary, MAX_SUMMARY),
+                tokens_before: k.tokens_before,
+                tokens_after: k.tokens_after,
+                prompt_tokens: k.prompt_tokens,
+                completion_tokens: k.completion_tokens,
+                focus: k.focus.clone(),
+                manual: k.manual,
+            },
+        ));
+    }
     for tool in &e.grants {
         lines.push(Line::new(c.updated_at, Event::Grant { tool: tool.clone(), allowed: true }));
     }
@@ -851,6 +875,48 @@ impl ChatStore for FolderStore {
             inner.write(&chat, vec![Event::StepsDeleted { m }], false, false)?;
         }
         Ok(n)
+    }
+
+    fn add_compaction(&self, chat_id: &str, c: &NewCompaction) -> Result<Compaction> {
+        let mut inner = self.lock();
+        let (n, last_m) = {
+            let s = inner.state_or_404(chat_id)?;
+            (s.last_compaction.saturating_add(1), s.last_m)
+        };
+        let slot = inner.entries.get(chat_id).map(|e| e.slot).unwrap_or_default();
+        // Stored by message number, which (unlike the session's message ids) survives a restart.
+        let through = if c.through.0 == 0 {
+            0
+        } else {
+            match split_id(c.through) {
+                Some((s, m)) if s == slot && m <= last_m => m,
+                _ => return Err(not_found(format!("message {} in chat {chat_id}", c.through.0))),
+            }
+        };
+        let event = Event::CompactionAdded {
+            n,
+            through,
+            summary: bound(&c.summary, MAX_SUMMARY),
+            tokens_before: c.tokens_before,
+            tokens_after: c.tokens_after,
+            prompt_tokens: c.prompt_tokens,
+            completion_tokens: c.completion_tokens,
+            focus: c.focus.clone(),
+            manual: c.manual,
+        };
+        inner.write(chat_id, vec![event], true, true)?;
+        let state = inner.state(chat_id).ok_or_else(|| not_found(format!("chat {chat_id}")))?;
+        let rec = state.compactions.iter().find(|r| r.n == n).ok_or_else(|| not_found(format!("compaction {n} of chat {chat_id}")))?;
+        Ok(state.compaction(slot, rec))
+    }
+
+    fn compactions(&self, chat_id: &str) -> Result<Vec<Compaction>> {
+        let mut inner = self.lock();
+        if !inner.ensure_loaded(chat_id)? {
+            return Ok(Vec::new());
+        }
+        let slot = inner.entries.get(chat_id).map(|e| e.slot).unwrap_or_default();
+        Ok(inner.state(chat_id).map(|s| s.compactions.iter().map(|c| s.compaction(slot, c)).collect()).unwrap_or_default())
     }
 
     fn grant(&self, scope: &GrantScope, tool: &str) -> Result<()> {

@@ -103,7 +103,9 @@ impl TurnJournal {
 }
 
 /// Undo journals by assistant entry id. In memory for now; the ops serialize with the same
-/// JSON shape as `yah_store::UndoOp`, for persisting.
+/// JSON shape as `yah_store::UndoOp`, for persisting. Persist them by the message's task id
+/// (`ChatStore::add_undo_op`), never by entry id: entry ids are store message ids, and the
+/// folder backend issues new ones every run.
 #[derive(Debug, Default)]
 pub struct Journals {
     by_entry: BTreeMap<u64, TurnJournal>,

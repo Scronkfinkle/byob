@@ -5,13 +5,15 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::folder::FolderStore;
-use crate::model::{Chat, ChatCursor, ChatPage, GrantScope, MessageId, MessageStats, NewMessage, NewStep, Step, StepResult, StoredMessage, UndoOp};
+use crate::model::{
+    Chat, ChatCursor, ChatPage, Compaction, GrantScope, MessageId, MessageStats, NewCompaction, NewMessage, NewStep, Step, StepResult, StoredMessage, UndoOp,
+};
 use crate::paths::Paths;
 use crate::settings::{Settings, StorageKind};
 use crate::store::{MAX_PAGE, Store};
 
-/// Chats, messages (including streamed updates), tool steps, always-allow grants and the
-/// undo journal. Method names, types and semantics are those of the original SQLite
+/// Chats, messages (including streamed updates), tool steps, context compactions,
+/// always-allow grants and the undo journal. Method names, types and semantics are those of the original SQLite
 /// [`Store`]; see its inherent methods for the details of each.
 ///
 /// Implementations are `Send` but need not be `Sync`: the engine owns its store on its
@@ -54,6 +56,14 @@ pub trait ChatStore: Send {
     fn steps(&self, message_id: MessageId) -> Result<Vec<Step>>;
     fn delete_steps(&self, message_id: MessageId) -> Result<usize>;
 
+    // ---- compactions ----
+    /// Record a compaction of `chat_id` (summary cut to a few hundred KB). `NotFound` if
+    /// there's no such chat.
+    fn add_compaction(&self, chat_id: &str, c: &NewCompaction) -> Result<Compaction>;
+    /// A chat's compactions, oldest first (empty for an unknown chat). Deleting messages
+    /// drops the compactions that covered any of them; deleting the chat drops them all.
+    fn compactions(&self, chat_id: &str) -> Result<Vec<Compaction>>;
+
     // ---- grants ----
     fn grant(&self, scope: &GrantScope, tool: &str) -> Result<()>;
     fn revoke(&self, scope: &GrantScope, tool: &str) -> Result<bool>;
@@ -82,11 +92,16 @@ pub trait ChatStore: Send {
                 }
             }
         }
-        Ok(Some(ChatExport { chat, messages, grants, undo }))
+        let compactions = self
+            .compactions(id)?
+            .into_iter()
+            .map(|c| ExportedCompaction { covers: messages.iter().filter(|m| m.id <= c.through).count(), compaction: c })
+            .collect();
+        Ok(Some(ChatExport { chat, messages, grants, undo, compactions }))
     }
 
-    /// Recreate a chat exactly (timestamps, flags, steps, grants, undo journal). Message ids
-    /// in `chat` are ignored; new ones are issued. Fails with [`crate::StoreError::Exists`]
+    /// Recreate a chat exactly (timestamps, flags, steps, grants, undo journal, compactions).
+    /// Message and compaction ids in `chat` are ignored; new ones are issued. Fails with [`crate::StoreError::Exists`]
     /// (or a constraint error) if the chat id is taken.
     fn import_chat(&self, chat: &ChatExport) -> Result<()>;
 }
@@ -101,6 +116,17 @@ pub struct ChatExport {
     pub grants: Vec<String>,
     /// Undo journals of the chat's tasks, by first appearance.
     pub undo: Vec<(String, Vec<UndoOp>)>,
+    /// Context compactions, oldest first.
+    pub compactions: Vec<ExportedCompaction>,
+}
+
+/// A compaction in a [`ChatExport`]. Its `id` and `through` are the source store's and are
+/// ignored on import; `covers` says which messages it stands in for, independent of ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedCompaction {
+    /// How many of the export's `messages`, from the first, the summary stands in for.
+    pub covers: usize,
+    pub compaction: Compaction,
 }
 
 /// What [`export`] did.
@@ -111,6 +137,7 @@ pub struct ExportReport {
     /// Chats left alone because the destination already had them (ids are global).
     pub skipped: Vec<String>,
     pub global_grants: usize,
+    pub compactions: usize,
 }
 
 /// Copy every chat (and the global grants) from `from` into `to`; chats `to` already has
@@ -134,6 +161,7 @@ pub fn export(from: &dyn ChatStore, to: &mut dyn ChatStore) -> Result<ExportRepo
             to.import_chat(&exp)?;
             report.chats += 1;
             report.messages += exp.messages.len();
+            report.compactions += exp.compactions.len();
         }
         match page.next {
             Some(n) => after = Some(n),
@@ -235,6 +263,12 @@ impl ChatStore for Store {
     }
     fn delete_steps(&self, message_id: MessageId) -> Result<usize> {
         Store::delete_steps(self, message_id)
+    }
+    fn add_compaction(&self, chat_id: &str, c: &NewCompaction) -> Result<Compaction> {
+        Store::add_compaction(self, chat_id, c)
+    }
+    fn compactions(&self, chat_id: &str) -> Result<Vec<Compaction>> {
+        Store::compactions(self, chat_id)
     }
     fn grant(&self, scope: &GrantScope, tool: &str) -> Result<()> {
         Store::grant(self, scope, tool)

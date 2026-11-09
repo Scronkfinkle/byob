@@ -131,6 +131,8 @@ fn engine(url: String, compaction: CompactOptions, tools: bool, paths: Option<Pa
         adapt: crate::AdaptOptions { probe: false, ..Default::default() },
         paths,
         auto_title: false,
+        storage: yah_store::StorageKind::default(),
+        chats_folder: None,
         compaction,
     };
     EngineHandle::spawn_with(config).unwrap()
@@ -489,3 +491,14 @@ fn stopping_a_manual_compaction() {
     assert!(v.compactions.is_empty());
     turn(&mut c, &mut v, "second");
 }
+
+// The same tests on the folder backend.
+crate::test_store::folder_too!(
+    compacts_before_a_request_over_the_threshold_and_keeps_the_newest_turn,
+    compacts_inside_a_long_tool_loop,
+    history_is_rebuilt_from_the_compaction_after_a_restart,
+    manual_compaction_with_focus,
+    failed_summary_falls_back_to_fit_history_and_the_turn_answers,
+    a_summary_longer_than_the_conversation_is_not_used,
+    stopping_a_manual_compaction,
+);

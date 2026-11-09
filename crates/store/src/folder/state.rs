@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::event::{Bad, Event, Line, Parsed};
-use crate::model::{Chat, MessageId, MessageStats, Millis, Role, Step, StepAccess, StepResult, StoredMessage, UndoOp};
+use crate::model::{Chat, Compaction, MessageId, MessageStats, Millis, Role, Step, StepAccess, StepResult, StoredMessage, UndoOp};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StepRec {
@@ -32,6 +32,22 @@ pub(crate) struct Msg {
     pub undone: bool,
     pub created_at: Millis,
     pub steps: Vec<StepRec>,
+}
+
+/// A compaction, by message number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompRec {
+    pub n: u32,
+    /// Last message number covered (0: none).
+    pub through: u32,
+    pub summary: String,
+    pub tokens_before: u64,
+    pub tokens_after: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub focus: Option<String>,
+    pub manual: bool,
+    pub created_at: Millis,
 }
 
 /// Undo journals by task, plus tasks with a damaged entry.
@@ -77,6 +93,10 @@ pub(crate) struct ChatState {
     pub journal: Journal,
     /// Every task any message (even a deleted one) carried, for routing undo entries.
     pub tasks: BTreeSet<String>,
+    /// Oldest first.
+    pub compactions: Vec<CompRec>,
+    /// Highest compaction number ever used.
+    pub last_compaction: u32,
 }
 
 /// The listing-relevant part of a chat, cached in the folder index.
@@ -133,6 +153,8 @@ impl ChatState {
             grants: BTreeSet::new(),
             journal: Journal::default(),
             tasks: BTreeSet::new(),
+            compactions: Vec::new(),
+            last_compaction: 0,
         }
     }
 
@@ -214,7 +236,32 @@ impl ChatState {
                 msg.error.get_or_insert_with(|| error.clone());
             }
             Event::MessageUndone { m, undone } => self.msg(*m)?.undone = *undone,
-            Event::MessagesDeleted { from } => self.messages.retain(|n, _| n < from),
+            Event::MessagesDeleted { from } => {
+                self.messages.retain(|n, _| n < from);
+                // Same as SQLite: a summary of any removed message goes with it.
+                self.compactions.retain(|c| c.through < *from);
+            }
+            Event::CompactionAdded { n, through, summary, tokens_before, tokens_after, prompt_tokens, completion_tokens, focus, manual } => {
+                if self.compactions.iter().any(|c| c.n == *n) {
+                    return Err(format!("duplicate compaction {n}"));
+                }
+                self.last_compaction = self.last_compaction.max(*n);
+                self.compactions.push(CompRec {
+                    n: *n,
+                    through: *through,
+                    summary: summary.clone(),
+                    tokens_before: *tokens_before,
+                    tokens_after: *tokens_after,
+                    prompt_tokens: *prompt_tokens,
+                    completion_tokens: *completion_tokens,
+                    focus: focus.clone(),
+                    manual: *manual,
+                    created_at: l.ts,
+                });
+                if *through > self.last_m {
+                    return Err(format!("compaction {n} covers message {through}, which doesn't exist"));
+                }
+            }
             Event::StepAdded { m, seq, tool, title, access, args } => {
                 let rec = StepRec { seq: *seq, tool: tool.clone(), title: title.clone(), access: *access, args: args.clone(), result: None };
                 let msg = self.msg(*m)?;
@@ -320,6 +367,22 @@ impl ChatState {
             created_at: msg.created_at,
             steps: self.steps(slot, m),
         })
+    }
+
+    pub(crate) fn compaction(&self, slot: u32, c: &CompRec) -> Compaction {
+        Compaction {
+            id: i64::from(c.n),
+            chat_id: self.chat.id.clone(),
+            through: if c.through == 0 { MessageId(0) } else { message_id(slot, c.through) },
+            summary: c.summary.clone(),
+            tokens_before: c.tokens_before,
+            tokens_after: c.tokens_after,
+            prompt_tokens: c.prompt_tokens,
+            completion_tokens: c.completion_tokens,
+            focus: c.focus.clone(),
+            manual: c.manual,
+            created_at: c.created_at,
+        }
     }
 
     /// Task ids of the current messages, sorted and distinct.

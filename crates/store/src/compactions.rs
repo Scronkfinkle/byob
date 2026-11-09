@@ -30,7 +30,7 @@ fn row(r: &Row<'_>) -> rusqlite::Result<Compaction> {
     })
 }
 
-fn int(n: u64) -> i64 {
+pub(crate) fn int(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
 
