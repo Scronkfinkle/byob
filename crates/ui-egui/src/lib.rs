@@ -17,6 +17,20 @@ pub mod ws;
 
 use yah_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, StepStatus};
 
+/// Tallest an expanded thinking block gets before it scrolls.
+const THINKING_MAX_HEIGHT: f32 = 240.0;
+
+/// "840 chars", "12.4k chars".
+fn size_label(chars: usize) -> String {
+    if chars < 1000 {
+        format!("{chars} chars")
+    } else {
+        #[allow(clippy::cast_precision_loss)] // display only
+        let k = chars as f64 / 1000.0;
+        format!("{k:.1}k chars")
+    }
+}
+
 /// Notices kept on screen.
 const MAX_NOTICES: usize = 3;
 
@@ -391,9 +405,18 @@ fn entry_view(
         });
         if !entry.reasoning.is_empty() {
             let thinking = !entry.done && entry.content.is_empty() && entry.steps.iter().all(|s| s.status == StepStatus::Running);
-            let title = if thinking { "Thinking…" } else { "Thought" };
+            let title = format!("{} · {}", if thinking { "Thinking…" } else { "Thought" }, size_label(entry.reasoning.chars().count()));
             egui::CollapsingHeader::new(egui::RichText::new(title).color(t.text_dim)).id_salt(("thinking", entry.id)).show(ui, |ui| {
-                ui.label(egui::RichText::new(&entry.reasoning).color(t.text_dim).small());
+                // Reasoning can run to many thousands of words: keep it in its own scroll box,
+                // following the newest text while the model is still thinking.
+                egui::ScrollArea::vertical()
+                    .id_salt(("thinking-scroll", entry.id))
+                    .max_height(THINKING_MAX_HEIGHT)
+                    .auto_shrink([false, true])
+                    .stick_to_bottom(thinking)
+                    .show(ui, |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(&entry.reasoning).color(t.text_dim).small()).selectable(true).wrap());
+                    });
             });
         }
         match entry.role {
@@ -415,4 +438,15 @@ fn entry_view(
         }
     });
     answer
+}
+
+#[cfg(test)]
+mod thinking_tests {
+    use super::size_label;
+
+    #[test]
+    fn sizes_read_naturally() {
+        assert_eq!(size_label(840), "840 chars");
+        assert_eq!(size_label(12_400), "12.4k chars");
+    }
 }
