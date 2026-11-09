@@ -12,6 +12,11 @@
 //!     --plugin DIR            load the plugin in DIR (repeatable; also <config>/plugins)
 //!     --auto-approve          allow every tool call without asking (testing)
 //!     --dev-tools             offer trivial test tools (get_time, set_reminder)
+//!     --storage KIND          sqlite | folder: chat storage for this run (default: settings.json `storage`)
+//!     --chats-folder DIR      root of the folder storage (default: settings.json `chats_folder`,
+//!                             else <data>/chats-folder)
+//!     --export-chats-to KIND  copy every chat from the current storage into KIND (sqlite |
+//!                             folder), then exit; chats already there are skipped
 //!     --theme NAME            system | dark | light, or a theme: a preset id (catppuccin-mocha,
 //!                             gruvbox-dark, nord, …) or the name of a file in <config>/themes
 //!                             (overrides the saved preference)
@@ -29,7 +34,7 @@
 //!                             settings.json `compaction`, 80% of the window)
 //! ```
 //!
-//! Chats live in `yah.db`; preferences in `settings.json` and the API key in `secrets.json`
+//! Chats live in `yah.db` (or, with `storage = "folder"`, in plain files); preferences in `settings.json` and the API key in `secrets.json`
 //! (all under `$YAH_HOME` if set, else the platform config/data directories). Flags and
 //! `YAH_API_KEY` override the files for this run; changing the endpoint in the UI saves it.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
@@ -45,7 +50,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use yah_agent::{EngineConfig, EngineHandle};
-use yah_store::{Paths, Secrets, Settings, Theme};
+use yah_store::{Paths, Secrets, Settings, StorageKind, Theme};
 use yah_types::InferenceConfig;
 
 #[derive(Default)]
@@ -68,7 +73,19 @@ struct Args {
     window_size: Option<[f32; 2]>,
     tool_mode: yah_agent::ToolMode,
     compact_at: Option<usize>,
+    storage: Option<StorageKind>,
+    chats_folder: Option<PathBuf>,
+    export_to: Option<StorageKind>,
     script: testing::Script,
+}
+
+fn storage_kind(flag: &str, v: Option<String>) -> Result<StorageKind, String> {
+    match v.as_deref() {
+        Some("sqlite") => Ok(StorageKind::Sqlite),
+        Some("folder") => Ok(StorageKind::Folder),
+        Some(other) => Err(format!("unknown storage {other:?} for {flag} (sqlite, folder)")),
+        None => Err(format!("{flag} needs sqlite or folder")),
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -91,6 +108,9 @@ fn parse_args() -> Result<Args, String> {
         window_size: None,
         tool_mode: yah_agent::ToolMode::Auto,
         compact_at: None,
+        storage: None,
+        chats_folder: None,
+        export_to: None,
         script: testing::Script { after: std::time::Duration::from_secs(2), ..Default::default() },
     };
     let mut it = std::env::args().skip(1).peekable();
@@ -112,6 +132,9 @@ fn parse_args() -> Result<Args, String> {
             "--inference-url" => args.inference_url = Some(it.next().ok_or("--inference-url needs a URL")?),
             "--model" => args.model = Some(it.next().ok_or("--model needs a name")?),
             "--workspace" => args.workspace = Some(it.next().ok_or("--workspace needs a folder")?.into()),
+            "--storage" => args.storage = Some(storage_kind("--storage", it.next())?),
+            "--chats-folder" => args.chats_folder = Some(it.next().ok_or("--chats-folder needs a folder")?.into()),
+            "--export-chats-to" => args.export_to = Some(storage_kind("--export-chats-to", it.next())?),
             "--dev-tools" => args.dev_tools = true,
             "--auto-approve" => args.auto_approve = true,
             "--plugin" => args.plugins.push(it.next().ok_or("--plugin needs a folder")?.into()),
@@ -154,7 +177,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "-h" | "--help" => {
                 return Err(
-                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--plugin DIR]... [--dev-tools] [--theme system|dark|light|THEME]"
+                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--storage sqlite|folder] [--chats-folder DIR] [--export-chats-to sqlite|folder] [--plugin DIR]... [--dev-tools] [--theme system|dark|light|THEME]"
                         .into(),
                 );
             }
@@ -258,11 +281,53 @@ fn theme_kind(theme: Theme) -> yah_ui_egui::theme::ThemeKind {
     }
 }
 
+/// Flags beat settings.json for where chats live.
+fn storage_settings(args: &Args, settings: &Settings) -> Settings {
+    Settings {
+        storage: args.storage.unwrap_or(settings.storage),
+        chats_folder: args.chats_folder.clone().or_else(|| settings.chats_folder.clone()),
+        ..settings.clone()
+    }
+}
+
+/// `--export-chats-to KIND`: copy everything from the storage in use into KIND.
+fn export_chats(to: StorageKind, paths: Option<&Paths>, settings: &Settings) -> Result<(), String> {
+    let paths = paths.ok_or("no data directory to export from")?;
+    if to == settings.storage {
+        return Err(format!("chats are already stored in {to:?} storage; pass --storage to pick the source"));
+    }
+    paths.ensure().map_err(|e| e.to_string())?;
+    let from = yah_store::open_backend(settings, paths).map_err(|e| format!("opening the chats: {e}"))?;
+    let mut dest = yah_store::open_backend(&Settings { storage: to, ..settings.clone() }, paths).map_err(|e| format!("opening the destination: {e}"))?;
+    let report = yah_store::export(&*from, &mut *dest).map_err(|e| format!("exporting: {e}"))?;
+    eprintln!(
+        "yah: copied {} chat(s) ({} messages, {} compactions, {} global grants) from {} to {}",
+        report.chats,
+        report.messages,
+        report.compactions,
+        report.global_grants,
+        from.path().display(),
+        dest.path().display()
+    );
+    if !report.skipped.is_empty() {
+        eprintln!("yah: skipped {} chat(s) the destination already had", report.skipped.len());
+    }
+    let name = if to == StorageKind::Folder { "folder" } else { "sqlite" };
+    eprintln!("yah: to use it, set \"storage\": \"{name}\" in {} (or run with --storage {name})", paths.settings().display());
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args = parse_args()?;
     let saved = load_saved();
+    let storage = storage_settings(&args, &saved.settings);
+    if let Some(to) = args.export_to {
+        return export_chats(to, saved.paths.as_ref(), &storage);
+    }
     let mut config = EngineConfig::new(inference_config(&args, &saved.settings, &saved.secrets));
     config.paths = saved.paths;
+    config.storage = storage.storage;
+    config.chats_folder = storage.chats_folder;
     config.adapt.tool_mode = args.tool_mode;
     let c = saved.settings.compaction;
     config.compaction = yah_agent::CompactOptions {

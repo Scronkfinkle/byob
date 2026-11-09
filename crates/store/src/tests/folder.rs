@@ -326,6 +326,7 @@ fn chat_md_snapshot() {
         messages: vec![msg(Role::User, "What is the answer?", 1_762_684_200_000), reply, failed],
         grants: vec![],
         undo: vec![],
+        compactions: vec![],
     };
     s.import_chat(&exp).unwrap();
     let md = std::fs::read_to_string(s.chat_dir("snap").unwrap().join("chat.md")).unwrap();
@@ -431,4 +432,57 @@ fn listing_2000_chats_is_fast() {
     );
     // Generous bounds: debug builds on a loaded CI box.
     assert!(cold.as_secs() < 20 && warm.as_secs() < 5 && list.as_secs() < 2, "too slow");
+}
+
+#[test]
+fn compactions_are_events_and_render_as_a_note() {
+    let dir = TempDir::new();
+    let s = open(dir.path());
+    s.create_chat("c", "Long chat", Path::new("/w")).unwrap();
+    s.append_message("c", &NewMessage::user("first question")).unwrap();
+    let a = s.append_message("c", &NewMessage::assistant_streaming(None)).unwrap();
+    s.append_message_text(a, "first answer", "").unwrap();
+    s.finish_message(a, None, None).unwrap();
+    s.append_message("c", &NewMessage::user("second question")).unwrap();
+    let new =
+        NewCompaction { through: a, summary: "We talked about **the first question**.".into(), tokens_before: 9000, tokens_after: 400, ..Default::default() };
+    s.add_compaction("c", &new).unwrap();
+    // An id from another chat's slot doesn't name a message of this one.
+    assert!(matches!(s.add_compaction("c", &NewCompaction { through: MessageId(a.0 + (1 << 32)), ..new.clone() }), Err(StoreError::NotFound(_))));
+
+    let text = std::fs::read_to_string(events(&s, "c")).unwrap();
+    let last: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert_eq!((last["v"].as_u64(), last["e"].as_str(), last["n"].as_u64(), last["through"].as_u64()), (Some(1), Some("compaction_added"), Some(1), Some(2)));
+    assert!(last.get("manual").is_none() && last.get("focus").is_none(), "defaults are left out: {last}");
+
+    let md = std::fs::read_to_string(s.chat_dir("c").unwrap().join("chat.md")).unwrap();
+    let note = md.find("— context compacted —").unwrap();
+    assert!(md.find("first answer").unwrap() < note && note < md.find("second question").unwrap(), "{md}");
+    assert!(md.contains("<details><summary>Summary the model continues from</summary>\n\nWe talked about **the first question**.\n\n</details>"), "{md}");
+    assert!(md.contains("(automatic, ~9000 → ~400 tokens,"), "{md}");
+
+    // Retrying from the reply drops the compaction, in the file view too.
+    s.delete_messages_from("c", a).unwrap();
+    assert!(s.compactions("c").unwrap().is_empty());
+    let md = std::fs::read_to_string(s.chat_dir("c").unwrap().join("chat.md")).unwrap();
+    assert!(!md.contains("context compacted"), "{md}");
+}
+
+#[test]
+fn hand_written_and_newer_compaction_lines_degrade() {
+    // A well-formed line written by someone else counts; one this build can't parse is
+    // skipped. Either way the chat still opens.
+    let dir = TempDir::new();
+    let s = open(dir.path());
+    s.create_chat("c", "x", Path::new("/w")).unwrap();
+    s.append_message("c", &NewMessage::user("hi")).unwrap();
+    let path = events(&s, "c");
+    drop(s);
+    append_raw(&path, b"{\"v\":1,\"ts\":1,\"e\":\"compaction_added\",\"n\":1,\"through\":1,\"summary\":\"ok\"}\n");
+    append_raw(&path, b"{\"v\":2,\"ts\":2,\"e\":\"compaction_added\",\"n\":\"two\"}\n");
+    let s = open(dir.path());
+    let cs = s.compactions("c").unwrap();
+    assert_eq!(cs.len(), 1);
+    assert_eq!(cs[0].through, s.messages("c").unwrap()[0].id);
+    assert_eq!(cs[0].summary, "ok");
 }

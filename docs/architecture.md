@@ -188,7 +188,8 @@ off-stream, for a dense summary (goals, decisions, facts, files/artifact ids, ke
 open tasks) of the conversation written out as text. Before the first request the newest
 `keep_turns` turns stay verbatim; inside a tool loop everything is summarised and the request is
 repeated after it. The request continues as system prompt + summary pair + verbatim tail.
-Compactions are stored (`compactions` table: summary, last message covered) and the next
+Compactions are stored (SQLite `compactions` table / folder `compaction_added` events:
+summary, last message covered) and the next
 request (also after a restart) is built from the latest one plus later messages; the transcript
 keeps every message and clients draw a divider. `ClientMsg::Compact` / `/compact [focus]`
 compacts on demand. A failed or longer-than-before summary changes nothing and
@@ -221,12 +222,20 @@ will run the tool-calling rounds itself (cap 30 per turn, as hob did).
 
 ## Storage
 
-The engine talks to `yah_store::ChatStore` (chats, messages incl. streamed deltas, steps,
-grants, undo journal); `open_backend(&Settings, &Paths)` picks the implementation from
-`"storage"` in settings.json. Both are `Send`, owned by the engine thread, and run the same
-contract test suite (`crates/store/src/tests/backends.rs`). `export(from, to)` copies
-everything between them (timestamps, flags, steps, grants, undo journals; chats the target
-already has are skipped), so switching backends is a copy, not a migration.
+The engine holds a `Box<dyn yah_store::ChatStore>` (chats, messages incl. streamed deltas,
+steps, compactions, grants, undo journal); `open_backend(&Settings, &Paths)` picks the
+implementation from `"storage"` in settings.json (`--storage sqlite|folder` and
+`--chats-folder DIR` override it for a run). Both are `Send`, owned by the engine thread, and
+run the same contract test suite (`crates/store/src/tests/backends.rs`); the engine tests run
+on both too (`test_store::folder_too!`). `export(from, to)` copies everything between them
+(timestamps, flags, steps, stats, compactions by position, grants, undo journals; chats the
+target already has are skipped), so switching backends is a copy, not a migration:
+`yah --export-chats-to folder|sqlite` copies from the storage in use.
+
+**Message ids are per run.** The folder backend issues new message ids every time it opens,
+so nothing may persist a message (= transcript entry) id: compactions are stored by message
+number in the folder, undo journals are in memory (to persist them, key by task id), artifact
+metadata and the UI's per-device pane prefs name only chat and artifact ids.
 
 - **`"sqlite"`** (default): `<data>/yah.db`, WAL, versioned schema (`schema.rs`).
 - **`"folder"`**: plain files under `"chats_folder"` (default `<data>/chats-folder`, `~/`
@@ -244,7 +253,11 @@ already has are skipped), so switching backends is a copy, not a migration.
   `message_added`, `message_delta` (one per ~250 ms batch), `message_updated`,
   `message_finished` (error, stats, and the final text lengths), `message_interrupted`,
   `message_undone`, `messages_deleted`, `step_added`/`step_finished`/`steps_deleted`,
-  `grant`, `undo_op`/`undo_cleared`, `deleted`. Messages are numbered per chat (`m`, never
+  `grant`, `undo_op`/`undo_cleared`, `compaction_added` (`n`, `through` = last message
+  number covered, summary, token figures, focus, manual), `deleted`. A `messages_deleted`
+  drops the compactions covering any removed message (as SQLite does); `chat.md` shows each
+  as a "— context compacted —" note after the last message it covers, with the summary in a
+  collapsed `<details>`. Messages are numbered per chat (`m`, never
   reused). The folder name never changes after a rename; the title lives in the events and
   the frontmatter.
 

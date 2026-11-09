@@ -3,6 +3,7 @@
 use rusqlite::params;
 
 use crate::backend::ChatExport;
+use crate::compactions::{MAX_SUMMARY, int};
 use crate::error::Result;
 use crate::messages::role_str;
 use crate::steps::{MAX_STEP_OUTPUT, bound};
@@ -18,6 +19,7 @@ impl Store {
             "INSERT INTO chats (id, title, workspace, created_at, updated_at, pinned_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![c.id, c.title, path_text(&c.workspace), c.created_at, c.updated_at, c.pinned_at],
         )?;
+        let mut ids = Vec::with_capacity(e.messages.len());
         for m in &e.messages {
             let stats = m.stats.as_ref().map(serde_json::to_string).transpose()?;
             tx.prepare_cached(
@@ -26,6 +28,7 @@ impl Store {
             )?
             .execute(params![c.id, role_str(m.role), m.content, m.reasoning, m.done, m.error, stats, m.task_id, m.undone, m.created_at])?;
             let id = tx.last_insert_rowid();
+            ids.push(id);
             for s in &m.steps {
                 let (output, failed, changes) = match &s.result {
                     Some(r) => (Some(bound(&r.output, MAX_STEP_OUTPUT)), r.failed, serde_json::to_string(&r.changes)?),
@@ -48,6 +51,27 @@ impl Store {
                 )?
                 .execute(params![task, json])?;
             }
+        }
+        for x in &e.compactions {
+            let k = &x.compaction;
+            // Covering none of the messages is `0`, as for a live compaction.
+            let through = x.covers.checked_sub(1).and_then(|i| ids.get(i)).copied().unwrap_or(0);
+            tx.prepare_cached(
+                "INSERT INTO compactions (chat_id, through_id, summary, tokens_before, tokens_after, prompt_tokens, completion_tokens, focus, manual, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?
+            .execute(params![
+                c.id,
+                through,
+                bound(&k.summary, MAX_SUMMARY),
+                int(k.tokens_before),
+                int(k.tokens_after),
+                int(k.prompt_tokens),
+                int(k.completion_tokens),
+                k.focus,
+                k.manual,
+                k.created_at
+            ])?;
         }
         tx.commit()?;
         Ok(())

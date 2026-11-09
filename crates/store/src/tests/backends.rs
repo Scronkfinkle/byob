@@ -38,6 +38,7 @@ for_each_backend!(
     embedded_nul_survives,
     large_streamed_content,
     import_keeps_everything,
+    compactions_follow_their_messages,
     ids_of_a_deleted_chat_stay_dead,
 );
 
@@ -168,11 +169,99 @@ fn import_keeps_everything(s: &dyn ChatStore) {
         messages: vec![msg("Q?", Role::User, 1_700_000_001_000), reply, streaming],
         grants: vec!["a_tool".into(), "b_tool".into()],
         undo: vec![("imp-t".into(), vec![UndoOp::Created { path: "/w/x".into() }])],
+        compactions: vec![
+            ExportedCompaction { covers: 0, compaction: compaction("nothing yet", 1_700_000_001_500, None, false) },
+            ExportedCompaction { covers: 2, compaction: compaction("Q and Done", 1_700_000_004_000, Some("the plan"), true) },
+        ],
     };
     s.import_chat(&exp).unwrap();
     assert!(s.import_chat(&exp).is_err(), "ids are unique");
     let got = s.export_chat("imp").unwrap().unwrap();
     assert_eq!(super::normalized(got), super::normalized(exp));
+}
+
+fn compaction(summary: &str, created_at: Millis, focus: Option<&str>, manual: bool) -> Compaction {
+    Compaction {
+        id: 0,
+        chat_id: "imp".into(),
+        through: MessageId(0),
+        summary: summary.into(),
+        tokens_before: 182_000,
+        tokens_after: 9_000,
+        prompt_tokens: 150_000,
+        completion_tokens: 2_000,
+        focus: focus.map(str::to_owned),
+        manual,
+        created_at,
+    }
+}
+
+fn new_compaction(through: MessageId, summary: &str) -> NewCompaction {
+    NewCompaction {
+        through,
+        summary: summary.into(),
+        tokens_before: 182_000,
+        tokens_after: 9_000,
+        prompt_tokens: 150_000,
+        completion_tokens: 2_000,
+        focus: Some("the CSV".into()),
+        manual: true,
+    }
+}
+
+/// Same semantics as the SQLite-only test in `db.rs`, on every backend.
+fn compactions_follow_their_messages(s: &dyn ChatStore) {
+    chat(s, "c");
+    chat(s, "other");
+    let ids: Vec<_> = (0..4).map(|i| s.append_message("c", &NewMessage::user(format!("m{i}"))).unwrap()).collect();
+    assert!(s.compactions("c").unwrap().is_empty());
+    assert!(s.compactions("nope").unwrap().is_empty());
+    let none = s.add_compaction("c", &NewCompaction { manual: false, focus: None, ..new_compaction(MessageId(0), "before anything") }).unwrap();
+    assert_eq!(none.through, MessageId(0));
+    let first = s.add_compaction("c", &new_compaction(ids[1], "first")).unwrap();
+    let second = s.add_compaction("c", &new_compaction(ids[3], &"x".repeat(MAX_SUMMARY + 10))).unwrap();
+    assert!(second.summary.len() < MAX_SUMMARY + 100 && second.summary.contains("not saved"));
+    let all = s.compactions("c").unwrap();
+    assert_eq!(all, vec![none.clone(), first.clone(), second]);
+    assert!(all[0].id < all[1].id && all[1].id < all[2].id, "ids order a chat's compactions");
+    assert_eq!((all[1].through, all[1].tokens_before, all[1].focus.as_deref(), all[1].manual), (ids[1], 182_000, Some("the CSV"), true));
+    assert_eq!(all[1].chat_id, "c");
+    assert!(s.compactions("other").unwrap().is_empty());
+    assert!(matches!(s.add_compaction("nope", &new_compaction(ids[0], "x")), Err(StoreError::NotFound(_))));
+    // Editing history from m2 on drops the compaction that covered m3, keeps the earlier ones.
+    s.delete_messages_from("c", ids[2]).unwrap();
+    assert_eq!(s.compactions("c").unwrap(), vec![none, first]);
+    // Compacting again after the edit works and sorts last.
+    let m = s.append_message("c", &NewMessage::user("again")).unwrap();
+    let third = s.add_compaction("c", &new_compaction(m, "third")).unwrap();
+    assert_eq!(s.compactions("c").unwrap().last(), Some(&third));
+    // Deleting the chat deletes its compactions, also for a new chat with the same id.
+    s.delete_chat("c").unwrap();
+    assert!(s.compactions("c").unwrap().is_empty());
+    chat(s, "c");
+    assert!(s.compactions("c").unwrap().is_empty());
+}
+
+#[test]
+fn compactions_point_at_the_same_message_after_reopen() {
+    for f in [sqlite(), folder()] {
+        let s = &*f;
+        chat(s, "c");
+        let ids: Vec<_> = (0..3).map(|i| s.append_message("c", &NewMessage::user(format!("m{i}"))).unwrap()).collect();
+        s.add_compaction("c", &new_compaction(ids[1], "covers m0 and m1")).unwrap();
+        let kind = s.kind();
+        let f = f.reopen();
+        let s = &*f;
+        let ms = s.messages("c").unwrap();
+        let cs = s.compactions("c").unwrap();
+        assert_eq!(cs.len(), 1, "{kind:?}");
+        // The (new) id of the second message, whatever ids this store issues now.
+        assert_eq!(cs[0].through, ms[1].id, "{kind:?}");
+        assert_eq!(ms.iter().filter(|m| m.id <= cs[0].through).count(), 2, "{kind:?}");
+        // And deletion semantics still hold after the reopen.
+        s.delete_messages_from("c", ms[1].id).unwrap();
+        assert!(s.compactions("c").unwrap().is_empty(), "{kind:?}");
+    }
 }
 
 fn chats_crud(s: &dyn ChatStore) {

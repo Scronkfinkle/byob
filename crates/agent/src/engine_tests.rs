@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use yah_protocol::{ChatSummary, ClientMsg, Connection, Entry, NoticeLevel, PROTOCOL_VERSION, ServerMsg};
-use yah_store::{NewMessage, Paths, Store};
+use yah_store::{NewMessage, Paths};
 use yah_types::InferenceConfig;
 
 use crate::{EngineConfig, EngineHandle, LocalConnection, chats};
@@ -250,7 +250,7 @@ fn interrupted_replies_are_closed_on_startup() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::at(dir.path());
     {
-        let store = Store::open(paths.db()).unwrap();
+        let store = crate::test_store::open(&paths);
         store.create_chat("c1", "Crashy", dir.path()).unwrap();
         store.append_message("c1", &NewMessage::user("go")).unwrap();
         let reply = store.append_message("c1", &NewMessage::assistant_streaming(None)).unwrap();
@@ -275,7 +275,7 @@ fn streamed_text_is_saved_in_batches_while_running() {
     c.send(ClientMsg::SendMessage { text: "go".into(), attachments: vec![] });
     recv_until(&mut c, |m| matches!(m, ServerMsg::EntryDelta { .. }));
     // Within a flush interval or two, the partial reply is on disk (as a crash would leave it).
-    let store = Store::open(paths.db()).unwrap();
+    let store = crate::test_store::open(&paths);
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let chat = store.list_chats(1, None).unwrap().chats.remove(0);
@@ -416,3 +416,20 @@ fn first_reply_names_the_chat() {
         assert!(Instant::now() < deadline);
     }
 }
+
+// The same tests on the folder backend.
+crate::test_store::folder_too!(
+    turn_streams_and_late_clients_get_the_chat,
+    unreachable_endpoint_finishes_with_error,
+    hello_returns_state_without_secrets,
+    inference_change_reaches_every_client_and_is_saved,
+    bad_url_only_errors_the_sender,
+    protocol_mismatch_is_reported,
+    restart_restores_chats_and_transcripts,
+    interrupted_replies_are_closed_on_startup,
+    streamed_text_is_saved_in_batches_while_running,
+    clients_have_their_own_chat_and_deltas_go_only_to_viewers,
+    chats_can_be_renamed_pinned_listed_and_deleted,
+    running_chats_cannot_be_deleted_and_other_chats_run_in_parallel,
+    first_reply_names_the_chat,
+);

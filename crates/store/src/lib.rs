@@ -48,7 +48,8 @@ mod store;
 #[cfg(test)]
 mod tests;
 
-pub use backend::{ChatExport, ChatStore, ExportReport, export, folder_root, open_backend};
+pub use backend::{ChatExport, ChatStore, ExportReport, ExportedCompaction, export, folder_root, open_backend};
+pub use compactions::MAX_SUMMARY;
 pub use error::{Result, StoreError};
 pub use files::Loaded;
 pub use folder::FolderStore;

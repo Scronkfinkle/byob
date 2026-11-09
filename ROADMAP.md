@@ -30,11 +30,12 @@ Last updated: 2026-11-09
 
 - Pluggable chat storage in `yah-store`: `ChatStore` trait, SQLite (default) or a plain-files
   folder backend (`events.jsonl` per chat + generated `chat.md`; `storage = "folder"`),
-  `export` between them, one contract test suite for both.
+  `export` between them, one contract test suite for both. The engine holds a
+  `Box<dyn ChatStore>` (`--storage`, `--chats-folder`, `--export-chats-to` to migrate);
+  compactions in both backends; engine tests run on both.
 
 ## Next
-0. **Folder storage follow-ups**: switch the engine to `Box<dyn ChatStore>` via
-   `open_backend`; settings UI for `storage`/`chats_folder` + "copy my chats" (`export`);
+0. **Folder storage follow-ups**: settings UI for `storage`/`chats_folder` + "copy my chats" (`export`);
    pass the model so `chat.md` frontmatter can name it; a file watcher so open chats update
    live; a lock file against two yah processes on one folder.
 1. **Artifact host follow-ups**: GPU rendering (surfman hardware context) instead of
