@@ -1,0 +1,18 @@
+yah-artifact-host
+=================
+
+yah-artifact-host renders HTML app artifacts for the yah desktop app. yah runs it as a
+separate process; it is not linked into yah.
+
+Its own source code (host/artifact-host/src and crates/artifact-wire in the yah
+repository) is licensed under MIT OR Apache-2.0, like the rest of yah.
+
+The binary includes Servo (https://servo.org, https://github.com/servo/servo) and
+SpiderMonkey via mozjs (https://github.com/servo/mozjs), which are licensed under the
+Mozilla Public License, version 2.0 (https://mozilla.org/MPL/2.0/). The source code of
+those components is available from the links above; the exact versions used are listed in
+host/artifact-host/Cargo.lock (servo 0.8.0, mozjs_sys 153.6.0-1). We have not modified them.
+
+Other dependencies are under permissive licences (MIT, Apache-2.0, BSD, ISC, Zlib and
+similar), or MPL-2.0 for some Servo-project crates; see Cargo.lock and each crate's
+licence on crates.io.

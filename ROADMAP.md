@@ -17,11 +17,14 @@ Last updated: 2026-11-09
 - Artifacts: versioned markdown / HTML app / chart / image / text files beside the chat
   (`create_artifact`, `update_artifact` with find/replace edits, `read_artifact`; charts and
   images adopted), cards + side pane, Export, Open in browser; HTML apps run inline in the
-  browser client (sandboxed iframe), desktop shows a summary until an inline renderer lands.
+  browser client (sandboxed iframe) and on the desktop (Servo in a helper process per live
+  app, `host/artifact-host`; live in cards and the pane, liveness pings, Stop/Reload,
+  snapshots when out of view).
 
 ## Next
-1. **Desktop inline HTML apps**: plug the Servo-offscreen renderer into `AppView`
-   (`crates/ui-egui/src/appview.rs`); until then the pane offers Open/Export.
+1. **Artifact host follow-ups**: GPU rendering (surfman hardware context) instead of
+   llvmpipe; `<select>`/date pickers (Servo embedder controls) and IME; a fully offline
+   `nix build .#yah-artifact-host` check in CI; macOS/Windows helper builds.
 2. **Plugins UI**: list/enable plugins, settings values (secrets), add connector by pasting config.
 3. Persist undo journals, attachments and step media; "denied" step status in the store.
 4. Media shown where the step happened (currently after the reply); header overflow on narrow widths.

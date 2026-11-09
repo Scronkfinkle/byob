@@ -22,6 +22,11 @@ eframe = { workspace = true, features = ["persistence"] }
 log.workspace = true
 env_logger.workspace = true
 png.workspace = true
+# Talking to the Servo helper process (host/artifact-host) that renders HTML apps inline.
+yah-artifact-wire.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

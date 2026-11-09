@@ -28,6 +28,7 @@
 //! `YAH_API_KEY` override the files for this run; changing the endpoint in the UI saves it.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+mod apphost;
 mod extensions;
 mod gpu;
 mod testing;
@@ -310,6 +311,10 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::The
             let conn = engine.connect(Arc::new(move || ctx.request_repaint()));
             let mut ui = yah_ui_egui::YahApp::new(Box::new(conn), "desktop");
             ui.set_link_base(link_base(engine.clone(), serving));
+            // HTML apps inline, if the Servo helper is installed; else the summary + Open.
+            if let Some(view) = apphost::ServoView::new(&cc.egui_ctx) {
+                ui.set_app_view(Box::new(view));
+            }
             // This device's saved appearance, else the theme from settings.json.
             let stored: Option<yah_ui_egui::theme::Prefs> = cc.storage.and_then(|s| eframe::get_value(s, yah_ui_egui::theme::Prefs::STORAGE_KEY));
             let mut prefs = stored.unwrap_or(yah_ui_egui::theme::Prefs { theme: saved_theme, ..Default::default() });

@@ -2,6 +2,8 @@
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/*", "xtask"]
+# The Servo helper is its own workspace (MPL-2.0 + tokio inside it; never linked into yah).
+exclude = ["host/artifact-host"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,6 +26,7 @@ yah-sandbox = { path = "crates/sandbox" }
 yah-exec = { path = "crates/exec" }
 yah-agent = { path = "crates/agent" }
 yah-ui-egui = { path = "crates/ui-egui" }
+yah-artifact-wire = { path = "crates/artifact-wire" }
 
 # Foundation.
 thiserror = "2"

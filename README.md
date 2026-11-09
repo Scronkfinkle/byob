@@ -24,7 +24,10 @@ nix develop          # or: direnv allow
 cargo run -p yah     # launch the app
 cargo xtask web      # build the browser UI into apps/yah-web/dist
 cargo xtask ci       # full gate: fmt, clippy, tests, layers, no-tokio, wasm
-nix build            # release package (yah + bundled web UI)
+nix build            # release package (yah + bundled web UI + the artifact host)
+
+# HTML artifacts inline on the desktop: the Servo helper is its own workspace (AGENTS.md §3)
+(cd host/artifact-host && cargo build --release)   # scripts/headless.sh picks it up
 
 # desktop GUI on a virtual display, scripted, with a screenshot
 scripts/headless.sh --inference-url http://silicon:9931/v1 --model local --send "hi" --screenshot /tmp/yah.png
