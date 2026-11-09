@@ -5,15 +5,21 @@
 //! through a callback. Everything the server sends is treated as untrusted input.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod budget;
+mod probe;
 mod sse;
 mod think;
+pub mod toolprompt;
 mod wire;
 
 use std::io::{BufRead, BufReader, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+pub use budget::{estimate_history_tokens, estimate_message_tokens, estimate_tokens, fit_history};
+pub use probe::{Capabilities, ProbeOptions, ServerKind, ToolSupport};
 pub use think::ThinkSplitter;
+pub use toolprompt::{ParsedToolCalls, ToolCallFilter, parse_tool_calls, tool_prompt};
 pub use wire::{ChatMessage, ChatRequest, ToolCall, ToolSpec, Usage};
 use yah_types::InferenceConfig;
 
