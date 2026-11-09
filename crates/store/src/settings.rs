@@ -52,6 +52,24 @@ impl InferenceSettings {
     }
 }
 
+/// Which chat storage backend to use (`"storage"` in settings.json).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageKind {
+    /// One SQLite file, `<data>/yah.db`.
+    #[default]
+    Sqlite,
+    /// Plain files: one folder per chat with an append-only `events.jsonl` and a generated
+    /// `chat.md` (see [`crate::FolderStore`]).
+    Folder,
+}
+
+impl StorageKind {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "InferenceSettings::is_empty")]
@@ -64,6 +82,13 @@ pub struct Settings {
     /// Extra folders to load plugins from.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Vec::is_empty")]
     pub plugin_dirs: Vec<PathBuf>,
+    /// Chat storage backend; SQLite unless set.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "StorageKind::is_default")]
+    pub storage: StorageKind,
+    /// Root folder for `storage = "folder"` (a leading `~/` means the home directory).
+    /// Defaults to [`crate::Paths::chats_folder`].
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub chats_folder: Option<PathBuf>,
     /// Fields this build doesn't know; preserved across load/save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

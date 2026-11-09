@@ -54,13 +54,18 @@ pub(crate) fn load_json<T: DeserializeOwned + Default>(path: &Path) -> Loaded<T>
 pub(crate) fn save_json<T: Serialize>(path: &Path, value: &T, mode: Option<u32>) -> Result<()> {
     let mut text = serde_json::to_string_pretty(value)?;
     text.push('\n');
+    write_atomic(path, text.as_bytes(), mode)
+}
+
+/// Write `bytes` via a temp file + rename (see [`save_json`]).
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|e| StoreError::io(dir, e))?;
     }
     let tmp = sibling(path, &format!(".tmp-{}", std::process::id()));
     // A stale temp file from a crash may have looser permissions; start fresh.
     let _ = std::fs::remove_file(&tmp);
-    let written = write_new(&tmp, text.as_bytes(), mode).and_then(|()| std::fs::rename(&tmp, path));
+    let written = write_new(&tmp, bytes, mode).and_then(|()| std::fs::rename(&tmp, path));
     if let Err(e) = written {
         let _ = std::fs::remove_file(&tmp);
         return Err(StoreError::io(path, e));
@@ -85,7 +90,7 @@ fn write_new(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::io::Result<()
 }
 
 /// Best effort: make the rename durable.
-fn sync_dir(path: &Path) {
+pub(crate) fn sync_dir(path: &Path) {
     #[cfg(unix)]
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
         && let Ok(d) = std::fs::File::open(dir)

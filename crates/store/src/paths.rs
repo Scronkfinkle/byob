@@ -53,6 +53,11 @@ impl Paths {
         self.config_dir.join("secrets.json")
     }
 
+    /// Default root of the folder chat backend (`storage = "folder"`).
+    pub fn chats_folder(&self) -> PathBuf {
+        self.data_dir.join("chats-folder")
+    }
+
     /// Backups the undo journal points at, one folder per task.
     pub fn undo_dir(&self) -> PathBuf {
         self.data_dir.join("undo")
@@ -78,6 +83,7 @@ mod tests {
         assert_eq!(p.settings(), Path::new("/tmp/yah-x/settings.json"));
         assert_eq!(p.secrets(), Path::new("/tmp/yah-x/secrets.json"));
         assert_eq!(p.undo_dir(), Path::new("/tmp/yah-x/undo"));
+        assert_eq!(p.chats_folder(), Path::new("/tmp/yah-x/chats-folder"));
     }
 
     #[test]

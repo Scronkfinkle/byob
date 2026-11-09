@@ -1,6 +1,6 @@
 [package]
 name = "yah-store"
-description = "SQLite persistence for chats, messages, tool steps, grants and the undo journal; settings and secrets files (L1)"
+description = "Pluggable chat storage (SQLite or a plain-files folder) for chats, messages, tool steps, grants and the undo journal; settings and secrets files (L1)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
