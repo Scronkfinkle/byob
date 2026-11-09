@@ -21,10 +21,9 @@ fn main() {
                 canvas,
                 eframe::WebOptions::default(),
                 Box::new(|cc| {
-                    let ctx = cc.egui_ctx.clone();
-                    let url = ws_url();
-                    let conn = yah_ui_egui::ws::WsConnection::connect(&url, move || ctx.request_repaint())?;
-                    Ok(Box::new(App(yah_ui_egui::YahApp::new(Box::new(conn), "browser"))))
+                    let conn = yah_ui_egui::ws::WsConnection::connect(&ws_url(), cc.egui_ctx.clone());
+                    let link = conn.status_handle();
+                    Ok(Box::new(App { ui: yah_ui_egui::YahApp::new(Box::new(conn), "browser"), link }))
                 }),
             )
             .await;
@@ -44,12 +43,27 @@ fn ws_url() -> String {
 }
 
 #[cfg(target_arch = "wasm32")]
-struct App(yah_ui_egui::YahApp);
+struct App {
+    ui: yah_ui_egui::YahApp,
+    link: yah_ui_egui::ws::LinkStatusHandle,
+}
 
 #[cfg(target_arch = "wasm32")]
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.0.ui(ui);
+        self.ui.ui(ui);
+        // One quiet banner while the link is down, instead of a notice per retry.
+        if let Some(label) = self.link.get().label() {
+            egui::Area::new(egui::Id::unique("yah-link-status"))
+                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
+                .order(egui::Order::Foreground)
+                .interactable(false)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(egui::RichText::new(label).color(ui.visuals().warn_fg_color));
+                    });
+                });
+        }
     }
 }
 

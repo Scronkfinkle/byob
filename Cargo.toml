@@ -42,6 +42,8 @@ ureq = { version = "3", features = ["json"] }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 httparse = "1"
 ewebsock = "0.8"
+# wasm-safe `Instant` (std::time::Instant panics on wasm32-unknown-unknown).
+web-time = "1"
 
 # Web frontend (wasm32 only).
 wasm-bindgen = "0.2"
