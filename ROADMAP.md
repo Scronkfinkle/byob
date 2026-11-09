@@ -14,6 +14,8 @@ Last updated: 2026-11-09
   managed Python via uv; hob-compatible plugins (skills, Python tools, MCP connectors).
 - Charts (hob ChartSpec v1, `make_chart` incl. CSV aggregation), inline images, uploads (desktop+web).
 - Themes, markdown, remote-access hardening, Tailscale identity allowlist.
+- Context compaction (automatic at a threshold, also inside tool loops; `/compact [focus]`),
+  stored and rebuilt after restarts, transcript dividers; per-chat usage meter in the header.
 - Artifacts: versioned markdown / HTML app / chart / image / text files beside the chat
   (`create_artifact`, `update_artifact` with find/replace edits, `read_artifact`; charts and
   images adopted), cards + side pane, Export, Open in browser; HTML apps run inline in the

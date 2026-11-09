@@ -1,5 +1,5 @@
 //! yah's persistence: one SQLite file (`yah.db`) for chats, messages, tool steps,
-//! always-allow grants and the undo journal, plus `settings.json` and `secrets.json`.
+//! context compactions, always-allow grants and the undo journal, plus `settings.json` and `secrets.json`.
 //!
 //! - [`Paths`] finds the directories (`YAH_HOME` overrides them).
 //! - [`Store`] is the database. It is `Send` but not `Sync`: the engine owns it on its
@@ -23,6 +23,7 @@
 //! ```
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+mod compactions;
 mod error;
 mod files;
 mod grants;
@@ -41,11 +42,11 @@ mod tests;
 pub use error::{Result, StoreError};
 pub use files::Loaded;
 pub use model::{
-    Chat, ChatCursor, ChatPage, GrantScope, MessageId, MessageStats, Millis, NewMessage, NewStep, Role, Step, StepAccess, StepChange, StepResult,
-    StoredMessage, UndoOp,
+    Chat, ChatCursor, ChatPage, Compaction, GrantScope, MessageId, MessageStats, Millis, NewCompaction, NewMessage, NewStep, Role, Step, StepAccess,
+    StepChange, StepResult, StoredMessage, UndoOp,
 };
 pub use paths::{HOME_ENV, Paths};
 pub use schema::LATEST as SCHEMA_VERSION;
-pub use settings::{InferenceSettings, SECRETS_MODE, Secrets, Settings, Theme};
+pub use settings::{CompactionSettings, InferenceSettings, SECRETS_MODE, Secrets, Settings, Theme};
 pub use steps::MAX_STEP_OUTPUT;
 pub use store::{BUSY_TIMEOUT, MAX_PAGE, Store};

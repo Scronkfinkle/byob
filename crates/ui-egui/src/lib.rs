@@ -13,6 +13,7 @@ pub mod sidebar;
 pub mod steps;
 pub mod theme;
 pub mod upload;
+pub mod usage;
 pub mod ws;
 
 use yah_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, StepStatus};
@@ -56,6 +57,8 @@ pub struct YahApp {
     uploads: upload::Uploads,
     /// The chat's artifacts: cards, the pane, export.
     artifacts: artifact::Artifacts,
+    /// Context meter and compaction dividers.
+    usage: usage::Usage,
 }
 
 impl YahApp {
@@ -79,6 +82,7 @@ impl YahApp {
             media: media::Cache::default(),
             uploads: upload::Uploads::default(),
             artifacts: artifact::Artifacts::default(),
+            usage: usage::Usage::default(),
         }
     }
 
@@ -113,7 +117,7 @@ impl YahApp {
 
     fn pump(&mut self) {
         while let Some(msg) = self.conn.try_recv() {
-            if self.sidebar.apply(&msg) || self.artifacts.apply(&msg) {
+            if self.usage.apply(&msg) || self.sidebar.apply(&msg) || self.artifacts.apply(&msg) {
                 continue;
             }
             match msg {
@@ -153,6 +157,8 @@ impl YahApp {
                 ServerMsg::Media { path, content } => self.media.received(&path, &content),
                 // Handled by the artifacts above.
                 ServerMsg::Artifacts { .. } | ServerMsg::ArtifactUpdated(_) | ServerMsg::ArtifactFile { .. } => {}
+                // Handled by the usage meter above.
+                ServerMsg::Usage(_) | ServerMsg::Compactions { .. } | ServerMsg::Compacted(_) => {}
             }
         }
     }
@@ -204,7 +210,8 @@ impl YahApp {
                 || (!self.busy() && self.entries.iter().all(|e| e.done) && !self.uploads.busy() && !self.media.loading() && !self.artifacts.loading()))
     }
 
-    fn busy(&self) -> bool {
+    /// A reply or compaction is running in the chat in view.
+    pub fn busy(&self) -> bool {
         self.state.as_ref().is_some_and(|s| s.busy)
     }
 
@@ -297,6 +304,9 @@ impl YahApp {
                 if let Some(info) = self.state.as_ref().and_then(|s| s.endpoint_info.as_ref()) {
                     ui.label(egui::RichText::new(info.summary()).small().color(t.text_dim));
                 }
+                if let Some(msg) = self.usage.meter(ui, &t, narrow) {
+                    self.conn.send(msg);
+                }
                 if steps::awaiting_approval(&self.entries) {
                     steps::waiting_badge(ui, &t);
                 } else if self.busy() {
@@ -364,12 +374,15 @@ impl YahApp {
         let markdown = &mut self.markdown;
         let media = &mut self.media;
         let artifacts = &mut self.artifacts;
+        let usage = &mut self.usage;
         let mut answers = Vec::new();
         egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(8.0);
+            usage.dividers(ui, &t, 0);
             for entry in &self.entries {
                 answers.extend(entry_view(ui, &t, entry, markdown, media, artifacts));
                 ui.add_space(8.0);
+                usage.dividers(ui, &t, entry.id);
             }
         });
         answers.extend(self.media.take_requests());

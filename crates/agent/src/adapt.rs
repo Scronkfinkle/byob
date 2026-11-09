@@ -97,6 +97,17 @@ impl Plan {
         }
         budget::fit_history(&msgs, self.context, reserve)
     }
+
+    /// Estimated tokens of a request for `messages` before any fitting: the messages plus
+    /// the tool definitions (native) or the tool prompt (prompt mode).
+    pub fn raw_tokens(&self, messages: &[ChatMessage], specs: &[ToolSpec]) -> usize {
+        let tools = match (self.prompt_tools, specs.is_empty()) {
+            (_, true) => 0,
+            (true, false) => budget::estimate_tokens(&toolprompt::tool_prompt(specs)),
+            (false, false) => budget::estimate_tools_tokens(specs),
+        };
+        budget::estimate_history_tokens(messages).saturating_add(tools)
+    }
 }
 
 /// Did the server refuse the request because of the `tools` field? (llama-server without

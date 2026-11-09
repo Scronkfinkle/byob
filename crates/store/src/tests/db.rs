@@ -219,7 +219,7 @@ fn streaming_reply_lifecycle() {
     let m = s.message(a).unwrap().unwrap();
     assert_eq!((m.content.as_str(), m.reasoning.as_str(), m.done), ("Hello", "thinking more", false));
 
-    let stats = MessageStats { prompt_tokens: 10, completion_tokens: 3, elapsed_ms: 420 };
+    let stats = MessageStats { prompt_tokens: 10, completion_tokens: 3, elapsed_ms: 420, model_calls: 2 };
     s.finish_message(a, None, Some(&stats)).unwrap();
     let m = s.message(a).unwrap().unwrap();
     assert!(m.done);
@@ -264,6 +264,39 @@ fn delete_messages_from_truncates_chat() {
     assert_eq!(s.delete_messages_from("c", ids[2]).unwrap(), 3);
     assert_eq!(s.messages("c").unwrap().iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), ["m0", "m1"]);
     assert!(s.message(keep).unwrap().is_some());
+}
+
+#[test]
+fn compactions_round_trip_and_follow_their_messages() {
+    let s = mem();
+    chat(&s, "c");
+    chat(&s, "other");
+    let ids: Vec<_> = (0..4).map(|i| s.append_message("c", &NewMessage::user(format!("m{i}"))).unwrap()).collect();
+    assert!(s.compactions("c").unwrap().is_empty());
+    let new = |through: MessageId, summary: &str| NewCompaction {
+        through,
+        summary: summary.into(),
+        tokens_before: 182_000,
+        tokens_after: 9_000,
+        prompt_tokens: 150_000,
+        completion_tokens: 2_000,
+        focus: Some("the CSV".into()),
+        manual: true,
+    };
+    let first = s.add_compaction("c", &new(ids[1], "first")).unwrap();
+    let second = s.add_compaction("c", &new(ids[3], &"x".repeat(compactions::MAX_SUMMARY + 10))).unwrap();
+    assert!(second.summary.len() < compactions::MAX_SUMMARY + 100 && second.summary.contains("not saved"));
+    let all = s.compactions("c").unwrap();
+    assert_eq!(all, vec![first.clone(), second]);
+    assert_eq!((all[0].through, all[0].tokens_before, all[0].focus.as_deref(), all[0].manual), (ids[1], 182_000, Some("the CSV"), true));
+    assert!(s.compactions("other").unwrap().is_empty());
+    assert!(matches!(s.add_compaction("nope", &new(ids[0], "x")), Err(StoreError::NotFound(_))));
+    // Editing history from m2 on drops the compaction that covered m3, keeps the earlier one.
+    s.delete_messages_from("c", ids[2]).unwrap();
+    assert_eq!(s.compactions("c").unwrap(), vec![first]);
+    // Deleting the chat deletes its compactions.
+    s.delete_chat("c").unwrap();
+    assert!(s.compactions("c").unwrap().is_empty());
 }
 
 #[test]

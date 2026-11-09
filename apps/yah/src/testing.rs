@@ -8,11 +8,14 @@ use std::time::{Duration, Instant};
 
 /// Give up waiting for the conversation to settle after this long and shoot anyway.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(180);
+/// A message that hasn't made the app busy after this long was refused or finished at once.
+const START_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 pub struct Script {
     /// Files attached (uploaded) before the first message is sent.
     pub attach: Vec<PathBuf>,
+    /// Sent one at a time, each once the previous reply finished.
     pub send: Vec<String>,
     pub screenshot: Option<PathBuf>,
     /// Minimum time before the screenshot (lets the window settle).
@@ -22,15 +25,17 @@ pub struct Script {
 pub struct Runner {
     script: Script,
     started: Instant,
-    sent: bool,
+    /// The last message sent: when, and whether the app has been busy since.
+    waiting: Option<(Instant, bool)>,
     requested: bool,
     done: Arc<AtomicBool>,
     result: Arc<Mutex<Option<String>>>,
 }
 
 impl Runner {
-    pub fn new(script: Script) -> Self {
-        Self { script, started: Instant::now(), sent: false, requested: false, done: Arc::default(), result: Arc::default() }
+    pub fn new(mut script: Script) -> Self {
+        script.send.reverse();
+        Self { script, started: Instant::now(), waiting: None, requested: false, done: Arc::default(), result: Arc::default() }
     }
 
     pub fn frame(&mut self, app: &mut yah_ui_egui::YahApp, ctx: &egui::Context) {
@@ -40,12 +45,23 @@ impl Runner {
                 Err(e) => eprintln!("yah: --attach {}: {e}", path.display()),
             }
         }
-        // Messages go out once the attachments have uploaded, so they ride along.
-        if !self.sent && !app.uploading() {
-            self.sent = true;
-            for text in std::mem::take(&mut self.script.send) {
-                app.submit(text);
-            }
+        // Messages go out once the attachments have uploaded (so they ride along with the
+        // first), one at a time: the next once the app was busy and has settled again.
+        if let Some((at, was_busy)) = self.waiting {
+            let busy = was_busy || app.busy();
+            let finished = at.elapsed() >= SETTLE_TIMEOUT || if busy { !app.busy() && app.settled() } else { at.elapsed() >= START_TIMEOUT };
+            self.waiting = (!finished).then_some((at, busy));
+        }
+        if self.waiting.is_none()
+            && !app.uploading()
+            && let Some(text) = self.script.send.pop()
+        {
+            app.submit(text);
+            self.waiting = Some((Instant::now(), false));
+        }
+        if self.waiting.is_some() || !self.script.send.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+            return;
         }
         let Some(path) = self.script.screenshot.clone() else { return };
         ctx.request_repaint_after(Duration::from_millis(100));

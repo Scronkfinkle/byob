@@ -57,7 +57,21 @@ pub fn message_id(entry: u64) -> yah_store::MessageId {
 }
 
 pub fn to_stats(s: &TurnStats) -> MessageStats {
-    MessageStats { prompt_tokens: s.prompt_tokens, completion_tokens: s.completion_tokens, elapsed_ms: s.elapsed_ms }
+    MessageStats { prompt_tokens: s.prompt_tokens, completion_tokens: s.completion_tokens, elapsed_ms: s.elapsed_ms, model_calls: s.model_calls }
+}
+
+/// A stored compaction for clients.
+pub fn compaction(c: &yah_store::Compaction) -> yah_protocol::Compaction {
+    yah_protocol::Compaction {
+        id: u64::try_from(c.id).unwrap_or(0),
+        after_entry: entry_id(c.through),
+        tokens_before: c.tokens_before,
+        tokens_after: c.tokens_after,
+        summary: c.summary.clone(),
+        manual: c.manual,
+        focus: c.focus.clone(),
+        created_at: c.created_at,
+    }
 }
 
 /// A stored message as a transcript entry. System and tool rows are not shown.
@@ -67,7 +81,12 @@ pub fn entry(m: StoredMessage, step_ids: &AtomicU64) -> Option<Entry> {
         Role::Assistant => EntryRole::Assistant,
         Role::System | Role::Tool => return None,
     };
-    let stats = m.stats.map(|s| TurnStats { prompt_tokens: s.prompt_tokens, completion_tokens: s.completion_tokens, elapsed_ms: s.elapsed_ms });
+    let stats = m.stats.map(|s| TurnStats {
+        prompt_tokens: s.prompt_tokens,
+        completion_tokens: s.completion_tokens,
+        elapsed_ms: s.elapsed_ms,
+        model_calls: s.model_calls,
+    });
     let steps = m.steps.into_iter().map(|s| step(s, step_ids)).collect();
     Some(Entry {
         id: entry_id(m.id),
