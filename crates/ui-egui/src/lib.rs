@@ -4,6 +4,7 @@
 
 pub mod markdown;
 mod settings;
+pub mod sidebar;
 pub mod steps;
 pub mod theme;
 pub mod ws;
@@ -20,6 +21,7 @@ pub struct YahApp {
     /// What `tokens` were last built from and pushed into egui.
     applied: Option<(theme::Prefs, Option<egui::Theme>)>,
     markdown: markdown::Cache,
+    sidebar: sidebar::Sidebar,
     state: Option<EngineState>,
     entries: Vec<Entry>,
     notices: Vec<(NoticeLevel, String)>,
@@ -39,6 +41,7 @@ impl YahApp {
             prefs: theme::Prefs::default(),
             applied: None,
             markdown: markdown::Cache::default(),
+            sidebar: sidebar::Sidebar::default(),
             state: None,
             entries: Vec::new(),
             notices: Vec::new(),
@@ -52,6 +55,9 @@ impl YahApp {
 
     fn pump(&mut self) {
         while let Some(msg) = self.conn.try_recv() {
+            if self.sidebar.apply(&msg) {
+                continue;
+            }
             match msg {
                 ServerMsg::State(state) => {
                     self.form_url.clone_from(&state.inference_base_url);
@@ -79,6 +85,8 @@ impl YahApp {
                 }
                 ServerMsg::StepUpdated { entry, step } => steps::apply(&mut self.entries, entry, step),
                 ServerMsg::EntryUndo { id, undoable, undone } => steps::apply_undo(&mut self.entries, id, undoable, undone),
+                // Handled by the sidebar above.
+                ServerMsg::Chats { .. } | ServerMsg::ChatUpdated(_) | ServerMsg::ChatDeleted { .. } | ServerMsg::ChatOpened { .. } => {}
             }
         }
     }
@@ -134,20 +142,54 @@ impl YahApp {
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.pump();
         self.apply_theme(ui.ctx());
-        self.header(ui);
+        let narrow = ui.available_width() < sidebar::NARROW;
+        let list_open = self.sidebar.is_open(narrow);
+        self.header(ui, narrow);
         if self.show_settings {
             egui::Panel::top("settings").show(ui, |ui| self.settings(ui));
+        }
+        let t = self.tokens;
+        if narrow && list_open {
+            // Phones: the chat list takes the whole screen until a chat is picked.
+            let sent = egui::CentralPanel::default().show(ui, |ui| self.sidebar.show(ui, &t, true)).inner;
+            self.send_all(sent);
+            return;
+        }
+        if list_open {
+            let sent = egui::Panel::left("sidebar")
+                .resizable(true)
+                .default_size(240.0)
+                .size_range(180.0..=420.0)
+                .show(ui, |ui| self.sidebar.show(ui, &t, false))
+                .inner;
+            self.send_all(sent);
         }
         egui::Panel::bottom("composer").show(ui, |ui| self.composer(ui));
         egui::CentralPanel::default().show(ui, |ui| self.transcript(ui));
     }
 
-    fn header(&mut self, ui: &mut egui::Ui) {
+    fn send_all(&mut self, msgs: Vec<ClientMsg>) {
+        for m in msgs {
+            self.conn.send(m);
+        }
+    }
+
+    fn header(&mut self, ui: &mut egui::Ui, narrow: bool) {
         let t = self.tokens;
         egui::Panel::top("header").show(ui, |ui| {
             ui.horizontal(|ui| {
+                if ui.button("Chats").on_hover_text("Show or hide the chat list").clicked() {
+                    self.sidebar.toggle();
+                }
                 ui.label(egui::RichText::new("yah").strong().size(18.0).color(t.accent));
+                let title = self.sidebar.current().map_or("New chat", |c| c.title.as_str());
+                let max = if narrow { 18 } else { 48 };
+                let short: String =
+                    if title.chars().count() > max { title.chars().take(max - 1).chain(std::iter::once('…')).collect() } else { title.to_owned() };
+                ui.label(egui::RichText::new(short).color(t.text_strong)).on_hover_text(title);
                 match &self.state {
+                    // The endpoint is detail a phone screen has no room for.
+                    Some(_) if narrow => ui.label(""),
                     Some(s) => ui.label(egui::RichText::new(format!("{} · {}", s.inference_model, s.inference_base_url)).color(t.text_dim)),
                     None => ui.label(egui::RichText::new("connecting…").color(t.text_dim)),
                 };

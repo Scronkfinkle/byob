@@ -353,8 +353,11 @@ fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step) -> Option<ClientMsg
             if ui.add(allow).clicked() {
                 answer = Some(ApprovalAnswer::Allow);
             }
-            if ui.button(format!("Always allow {}", step.tool)).on_hover_text("Don't ask again for this tool in this session").clicked() {
+            if ui.button(format!("Always allow {}", step.tool)).on_hover_text("Don't ask again for this tool in this chat").clicked() {
                 answer = Some(ApprovalAnswer::Always);
+            }
+            if ui.button("…in every chat").on_hover_text(format!("Don't ask again for {} in any chat", step.tool)).clicked() {
+                answer = Some(ApprovalAnswer::AlwaysEverywhere);
             }
             if ui.button(RichText::new("Deny").color(t.danger)).clicked() {
                 answer = Some(ApprovalAnswer::Deny);

@@ -5010,6 +5010,7 @@ dependencies = [
  "env_logger",
  "log",
  "png",
+ "tempfile",
  "yah-agent",
  "yah-plugins",
  "yah-server",

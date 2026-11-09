@@ -130,23 +130,32 @@ impl Engine {
         self.set_undo_flags(id, undoable, undone);
     }
 
+    /// The chat holding entry `id` (among loaded chats) and the entry.
+    fn locate(&mut self, id: u64) -> Option<(String, &mut yah_protocol::Entry)> {
+        self.live.iter_mut().find_map(|(chat, l)| l.entries.iter_mut().rev().find(|e| e.id == id).map(|e| (chat.clone(), e)))
+    }
+
     fn set_undo_flags(&mut self, id: u64, undoable: bool, undone: bool) {
-        let changed = self.entry_mut(id).is_some_and(|e| {
+        let changed = self.locate(id).and_then(|(chat, e)| {
             let changed = e.undoable != undoable || e.undone != undone;
             e.undoable = undoable;
             e.undone = undone;
-            changed
+            changed.then_some(chat)
         });
-        if changed {
-            self.broadcast(ServerMsg::EntryUndo { id, undoable, undone });
+        if let Some(chat) = changed {
+            self.send_viewers(&chat, ServerMsg::EntryUndo { id, undoable, undone });
         }
     }
 
     /// A client asked to undo entry `entry`'s file changes.
     pub(crate) fn undo(&mut self, client: ClientId, entry: u64) {
         let refuse = |text: String| ServerMsg::Notice { level: NoticeLevel::Error, text };
-        if self.running.is_some() {
-            self.send_to(client, refuse("Can't undo while a reply is running; stop it or wait.".into()));
+        let Some(chat) = self.locate(entry).map(|(chat, _)| chat) else {
+            self.send_to(client, refuse("That reply isn't loaded; open its chat first.".into()));
+            return;
+        };
+        if self.chat_busy(&chat) {
+            self.send_to(client, refuse("Can't undo while a reply is running in this chat; stop it or wait.".into()));
             return;
         }
         let Some(j) = self.journals.get(entry).cloned() else {
@@ -161,7 +170,7 @@ impl Engine {
             self.send_to(client, refuse("Some of that reply's changes can't be undone, so nothing was changed.".into()));
             return;
         }
-        let workspace: PathBuf = self.workspace.as_ref().clone();
+        let Some(workspace) = self.live.get(&chat).map(|l| PathBuf::clone(&l.workspace)) else { return };
         match yah_tools::undo::undo(&j.ops, &workspace) {
             Ok(report) => {
                 if let Some(j) = self.journals.by_entry.get_mut(&entry) {
@@ -170,7 +179,7 @@ impl Engine {
                 self.set_undo_flags(entry, false, true);
                 let n = report.done.len();
                 let text = format!("Undid {n} change{}: {}.", if n == 1 { "" } else { "s" }, report.done.join("; "));
-                self.broadcast(ServerMsg::Notice { level: NoticeLevel::Info, text });
+                self.send_viewers(&chat, ServerMsg::Notice { level: NoticeLevel::Info, text });
             }
             Err(e) => self.send_to(client, refuse(format!("Can't undo: {e}."))),
         }

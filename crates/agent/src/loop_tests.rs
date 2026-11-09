@@ -143,6 +143,10 @@ fn harness(script: Vec<Reply>, tool: &'static str, access: Access) -> Harness {
 }
 
 fn harness_with(script: Vec<Reply>, tool: &'static str, access: Access, reply: Option<String>) -> Harness {
+    harness_at(script, tool, access, reply, None)
+}
+
+fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Option<String>, paths: Option<yah_store::Paths>) -> Harness {
     let (url, requests) = fake_llm(script, "final answer");
     let runs = Arc::new(AtomicUsize::new(0));
     let mut tools = Registry::default();
@@ -153,6 +157,8 @@ fn harness_with(script: Vec<Reply>, tool: &'static str, access: Access, reply: O
         tools,
         policy: Policy::default(),
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
+        paths,
+        auto_title: false,
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests, runs }
 }
@@ -171,9 +177,12 @@ fn recv(conn: &mut LocalConnection) -> ServerMsg {
 fn client(h: &Harness) -> (LocalConnection, Vec<Entry>) {
     let mut c = h.engine.connect(Arc::new(|| {}));
     c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
-    assert!(matches!(recv(&mut c), ServerMsg::State(_)));
-    let ServerMsg::Transcript { entries } = recv(&mut c) else { panic!("expected transcript") };
-    (c, entries)
+    // Hello is answered with the chat list, State, ChatOpened and the Transcript.
+    loop {
+        if let ServerMsg::Transcript { entries } = recv(&mut c) {
+            return (c, entries);
+        }
+    }
 }
 
 /// Mirror of what a UI keeps.
@@ -470,6 +479,8 @@ fn approval_card_then_undo_the_turn() {
         tools: yah_tools::builtin(),
         policy: Policy::default(),
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
+        paths: None,
+        auto_title: false,
     };
     let h = Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests: Arc::default(), runs: Arc::default() };
     let (mut c, _) = client(&h);
@@ -507,4 +518,49 @@ fn approval_card_then_undo_the_turn() {
     // twice is refused
     late.send(ClientMsg::Undo { entry });
     assert!(matches!(recv(&mut late), ServerMsg::Notice { level: NoticeLevel::Error, .. }));
+}
+
+/// Switch `c` to a new, empty chat.
+fn new_chat(c: &mut LocalConnection) {
+    c.send(ClientMsg::NewChat);
+    while !matches!(recv(c), ServerMsg::Transcript { .. }) {}
+}
+
+fn answer_with(answer: ApprovalAnswer) -> impl FnMut(&Step, &mut LocalConnection) {
+    move |step, c| c.send(ClientMsg::Approve { step: step.id, answer })
+}
+
+#[test]
+fn always_allow_is_per_chat_or_global_and_survives_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = yah_store::Paths::at(dir.path());
+    let w = |n: &str| call("write", &format!(r#"{{"text":"{n}"}}"#));
+    let script = vec![w("1"), Reply::Text("ok1"), w("2"), Reply::Text("ok2"), w("3"), Reply::Text("ok3")];
+    let h = harness_at(script, "write", Access::Write, None, Some(paths.clone()));
+    let (mut c, _) = client(&h);
+    run_turn(&mut c, "one", answer_with(ApprovalAnswer::Always));
+    // Same chat: no question.
+    let view = run_turn(&mut c, "two", |_, _| panic!("granted for this chat"));
+    assert_eq!(view.reply().content, "ok2");
+    // Another chat: asked again; this time for every chat.
+    new_chat(&mut c);
+    let mut asked = 0;
+    let mut everywhere = answer_with(ApprovalAnswer::AlwaysEverywhere);
+    run_turn(&mut c, "three", |s, c| {
+        asked += 1;
+        everywhere(s, c);
+    });
+    assert_eq!(asked, 1);
+    assert_eq!(h.runs.load(Ordering::SeqCst), 3);
+
+    // After a restart the global grant still holds, in a brand-new chat.
+    let h2 = harness_at(vec![w("4"), Reply::Text("ok4")], "write", Access::Write, None, Some(paths));
+    let (mut c2, entries) = client(&h2);
+    // The most recent chat is restored with its steps and file changes.
+    assert_eq!(entries.len(), 2);
+    let step = &entries[1].steps[0];
+    assert_eq!((step.status, step.changes.len()), (StepStatus::Done, 1));
+    new_chat(&mut c2);
+    let view = run_turn(&mut c2, "four", |_, _| panic!("granted everywhere"));
+    assert_eq!(view.reply().content, "ok4");
 }
