@@ -4,4 +4,4 @@ author:       The Inter Project Authors (Rasmus Andersson et al.)
 source:       https://github.com/rsms/inter
 license:      OFL-1.1
 license-file: crates/ui-egui/assets/fonts/OFL-Inter.txt
-notes:        Unmodified font file, embedded via include_bytes! in crates/ui-egui/src/theme.rs.
+notes:        Unmodified font file, embedded via include_bytes! in crates/ui-egui/src/theme/mod.rs.

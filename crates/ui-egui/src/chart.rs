@@ -24,9 +24,9 @@ const DOTS_UP_TO: usize = 24;
 pub fn show(ui: &mut egui::Ui, t: &Tokens, spec: &ChartSpec, id: egui::Id) {
     let palette = t.chart_palette();
     let color = |i: usize| palette.get(i % palette.len()).copied().unwrap_or(t.accent);
-    egui::Frame::new().stroke(Stroke::new(1.0, t.border)).corner_radius(8.0).inner_margin(12.0).show(ui, |ui| {
+    egui::Frame::new().stroke(Stroke::new(1.0, t.border)).corner_radius(t.round(8.0)).inner_margin(t.pad(12.0)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(egui::RichText::new(&spec.title).strong().size(15.0).color(t.text_strong));
+        ui.label(egui::RichText::new(&spec.title).strong().size(t.text_size(15.0)).color(t.text_strong));
         let items = legend(spec, &color);
         if !items.is_empty() {
             ui.horizontal_wrapped(|ui| {

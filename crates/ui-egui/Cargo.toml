@@ -14,6 +14,7 @@ ewebsock.workspace = true
 log.workspace = true
 web-time.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 pulldown-cmark.workspace = true
 yah-types.workspace = true
 image.workspace = true
@@ -27,7 +28,7 @@ web-sys = { workspace = true, features = ["File", "FileList", "Blob", "BlobPrope
 
 [dev-dependencies]
 tungstenite.workspace = true
-serde_json.workspace = true
+ron.workspace = true
 
 [lints]
 workspace = true

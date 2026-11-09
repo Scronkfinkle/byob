@@ -306,45 +306,48 @@ impl Artifacts {
         let note = a.version(version).map(|v| v.note.clone()).unwrap_or_default();
         let selected = self.open && self.selected.as_ref().is_some_and(|(id, _)| *id == a.id);
         let stroke = if selected { t.accent } else { t.border };
-        egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, stroke)).corner_radius(8.0).inner_margin(vec2(10.0, 8.0)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                kind_badge(ui, t, a.kind);
-                ui.label(RichText::new(&a.title).strong().color(t.text_strong));
-                ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
-                if !note.is_empty() {
-                    ui.add(egui::Label::new(RichText::new(&note).small().color(t.text_dim)).truncate()).on_hover_text(&note);
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Show").on_hover_text("Show it beside the chat").clicked() {
-                    self.actions.push(Action::Select { id: a.id.clone(), version: Some(version) });
-                }
-                if a.kind == ArtifactKind::Html && ui.button("Open").on_hover_text("Open the app in a browser tab").clicked() {
-                    self.actions.push(Action::Open { id: a.id.clone(), version });
-                }
-                if ui.button("Export").on_hover_text(format!("Save {}", a.filename)).clicked() {
-                    self.actions.push(Action::Export { id: a.id.clone(), version });
-                }
-                if a.versions.len() > 1 {
-                    let mut pick = None;
-                    egui::ComboBox::from_id_salt(("artifact-versions", &a.id, version)).selected_text(format!("{} versions", a.versions.len())).show_ui(
-                        ui,
-                        |ui| {
-                            for v in a.versions.iter().rev() {
-                                if ui.selectable_label(v.n == version, version_label(v)).clicked() {
-                                    pick = Some(v.n);
-                                }
-                            }
-                        },
-                    );
-                    if let Some(n) = pick {
-                        self.actions.push(Action::Select { id: a.id.clone(), version: Some(n) });
+        egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, stroke)).corner_radius(t.round(8.0)).inner_margin(vec2(t.pad(10.0), t.pad(8.0))).show(
+            ui,
+            |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    kind_badge(ui, t, a.kind);
+                    ui.label(RichText::new(&a.title).strong().color(t.text_strong));
+                    ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
+                    if !note.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(&note).small().color(t.text_dim)).truncate()).on_hover_text(&note);
                     }
-                }
-            });
-            self.card_preview(ui, t, &a, version);
-        });
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Show").on_hover_text("Show it beside the chat").clicked() {
+                        self.actions.push(Action::Select { id: a.id.clone(), version: Some(version) });
+                    }
+                    if a.kind == ArtifactKind::Html && ui.button("Open").on_hover_text("Open the app in a browser tab").clicked() {
+                        self.actions.push(Action::Open { id: a.id.clone(), version });
+                    }
+                    if ui.button("Export").on_hover_text(format!("Save {}", a.filename)).clicked() {
+                        self.actions.push(Action::Export { id: a.id.clone(), version });
+                    }
+                    if a.versions.len() > 1 {
+                        let mut pick = None;
+                        egui::ComboBox::from_id_salt(("artifact-versions", &a.id, version)).selected_text(format!("{} versions", a.versions.len())).show_ui(
+                            ui,
+                            |ui| {
+                                for v in a.versions.iter().rev() {
+                                    if ui.selectable_label(v.n == version, version_label(v)).clicked() {
+                                        pick = Some(v.n);
+                                    }
+                                }
+                            },
+                        );
+                        if let Some(n) = pick {
+                            self.actions.push(Action::Select { id: a.id.clone(), version: Some(n) });
+                        }
+                    }
+                });
+                self.card_preview(ui, t, &a, version);
+            },
+        );
     }
 
     fn card_preview(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32) {
@@ -373,7 +376,7 @@ impl Artifacts {
         let key = egui::Id::unique(("artifact-card", &a.id, version));
         match self.shown(&ctx, a, version) {
             Err(None) => {
-                ui.add(egui::Spinner::new().size(12.0));
+                crate::theme::spinner(ui, t, Some(12.0));
             }
             Err(Some(e)) => {
                 ui.label(RichText::new(format!("Couldn't show it: {e}")).small().color(t.text_dim));
@@ -418,7 +421,7 @@ impl Artifacts {
         let source = self.source;
         match self.shown(&ctx, &a, version) {
             Err(None) => {
-                ui.centered_and_justified(|ui| ui.spinner());
+                ui.centered_and_justified(|ui| crate::theme::spinner(ui, t, None));
             }
             Err(Some(e)) => {
                 ui.label(RichText::new(format!("Couldn't show {}: {e}", a.filename)).color(t.text_dim));
@@ -457,7 +460,8 @@ impl Artifacts {
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     kind_badge(ui, t, a.kind);
-                    ui.add(egui::Label::new(RichText::new(&a.title).strong().size(15.0).color(t.text_strong)).truncate()).on_hover_text(&a.filename);
+                    ui.add(egui::Label::new(RichText::new(&a.title).strong().size(t.text_size(15.0)).color(t.text_strong)).truncate())
+                        .on_hover_text(&a.filename);
                 });
             });
         });
@@ -507,7 +511,7 @@ impl Artifacts {
         };
         let errors = self.view.errors();
         if !errors.is_empty() {
-            egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, t.danger)).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
+            egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, t.danger)).corner_radius(t.round(6.0)).inner_margin(t.pad(8.0)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(
                     RichText::new(if errors.len() == 1 { "The app reported an error".to_owned() } else { format!("The app reported {} errors", errors.len()) })
@@ -545,7 +549,7 @@ fn version_label(v: &yah_protocol::ArtifactVersion) -> String {
 }
 
 fn kind_badge(ui: &mut egui::Ui, t: &Tokens, kind: ArtifactKind) {
-    egui::Frame::new().fill(crate::theme::mix(t.accent, t.code_bg, 0.8)).corner_radius(4.0).inner_margin(vec2(5.0, 1.0)).show(ui, |ui| {
+    egui::Frame::new().fill(crate::theme::mix(t.accent, t.code_bg, 0.8)).corner_radius(t.round(4.0)).inner_margin(vec2(5.0, 1.0)).show(ui, |ui| {
         ui.label(RichText::new(kind.label().to_uppercase()).small().color(t.accent));
     });
 }
@@ -556,7 +560,7 @@ fn image(ui: &mut egui::Ui, t: &Tokens, tex: &egui::TextureHandle, max_height: f
         return;
     }
     let scale = (ui.available_width() / natural.x).min(max_height / natural.y).min(1.0);
-    ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), natural * scale)).corner_radius(6.0));
+    ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), natural * scale)).corner_radius(t.round(6.0)));
     let _ = t;
 }
 

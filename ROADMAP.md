@@ -13,7 +13,11 @@ Last updated: 2026-11-09
 - Sandboxed file tools; `run_command` / `run_python` through `yah-sandbox` (Landlock + namespaces);
   managed Python via uv; hob-compatible plugins (skills, Python tools, MCP connectors).
 - Charts (hob ChartSpec v1, `make_chart` incl. CSV aggregation), inline images, uploads (desktop+web).
-- Themes, markdown, remote-access hardening, Tailscale identity allowlist.
+- Markdown, remote-access hardening, Tailscale identity allowlist.
+- Theming: 15 presets (yah, Catppuccin ×4, Gruvbox, Nord, Dracula, Solarized, Tokyo Night, Rosé Pine),
+  separate light/dark picks for System, accents, knobs (sizes, fonts, density, radius, bubbles,
+  layout, column width, motion, chart colours, pane widths), every colour role overridable,
+  JSON theme files (import/export, `<config>/themes`), basic code highlighting.
 - Artifacts: versioned markdown / HTML app / chart / image / text files beside the chat
   (`create_artifact`, `update_artifact` with find/replace edits, `read_artifact`; charts and
   images adopted), cards + side pane, Export, Open in browser; HTML apps run inline in the
@@ -30,7 +34,7 @@ Last updated: 2026-11-09
 4. Media shown where the step happened (currently after the reply); header overflow on narrow widths.
 5. Legacy HTTP+SSE MCP transport; OAuth for MCP.
 6. macOS sandbox profile (untested); Windows sandboxing.
-7. Syntax highlighting; table alignment; markdown for thinking text.
+7. Language-aware syntax highlighting; table alignment; markdown for thinking text.
 8. Flaky under load: `yah-mcp` `expired_session_is_reported` (passes alone).
 
 ## Ideas worth deciding early

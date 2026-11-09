@@ -87,10 +87,31 @@ fn hex(c: egui::Color32) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
 }
 
-/// The theme as the CSS variables apps are told to use.
+/// The theme as the CSS variables apps are told to use (in [`THEME_VARS`] order).
 pub fn theme_vars(t: &Tokens) -> Vec<(&'static str, String)> {
-    let values = [t.app_bg, t.assistant_bubble, t.text, t.text_dim, t.accent, t.on_accent, t.border, t.danger, t.success];
-    THEME_VARS.iter().zip(values).map(|(k, v)| (*k, hex(v))).collect()
+    let colors = [
+        t.app_bg,
+        t.assistant_bubble,
+        t.text,
+        t.text_dim,
+        t.accent,
+        t.on_accent,
+        t.border,
+        t.danger,
+        t.success,
+        t.warning,
+        t.link,
+        t.text_strong,
+        t.text_faint,
+        t.panel_bg,
+        t.field_bg,
+        t.code_bg,
+        t.code_text,
+    ];
+    let mut values: Vec<String> = colors.into_iter().map(hex).collect();
+    values.push(format!("{}px", t.radius.round()));
+    values.extend(t.chart.iter().map(|c| hex(*c)));
+    THEME_VARS.iter().zip(values).map(|(k, v)| (*k, v)).collect()
 }
 
 /// `#--yah-bg=%2316171a&…`, read by the helper script in served apps.
@@ -116,22 +137,25 @@ impl AppView for Placeholder {
     fn show(&mut self, ui: &mut egui::Ui, t: &Tokens, doc: &AppDoc<'_>) -> AppViewResponse {
         let mut resp = AppViewResponse::default();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            egui::Frame::new().fill(t.assistant_bubble).stroke(Stroke::new(1.0, t.border)).corner_radius(10.0).inner_margin(16.0).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let name = doc.source.and_then(html_title).unwrap_or_else(|| doc.title.to_owned());
-                ui.label(RichText::new(name).strong().size(17.0).color(t.text_strong));
-                ui.label(
-                    RichText::new(format!("Interactive app · version {} · {}", doc.version, yah_protocol::media::size_label(doc.size)))
-                        .small()
-                        .color(t.text_dim),
-                );
-                ui.add_space(8.0);
-                ui.label(RichText::new("Apps run in your browser for now. Open it there, or export the file to keep it.").color(t.text));
-                ui.add_space(8.0);
-                if ui.add(egui::Button::new(RichText::new("Open in browser").color(t.on_accent)).fill(t.accent)).clicked() {
-                    resp.open = true;
-                }
-            });
+            egui::Frame::new().fill(t.assistant_bubble).stroke(Stroke::new(1.0, t.border)).corner_radius(t.round(10.0)).inner_margin(t.pad(16.0)).show(
+                ui,
+                |ui| {
+                    ui.set_width(ui.available_width());
+                    let name = doc.source.and_then(html_title).unwrap_or_else(|| doc.title.to_owned());
+                    ui.label(RichText::new(name).strong().size(t.text_size(17.0)).color(t.text_strong));
+                    ui.label(
+                        RichText::new(format!("Interactive app · version {} · {}", doc.version, yah_protocol::media::size_label(doc.size)))
+                            .small()
+                            .color(t.text_dim),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Apps run in your browser for now. Open it there, or export the file to keep it.").color(t.text));
+                    ui.add_space(8.0);
+                    if ui.add(egui::Button::new(RichText::new("Open in browser").color(t.on_accent)).fill(t.accent)).clicked() {
+                        resp.open = true;
+                    }
+                },
+            );
             if let Some(src) = doc.source {
                 ui.add_space(8.0);
                 egui::CollapsingHeader::new(RichText::new("Source").color(t.text_dim)).id_salt(("app-source", doc.title, doc.version)).show(ui, |ui| {
@@ -331,6 +355,13 @@ mod tests {
         let hash = theme_hash(&vars);
         assert!(hash.starts_with("#--yah-bg=%23") && hash.contains("&--yah-accent=%23"), "{hash}");
         assert!(!hash[1..].contains('#'));
+        // The desktop helper only accepts `--yah-` + lowercase letters and dashes.
+        for (k, v) in &vars {
+            let name = k.strip_prefix("--yah-").unwrap_or_default();
+            assert!(!name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'), "{k}");
+            assert!(v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'#'), "{k}={v}");
+        }
+        assert!(vars.contains(&("--yah-radius", "6px".to_owned())));
     }
 
     #[test]

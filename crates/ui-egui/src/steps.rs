@@ -236,7 +236,7 @@ fn row(ui: &mut egui::Ui, t: &Tokens, step: &Step) {
             ui.spacing_mut().item_spacing.x = 6.0;
             match status_icon(step.status) {
                 Some(i) => icon(ui, t, i, 15.0),
-                None => ui.add(egui::Spinner::new().size(13.0)),
+                None => crate::theme::spinner(ui, t, Some(13.0)),
             };
             let mut title = RichText::new(&step.title).color(color);
             if step.status == StepStatus::Denied {
@@ -329,17 +329,20 @@ fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step) -> Option<ClientMsg
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             icon(ui, t, Icon::Waiting, 16.0);
-            ui.label(RichText::new(card_question(step)).family(bold_family()).size(15.0).color(t.text_strong));
+            ui.label(RichText::new(card_question(step)).family(bold_family()).size(t.text_size(15.0)).color(t.text_strong));
         });
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let color = access_color(t, step.access);
-            egui::Frame::new().fill(mix(t.assistant_bubble, color, 0.14)).corner_radius(8.0).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                icon(ui, t, Icon::Access(step.access), 12.0);
-                ui.label(RichText::new(access_text(step.access)).small().color(color));
-            });
+            egui::Frame::new().fill(mix(t.assistant_bubble, color, 0.14)).corner_radius(t.round(8.0)).inner_margin(egui::Margin::symmetric(6, 1)).show(
+                ui,
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    icon(ui, t, Icon::Access(step.access), 12.0);
+                    ui.label(RichText::new(access_text(step.access)).small().color(color));
+                },
+            );
             ui.label(RichText::new(&step.tool).small().monospace().color(t.text_faint));
         });
         ui.add_space(4.0);
@@ -373,7 +376,7 @@ fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step) -> Option<ClientMsg
 }
 
 fn code_frame(ui: &mut egui::Ui, t: &Tokens, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, t.code_border)).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+    egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, t.code_border)).corner_radius(t.round(4.0)).inner_margin(t.pad(6.0)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 0.0;
         add(ui);

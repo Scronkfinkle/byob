@@ -1,0 +1,41 @@
+asset:        Colour palettes of the built-in theme presets (hex values only, no code or files copied)
+used-in:      crates/ui-egui/src/theme/presets.rs
+added:        2026-11-09 by Claude (agent)
+notes:        Slots a scheme has no colour for are derived from its neighbours and marked
+              "derived" in presets.rs. Readability fix-ups (accents nudged to 4.5:1) happen at
+              runtime in Tokens::derive.
+
+title:        Catppuccin (Latte, Frappé, Macchiato, Mocha)
+author:       Catppuccin Org
+source:       https://github.com/catppuccin/palette
+license:      MIT
+
+title:        Gruvbox (dark, light)
+author:       Pavel Pertsev (morhetz)
+source:       https://github.com/morhetz/gruvbox
+license:      MIT
+
+title:        Nord
+author:       Arctic Ice Studio & Sven Greb
+source:       https://github.com/nordtheme/nord
+license:      MIT
+
+title:        Dracula
+author:       Zeno Rocha and contributors
+source:       https://github.com/dracula/dracula-theme
+license:      MIT
+
+title:        Solarized (dark, light)
+author:       Ethan Schoonover
+source:       https://github.com/altercation/solarized
+license:      MIT
+
+title:        Tokyo Night
+author:       enkia
+source:       https://github.com/enkia/tokyo-night-vscode-theme
+license:      MIT
+
+title:        Rosé Pine (main, Dawn)
+author:       Rosé Pine
+source:       https://github.com/rose-pine/rose-pine-theme
+license:      MIT

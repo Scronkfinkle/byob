@@ -103,6 +103,18 @@ Funnel (public internet) requests get `Tailscale-Funnel-Request: ?1` and no iden
   unless `--serve` already runs.
 - Not yet: read-only clients.
 
+## Themes
+
+Appearance is per device (`theme::Prefs`, eframe storage: a file natively, `localStorage` in
+the browser) and lives entirely in `yah-ui-egui`. A theme is a `presets::Palette` (the
+schemes' own colours in a dozen slots) plus a theme file's changes (`file::ThemeDef`);
+`Tokens::build` derives every colour role from it, nudges text-like roles to readable
+contrast, then applies the user's accent, knobs, high contrast and per-theme overrides.
+Widgets read only `Tokens` (colours, `round()`/`pad()`/`text_size()` for the radius, density
+and size knobs). Theme files are small JSON (`base` preset + changed roles + knobs);
+desktop lists `<config>/themes/*.json`, the browser keeps imported ones in its prefs. HTML
+artifacts get the theme as `--yah-*` CSS variables (`THEME_VARS`, additive only).
+
 ## Artifacts
 
 Files the model makes to keep, beside the conversation, versioned and exportable. The kind
