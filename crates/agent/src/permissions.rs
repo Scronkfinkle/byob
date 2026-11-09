@@ -1,7 +1,5 @@
 //! The permission gate: which tool calls run on their own, which ask the user, and which
-//! are refused outright. The engine thread owns the session's "always allow" set.
-
-use std::collections::BTreeSet;
+//! are refused outright. "Always allow" grants live in the store (per chat or global).
 
 use yah_protocol::ToolAccess;
 
@@ -49,13 +47,13 @@ pub enum Gate {
     Deny(String),
 }
 
-/// Decide one call. "Always allow" (per tool, per session) skips the question but never
-/// overrides a [`Rule::Deny`].
-pub fn decide(policy: &Policy, always: &BTreeSet<String>, tool: &str, access: ToolAccess) -> Gate {
+/// Decide one call. `granted` means the user chose "always allow" for this tool (in this
+/// chat or everywhere): it skips the question but never overrides a [`Rule::Deny`].
+pub fn decide(policy: &Policy, granted: bool, access: ToolAccess) -> Gate {
     match policy.rule(access) {
         Rule::Allow => Gate::Allow,
         Rule::Deny => Gate::Deny(format!("{} tools are turned off", access.label())),
-        Rule::Ask if always.contains(tool) => Gate::Allow,
+        Rule::Ask if granted => Gate::Allow,
         Rule::Ask => Gate::Ask,
     }
 }
@@ -67,20 +65,17 @@ mod tests {
     #[test]
     fn default_policy_allows_reads_and_asks_for_the_rest() {
         let p = Policy::default();
-        let none = BTreeSet::new();
-        assert_eq!(decide(&p, &none, "read_file", ToolAccess::Read), Gate::Allow);
+        assert_eq!(decide(&p, false, ToolAccess::Read), Gate::Allow);
         for a in [ToolAccess::Write, ToolAccess::Network, ToolAccess::Execute] {
-            assert_eq!(decide(&p, &none, "x", a), Gate::Ask);
+            assert_eq!(decide(&p, false, a), Gate::Ask);
         }
     }
 
     #[test]
     fn always_skips_asking_but_not_deny() {
-        let always = BTreeSet::from(["write_file".to_owned()]);
         let p = Policy { write: Rule::Ask, execute: Rule::Deny, ..Policy::default() };
-        assert_eq!(decide(&p, &always, "write_file", ToolAccess::Write), Gate::Allow);
-        assert_eq!(decide(&p, &always, "other", ToolAccess::Write), Gate::Ask);
-        let always = BTreeSet::from(["run".to_owned()]);
-        assert!(matches!(decide(&p, &always, "run", ToolAccess::Execute), Gate::Deny(_)));
+        assert_eq!(decide(&p, true, ToolAccess::Write), Gate::Allow);
+        assert_eq!(decide(&p, false, ToolAccess::Write), Gate::Ask);
+        assert!(matches!(decide(&p, true, ToolAccess::Execute), Gate::Deny(_)));
     }
 }

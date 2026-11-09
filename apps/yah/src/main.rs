@@ -6,9 +6,9 @@
 //! yah --headless [ADDR]       browser access only, no window
 //!     --web-dir DIR           built web bundle to serve (default: $YAH_WEB_DIR, else apps/yah-web/dist)
 //!     --allow-user LOGIN      only admit this Tailscale login via `tailscale serve` (repeatable)
-//!     --inference-url URL     OpenAI-compatible base URL
-//!     --model NAME
-//!     --workspace DIR         folder tools work in (default: current directory)
+//!     --inference-url URL     OpenAI-compatible base URL (default: settings.json)
+//!     --model NAME            (default: settings.json)
+//!     --workspace DIR         folder new chats work in (default: settings.json, else current directory)
 //!     --plugin DIR            load the plugin in DIR (repeatable; also <config>/plugins)
 //!     --dev-tools             offer trivial test tools (get_time, set_reminder)
 //!     --theme NAME            system | dark | light (overrides the saved preference)
@@ -19,6 +19,10 @@
 //!     --screenshot-after SECS minimum wait before the screenshot (default 2)
 //!     --open-settings         start with the settings panel open
 //! ```
+//!
+//! Chats live in `yah.db`; preferences in `settings.json` and the API key in `secrets.json`
+//! (all under `$YAH_HOME` if set, else the platform config/data directories). Flags and
+//! `YAH_API_KEY` override the files for this run; changing the endpoint in the UI saves it.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod extensions;
@@ -31,14 +35,18 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use yah_agent::{EngineConfig, EngineHandle};
+use yah_store::{Paths, Secrets, Settings, Theme};
 use yah_types::InferenceConfig;
 
+#[derive(Default)]
 struct Args {
     serve: Option<SocketAddr>,
     headless: bool,
     web_dir: PathBuf,
     allowed_users: Vec<String>,
-    inference: InferenceConfig,
+    inference_url: Option<String>,
+    model: Option<String>,
+    api_key: Option<String>,
     workspace: Option<PathBuf>,
     dev_tools: bool,
     plugins: Vec<PathBuf>,
@@ -54,7 +62,9 @@ fn parse_args() -> Result<Args, String> {
         headless: false,
         allowed_users: Vec::new(),
         web_dir: std::env::var_os("YAH_WEB_DIR").map_or_else(|| PathBuf::from("apps/yah-web/dist"), PathBuf::from),
-        inference: InferenceConfig::default(),
+        inference_url: None,
+        model: None,
+        api_key: std::env::var("YAH_API_KEY").ok().filter(|k| !k.is_empty()),
         workspace: None,
         dev_tools: false,
         plugins: Vec::new(),
@@ -62,9 +72,6 @@ fn parse_args() -> Result<Args, String> {
         open_settings: false,
         script: testing::Script { after: std::time::Duration::from_secs(2), ..Default::default() },
     };
-    if let Ok(key) = std::env::var("YAH_API_KEY") {
-        args.inference.api_key = Some(key);
-    }
     let mut it = std::env::args().skip(1).peekable();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -81,8 +88,8 @@ fn parse_args() -> Result<Args, String> {
             }
             "--web-dir" => args.web_dir = it.next().ok_or("--web-dir needs a path")?.into(),
             "--allow-user" => args.allowed_users.push(it.next().ok_or("--allow-user needs a Tailscale login")?),
-            "--inference-url" => args.inference.base_url = it.next().ok_or("--inference-url needs a URL")?,
-            "--model" => args.inference.model = it.next().ok_or("--model needs a name")?,
+            "--inference-url" => args.inference_url = Some(it.next().ok_or("--inference-url needs a URL")?),
+            "--model" => args.model = Some(it.next().ok_or("--model needs a name")?),
             "--workspace" => args.workspace = Some(it.next().ok_or("--workspace needs a folder")?.into()),
             "--dev-tools" => args.dev_tools = true,
             "--plugin" => args.plugins.push(it.next().ok_or("--plugin needs a folder")?.into()),
@@ -138,25 +145,90 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<(), String> {
-    let args = parse_args()?;
-    let mut config = EngineConfig::new(args.inference);
-    if let Some(dir) = args.workspace {
-        if !dir.is_dir() {
+/// What the settings files say; defaults when there is no usable home directory.
+struct Saved {
+    paths: Option<Paths>,
+    settings: Settings,
+    secrets: Secrets,
+}
+
+fn load_saved() -> Saved {
+    match Paths::resolve() {
+        Ok(paths) => {
+            // Warnings (corrupt file kept aside, loose permissions fixed) are logged by the store.
+            let settings = Settings::load(&paths.settings()).value;
+            let secrets = Secrets::load(&paths.secrets()).value;
+            Saved { paths: Some(paths), settings, secrets }
+        }
+        Err(e) => {
+            log::warn!("{e}; chats and settings won't be saved this run");
+            Saved { paths: None, settings: Settings::default(), secrets: Secrets::default() }
+        }
+    }
+}
+
+/// Flags (and `YAH_API_KEY`) beat settings.json / secrets.json, which beat built-in defaults.
+fn inference_config(args: &Args, settings: &Settings, secrets: &Secrets) -> InferenceConfig {
+    let defaults = InferenceConfig::default();
+    let pick = |flag: &Option<String>, saved: &Option<String>, default: String| {
+        flag.clone().or_else(|| saved.clone().filter(|s| !s.trim().is_empty())).unwrap_or(default)
+    };
+    InferenceConfig {
+        base_url: pick(&args.inference_url, &settings.inference.base_url, defaults.base_url),
+        model: pick(&args.model, &settings.inference.model, defaults.model),
+        api_key: args.api_key.clone().or_else(|| secrets.api_key.clone().filter(|k| !k.is_empty())),
+    }
+}
+
+/// `--workspace`, else the saved default, else the current directory.
+fn workspace(args: &Args, settings: &Settings) -> Result<Option<PathBuf>, String> {
+    let (dir, from_flag) = match (&args.workspace, &settings.workspace) {
+        (Some(dir), _) => (dir.clone(), true),
+        (None, Some(dir)) => (dir.clone(), false),
+        (None, None) => return Ok(None),
+    };
+    if !dir.is_dir() {
+        if from_flag {
             return Err(format!("workspace {} is not a folder", dir.display()));
         }
-        config.workspace = std::fs::canonicalize(&dir).map_err(|e| format!("workspace {}: {e}", dir.display()))?;
+        log::warn!("the saved workspace {} is not a folder; using the current directory", dir.display());
+        return Ok(None);
     }
-    let extra = extensions::load(&mut config.tools, args.plugins);
+    std::fs::canonicalize(&dir).map(Some).map_err(|e| format!("workspace {}: {e}", dir.display()))
+}
+
+fn theme_kind(theme: Theme) -> yah_ui_egui::theme::ThemeKind {
+    use yah_ui_egui::theme::ThemeKind;
+    match theme {
+        Theme::System => ThemeKind::System,
+        Theme::Light => ThemeKind::Light,
+        Theme::Dark => ThemeKind::Dark,
+    }
+}
+
+fn run() -> Result<(), String> {
+    let args = parse_args()?;
+    let saved = load_saved();
+    let mut config = EngineConfig::new(inference_config(&args, &saved.settings, &saved.secrets));
+    config.paths = saved.paths;
+    if let Some(dir) = workspace(&args, &saved.settings)? {
+        config.workspace = dir;
+    }
+    let saved_theme = theme_kind(saved.settings.theme);
+    let plugins = args.plugins.clone();
+    let extra = extensions::load(&mut config.tools, plugins);
     if !extra.is_empty() {
         config.system_prompt = format!("{}\n\n{extra}", config.system_prompt);
     }
     if args.dev_tools {
         yah_agent::dev_tools::register(&mut config.tools);
     }
-    log::info!("{} tools available in {}", config.tools.len(), config.workspace.display());
+    log::info!("{} tools available; new chats work in {}", config.tools.len(), config.workspace.display());
     let engine = EngineHandle::spawn_with(config).map_err(|e| format!("starting engine: {e}"))?;
+    run_ui(args, engine, saved_theme)
+}
 
+fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::ThemeKind) -> Result<(), String> {
     if let Some(addr) = args.serve {
         let config = yah_server::ServerConfig { addr, web_dir: Some(args.web_dir), allowed_users: args.allowed_users, ..Default::default() };
         let bound = yah_server::spawn(engine.clone(), config).map_err(|e| format!("binding {addr}: {e}"))?;
@@ -186,8 +258,9 @@ fn run() -> Result<(), String> {
             let ctx = cc.egui_ctx.clone();
             let conn = engine.connect(Arc::new(move || ctx.request_repaint()));
             let mut ui = yah_ui_egui::YahApp::new(Box::new(conn), "desktop");
-            let mut prefs: yah_ui_egui::theme::Prefs =
-                cc.storage.and_then(|s| eframe::get_value(s, yah_ui_egui::theme::Prefs::STORAGE_KEY)).unwrap_or_default();
+            // This device's saved appearance, else the theme from settings.json.
+            let stored: Option<yah_ui_egui::theme::Prefs> = cc.storage.and_then(|s| eframe::get_value(s, yah_ui_egui::theme::Prefs::STORAGE_KEY));
+            let mut prefs = stored.unwrap_or(yah_ui_egui::theme::Prefs { theme: saved_theme, ..Default::default() });
             if let Some(theme) = theme {
                 prefs.theme = theme;
             }
@@ -201,4 +274,48 @@ fn run() -> Result<(), String> {
         let _ = std::fs::remove_file(path);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved(url: Option<&str>, model: Option<&str>, key: Option<&str>) -> (Settings, Secrets) {
+        let mut settings = Settings::default();
+        settings.inference.base_url = url.map(Into::into);
+        settings.inference.model = model.map(Into::into);
+        let secrets = Secrets { api_key: key.map(Into::into), ..Default::default() };
+        (settings, secrets)
+    }
+
+    #[test]
+    fn flags_beat_saved_settings_which_beat_defaults() {
+        let (settings, secrets) = saved(Some("http://saved:1/v1"), Some("saved-model"), Some("sk-saved"));
+        let none = Args::default();
+        let c = inference_config(&none, &settings, &secrets);
+        assert_eq!((c.base_url.as_str(), c.model.as_str(), c.api_key.as_deref()), ("http://saved:1/v1", "saved-model", Some("sk-saved")));
+
+        let flags = Args { inference_url: Some("http://flag:2/v1".into()), api_key: Some("sk-env".into()), ..Default::default() };
+        let c = inference_config(&flags, &settings, &secrets);
+        assert_eq!((c.base_url.as_str(), c.model.as_str(), c.api_key.as_deref()), ("http://flag:2/v1", "saved-model", Some("sk-env")));
+
+        let (empty, no_key) = saved(Some("  "), None, Some(""));
+        let c = inference_config(&none, &empty, &no_key);
+        assert_eq!(c, InferenceConfig::default());
+    }
+
+    #[test]
+    fn workspace_flag_beats_settings_and_a_missing_saved_folder_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let settings = Settings { workspace: Some(dir.path().into()), ..Default::default() };
+        let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+        assert_eq!(workspace(&Args::default(), &settings).unwrap(), Some(real(dir.path())));
+        let flag = Args { workspace: Some(other.path().into()), ..Default::default() };
+        assert_eq!(workspace(&flag, &settings).unwrap(), Some(real(other.path())));
+        let gone = Settings { workspace: Some(dir.path().join("missing")), ..Default::default() };
+        assert_eq!(workspace(&Args::default(), &gone).unwrap(), None);
+        let bad_flag = Args { workspace: Some(dir.path().join("missing")), ..Default::default() };
+        assert!(workspace(&bad_flag, &settings).is_err());
+    }
 }

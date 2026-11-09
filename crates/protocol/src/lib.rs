@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -18,16 +18,53 @@ pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     /// First message on every connection.
-    Hello { protocol: u32, client: String },
+    Hello {
+        protocol: u32,
+        client: String,
+    },
     /// Point the engine at a different inference endpoint.
-    SetInference { base_url: String, model: String, api_key: Option<String> },
+    SetInference {
+        base_url: String,
+        model: String,
+        api_key: Option<String>,
+    },
     /// Send a user message and start a turn.
-    SendMessage { text: String },
+    SendMessage {
+        text: String,
+    },
     /// Stop the running turn. Pending approvals are denied.
     Cancel,
     /// Answer a pending approval (a [`Step`] with status [`StepStatus::Waiting`]). Any
     /// client may answer; the first answer wins and later ones are ignored.
-    Approve { step: u64, answer: ApprovalAnswer },
+    Approve {
+        step: u64,
+        answer: ApprovalAnswer,
+    },
+    /// Ask for a page of the chat list (answered with [`ServerMsg::Chats`]). `after` is the
+    /// previous page's `next`; `None` asks for the first page (pinned chats included).
+    ListChats {
+        after: Option<ChatCursor>,
+        limit: u32,
+    },
+    /// Start a new, empty chat in this client. The chat is created when the first message
+    /// is sent; until then this client sees an empty transcript.
+    NewChat,
+    /// Look at another chat. Only this client switches; a turn running elsewhere goes on.
+    OpenChat {
+        id: String,
+    },
+    RenameChat {
+        id: String,
+        title: String,
+    },
+    /// Delete a chat and its messages. Refused while a reply is running in it.
+    DeleteChat {
+        id: String,
+    },
+    PinChat {
+        id: String,
+        pinned: bool,
+    },
 }
 
 /// Engine -> client(s).
@@ -48,6 +85,43 @@ pub enum ServerMsg {
     EntryFinished { id: u64, error: Option<String>, stats: Option<TurnStats> },
     /// A tool step of entry `entry` was added or changed (replace by `step.id`).
     StepUpdated { entry: u64, step: Step },
+    /// A page of the chat list. With `after: None` it replaces the client's list (pinned
+    /// chats are in `pinned`); otherwise `recent` continues the list after `after`.
+    Chats { pinned: Vec<ChatSummary>, recent: Vec<ChatSummary>, after: Option<ChatCursor>, next: Option<ChatCursor> },
+    /// A chat was created or changed (title, pin, activity, busy). Sent to every client.
+    ChatUpdated(ChatSummary),
+    /// A chat was deleted. Sent to every client.
+    ChatDeleted { id: String },
+    /// This client now looks at `chat` (`None`: a new chat, not sent yet). The chat's
+    /// [`ServerMsg::Transcript`] follows; entry messages only arrive for the chat in view.
+    ChatOpened { chat: Option<ChatSummary> },
+}
+
+/// A chat as shown in the sidebar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatSummary {
+    pub id: String,
+    pub title: String,
+    /// Milliseconds since the Unix epoch of the last activity; the list is ordered by it.
+    pub updated_at: i64,
+    /// When it was pinned (ms since the epoch), if it is. Pinned chats list first.
+    pub pinned_at: Option<i64>,
+    /// A reply is running in this chat.
+    #[serde(default)]
+    pub busy: bool,
+}
+
+impl ChatSummary {
+    pub fn cursor(&self) -> ChatCursor {
+        ChatCursor { updated_at: self.updated_at, id: self.id.clone() }
+    }
+}
+
+/// Position in the recent-first chat list, for paging.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatCursor {
+    pub updated_at: i64,
+    pub id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,9 +214,11 @@ impl StepStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalAnswer {
     Allow,
-    /// Allow, and stop asking about this tool for the rest of the session.
+    /// Allow, and stop asking about this tool in this chat (remembered across restarts).
     Always,
     Deny,
+    /// Allow, and stop asking about this tool in every chat.
+    AlwaysEverywhere,
 }
 
 /// A file-system effect of a tool call. Paths are for display (workspace-relative when possible).
@@ -198,7 +274,7 @@ pub struct EngineState {
     pub has_api_key: bool,
     /// Resolved `chat/completions` URL, if the base URL is valid.
     pub endpoint: Option<String>,
-    /// A turn is running.
+    /// A turn is running in the chat this client is looking at.
     pub busy: bool,
 }
 
@@ -291,6 +367,22 @@ mod tests {
         let json = r#"{"id":1,"role":"user","content":"hi","reasoning":"","done":true,"error":null,"stats":null}"#;
         let e: Entry = serde_json::from_str(json).unwrap();
         assert!(e.steps.is_empty());
+    }
+
+    #[test]
+    fn chat_messages_round_trip() {
+        let summary = ChatSummary { id: "c1".into(), title: "Plans".into(), updated_at: 5, pinned_at: None, busy: true };
+        for m in [
+            ServerMsg::Chats { pinned: vec![], recent: vec![summary.clone()], after: None, next: Some(summary.cursor()) },
+            ServerMsg::ChatUpdated(summary.clone()),
+            ServerMsg::ChatOpened { chat: Some(summary) },
+            ServerMsg::ChatDeleted { id: "c1".into() },
+        ] {
+            assert_eq!(ServerMsg::from_json(&m.to_json()).unwrap(), m);
+        }
+        let m = ClientMsg::ListChats { after: Some(ChatCursor { updated_at: 1, id: "x".into() }), limit: 50 };
+        assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m);
+        assert_eq!(ClientMsg::NewChat.to_json(), r#"{"type":"new_chat"}"#);
     }
 
     #[test]

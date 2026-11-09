@@ -170,6 +170,9 @@ pub struct WsConnection {
     status: LinkStatusHandle,
     /// The client's `Hello`, replayed on every (re)open.
     hello: Option<ClientMsg>,
+    /// The chat the engine last showed us (as the message that reopens it), replayed after
+    /// `Hello` so a reconnect lands back on the same chat.
+    view: Option<ClientMsg>,
     /// Messages sent while the socket was down.
     pending: VecDeque<ClientMsg>,
 }
@@ -186,6 +189,7 @@ impl WsConnection {
             link: Reconnect::new(now),
             status: LinkStatusHandle(Arc::new(Mutex::new(LinkStatus::Connecting))),
             hello: None,
+            view: None,
             pending: VecDeque::new(),
         };
         conn.dial(now);
@@ -220,6 +224,9 @@ impl WsConnection {
         self.link.opened(now);
         if let Some(hello) = self.hello.clone() {
             self.send_now(&hello);
+            if let Some(view) = self.view.clone() {
+                self.send_now(&view);
+            }
         }
         while let Some(msg) = self.pending.pop_front() {
             self.send_now(&msg);
@@ -278,7 +285,12 @@ impl Connection for WsConnection {
                     self.status.set(LinkStatus::Connected);
                 }
                 ewebsock::WsEvent::Message(ewebsock::WsMessage::Text(text)) => match ServerMsg::from_json(&text) {
-                    Ok(msg) => return Some(msg),
+                    Ok(msg) => {
+                        if let ServerMsg::ChatOpened { chat } = &msg {
+                            self.view = Some(chat.as_ref().map_or(ClientMsg::NewChat, |c| ClientMsg::OpenChat { id: c.id.clone() }));
+                        }
+                        return Some(msg);
+                    }
                     Err(e) => log::warn!("bad frame from engine: {e}"),
                 },
                 ewebsock::WsEvent::Message(_) => {}
