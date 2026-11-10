@@ -1,5 +1,5 @@
-//! Finding plugins on disk: folders with a `byob-plugin.json`,
-//! their `skills/*/SKILL.md`, and checks that declared scripts exist. Nothing here is
+//! Finding plugins on disk: folders with a `byob-plugin.json`, their `skills/*/SKILL.md`,
+//! `agents/*.md` and `commands/*.md`, and checks that declared scripts exist. Nothing here is
 //! fatal: a broken plugin becomes a [`LoadError`] and the rest still load.
 
 use std::collections::BTreeMap;
@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::LoadError;
 use crate::agents::{AgentDef, load_agents_dir};
+use crate::commands::{Command, load_commands_dir};
 use crate::manifest::{MANIFEST, Manifest, OLD_MANIFEST, ParseOptions, ToolKind, parse_manifest_str};
 use crate::skills::{Skill, load_skills_dir, read_capped};
 
@@ -24,6 +25,8 @@ pub struct Plugin {
     pub skills: Vec<Skill>,
     /// Subagent definitions from its `agents/*.md` (Claude Code format).
     pub agents: Vec<AgentDef>,
+    /// Slash commands from its `commands/*.md` (Claude Code format).
+    pub commands: Vec<Command>,
     /// Non-fatal problems for the plugin's card (a bad skill, a missing script). The parts
     /// that work are still used.
     pub problems: Vec<String>,
@@ -101,7 +104,9 @@ pub fn load_plugin(dir: &Path, builtin: bool) -> Option<Result<Plugin, LoadError
     problems.extend(skill_errors.into_iter().map(|e| e.message));
     let (agents, agent_errors) = load_agents_dir(&dir.join("agents"));
     problems.extend(agent_errors.into_iter().map(|e| e.to_string()));
-    Some(Ok(Plugin { manifest, dir: dir.to_path_buf(), builtin, skills, agents, problems }))
+    let (commands, command_errors) = load_commands_dir(&dir.join("commands"));
+    problems.extend(command_errors.into_iter().map(|e| e.message));
+    Some(Ok(Plugin { manifest, dir: dir.to_path_buf(), builtin, skills, agents, commands, problems }))
 }
 
 /// Where to look for plugins.

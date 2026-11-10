@@ -24,6 +24,7 @@ pub use env::{ContainerEnv, EnvAction, EnvSupport, WorkspaceEnv};
 pub use media::{MediaContent, MediaKind, MediaRef};
 pub use plugins::{
     Extensions, PluginAction, PluginCard, PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, PluginTest, ServerInfo, ServerState,
+    SlashItem, SlashKind,
 };
 pub use queue::{ChatQueue, QueuePause, QueuedMessage};
 pub use usage::{ChatUsage, Compaction};
@@ -530,7 +531,7 @@ pub struct Step {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask: Option<Box<Ask>>,
     /// The step made, changed, kept or removed a plugin: show a plugin card. Set on the
-    /// finished step (live only: a transcript loaded from storage has the plain step).
+    /// finished step, and stored with it (a transcript loaded from storage has it too).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin: Option<Box<PluginCard>>,
 }

@@ -112,6 +112,9 @@ pub(crate) enum Event {
         failed: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         changes: Vec<StepChange>,
+        /// The step's card (see [`crate::StepResult::card`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        card: Option<Value>,
     },
     StepsDeleted {
         m: u32,

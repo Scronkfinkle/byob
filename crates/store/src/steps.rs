@@ -11,7 +11,7 @@ use crate::store::{Store, found};
 /// (separately bounded) full text already; the transcript only needs enough to show.
 pub const MAX_STEP_OUTPUT: usize = 64 * 1024;
 
-const STEP_COLS: &str = "s.message_id, s.seq, s.tool, s.title, s.access, s.args, s.output, s.failed, s.changes";
+const STEP_COLS: &str = "s.message_id, s.seq, s.tool, s.title, s.access, s.args, s.output, s.failed, s.changes, s.card";
 
 /// Cut `s` to at most `max` bytes on a char boundary, noting how much was dropped.
 pub(crate) fn bound(s: &str, max: usize) -> String {
@@ -36,6 +36,7 @@ pub(crate) struct Raw {
     output: Option<String>,
     failed: bool,
     changes: String,
+    card: Option<String>,
 }
 
 pub(crate) fn raw_row(r: &Row<'_>) -> rusqlite::Result<Raw> {
@@ -49,6 +50,7 @@ pub(crate) fn raw_row(r: &Row<'_>) -> rusqlite::Result<Raw> {
         output: r.get(6)?,
         failed: r.get(7)?,
         changes: r.get(8)?,
+        card: r.get(9)?,
     })
 }
 
@@ -63,7 +65,9 @@ impl Raw {
                 log::warn!("byob-store: step {}/{}: ignoring bad changes: {e}", self.message_id, self.seq);
                 Vec::new()
             });
-            StepResult { output, failed: self.failed, changes }
+            // A card that doesn't parse is only lost decoration.
+            let card = self.card.and_then(|c| serde_json::from_str(&c).ok());
+            StepResult { output, failed: self.failed, changes, card }
         });
         Ok(Step { message_id: MessageId(self.message_id), seq: self.seq, tool: self.tool, title: self.title, access, args, result })
     }
@@ -90,13 +94,11 @@ impl Store {
 
     /// Record how a tool call ended. Output is bounded to [`MAX_STEP_OUTPUT`].
     pub fn finish_step(&self, message_id: MessageId, seq: i64, result: &StepResult) -> Result<()> {
-        let n = self.conn.prepare_cached("UPDATE steps SET output = ?3, failed = ?4, changes = ?5 WHERE message_id = ?1 AND seq = ?2")?.execute(params![
-            message_id.0,
-            seq,
-            bound(&result.output, MAX_STEP_OUTPUT),
-            result.failed,
-            serde_json::to_string(&result.changes)?
-        ])?;
+        let card = result.card.as_ref().map(serde_json::to_string).transpose()?;
+        let n = self
+            .conn
+            .prepare_cached("UPDATE steps SET output = ?3, failed = ?4, changes = ?5, card = ?6 WHERE message_id = ?1 AND seq = ?2")?
+            .execute(params![message_id.0, seq, bound(&result.output, MAX_STEP_OUTPUT), result.failed, serde_json::to_string(&result.changes)?, card])?;
         found(n, || format!("step {}/{seq}", message_id.0))
     }
 

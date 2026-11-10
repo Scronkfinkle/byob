@@ -4,6 +4,7 @@
 //!   [`UseSkillTool`], [`skills_prompt`];
 //! - **Python tools** (`tools[].run`) → [`python::PythonTool`];
 //! - **subagents** (`agents/*.md`, Claude Code's format) → [`agents`];
+//! - **slash commands** (`commands/*.md`, Claude Code's format) → [`commands`];
 //! - **connectors** (`mcpServers`, MCP) → [`connectors::ConnectorToolAdapter`] over the
 //!   [`connectors::Connector`] trait, which `byob-mcp`'s client implements.
 //!
@@ -17,6 +18,7 @@
 
 pub mod agents;
 pub mod authoring;
+pub mod commands;
 pub mod connectors;
 pub mod discover;
 pub mod manifest;
@@ -30,6 +32,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 pub use agents::{AgentDef, load_agents_dir, merge_agents, parse_agent};
+pub use commands::{Command, load_commands_dir, split_slash};
 pub use connectors::{
     Connector, ConnectorContent, ConnectorDraft, ConnectorResult, ConnectorTool, ConnectorToolAdapter, connector_tools, connector_tools_from, parse_connector,
 };

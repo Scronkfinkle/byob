@@ -285,8 +285,9 @@ list_files · 4.1 s]`), is the tool result, so the parent's context grows only b
 
 A plugin is a folder with a `byob-plugin.json` (format and loader: `crates/plugins`) that adds
 Python tools (`tools[].run`, JSON on stdin), MCP servers (`mcpServers`), skills
-(`skills/<name>/SKILL.md`), subagents (`agents/*.md`), settings (`settings`, passed as
-environment variables) and one system-prompt line (`prompt`). The engine loads them itself
+(`skills/<name>/SKILL.md`), subagents (`agents/*.md`), slash commands (`commands/*.md`,
+Claude Code's format), settings (`settings`, passed as environment variables) and one
+system-prompt line (`prompt`). The engine loads them itself
 (`crates/agent/src/extensions.rs`, `plugins.rs`); the app only says where to look
 (`PluginsConfig`) and registers the base tools (file, artifact, code-running) once.
 
@@ -352,7 +353,7 @@ view (or the new chat a client is about to start). `PluginInfo`:
 | `trusted`, `declined` | may its code run; did the user say no (repo plugins) |
 | `shadowed_by` | a more specific copy with the same id is used instead |
 | `tools` | model-facing tool names in use (empty when off or untrusted) |
-| `skills`, `agents`, `commands` | names (`commands` reserved for `commands/*.md`) |
+| `skills`, `agents`, `commands` | names (`commands`: its `commands/*.md`) |
 | `servers` | `{ name, state: connecting/ready/failed/off, tools, error }` |
 | `settings` | `{ key, label, help, secret, required, set }`, never the value |
 | `network` | its tools may use the internet |
@@ -361,6 +362,14 @@ view (or the new chat a client is about to start). `PluginInfo`:
 | `fingerprint` | changes whenever a file of it changes |
 
 `errors: Vec<PluginLoadError { scope, path, message }>`: folders that couldn't load at all.
+
+`slash: Vec<SlashItem { name, kind: builtin|command|skill, description, hint, scope, plugin }>`:
+the composer's `/` menu (`/compact`, then switched-on plugins' commands, then every skill the
+chat sees; a name once). A message starting with `/name args` is expanded when its turn starts
+(`extensions::expand_slash`): a command's template with `$ARGUMENTS` and `$1`…`$9` filled in
+(arguments it doesn't mention are appended, as in Claude Code), a skill as "use the `name`
+skill (call `use_skill` first)" plus the arguments. Only the model sees the expansion; the
+transcript keeps what was typed, and later turns send the typed text.
 
 Client messages (all validated; ids are plugin ids `[a-z0-9-]{1,48}`):
 
@@ -376,8 +385,9 @@ Client messages (all validated; ids are plugin ids `[a-z0-9-]{1,48}`):
 
 **Plugin cards.** A finished step of an authoring tool carries `Step::plugin:
 Option<Box<PluginCard>>` with `{ plugin, scope, action: made/edited/kept/removed, tools, added,
-removed, test: Option<{ ok, output }>, problems, missing_settings }` (live only: a transcript
-loaded from storage shows the plain step). The trust question is an ordinary approval card on
+removed, test: Option<{ ok, output }>, problems, missing_settings }`. The card is stored with the
+step (`steps.card`, SQLite schema v5; `card` on the folder store's `step_finished` line), so a
+transcript loaded from storage shows it too. The trust question is an ordinary approval card on
 a step named `plugins` with `ask.text` listing the plugins.
 
 ### The model's side

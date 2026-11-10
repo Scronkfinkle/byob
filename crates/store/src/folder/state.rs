@@ -270,8 +270,8 @@ impl ChatState {
                 }
                 msg.steps.push(rec);
             }
-            Event::StepFinished { m, seq, output, failed, changes } => {
-                self.step(*m, *seq)?.result = Some(StepResult { output: output.clone(), failed: *failed, changes: changes.clone() });
+            Event::StepFinished { m, seq, output, failed, changes, card } => {
+                self.step(*m, *seq)?.result = Some(StepResult { output: output.clone(), failed: *failed, changes: changes.clone(), card: card.clone() });
             }
             Event::StepsDeleted { m } => self.msg(*m)?.steps.clear(),
             Event::Grant { tool, allowed: true } => {

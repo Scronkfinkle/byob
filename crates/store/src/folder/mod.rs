@@ -610,7 +610,14 @@ fn import_lines(e: &ChatExport) -> Result<Vec<Line>> {
             if let Some(r) = &s.result {
                 lines.push(Line::new(
                     ts,
-                    Event::StepFinished { m: n, seq: s.seq, output: bound(&r.output, MAX_STEP_OUTPUT), failed: r.failed, changes: r.changes.clone() },
+                    Event::StepFinished {
+                        m: n,
+                        seq: s.seq,
+                        output: bound(&r.output, MAX_STEP_OUTPUT),
+                        failed: r.failed,
+                        changes: r.changes.clone(),
+                        card: r.card.clone(),
+                    },
                 ));
             }
         }
@@ -885,7 +892,14 @@ impl ChatStore for FolderStore {
         if !exists {
             return Err(missing());
         }
-        let event = Event::StepFinished { m, seq, output: bound(&result.output, MAX_STEP_OUTPUT), failed: result.failed, changes: result.changes.clone() };
+        let event = Event::StepFinished {
+            m,
+            seq,
+            output: bound(&result.output, MAX_STEP_OUTPUT),
+            failed: result.failed,
+            changes: result.changes.clone(),
+            card: result.card.clone(),
+        };
         inner.write(&chat, vec![event], false, false)
     }
 

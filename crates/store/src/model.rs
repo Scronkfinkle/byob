@@ -164,6 +164,9 @@ pub struct StepResult {
     pub output: String,
     pub failed: bool,
     pub changes: Vec<StepChange>,
+    /// A card the step showed (e.g. a plugin card), as the client protocol's JSON; the store
+    /// keeps it without looking inside. Steps of subagent runs don't keep one.
+    pub card: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -213,7 +213,7 @@ impl Engine {
         let Some(c) = self.compose_for(chat.as_deref(), Some(id), refresh) else { return };
         let ws = self.ext_workspace(chat.as_deref(), Some(id));
         let workspace = self.workspaces.by_folder(&ws).map(|w| w.id.clone());
-        self.send_to(id, ServerMsg::Extensions(Box::new(ExtMsg { chat, workspace, plugins: c.infos, errors: c.errors })));
+        self.send_to(id, ServerMsg::Extensions(Box::new(ExtMsg { chat, workspace, plugins: c.infos, errors: c.errors, slash: c.slash })));
     }
 
     /// `Input::Plugins`: a request from an authoring tool or a turn.

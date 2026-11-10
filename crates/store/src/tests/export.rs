@@ -23,7 +23,7 @@ fn populate(s: &dyn ChatStore) {
     let read = s
         .add_step(a, &NewStep { tool: "read_file".into(), title: "Read Cargo.toml".into(), access: StepAccess::Read, args: json!({"path": "Cargo.toml"}) })
         .unwrap();
-    s.finish_step(a, read, &StepResult { output: "[package]\nname = \"x\"".into(), failed: false, changes: vec![] }).unwrap();
+    s.finish_step(a, read, &StepResult { output: "[package]\nname = \"x\"".into(), failed: false, changes: vec![], card: None }).unwrap();
     let write = s
         .add_step(
             a,
@@ -39,12 +39,13 @@ fn populate(s: &dyn ChatStore) {
             output: "wrote".into(),
             failed: false,
             changes: vec![StepChange::Modified { path: "/home/me/proj/src/lib.rs".into() }, StepChange::Created { path: "/home/me/proj/new.rs".into() }],
+            card: None,
         },
     )
     .unwrap();
     let run =
         s.add_step(a, &NewStep { tool: "run_command".into(), title: "Run cargo test".into(), access: StepAccess::Execute, args: json!("not json") }).unwrap();
-    s.finish_step(a, run, &StepResult { output: "error[E0425]".into(), failed: true, changes: vec![] }).unwrap();
+    s.finish_step(a, run, &StepResult { output: "error[E0425]".into(), failed: true, changes: vec![], card: None }).unwrap();
     s.add_step(a, &NewStep { tool: "fetch".into(), title: "Fetch docs".into(), access: StepAccess::Network, args: json!({}) }).unwrap();
     s.append_message_text(a, "\n\nFixed: a missing `use`.", "").unwrap();
     s.finish_message(a, None, Some(&MessageStats { prompt_tokens: 1200, completion_tokens: 87, elapsed_ms: 4321, model_calls: 3 })).unwrap();

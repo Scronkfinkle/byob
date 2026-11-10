@@ -133,7 +133,7 @@ impl Store {
     fn agent_steps(&self, run_id: &str) -> Result<Vec<Step>> {
         self.conn
             .prepare_cached(
-                "SELECT r.parent_id, s.seq, s.tool, s.title, s.access, s.args, s.output, s.failed, s.changes
+                "SELECT r.parent_id, s.seq, s.tool, s.title, s.access, s.args, s.output, s.failed, s.changes, NULL
                  FROM agent_steps s JOIN agent_runs r ON r.id = s.run_id WHERE s.run_id = ?1 ORDER BY s.seq",
             )?
             .query_map([run_id], raw_row)?

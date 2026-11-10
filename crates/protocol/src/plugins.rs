@@ -14,6 +14,9 @@
 //! client looks at after [`ServerMsg::ChatOpened`](crate::ServerMsg::ChatOpened), and again
 //! whenever something changes (a reload, a switch, a setting, a server connecting). Setting
 //! values never leave the engine: clients only learn whether each one is set.
+//!
+//! [`Extensions::slash`] lists what a message may start with (`/name args`): the engine
+//! expands it when the turn starts (see [`SlashKind`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -135,7 +138,7 @@ pub struct PluginInfo {
     /// Subagent names.
     #[serde(default)]
     pub agents: Vec<String>,
-    /// Slash commands (`commands/*.md`; reserved, empty for now).
+    /// Slash commands (`commands/*.md`, Claude Code's format).
     #[serde(default)]
     pub commands: Vec<String>,
     #[serde(default)]
@@ -177,6 +180,42 @@ pub struct Extensions {
     pub plugins: Vec<PluginInfo>,
     #[serde(default)]
     pub errors: Vec<PluginLoadError>,
+    /// What the composer's `/` menu offers: built-in commands, then plugin commands, then
+    /// skills (the same name only once).
+    #[serde(default)]
+    pub slash: Vec<SlashItem>,
+}
+
+/// What a `/name` at the start of a message is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlashKind {
+    /// Built into byob (`/compact`).
+    Builtin,
+    /// A plugin's `commands/<name>.md`: its prompt template, with the arguments filled in,
+    /// is what the model gets.
+    Command,
+    /// A skill: the model is told to use it, the arguments are the task.
+    Skill,
+}
+
+/// One entry of the `/` menu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlashItem {
+    /// What follows the `/`.
+    pub name: String,
+    pub kind: SlashKind,
+    #[serde(default)]
+    pub description: String,
+    /// What to type after the name, e.g. `<file> [focus]`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hint: String,
+    /// Where it comes from (`None`: built in).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<PluginScope>,
+    /// The plugin that brings it (`None`: built in, or a standalone skill).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
 }
 
 /// What a step did to a plugin.
@@ -307,6 +346,14 @@ mod tests {
             workspace: Some("w1".into()),
             plugins: vec![info()],
             errors: vec![PluginLoadError { scope: PluginScope::Global, path: "/p".into(), message: "bad".into() }],
+            slash: vec![SlashItem {
+                name: "review".into(),
+                kind: SlashKind::Command,
+                description: "Review a file".into(),
+                hint: "<file>".into(),
+                scope: Some(PluginScope::Workspace),
+                plugin: Some("code".into()),
+            }],
         };
         let m = ServerMsg::Extensions(Box::new(ext));
         assert_eq!(ServerMsg::from_json(&m.to_json()).unwrap(), m);

@@ -1446,6 +1446,8 @@ impl Engine {
         let workspace_dir = self.live(&chat).map(|l| Arc::clone(&l.workspace)).ok();
         // Plugins: read again where their files changed, then this turn's tools and prompt.
         let composed = self.compose_for(Some(&chat), None, true);
+        // `/name args`: what the model gets instead (the transcript keeps what was typed).
+        let model_text = composed.as_ref().and_then(|c| extensions::expand_slash(&text, c)).unwrap_or_else(|| text.clone());
         let mut extra = composed.as_ref().map(|c| c.prompt.clone()).unwrap_or_default();
         if let Some(md) = workspace_dir.as_deref().and_then(|w| extensions::agents_md(w)) {
             extra = if extra.is_empty() { md } else { format!("{extra}\n\n{md}") };
@@ -1469,7 +1471,7 @@ impl Engine {
         let (history, ids, prior, workspace, first) = {
             let live = self.live(&chat)?;
             let system_prompt = system_prompt(&base_prompt, live);
-            let (history, ids) = compact::history(&live.entries, latest(live), Some(&text), &system_prompt);
+            let (history, ids) = compact::history(&live.entries, latest(live), Some(&model_text), &system_prompt);
             let prior = live.entries.last().map_or(0, |e| e.id);
             (history, ids, prior, Arc::clone(&live.workspace), live.entries.is_empty())
         };
@@ -1479,7 +1481,7 @@ impl Engine {
         let reply = added.map_err(|e| format!("couldn't save the message: {e}"))?;
         let mut history = history;
         if let Some(last) = history.last_mut().filter(|_| !attached.is_empty()) {
-            *last = attachments::user_message(&workspace, &text, &attached);
+            *last = attachments::user_message(&workspace, &model_text, &attached);
         }
         let cancel = Arc::new(AtomicBool::new(false));
         let title_from = (first && self.auto_title && self.provisional.contains_key(&chat)).then(|| text.clone());

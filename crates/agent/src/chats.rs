@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use byob_llm::{ChatMessage, StreamEvent};
 use byob_protocol::{
-    ArtifactRef, ChatSummary, Delegation, DelegationState, Entry, EntryRole, FileChange, MediaKind, MediaRef, Step, StepStatus, ToolAccess, TurnStats,
+    ArtifactRef, ChatSummary, Delegation, DelegationState, Entry, EntryRole, FileChange, MediaKind, MediaRef, PluginCard, Step, StepStatus, ToolAccess,
+    TurnStats,
 };
 use byob_store::{AgentRun, Chat, MessageStats, NewStep, Role, StepAccess, StepChange, StepResult, StoredMessage};
 use serde_json::{Value, json};
@@ -109,11 +110,13 @@ pub fn entry(m: StoredMessage, step_ids: &AtomicU64) -> Option<Entry> {
 /// A stored step for display. A step without a result was cut off when byob stopped.
 fn step(s: byob_store::Step, step_ids: &AtomicU64) -> Step {
     let (summary, at) = step_args(&s.args);
-    let (status, detail, changes) = match s.result {
-        None => (StepStatus::Failed, "interrupted".to_owned(), Vec::new()),
+    let (status, detail, changes, plugin) = match s.result {
+        None => (StepStatus::Failed, "interrupted".to_owned(), Vec::new(), None),
         Some(r) => {
             let status = if r.failed { StepStatus::Failed } else { StepStatus::Done };
-            (status, one_line(&r.output, DETAIL_CHARS), r.changes.iter().map(from_change).collect())
+            // The plugin card it showed (stored since protocol 12; older rows have none).
+            let plugin = r.card.and_then(|c| serde_json::from_value::<PluginCard>(c).ok()).map(Box::new);
+            (status, one_line(&r.output, DETAIL_CHARS), r.changes.iter().map(from_change).collect(), plugin)
         }
     };
     let detail = if detail.is_empty() { summary } else { detail };
@@ -131,7 +134,7 @@ fn step(s: byob_store::Step, step_ids: &AtomicU64) -> Step {
         artifacts: Vec::new(),
         delegation: None,
         ask: None,
-        plugin: None,
+        plugin,
     }
 }
 
@@ -195,7 +198,12 @@ fn step_args(args: &Value) -> (String, usize) {
 }
 
 pub fn step_result(step: &Step) -> StepResult {
-    StepResult { output: step.detail.clone(), failed: step.status != StepStatus::Done, changes: step.changes.iter().map(to_change).collect() }
+    StepResult {
+        output: step.detail.clone(),
+        failed: step.status != StepStatus::Done,
+        changes: step.changes.iter().map(to_change).collect(),
+        card: step.plugin.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+    }
 }
 
 fn to_access(a: ToolAccess) -> StepAccess {
@@ -332,6 +340,56 @@ pub fn spawn_titler(llm: byob_llm::Client, chat: String, user: String, reply: St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugin_card_is_stored_with_its_step() {
+        let card = byob_protocol::PluginCard {
+            plugin: "scratch".into(),
+            scope: byob_protocol::PluginScope::Chat,
+            action: byob_protocol::PluginAction::Made,
+            tools: vec!["c2f".into()],
+            added: vec!["c2f".into()],
+            removed: vec![],
+            test: Some(byob_protocol::PluginTest { ok: true, output: "212".into() }),
+            problems: vec![],
+            missing_settings: vec!["API key".into()],
+        };
+        let live = Step {
+            id: 7,
+            tool: "make_tool".into(),
+            title: "Make tool c2f".into(),
+            access: ToolAccess::Execute,
+            status: StepStatus::Done,
+            detail: "made c2f".into(),
+            changes: vec![],
+            at: 3,
+            media: vec![],
+            preview: None,
+            artifacts: vec![],
+            delegation: None,
+            ask: None,
+            plugin: Some(Box::new(card.clone())),
+        };
+        let new = new_step(&live);
+        let stored = byob_store::Step {
+            message_id: byob_store::MessageId(1),
+            seq: 1,
+            tool: new.tool,
+            title: new.title,
+            access: new.access,
+            args: new.args,
+            result: Some(step_result(&live)),
+        };
+        let back = step(stored.clone(), &AtomicU64::new(1));
+        assert_eq!(back.plugin.as_deref(), Some(&card));
+        assert_eq!((back.at, back.detail.as_str()), (3, "made c2f"));
+        // Rows from before cards were stored, or a card that doesn't parse: the plain step.
+        let mut old = stored;
+        if let Some(r) = old.result.as_mut() {
+            r.card = Some(json!({"plugin": 5}));
+        }
+        assert_eq!(step(old, &AtomicU64::new(1)).plugin, None);
+    }
 
     #[test]
     fn titles_are_cleaned() {

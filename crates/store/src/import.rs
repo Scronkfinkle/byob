@@ -30,14 +30,19 @@ impl Store {
             let id = tx.last_insert_rowid();
             ids.push(id);
             for s in &m.steps {
-                let (output, failed, changes) = match &s.result {
-                    Some(r) => (Some(bound(&r.output, MAX_STEP_OUTPUT)), r.failed, serde_json::to_string(&r.changes)?),
-                    None => (None, false, "[]".to_owned()),
+                let (output, failed, changes, card) = match &s.result {
+                    Some(r) => (
+                        Some(bound(&r.output, MAX_STEP_OUTPUT)),
+                        r.failed,
+                        serde_json::to_string(&r.changes)?,
+                        r.card.as_ref().map(serde_json::to_string).transpose()?,
+                    ),
+                    None => (None, false, "[]".to_owned(), None),
                 };
                 tx.prepare_cached(
-                    "INSERT INTO steps (message_id, seq, tool, title, access, args, output, failed, changes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    "INSERT INTO steps (message_id, seq, tool, title, access, args, output, failed, changes, card) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 )?
-                .execute(params![id, s.seq, s.tool, s.title, s.access.as_str(), serde_json::to_string(&s.args)?, output, failed, changes])?;
+                .execute(params![id, s.seq, s.tool, s.title, s.access.as_str(), serde_json::to_string(&s.args)?, output, failed, changes, card])?;
             }
         }
         for tool in &e.grants {

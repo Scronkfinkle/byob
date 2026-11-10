@@ -26,9 +26,9 @@ use std::time::{Duration, Instant};
 use byob_plugins::authoring::{Fnv, fingerprint, fingerprint_into};
 use byob_plugins::mcp::McpSandbox;
 use byob_plugins::{
-    AgentDef, Connector, ConnectorTool, Discovery, LoadError, McpServerConfig, Plugin, PluginRef, PluginSources, Skill, ToolNames, UseSkillTool,
+    AgentDef, Command, Connector, ConnectorTool, Discovery, LoadError, McpServerConfig, Plugin, PluginRef, PluginSources, Skill, ToolNames, UseSkillTool,
 };
-use byob_protocol::{PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, ServerInfo, ServerState};
+use byob_protocol::{PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, ServerInfo, ServerState, SlashItem, SlashKind};
 use byob_sandbox::Sandbox;
 use byob_store::PluginTrust;
 use byob_tools::{Registry, Tool};
@@ -204,6 +204,10 @@ pub(crate) struct Composed {
     pub connect: Vec<ConnectJob>,
     /// Plugins of the workspace that carry code and nobody decided on yet.
     pub undecided: Vec<String>,
+    /// The slash commands of switched-on plugins (most specific first; a name once).
+    pub commands: Vec<Command>,
+    /// The `/` menu: built-in commands, plugin commands, skills.
+    pub slash: Vec<SlashItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -383,6 +387,9 @@ impl Extensions {
         let mut winners: BTreeMap<String, PluginScope> = BTreeMap::new();
         let mut prompt_lines = Vec::new();
         let mut skills: Vec<Skill> = Vec::new();
+        // Where each skill and command came from, for the `/` menu.
+        let mut skill_from: BTreeMap<String, (PluginScope, Option<String>)> = BTreeMap::new();
+        let mut command_from: Vec<(PluginScope, String)> = Vec::new();
         let mut agent_lists = Vec::new();
         let ws_local = input.workspace.to_path_buf();
         let empty = BTreeMap::new();
@@ -413,6 +420,13 @@ impl Extensions {
                     for s in &plugin.skills {
                         if !skills.iter().any(|k| k.name == s.name) {
                             skills.push(s.clone());
+                            skill_from.insert(s.name.clone(), (set.scope, Some(id.clone())));
+                        }
+                    }
+                    for c in &plugin.commands {
+                        if !out.commands.iter().any(|k| k.name == c.name) {
+                            out.commands.push(c.clone());
+                            command_from.push((set.scope, id.clone()));
                         }
                     }
                     agent_lists.push(plugin.agents.clone());
@@ -493,12 +507,14 @@ impl Extensions {
             for s in &set.skills {
                 if !skills.iter().any(|k| k.name == s.name) {
                     skills.push(s.clone());
+                    skill_from.insert(s.name.clone(), (set.scope, None));
                 }
             }
         }
         if !skills.iter().any(|k| k.name == builtin_skill.name) {
             skills.push(builtin_skill.clone());
         }
+        out.slash = slash_menu(&out.commands, &command_from, &skills, &skill_from);
         out.tools.register(Arc::new(UseSkillTool::new(skills.clone())));
         let mut prompt = prompt_lines.join("\n");
         for part in [byob_plugins::skills_prompt(&skills), AUTHORING_LINE.to_owned()] {
@@ -514,6 +530,62 @@ impl Extensions {
         out.infos.sort_by(|a, b| b.scope.cmp(&a.scope).then_with(|| a.id.cmp(&b.id)));
         pool.gc();
         out
+    }
+}
+
+/// The `/` menu: `/compact`, then commands, then skills; a name only once.
+fn slash_menu(
+    commands: &[Command],
+    command_from: &[(PluginScope, String)],
+    skills: &[Skill],
+    skill_from: &BTreeMap<String, (PluginScope, Option<String>)>,
+) -> Vec<SlashItem> {
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect::<String>();
+    let mut out = vec![SlashItem {
+        name: "compact".into(),
+        kind: SlashKind::Builtin,
+        description: "Summarize the conversation so far to free up context".into(),
+        hint: "[what to keep]".into(),
+        scope: None,
+        plugin: None,
+    }];
+    for (c, (scope, plugin)) in commands.iter().zip(command_from) {
+        if out.iter().any(|i| i.name == c.name) {
+            continue;
+        }
+        out.push(SlashItem {
+            name: c.name.clone(),
+            kind: SlashKind::Command,
+            description: one_line(&c.description),
+            hint: one_line(&c.argument_hint),
+            scope: Some(*scope),
+            plugin: Some(plugin.clone()),
+        });
+    }
+    for s in skills {
+        if out.iter().any(|i| i.name == s.name) {
+            continue;
+        }
+        let (scope, plugin) = skill_from.get(&s.name).cloned().map_or((None, None), |(scope, plugin)| (Some(scope), plugin));
+        out.push(SlashItem { name: s.name.clone(), kind: SlashKind::Skill, description: one_line(&s.description), hint: String::new(), scope, plugin });
+    }
+    out
+}
+
+/// What the model gets for a message that starts with `/name`: a command's prompt with the
+/// arguments filled in, or the request to use a skill. `None`: not one of the chat's (the
+/// text goes as typed; `/compact` is handled before a turn starts).
+pub(crate) fn expand_slash(text: &str, composed: &Composed) -> Option<String> {
+    let (name, args) = byob_plugins::split_slash(text)?;
+    let item = composed.slash.iter().find(|i| i.name == name)?;
+    match item.kind {
+        SlashKind::Builtin => None,
+        SlashKind::Command => composed.commands.iter().find(|c| c.name == name).map(|c| c.expand(args)),
+        SlashKind::Skill => {
+            let task =
+                if args.is_empty() { "Ask me what I'd like it applied to if that isn't clear from the conversation.".to_owned() } else { args.to_owned() };
+            Some(format!("Use the \"{name}\" skill for this: call use_skill with name \"{name}\" first, then follow it.\n\n{task}"))
+        }
     }
 }
 
@@ -547,7 +619,7 @@ fn info(plugin: &Plugin, scope: PluginScope, input: &ComposeIn<'_>, tools: &[Str
             tools: tools.to_vec(),
             skills: plugin.skills.iter().map(|s| s.name.clone()).collect(),
             agents: plugin.agents.iter().map(|a| a.name.clone()).collect(),
-            commands: Vec::new(),
+            commands: plugin.commands.iter().map(|c| c.name.clone()).collect(),
             servers: Vec::new(),
             settings: m
                 .settings

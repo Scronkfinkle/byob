@@ -477,3 +477,43 @@ fn plugins_switch_off_per_level() {
         }
     }
 }
+
+#[test]
+fn slash_commands_and_skills_expand_for_the_model_only() {
+    let h = harness(vec![Reply::Text("reviewed"), Reply::Text("skilled"), Reply::Text("plain")], Some(Policy::ALLOW_ALL), |home, _| {
+        let dir = write_plugin(&home.join("plugins"), "code", "lint", "'ok'", json!({}));
+        fs::create_dir_all(dir.join("commands")).unwrap();
+        fs::write(dir.join("commands/review.md"), "---\ndescription: Review a file\nargument-hint: <file>\n---\nReview $1 carefully. Notes: $ARGUMENTS")
+            .unwrap();
+        fs::create_dir_all(home.join("skills/trip-plan")).unwrap();
+        fs::write(home.join("skills/trip-plan/SKILL.md"), "---\nname: trip-plan\ndescription: Plan a trip\n---\nSteps.").unwrap();
+    });
+    let (mut c, ext) = hello(&h);
+    use byob_protocol::SlashKind as K;
+    let names: Vec<(&str, K, Option<PluginScope>)> = ext.slash.iter().map(|i| (i.name.as_str(), i.kind, i.scope)).collect();
+    assert_eq!(
+        names[..3],
+        [("compact", K::Builtin, None), ("review", K::Command, Some(PluginScope::Global)), ("trip-plan", K::Skill, Some(PluginScope::Global))]
+    );
+    assert!(names.iter().any(|(n, k, _)| *n == "plugin-authoring" && *k == K::Skill));
+    assert_eq!(ext.plugins.iter().find(|p| p.id == "code").unwrap().commands, ["review"]);
+    let last_user = |req: &Value| {
+        let msgs = req["messages"].as_array().unwrap();
+        msgs.iter().rev().find(|m| m["role"] == "user").unwrap()["content"].as_str().unwrap_or_default().to_owned()
+    };
+    // A command: its template, filled in; the transcript keeps what was typed.
+    let (_, seen) = turn(&mut c, "/review src/a.rs please", |_, _| {});
+    let typed = seen.iter().find_map(|m| match m {
+        ServerMsg::EntryAdded(e) if e.role == byob_protocol::EntryRole::User => Some(e.content.clone()),
+        _ => None,
+    });
+    assert_eq!(typed.as_deref(), Some("/review src/a.rs please"));
+    assert_eq!(last_user(&h.requests.lock().unwrap()[0]), "Review src/a.rs carefully. Notes: src/a.rs please");
+    // A skill: the model is told to use it.
+    turn(&mut c, "/trip-plan Lisbon in May", |_, _| {});
+    let asked = last_user(&h.requests.lock().unwrap()[1]);
+    assert!(asked.contains("use_skill") && asked.contains("\"trip-plan\"") && asked.ends_with("Lisbon in May"), "{asked}");
+    // Anything else goes as typed.
+    turn(&mut c, "/unknown thing", |_, _| {});
+    assert_eq!(last_user(&h.requests.lock().unwrap()[2]), "/unknown thing");
+}

@@ -160,7 +160,7 @@ pub(crate) fn replay(path: &Path, run_id: &str, chat_id: &str) -> Option<RunRec>
             }
             (RunEvent::StepFinished { seq, output, failed, changes }, Some(r)) => {
                 if let Some(s) = r.run.steps.iter_mut().find(|s| s.seq == seq) {
-                    s.result = Some(StepResult { output, failed, changes });
+                    s.result = Some(StepResult { output, failed, changes, card: None });
                 }
             }
             (RunEvent::Finished { error, stats }, Some(r)) => {

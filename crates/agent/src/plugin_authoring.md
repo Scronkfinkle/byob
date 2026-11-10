@@ -105,6 +105,10 @@ Both reload the plugin and report the loader's problems verbatim. A tool script 
   then step-by-step instructions. Listed in the system prompt; loaded with `use_skill`.
 - Subagent: `agents/<name>.md` with frontmatter `name:`, `description:`, optional `tools:`
   (comma-separated) and `model:`, then its system prompt. Used with `delegate`.
+- Slash command: `commands/<name>.md` with optional frontmatter `description:` and
+  `argument-hint:`, then a prompt template. The user types `/<name> args`; you get the
+  template with `$ARGUMENTS` (all arguments) and `$1`, `$2`… filled in. Users also type
+  `/<skill> task` to ask you to use a skill.
 
 ## 5. Status, keeping and removing
 
