@@ -1,5 +1,4 @@
-//! Plugins, compatible with hob's: a folder with a `hob-plugin.json` (or
-//! `byob-plugin.json`) that adds any mix of
+//! Plugins: a folder with a `byob-plugin.json` that adds any mix of
 //!
 //! - **skills** (`skills/<name>/SKILL.md`, the Agent Skills format) → [`skills`],
 //!   [`UseSkillTool`], [`skills_prompt`];
@@ -32,7 +31,7 @@ use std::path::PathBuf;
 pub use agents::{AgentDef, load_agents_dir, merge_agents, parse_agent};
 pub use connectors::{Connector, ConnectorContent, ConnectorDraft, ConnectorResult, ConnectorTool, ConnectorToolAdapter, connector_tools, parse_connector};
 pub use discover::{Discovery, Plugin, PluginSources, discover, load_plugin};
-pub use manifest::{MANIFEST, MANIFEST_ALIAS, Manifest, ManifestError, McpServerConfig, parse_manifest};
+pub use manifest::{MANIFEST, Manifest, ManifestError, McpServerConfig, OLD_MANIFEST, parse_manifest};
 pub use names::ToolNames;
 pub use python::{PythonTool, default_python, python_tools, python_tools_in, run_script_sandboxed, run_script_unsandboxed};
 pub use skills::{SaveSkillTool, Skill, UseSkillTool, load_skills_dir, skills_prompt};

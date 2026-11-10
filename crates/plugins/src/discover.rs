@@ -1,4 +1,4 @@
-//! Finding plugins on disk: folders with a `hob-plugin.json` (or `byob-plugin.json`),
+//! Finding plugins on disk: folders with a `byob-plugin.json`,
 //! their `skills/*/SKILL.md`, and checks that declared scripts exist. Nothing here is
 //! fatal: a broken plugin becomes a [`LoadError`] and the rest still load.
 
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::LoadError;
 use crate::agents::{AgentDef, load_agents_dir};
-use crate::manifest::{MANIFEST, MANIFEST_ALIAS, Manifest, ParseOptions, ToolKind, parse_manifest_str};
+use crate::manifest::{MANIFEST, Manifest, OLD_MANIFEST, ParseOptions, ToolKind, parse_manifest_str};
 use crate::skills::{Skill, load_skills_dir, read_capped};
 
 /// Biggest manifest we read.
@@ -64,9 +64,16 @@ pub fn current_platform() -> &'static str {
     }
 }
 
-/// The manifest file in `dir`, if any: `hob-plugin.json`, else `byob-plugin.json`.
+/// The manifest file in `dir`, if any (`byob-plugin.json`).
 pub fn manifest_path(dir: &Path) -> Option<PathBuf> {
-    [MANIFEST, MANIFEST_ALIAS].iter().map(|f| dir.join(f)).find(|p| p.is_file())
+    let file = dir.join(MANIFEST);
+    if file.is_file() {
+        return Some(file);
+    }
+    if dir.join(OLD_MANIFEST).is_file() {
+        log::warn!("{}: rename {OLD_MANIFEST} to {MANIFEST}; the old name isn't read any more", dir.display());
+    }
+    None
 }
 
 /// Load the plugin in `dir`. `None` when there's no manifest there.

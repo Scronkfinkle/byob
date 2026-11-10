@@ -1,6 +1,6 @@
 [package]
 name = "byob-plugins"
-description = "Plugins: hob-compatible manifests, Agent Skills (SKILL.md), MCP connectors, adapted into byob-tools (L3)"
+description = "Plugins: byob-plugin.json manifests, Agent Skills (SKILL.md), MCP connectors, adapted into byob-tools (L3)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,8 +1,8 @@
-//! `hob-plugin.json` (alias `byob-plugin.json`): the plugin manifest.
+//! `byob-plugin.json`: the plugin manifest.
 //!
 //! Parsing mirrors hob's `parseManifest`: the same required fields, defaults and limits,
 //! and error messages written for the plugin's author (e.g.
-//! `hob-plugin.json: tools[0].run must be a path inside the plugin folder`). Unknown fields
+//! `byob-plugin.json: tools[0].run must be a path inside the plugin folder`). Unknown fields
 //! are ignored so newer manifests still load.
 
 use std::collections::BTreeMap;
@@ -11,10 +11,11 @@ use std::path::{Component, Path};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-/// The manifest file name hob uses. byob reads it unchanged.
-pub const MANIFEST: &str = "hob-plugin.json";
-/// byob's own name for the same file; read when there is no `hob-plugin.json`.
-pub const MANIFEST_ALIAS: &str = "byob-plugin.json";
+/// The manifest file name.
+pub const MANIFEST: &str = "byob-plugin.json";
+/// The manifest's old name (from hob, which byob started as a rewrite of). Not read: a
+/// folder with only this file gets a warning to rename it.
+pub const OLD_MANIFEST: &str = "hob-plugin.json";
 
 /// Prompt length caps (characters), as in hob: built-in plugins carry longer how-tos.
 const PROMPT_MAX: usize = 600;
@@ -237,7 +238,7 @@ pub fn path_inside(p: &str) -> bool {
     !(p.starts_with('\\') || p.as_bytes().get(1) == Some(&b':'))
 }
 
-/// Check a parsed `hob-plugin.json` and fill in defaults.
+/// Check a parsed `byob-plugin.json` and fill in defaults.
 pub fn parse_manifest(raw: &Value, opts: ParseOptions<'_>) -> Result<Manifest, ManifestError> {
     let file = opts.file.unwrap_or(MANIFEST);
     parse(raw, opts.builtin).map_err(|message| ManifestError { file: file.to_string(), message })
@@ -506,44 +507,44 @@ mod tests {
     #[test]
     fn author_facing_errors() {
         let cases = [
-            (json!([]), "hob-plugin.json: must be a JSON object"),
-            (json!({"name": "x"}), "hob-plugin.json: id must be text"),
-            (json!({"id": "Bad_Id", "name": "x"}), "hob-plugin.json: id must be lowercase letters, digits and dashes, like \"trip-planner\""),
-            (json!({"id": "a", "name": "x", "tools": {}}), "hob-plugin.json: tools must be a list"),
+            (json!([]), "byob-plugin.json: must be a JSON object"),
+            (json!({"name": "x"}), "byob-plugin.json: id must be text"),
+            (json!({"id": "Bad_Id", "name": "x"}), "byob-plugin.json: id must be lowercase letters, digits and dashes, like \"trip-planner\""),
+            (json!({"id": "a", "name": "x", "tools": {}}), "byob-plugin.json: tools must be a list"),
             (
                 json!({"id": "a", "name": "x", "tools": [{"name": "t", "description": "d", "run": "../escape.py"}]}),
-                "hob-plugin.json: tools[0].run must be a path inside the plugin folder",
+                "byob-plugin.json: tools[0].run must be a path inside the plugin folder",
             ),
             (
                 json!({"id": "a", "name": "x", "tools": [{"name": "t", "description": "d", "run": "/abs.py"}]}),
-                "hob-plugin.json: tools[0].run must be a path inside the plugin folder",
+                "byob-plugin.json: tools[0].run must be a path inside the plugin folder",
             ),
             (
                 json!({"id": "a", "name": "x", "tools": [{"name": "t", "description": "d"}]}),
-                "hob-plugin.json: tools[0].run must name the Python script that runs this tool",
+                "byob-plugin.json: tools[0].run must name the Python script that runs this tool",
             ),
             (
                 json!({"id": "a", "name": "x", "tools": [{"name": "1t", "description": "d", "run": "t.py"}]}),
-                "hob-plugin.json: tools[0].name must be letters, digits or _, starting with a letter",
+                "byob-plugin.json: tools[0].name must be letters, digits or _, starting with a letter",
             ),
             (
                 json!({"id": "a", "name": "x", "tools": [{"native": "run_python"}]}),
-                "hob-plugin.json: tools[0].native is only for plugins that ship with the app; use \"run\" with a Python script",
+                "byob-plugin.json: tools[0].native is only for plugins that ship with the app; use \"run\" with a Python script",
             ),
             (
                 json!({"id": "a", "name": "x", "settings": [{"key": "api_key", "label": "k"}]}),
-                "hob-plugin.json: settings[0].key must be UPPER_CASE, like \"API_KEY\"",
+                "byob-plugin.json: settings[0].key must be UPPER_CASE, like \"API_KEY\"",
             ),
             (
                 json!({"id": "a", "name": "x", "settings": [{"key": "K", "label": "k", "type": "color"}]}),
-                "hob-plugin.json: settings[0].type must be one of text, number, boolean, directory, file",
+                "byob-plugin.json: settings[0].type must be one of text, number, boolean, directory, file",
             ),
-            (json!({"id": "a", "name": "x", "mcpServers": {"s": {"url": "ftp://x"}}}), "hob-plugin.json: mcpServers.s.url must start with https://"),
+            (json!({"id": "a", "name": "x", "mcpServers": {"s": {"url": "ftp://x"}}}), "byob-plugin.json: mcpServers.s.url must start with https://"),
             (
                 json!({"id": "a", "name": "x", "mcpServers": {"s": {"command": "x", "env": {"A": 1}}}}),
-                "hob-plugin.json: mcpServers.s.env must map names to text",
+                "byob-plugin.json: mcpServers.s.env must map names to text",
             ),
-            (json!({"id": "a", "name": "x", "mcpServers": {"s": {}}}), "hob-plugin.json: mcpServers.s.command must be text"),
+            (json!({"id": "a", "name": "x", "mcpServers": {"s": {}}}), "byob-plugin.json: mcpServers.s.command must be text"),
         ];
         for (raw, want) in cases {
             assert_eq!(parse_user(raw.clone()).unwrap_err(), want, "for {raw}");

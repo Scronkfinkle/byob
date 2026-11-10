@@ -511,7 +511,7 @@ impl ConnectorDraft {
         self.servers.values().all(|c| !c.is_local())
     }
 
-    /// The `hob-plugin.json` to write for this connector (already validated).
+    /// The `byob-plugin.json` to write for this connector (already validated).
     pub fn manifest_json(&self) -> Value {
         let description = if self.online() {
             let hosts: Vec<String> = self

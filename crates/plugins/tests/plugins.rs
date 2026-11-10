@@ -1,5 +1,5 @@
-//! Discovery and tools over fixture plugin folders (hob's built-in manifests are copied
-//! unchanged into `fixtures/builtin`).
+//! Discovery and tools over fixture plugin folders (`fixtures/builtin` holds built-in style
+//! manifests, with `native` tools and long prompts).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -37,7 +37,7 @@ fn has(cmd: &str) -> bool {
 }
 
 #[test]
-fn hob_builtin_manifests_load_unchanged() {
+fn builtin_manifests_load() {
     let d = found();
     let ids: Vec<&str> = d.plugins.iter().map(|p| p.id()).collect();
     assert_eq!(&ids[..4], ["calendar-mail", "code", "pdf", "web"]);
@@ -61,13 +61,13 @@ fn user_plugins_and_errors() {
 
     let errors: Vec<String> = d.errors.iter().map(|e| format!("{}: {}", e.path.file_name().unwrap().to_string_lossy(), e.message)).collect();
     assert_eq!(errors.len(), 3, "{errors:?}");
-    assert_eq!(errors[0], "bad-id: hob-plugin.json: id must be lowercase letters, digits and dashes, like \"trip-planner\"");
-    assert!(errors[1].starts_with("bad-json: hob-plugin.json: isn't valid JSON"), "{}", errors[1]);
+    assert_eq!(errors[0], "bad-id: byob-plugin.json: id must be lowercase letters, digits and dashes, like \"trip-planner\"");
+    assert!(errors[1].starts_with("bad-json: byob-plugin.json: isn't valid JSON"), "{}", errors[1]);
     assert!(errors[2].starts_with("zz-dup-id: id \"memory\" is already used by"), "{}", errors[2]);
 
     let get = |id: &str| d.plugins.iter().find(|p| p.id() == id).unwrap();
     assert!(get("memory").manifest.mcp_servers["memory"].is_local());
-    assert_eq!(get("missing-script").problems, ["hob-plugin.json: tools/go.py is missing"]);
+    assert_eq!(get("missing-script").problems, ["byob-plugin.json: tools/go.py is missing"]);
     let recipe = get("recipe-helper");
     assert_eq!(recipe.skills.len(), 1);
     assert!(recipe.problems[0].contains("broken/SKILL.md: add a description"));
@@ -105,7 +105,7 @@ fn sh_plugin(tag: &str, script: &str) -> (PathBuf, byob_plugins::Plugin) {
     fs::create_dir_all(dir.join("tools")).unwrap();
     fs::write(dir.join("tools/run.sh"), script).unwrap();
     fs::write(
-        dir.join("hob-plugin.json"),
+        dir.join("byob-plugin.json"),
         json!({"id": "shell", "name": "Shell", "tools": [{"name": "go", "description": "Go.", "run": "tools/run.sh", "title": "Went to {place}"}],
                "settings": [{"key": "API_KEY", "label": "Key"}, {"key": "MODE", "label": "Mode", "default": "fast"}]})
         .to_string(),
@@ -236,4 +236,15 @@ fn real_python_tool_from_docs() {
     assert_eq!((out.failed, out.text.as_str()), (false, "5 words, 2 sentences"));
     assert_eq!(tools[0].title(&json!({"file": "notes.txt"})), "Counted the words in notes.txt");
     let _ = fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn the_old_manifest_name_is_not_read() {
+    let d = tempfile::tempdir().unwrap();
+    let old = d.path().join("old");
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join("hob-plugin.json"), r#"{"id": "old", "name": "Old"}"#).unwrap();
+    assert!(byob_plugins::discover::manifest_path(&old).is_none());
+    fs::write(old.join("byob-plugin.json"), r#"{"id": "old", "name": "Old"}"#).unwrap();
+    assert_eq!(byob_plugins::discover::manifest_path(&old), Some(old.join("byob-plugin.json")));
 }
