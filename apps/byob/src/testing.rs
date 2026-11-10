@@ -23,6 +23,8 @@ pub struct Script {
     pub after: Duration,
     /// Done once the conversation has settled (`--then`).
     pub then: Vec<Command>,
+    /// Put this endpoint (URL, model) in the connection form and test it, once connected.
+    pub test_connection: Option<(String, String)>,
 }
 
 /// Something done to the artifacts in a scripted run.
@@ -84,6 +86,11 @@ impl Runner {
     }
 
     pub fn frame(&mut self, app: &mut byob_ui_egui::ByobApp, ctx: &egui::Context) {
+        if app.settled()
+            && let Some((url, model)) = self.script.test_connection.take()
+        {
+            app.test_connection(&url, &model);
+        }
         for path in std::mem::take(&mut self.script.attach) {
             match byob_ui_egui::upload::read_path(&path) {
                 Ok((name, bytes)) => app.attach(&name, &bytes),

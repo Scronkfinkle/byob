@@ -22,6 +22,9 @@ mod chats;
 mod compact;
 #[cfg(test)]
 mod compact_tests;
+mod connect;
+#[cfg(test)]
+mod connect_tests;
 mod delegate;
 #[cfg(test)]
 mod delegate_tests;
@@ -50,7 +53,7 @@ use std::time::{Duration, Instant};
 pub use adapt::{AdaptOptions, ToolMode};
 pub use byob_plugins::AgentDef;
 use byob_protocol::{
-    ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, DelegationState, EngineState, Entry, EntryRole, MediaRef,
+    ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, DelegationState, EngineState, Entry, EntryRole, Link, MediaRef,
     NoticeLevel, PROTOCOL_VERSION, ServerMsg, Step, StepStatus,
 };
 use byob_store::{ChatStore, GrantScope, NewMessage, Paths, Role, Secrets, Settings, StorageKind, Store, StoreError};
@@ -98,6 +101,12 @@ pub struct EngineConfig {
     /// Model roles (`settings.json` `models`): name → endpoint, for agents' `model:`.
     pub models: BTreeMap<String, InferenceConfig>,
     pub subagents: SubagentOptions,
+    /// An endpoint has worked before, or the user named one (settings.json
+    /// `inference.last_good`, `--inference-url`): no welcome screen.
+    pub onboarded: bool,
+    /// Until onboarded, look for inference servers on this machine's usual ports at startup.
+    /// Off in this crate's unit tests.
+    pub detect_local: bool,
 }
 
 impl EngineConfig {
@@ -119,6 +128,8 @@ impl EngineConfig {
             agents: Vec::new(),
             models: BTreeMap::new(),
             subagents: SubagentOptions::default(),
+            onboarded: false,
+            detect_local: !cfg!(test),
         }
     }
 }
@@ -160,6 +171,8 @@ enum Input {
     },
     /// A manual compaction (`ClientMsg::Compact`) finished.
     Compacted(Box<ManualDone>),
+    /// A connection check, test or local server search finished.
+    Link(connect::Event),
 }
 
 /// The outcome of a manual compaction.
@@ -358,6 +371,18 @@ struct Engine {
     subagents: SubagentOptions,
     /// Inference slots subagents may use, shared by every chat.
     slots: Arc<delegate::Slots>,
+    /// Whether the current endpoint answers (see [`connect`]).
+    link: Link,
+    /// Check endpoints when they are set (off in unit tests with scripted servers).
+    checks: bool,
+    onboarded: bool,
+    /// The base URL saved as working, to save it only once.
+    last_good: Option<String>,
+    /// Local inference servers found, and whether a search is running.
+    detected: Vec<byob_protocol::Detected>,
+    detecting: bool,
+    /// Clients with a connection test running.
+    testing: BTreeSet<ClientId>,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -394,7 +419,15 @@ impl Engine {
             }
         }
         let slots = Arc::new(delegate::Slots::new(config.subagents.parallel(None)));
-        Self {
+        let detect = config.detect_local && !config.onboarded;
+        let mut engine = Self {
+            link: Link::Unknown,
+            checks: config.adapt.probe,
+            onboarded: config.onboarded,
+            last_good: None,
+            detected: Vec::new(),
+            detecting: false,
+            testing: BTreeSet::new(),
             endpoints,
             config: config.inference,
             llm,
@@ -420,7 +453,12 @@ impl Engine {
             models: config.models,
             subagents: config.subagents,
             slots,
+        };
+        engine.check_link();
+        if detect {
+            engine.detect_endpoints();
         }
+        engine
     }
 
     // ---- chats ------------------------------------------------------------------------
@@ -646,6 +684,10 @@ impl Engine {
             endpoint: self.llm.as_ref().ok().map(|c| c.endpoint().to_string()),
             busy: chat.is_some_and(|c| self.chat_busy(c)),
             endpoint_info: Some(self.endpoints.info(&self.config)),
+            link: self.link.clone(),
+            onboarded: self.onboarded,
+            detected: self.detected.clone(),
+            detecting: self.detecting,
         }
     }
 
@@ -667,6 +709,7 @@ impl Engine {
                 self.clients.remove(&id);
                 self.gc();
                 self.uploads.forget(id);
+                self.testing.remove(&id);
             }
             Input::Client { id, msg } => self.handle_client(id, msg),
             Input::Turn(event) => self.handle_turn(event),
@@ -686,6 +729,7 @@ impl Engine {
                 let _ = reply.send(self.chat_workspace(&chat));
             }
             Input::Compacted(done) => self.manual_compacted(*done),
+            Input::Link(event) => self.handle_connect(event),
         }
     }
 
@@ -714,6 +758,9 @@ impl Engine {
                 self.show_chat_with(id, chat, false);
             }
             ClientMsg::SetInference { base_url, model, api_key } => self.set_inference(id, base_url, model, api_key),
+            ClientMsg::TestInference { base_url, model, api_key } => self.test_inference(id, base_url, model, api_key),
+            ClientMsg::DetectEndpoints => self.detect_endpoints(),
+            ClientMsg::Retry => self.retry(id),
             ClientMsg::SendMessage { text, attachments } => self.start_turn(id, text, &attachments),
             ClientMsg::Cancel => {
                 if let Some(chat) = self.client_chat(id) {
@@ -834,8 +881,13 @@ impl Engine {
     }
 
     fn set_inference(&mut self, id: ClientId, base_url: String, model: String, api_key: Option<String>) {
-        let new_key = api_key.is_some();
-        let config = InferenceConfig { base_url, model, api_key: api_key.or_else(|| self.config.api_key.clone()) };
+        if let Err(e) = connect::check_lengths(&base_url, &model, api_key.as_deref()) {
+            self.notice(id, e);
+            return;
+        }
+        let (base_url, model) = (base_url.trim().to_owned(), model.trim().to_owned());
+        let config = InferenceConfig { api_key: self.key_for(&base_url, api_key), base_url, model };
+        let new_key = config.api_key != self.config.api_key;
         match byob_llm::Client::new(config.clone()) {
             Ok(client) => {
                 if let Err(e) = self.save_inference(&config, new_key) {
@@ -844,13 +896,15 @@ impl Engine {
                 self.config = config;
                 self.endpoints.probe(&client, &self.inbox);
                 self.llm = Ok(client);
+                self.link = Link::Unknown;
+                self.check_link();
                 self.broadcast_state();
             }
             Err(e) => self.notice(id, e.to_string()),
         }
     }
 
-    /// Remember the endpoint in settings.json and a new API key in secrets.json (only there).
+    /// Remember the endpoint in settings.json and a changed API key in secrets.json (only there).
     fn save_inference(&self, config: &InferenceConfig, new_key: bool) -> Result<(), StoreError> {
         let Some(paths) = &self.paths else { return Ok(()) };
         Settings::update(&paths.settings(), |s| {
@@ -1035,6 +1089,12 @@ impl Engine {
         if text.is_empty() && attached.is_empty() {
             return;
         }
+        self.begin_turn(client, text, attached);
+    }
+
+    /// Add the user's message (and a reply entry) to the client's chat, creating the chat if
+    /// it is new, and start the turn.
+    fn begin_turn(&mut self, client: ClientId, text: String, attached: Vec<MediaRef>) {
         let llm = match &self.llm {
             Ok(llm) => llm.clone(),
             Err(e) => {
@@ -1406,6 +1466,7 @@ impl Engine {
         self.chat_changed(&run.chat);
         self.viewer_states(&run.chat);
         self.send_usage(&run.chat);
+        self.turn_outcome(error.as_deref());
         if let (Some(user), Some(reply), None, Ok(llm)) = (run.title_from, content, &error, &self.llm) {
             chats::spawn_titler(llm.clone(), run.chat.clone(), user, reply, self.inbox.clone());
         }

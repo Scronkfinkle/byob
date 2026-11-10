@@ -32,6 +32,7 @@
 //!     --tool-mode MODE        auto | native | prompt: force how tools are passed to the model
 //!     --compact-at TOKENS     compact the context when a request passes TOKENS (default:
 //!                             settings.json `compaction`, 80% of the window)
+//!     --test-connection URL MODEL  fill the connection form and press Test connection
 //! ```
 //!
 //! Chats live in `byob.db` (or, with `storage = "folder"`, in plain files); preferences in `settings.json` and the API key in `secrets.json`
@@ -175,6 +176,12 @@ fn parse_args() -> Result<Args, String> {
                 args.compact_at = Some(v.parse().map_err(|e| format!("bad token count {v:?}: {e}"))?);
             }
             "--send" => args.script.send.push(it.next().ok_or("--send needs text")?),
+            // Hidden, for testing: fill the connection form with URL and MODEL and test it.
+            "--test-connection" => {
+                let url = it.next().ok_or("--test-connection needs a URL and a model")?;
+                let model = it.next().ok_or("--test-connection needs a URL and a model")?;
+                args.script.test_connection = Some((url, model));
+            }
             "--attach" => args.script.attach.push(it.next().ok_or("--attach needs a file")?.into()),
             "--screenshot" => args.script.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into()),
             // Hidden, for testing: act on the artifacts once the conversation settles.
@@ -357,6 +364,9 @@ fn run() -> Result<(), String> {
         return export_chats(to, saved.paths.as_ref(), &storage);
     }
     let mut config = EngineConfig::new(inference_config(&args, &saved.settings, &saved.secrets));
+    // Returning users (an endpoint worked before) and explicit `--inference-url` runs go
+    // straight to the chat; everyone else gets the welcome screen until something answers.
+    config.onboarded = saved.settings.inference.onboarded() || args.inference_url.is_some();
     config.paths = saved.paths;
     config.storage = storage.storage;
     config.chats_folder = storage.chats_folder;
