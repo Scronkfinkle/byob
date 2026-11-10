@@ -34,6 +34,12 @@ tailscale serve 7470                       # reach it from any device on your ta
 byob --headless --allow-user you@example.com # only admit that Tailscale login
 ```
 
+On first run byob shows a **Connect a model** screen: it lists servers it found on this
+computer's usual ports (llama-server 8080, Ollama 11434, LM Studio 1234, vLLM 8000), has
+presets for those and for hosted APIs (which need a key), and a Test connection button.
+Once something answers it goes straight to your chats; the connection lives at the top of
+Settings, or click the status dot in the header.
+
 ## Develop
 
 ```sh
