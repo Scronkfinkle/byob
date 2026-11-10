@@ -36,6 +36,11 @@ pub fn run(policy: &Policy, program: &OsStr, args: &[OsString]) -> ExitCode {
         return fail(&e);
     }
     let mut cmd = if Path::new(SANDBOX_EXEC).exists() {
+        // sandbox-exec reports a missing command as its own failure (exit 71); answer like
+        // a shell and like Linux (127, "not found") so the model reads it right.
+        if !program_exists(program) {
+            return exec_failed(program, &std::io::Error::from(std::io::ErrorKind::NotFound));
+        }
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from).and_then(|h| h.canonicalize().ok());
         let (profile, params) = crate::seatbelt::profile(policy, home.as_deref());
         let mut c = Command::new(SANDBOX_EXEC);
@@ -57,6 +62,15 @@ pub fn run(policy: &Policy, program: &OsStr, args: &[OsString]) -> ExitCode {
     }
     let e = cmd.exec();
     exec_failed(program, &e)
+}
+
+/// Whether `program` would be found by `execvp`: a path that exists, or a name on `PATH`.
+fn program_exists(program: &OsStr) -> bool {
+    let p = Path::new(program);
+    if p.components().count() > 1 || p.is_absolute() {
+        return p.exists();
+    }
+    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
 }
 
 fn apply_limits(l: &Limits) -> Result<(), String> {

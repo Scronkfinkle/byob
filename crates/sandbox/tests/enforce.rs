@@ -130,7 +130,9 @@ fn read_outside_allowed_dirs_is_denied(_: &Enforcement) {
     std::fs::write(&secret, "TOP SECRET").unwrap();
     let o = r.quick("cat \"$1\"; ls \"$2\"", &[secret.to_str().unwrap(), secret_dir.path().to_str().unwrap()]);
     assert!(!o.stdout.text().contains("TOP SECRET") && !o.stdout.text().contains("id_rsa"), "{o:?}");
-    assert!(o.stderr.text().contains("Permission denied"), "{o:?}");
+    // Landlock: EACCES ("Permission denied"); macOS sandbox: EPERM ("Operation not permitted").
+    let err = o.stderr.text();
+    assert!(err.contains("Permission denied") || err.contains("Operation not permitted"), "{o:?}");
     // the real home folder is not readable either
     if let Some(home) = std::env::var_os("HOME") {
         let o = r.quick("ls \"$1\" >/dev/null && echo readable", &[home.to_str().unwrap()]);
@@ -296,6 +298,11 @@ fn env_is_scrubbed(_: &Enforcement) {
 }
 
 fn no_new_privs_is_set(_: &Enforcement) {
+    // A Linux concept (read from /proc/self/status); macOS has neither.
+    if !cfg!(target_os = "linux") {
+        println!("  (skipped: no_new_privs is Linux-only)");
+        return;
+    }
     let r = Run::new();
     let o = r.quick("grep NoNewPrivs /proc/self/status", &[]);
     assert!(o.stdout.text().contains('1'), "{o:?}");
