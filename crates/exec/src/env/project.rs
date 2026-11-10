@@ -39,8 +39,12 @@ pub struct JsonEnvTool {
     state: Option<PathBuf>,
 }
 
-/// The project tools on `PATH`.
+/// The project tools on `PATH`. None on Windows yet: loading goes through `sh`, which it
+/// lacks (like `run_command` itself; see docs/environments.md).
 pub fn detect(data_dir: Option<&Path>) -> Vec<JsonEnvTool> {
+    if cfg!(windows) {
+        return Vec::new();
+    }
     [(Kind::Pixi, "pixi"), (Kind::Mise, "mise")]
         .into_iter()
         .filter_map(|(kind, name)| {
