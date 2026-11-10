@@ -95,6 +95,37 @@ fn find<'a>(reply: &'a PluginReply, id: &str) -> Result<&'a PluginInfo, String> 
     })
 }
 
+/// Plugin `id` the chat uses, or, if it doesn't load (a broken manifest only shows up as a
+/// load error), its folder, so the authoring tools can still read, fix or remove it.
+fn locate(reply: &PluginReply, id: &str) -> Result<PluginInfo, String> {
+    if let Some(info) = reply.find(id) {
+        return Ok(info.clone());
+    }
+    broken(reply, id).ok_or_else(|| find(reply, id).err().unwrap_or_default())
+}
+
+/// The folder of plugin `id` if it failed to load, in one of the places plugins are written
+/// (this chat's, a workspace's `.byob/plugins`, or the global folder; never byob's own).
+fn broken(reply: &PluginReply, id: &str) -> Option<PluginInfo> {
+    reply.errors.iter().find_map(|e| {
+        let dir = Path::new(&e.path);
+        let parent = dir.parent()?;
+        let ours = parent == reply.scratch_dir.as_path() || reply.global_dir.as_deref() == Some(parent) || parent.ends_with(".byob/plugins");
+        if dir.file_name()?.to_str()? != id || !ours {
+            return None;
+        }
+        let mut info = new_info(id, dir);
+        info.scope = e.scope;
+        info.origin = match e.scope {
+            PluginScope::Chat => PluginOrigin::Agent,
+            PluginScope::Workspace => PluginOrigin::Repo,
+            _ => PluginOrigin::User,
+        };
+        info.problems = vec![e.message.clone()];
+        Some(info)
+    })
+}
+
 fn writable(info: &PluginInfo) -> Result<(), String> {
     if info.origin == PluginOrigin::Bundled {
         return Err(format!("{} ships with byob and can't be changed", info.id));
@@ -418,7 +449,7 @@ impl Tool for EditPlugin {
         let run = || -> Result<ToolOutput, String> {
             let a: EditArgs = parse_args(args)?;
             let before = self.0.ask(ctx, PluginOp::Status)?;
-            let info = find(&before, a.plugin.trim())?.clone();
+            let info = locate(&before, a.plugin.trim())?;
             writable(&info)?;
             let file = plugin_file(Path::new(&info.dir), &a.file)?;
             if a.find.is_empty() {
@@ -502,8 +533,9 @@ impl Tool for WritePluginFile {
                 return Err(format!("that file is too big (at most {} KB)", MAX_FILE_BYTES / 1000));
             }
             let before = self.0.ask(ctx, PluginOp::Status)?;
-            let info = match before.find(id) {
-                Some(info) => info.clone(),
+            // A broken plugin of that id gets fixed in place, not shadowed by a new one.
+            let info = match before.find(id).cloned().or_else(|| broken(&before, id)) {
+                Some(info) => info,
                 None => new_info(id, &before.scratch_dir.join(id)),
             };
             writable(&info)?;
@@ -679,20 +711,23 @@ impl Tool for PluginStatus {
         } else {
             let copies: Vec<&PluginInfo> = reply.infos.iter().filter(|p| p.id == asked).collect();
             if copies.is_empty() {
-                return ToolOutput::err(find(&reply, asked).err().unwrap_or_default());
+                let Some(b) = broken(&reply, asked) else { return ToolOutput::err(find(&reply, asked).err().unwrap_or_default()) };
+                let file = str_arg(args, "file").trim();
+                if file.is_empty() {
+                    let files = plugin_files(Path::new(&b.dir));
+                    return ToolOutput::err(format!(
+                        "plugin {asked} ({}) doesn't load: {}\nIts files: {}. Read one with plugin_status (plugin, file), fix it with edit_plugin or write_plugin_file.",
+                        b.dir,
+                        b.problems.join("; "),
+                        if files.is_empty() { "none".to_owned() } else { files.join(", ") }
+                    ));
+                }
+                return read_plugin_file(&b, file);
             }
             let file = str_arg(args, "file").trim();
             if !file.is_empty() {
                 let Some(p) = copies.iter().find(|p| p.shadowed_by.is_none()).or(copies.first()) else { return ToolOutput::err("no such plugin") };
-                let path = match plugin_file(Path::new(&p.dir), file) {
-                    Ok(path) => path,
-                    Err(e) => return ToolOutput::err(e),
-                };
-                return match fs::read(&path) {
-                    Ok(bytes) if bytes.len() > MAX_FILE_BYTES => ToolOutput::err(format!("{file} is too big to show")),
-                    Ok(bytes) => ToolOutput::ok(format!("{file} of plugin {}:\n{}", p.id, String::from_utf8_lossy(&bytes))),
-                    Err(e) => ToolOutput::err(format!("{file}: {e}")),
-                };
+                return read_plugin_file(p, file);
             }
             for p in copies {
                 text.push_str(&describe(p, true));
@@ -704,6 +739,43 @@ impl Tool for PluginStatus {
         }
         ToolOutput::ok(text.trim_end().to_owned())
     }
+}
+
+/// `file` of plugin `p`, for plugin_status.
+fn read_plugin_file(p: &PluginInfo, file: &str) -> ToolOutput {
+    let path = match plugin_file(Path::new(&p.dir), file) {
+        Ok(path) => path,
+        Err(e) => return ToolOutput::err(e),
+    };
+    match fs::read(&path) {
+        Ok(bytes) if bytes.len() > MAX_FILE_BYTES => ToolOutput::err(format!("{file} is too big to show")),
+        Ok(bytes) => ToolOutput::ok(format!("{file} of plugin {}:\n{}", p.id, String::from_utf8_lossy(&bytes))),
+        Err(e) => ToolOutput::err(format!("{file}: {e}")),
+    }
+}
+
+/// Files in a plugin folder (relative, `/`-separated), for telling the model what's there.
+fn plugin_files(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&d) else { continue };
+        for e in entries.flatten().take(200) {
+            let path = e.path();
+            // Not following symlinks: a looped link can't keep this going.
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(path);
+            } else if let Ok(rel) = path.strip_prefix(dir) {
+                out.push(rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"));
+            }
+            if out.len() >= 50 {
+                out.sort();
+                return out;
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 // ---- keep_plugin / remove_plugin ---------------------------------------------------------
@@ -898,7 +970,7 @@ impl Tool for RemovePlugin {
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
         let run = || -> Result<ToolOutput, String> {
             let before = self.0.ask(ctx, PluginOp::Status)?;
-            let info = find(&before, str_arg(args, "plugin").trim())?.clone();
+            let info = locate(&before, str_arg(args, "plugin").trim())?;
             writable(&info)?;
             if info.scope != PluginScope::Chat {
                 confirm(ctx, format!("Delete the plugin {} ({})", info.id, where_(&info)), format!("Deletes {}", info.dir), None, false)?;

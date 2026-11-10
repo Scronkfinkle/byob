@@ -66,6 +66,9 @@ Rules:
 - `write_plugin_file(plugin, path, content)`: create or overwrite any file in a plugin.
 Both reload the plugin and report the loader's problems verbatim. A tool script is
 `tools/<name>.py`; keep the `# --- byob runner` footer at its end.
+A plugin that doesn't load (a broken manifest), in any scope, is still reachable by its
+folder name: `plugin_status(plugin)` says why and lists its files, `plugin_status(plugin,
+file)` reads one, and these two fix it in place. Don't make a new plugin beside it.
 
 ## 3. The manifest (byob-plugin.json)
 

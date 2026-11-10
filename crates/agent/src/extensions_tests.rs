@@ -517,3 +517,38 @@ fn slash_commands_and_skills_expand_for_the_model_only() {
     turn(&mut c, "/unknown thing", |_, _| {});
     assert_eq!(last_user(&h.requests.lock().unwrap()[2]), "/unknown thing");
 }
+
+/// Regression: a plugin whose manifest doesn't parse only showed up as a load error, so
+/// plugin_status / edit_plugin said "there's no plugin" and write_plugin_file made a new
+/// chat plugin beside it. Now a broken global plugin can be read and fixed in place.
+#[test]
+fn a_broken_global_plugin_can_be_read_and_fixed_from_a_chat() {
+    let status = json!({"plugin": "hello"}).to_string();
+    let read = json!({"plugin": "hello", "file": "byob-plugin.json"}).to_string();
+    let edit = json!({"plugin": "hello", "file": "byob-plugin.json", "find": "\"version\": \"1.0.0\",,", "replace": "\"version\": \"1.0.0\","}).to_string();
+    let h = harness(
+        vec![call("plugin_status", &status), call("plugin_status", &read), call("edit_plugin", &edit), call("hello", "{}"), Reply::Text("fixed")],
+        Some(Policy::ALLOW_ALL),
+        |home, _| {
+            let dir = write_plugin(&home.join("plugins"), "hello", "hello", "'hi'", json!({}));
+            let broken = r#"{
+  "id": "hello", "name": "hello", "version": "1.0.0",,
+  "description": "The hello plugin",
+  "tools": [{"name": "hello", "description": "test tool", "params": {"type": "object", "properties": {}}, "run": "tools/t.py"}]
+}"#;
+            fs::write(dir.join("byob-plugin.json"), broken).unwrap();
+        },
+    );
+    let (mut c, _) = hello(&h);
+    let (reply, _) = turn(&mut c, "fix my hello plugin", |_, _| {});
+    let first = step(&reply, "plugin_status");
+    assert!(first.detail.contains("doesn't load") && first.detail.contains("byob-plugin.json"), "{}", first.detail);
+    let reqs = h.requests.lock().unwrap().clone();
+    let shown = reqs[2]["messages"].as_array().unwrap().iter().rev().find(|m| m["role"] == "tool").unwrap()["content"].as_str().unwrap().to_owned();
+    assert!(shown.contains(",,"), "the broken manifest can be read: {shown}");
+    let edited = step(&reply, "edit_plugin");
+    assert_eq!(edited.status, StepStatus::Done, "{}", edited.detail);
+    assert_eq!(step(&reply, "hello").detail, "hi");
+    assert!(!h.home.path().join("chats").read_dir().is_ok_and(|mut d| d.any(|e| e.is_ok_and(|e| e.path().join("plugins/hello").exists()))));
+    assert!(!fs::read_to_string(h.home.path().join("plugins/hello/byob-plugin.json")).unwrap().contains(",,"), "fixed in place");
+}
