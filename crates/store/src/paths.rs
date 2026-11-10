@@ -82,6 +82,16 @@ impl Paths {
         self.config_dir.join("secrets.json")
     }
 
+    /// Workspaces: names, folders and their settings.
+    pub fn workspaces(&self) -> PathBuf {
+        self.config_dir.join("workspaces.json")
+    }
+
+    /// Each chat's own settings.
+    pub fn chat_settings(&self) -> PathBuf {
+        self.data_dir.join("chat-settings.json")
+    }
+
     /// Default root of the folder chat backend (`storage = "folder"`).
     pub fn chats_folder(&self) -> PathBuf {
         self.data_dir.join("chats-folder")

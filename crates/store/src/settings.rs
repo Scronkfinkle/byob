@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+pub use byob_types::config::{Approvals, Layer, ToolMode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -191,6 +192,18 @@ pub struct Settings {
     pub subagents: SubagentSettings,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "ContainerSettings::is_default")]
     pub containers: ContainerSettings,
+    /// How turns pass tools to the model (default: automatic). Workspaces and chats may override it.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub tool_mode: Option<ToolMode>,
+    /// Which tool calls run without asking (default: ask before changes).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub approvals: Option<Approvals>,
+    /// Added to every chat's system prompt (workspaces and chats add their own after it).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    /// Where "New workspace" creates fresh folders (default `~/byob-workspaces`; `~/` allowed).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub workspaces_root: Option<PathBuf>,
     /// Fields this build doesn't know; preserved across load/save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -241,6 +254,44 @@ impl Settings {
         s.save(path)?;
         Ok(s)
     }
+
+    /// The global level of the layered settings (see [`byob_types::config`]). Compaction and
+    /// subagents always have a value here (their sections have defaults).
+    pub fn global_layer(&self) -> Layer {
+        let text = |v: &Option<String>| v.clone().filter(|s| !s.trim().is_empty());
+        Layer {
+            base_url: text(&self.inference.base_url),
+            model: text(&self.inference.model),
+            tool_mode: self.tool_mode,
+            approvals: self.approvals,
+            auto_compact: Some(self.compaction.auto),
+            compact_percent: Some(self.compaction.threshold_percent),
+            subagents: Some(self.subagents.enabled),
+            instructions: text(&self.instructions),
+            env: None,
+            image: None,
+        }
+    }
+
+    /// Store the global level's layered settings. The endpoint is left alone: it changes
+    /// through the connection form, which also checks it.
+    pub fn set_global_layer(&mut self, l: &Layer) {
+        self.tool_mode = l.tool_mode;
+        self.approvals = l.approvals;
+        let defaults = CompactionSettings::default();
+        self.compaction.auto = l.auto_compact.unwrap_or(defaults.auto);
+        self.compaction.threshold_percent = l.compact_percent.unwrap_or(defaults.threshold_percent);
+        self.subagents.enabled = l.subagents.unwrap_or(SubagentSettings::default().enabled);
+        self.instructions.clone_from(&l.instructions);
+    }
+
+    /// The folder new workspaces are created in.
+    pub fn workspaces_root(&self) -> Option<PathBuf> {
+        match &self.workspaces_root {
+            Some(p) => Some(crate::backend::expand_home(p)),
+            None => directories::BaseDirs::new().map(|d| d.home_dir().join("byob-workspaces")),
+        }
+    }
 }
 
 /// Credentials, kept apart from settings so settings.json can be shared or synced.
@@ -252,6 +303,10 @@ pub struct Secrets {
     /// API keys of model roles, by role name.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
     pub model_keys: BTreeMap<String, String>,
+    /// API keys of workspaces and chats that use their own endpoint, by scope
+    /// (`workspace:<id>`, `chat:<id>`).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
+    pub scoped_keys: BTreeMap<String, String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -261,6 +316,7 @@ impl std::fmt::Debug for Secrets {
         f.debug_struct("Secrets")
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("model_keys", &self.model_keys.keys().collect::<Vec<_>>())
+            .field("scoped_keys", &self.scoped_keys.keys().collect::<Vec<_>>())
             .field("extra", &self.extra.keys().collect::<Vec<_>>())
             .finish()
     }

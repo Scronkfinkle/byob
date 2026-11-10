@@ -28,6 +28,9 @@ pub enum StoreError {
     Io { path: PathBuf, source: std::io::Error },
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    /// A value from a user or client that can't be used (an empty name, …).
+    #[error("{0}")]
+    Invalid(String),
     /// Neither `BYOB_HOME` nor a platform home directory is available.
     #[error("no home directory found; set BYOB_HOME")]
     NoHome,

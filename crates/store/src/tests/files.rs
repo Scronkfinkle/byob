@@ -213,3 +213,50 @@ fn storage_settings_parse_and_default_to_sqlite() {
     Settings::default().save(&p).unwrap();
     assert!(!std::fs::read_to_string(&p).unwrap().contains("storage"));
 }
+
+#[test]
+fn global_layer_maps_to_settings_and_back() {
+    let dir = TempDir::new();
+    let p = Paths::at(dir.path()).settings();
+    let mut s = Settings::default();
+    s.inference.base_url = Some("http://h/v1".into());
+    let l = s.global_layer();
+    assert_eq!(
+        (l.base_url.as_deref(), l.auto_compact, l.compact_percent, l.subagents, l.approvals),
+        (Some("http://h/v1"), Some(true), Some(80), Some(true), None)
+    );
+    let changed = Layer {
+        base_url: Some("http://ignored/v1".into()),
+        approvals: Some(Approvals::AllowEdits),
+        tool_mode: Some(ToolMode::Prompt),
+        compact_percent: Some(60),
+        subagents: Some(false),
+        instructions: Some("Answer in French.".into()),
+        ..Layer::default()
+    };
+    s.set_global_layer(&changed);
+    s.save(&p).unwrap();
+    let back = Settings::load(&p).value;
+    let l = back.global_layer();
+    assert_eq!(l.base_url.as_deref(), Some("http://h/v1"), "the endpoint changes only through the connection form");
+    assert_eq!((l.approvals, l.tool_mode, l.compact_percent, l.subagents), (Some(Approvals::AllowEdits), Some(ToolMode::Prompt), Some(60), Some(false)));
+    assert_eq!(l.instructions.as_deref(), Some("Answer in French."));
+    let text = std::fs::read_to_string(&p).unwrap();
+    assert!(text.contains("\"approvals\": \"allow_edits\"") && text.contains("\"tool_mode\": \"prompt\""), "{text}");
+    // A bad value doesn't reset the rest.
+    std::fs::write(&p, r#"{"approvals": 7, "tool_mode": "native", "workspaces_root": "~/ws"}"#).unwrap();
+    let s = Settings::load(&p).value;
+    assert_eq!((s.approvals, s.tool_mode), (None, Some(ToolMode::Native)));
+    assert!(s.workspaces_root().is_some_and(|r| r.ends_with("ws") && !r.starts_with("~")));
+}
+
+#[test]
+fn scoped_keys_are_secrets() {
+    let dir = TempDir::new();
+    let p = Paths::at(dir.path()).secrets();
+    let mut s = Secrets::default();
+    s.scoped_keys.insert("workspace:w1".into(), "sk-ws".into());
+    s.save(&p).unwrap();
+    assert_eq!(Secrets::load(&p).value.scoped_keys.get("workspace:w1").map(String::as_str), Some("sk-ws"));
+    assert!(!format!("{s:?}").contains("sk-ws"));
+}

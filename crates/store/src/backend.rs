@@ -90,6 +90,29 @@ pub trait ChatStore: Send {
     fn undo_ops(&self, task_id: &str) -> Result<Vec<UndoOp>>;
     fn delete_undo_ops(&self, task_id: &str) -> Result<usize>;
 
+    // ---- workspaces ----
+    /// Per folder chats work in: how many chats and the latest activity, most recent
+    /// first. Pages through every chat (a few ms per thousand).
+    fn folder_stats(&self) -> Result<Vec<FolderStats>> {
+        let mut by: std::collections::BTreeMap<PathBuf, FolderStats> = std::collections::BTreeMap::new();
+        let mut after = None;
+        loop {
+            let page = self.list_chats(MAX_PAGE, after.as_ref())?;
+            for c in &page.chats {
+                let s = by.entry(c.workspace.clone()).or_insert_with(|| FolderStats { folder: c.workspace.clone(), chats: 0, updated_at: c.updated_at });
+                s.chats = s.chats.saturating_add(1);
+                s.updated_at = s.updated_at.max(c.updated_at);
+            }
+            match page.next {
+                Some(n) if !page.chats.is_empty() => after = Some(n),
+                _ => break,
+            }
+        }
+        let mut out: Vec<FolderStats> = by.into_values().collect();
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.folder.cmp(&b.folder)));
+        Ok(out)
+    }
+
     // ---- interop ----
     /// Everything about one chat, for [`export`]. `None` if there's no such chat.
     fn export_chat(&self, id: &str) -> Result<Option<ChatExport>> {
@@ -202,8 +225,17 @@ pub fn export(from: &dyn ChatStore, to: &mut dyn ChatStore) -> Result<ExportRepo
     Ok(report)
 }
 
+/// The chats of one folder (see [`ChatStore::folder_stats`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderStats {
+    pub folder: PathBuf,
+    pub chats: u64,
+    /// Latest activity of any of its chats.
+    pub updated_at: crate::model::Millis,
+}
+
 /// Expand a leading `~/` (or a bare `~`) to the home directory.
-fn expand_home(p: &Path) -> PathBuf {
+pub fn expand_home(p: &Path) -> PathBuf {
     let Ok(rest) = p.strip_prefix("~") else { return p.to_owned() };
     match directories::BaseDirs::new() {
         Some(b) => b.home_dir().join(rest),

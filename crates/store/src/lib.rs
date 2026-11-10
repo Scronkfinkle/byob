@@ -45,12 +45,13 @@ mod schema;
 mod settings;
 mod steps;
 mod store;
+mod workspaces;
 
 #[cfg(test)]
 mod tests;
 
 pub use agent_runs::MAX_AGENT_TASK;
-pub use backend::{ChatExport, ChatStore, ExportReport, ExportedAgentRun, ExportedCompaction, export, folder_root, open_backend};
+pub use backend::{ChatExport, ChatStore, ExportReport, ExportedAgentRun, ExportedCompaction, FolderStats, expand_home, export, folder_root, open_backend};
 pub use compactions::MAX_SUMMARY;
 pub use error::{Result, StoreError};
 pub use files::Loaded;
@@ -62,7 +63,9 @@ pub use model::{
 pub use paths::{HOME_ENV, Paths, migrate_workspace};
 pub use schema::LATEST as SCHEMA_VERSION;
 pub use settings::{
-    CompactionSettings, ContainerSettings, InferenceSettings, ModelRole, SECRETS_MODE, Secrets, Settings, StorageKind, SubagentSettings, Theme,
+    Approvals, CompactionSettings, ContainerSettings, InferenceSettings, Layer, ModelRole, SECRETS_MODE, Secrets, Settings, StorageKind, SubagentSettings,
+    Theme, ToolMode,
 };
 pub use steps::MAX_STEP_OUTPUT;
 pub use store::{BUSY_TIMEOUT, MAX_PAGE, Store};
+pub use workspaces::{MAX_NAME_CHARS, MAX_PATH_CHARS, WorkspaceRow, Workspaces, clean_name, default_name, folder_slug, workspace_id};

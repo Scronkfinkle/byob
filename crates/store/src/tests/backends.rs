@@ -41,7 +41,23 @@ for_each_backend!(
     compactions_follow_their_messages,
     ids_of_a_deleted_chat_stay_dead,
     agent_runs_record_child_threads,
+    folder_stats_count_every_chat,
 );
+
+fn folder_stats_count_every_chat(s: &dyn ChatStore) {
+    assert!(s.folder_stats().unwrap().is_empty());
+    // More than one page, across two folders.
+    for i in 0..(MAX_PAGE + 3) {
+        let folder = if i % 3 == 0 { "/b" } else { "/a" };
+        s.create_chat(&format!("c{i:04}"), "t", Path::new(folder)).unwrap();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    s.append_message("c0000", &NewMessage::user("latest")).unwrap();
+    let stats = s.folder_stats().unwrap();
+    let b = (MAX_PAGE + 3).div_ceil(3) as u64;
+    assert_eq!(stats.iter().map(|f| (f.folder.to_str().unwrap(), f.chats)).collect::<Vec<_>>(), vec![("/b", b), ("/a", (MAX_PAGE + 3) as u64 - b)]);
+    assert!(stats[0].updated_at >= stats[1].updated_at, "most recent first");
+}
 
 fn agent_runs_record_child_threads(s: &dyn ChatStore) {
     chat(s, "c");
