@@ -487,6 +487,9 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
     let mut serving = None;
     if let Some(addr) = args.serve {
         let config = byob_server::ServerConfig { addr, web_dir: web_dir(args.web_dir), allowed_users: args.allowed_users, ..Default::default() };
+        if let Some(warning) = byob_server::webui::UiCheck::of(config.web_dir.as_deref()).warning() {
+            eprintln!("byob: warning: {warning}");
+        }
         let bound = byob_server::spawn(engine.clone(), config).map_err(|e| format!("binding {addr}: {e}"))?;
         eprintln!("byob: browser UI at http://{bound}  (expose on your tailnet with: tailscale serve {})", bound.port());
         serving = Some(bound);

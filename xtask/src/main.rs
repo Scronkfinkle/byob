@@ -184,7 +184,13 @@ fn web() -> Result<(), String> {
     if tool("wasm-opt", &["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "-o", &wasm, &wasm]).is_err() {
         eprintln!("xtask: wasm-opt failed or missing; shipping unoptimized wasm");
     }
-    std::fs::copy("apps/byob-web/index.html", format!("{dist}/index.html")).map_err(|e| format!("copy index.html: {e}"))?;
+    // Stamp the protocol it speaks, so byob can refuse a UI from an older build (byob-server's webui.rs).
+    let index = std::fs::read_to_string("apps/byob-web/index.html").map_err(|e| format!("read index.html: {e}"))?;
+    let stamp = format!("<meta charset=\"utf-8\" />\n    <meta name=\"byob-protocol\" content=\"{}\" />", protocol_version()?);
+    if !index.contains("<meta charset=\"utf-8\" />") {
+        return Err("apps/byob-web/index.html lost its `<meta charset=\"utf-8\" />`, where the protocol stamp goes".into());
+    }
+    std::fs::write(format!("{dist}/index.html"), index.replacen("<meta charset=\"utf-8\" />", &stamp, 1)).map_err(|e| format!("write index.html: {e}"))?;
     // Precompressed copies; byob-server sends `<file>.gz` to clients that accept gzip
     // (the wasm shrinks ~3x). Optional: without them it serves the plain files.
     let (wasm_js, wasm_bin) = (format!("{dist}/byob-web.js"), format!("{dist}/byob-web_bg.wasm"));
@@ -227,4 +233,13 @@ fn ci() -> Result<(), String> {
     run(&["test", "--workspace", "--doc"])?;
     layers()?;
     wasm()
+}
+
+/// `byob_protocol::PROTOCOL_VERSION`, read from its source (xtask doesn't build the crate).
+fn protocol_version() -> Result<u32, String> {
+    let src = std::fs::read_to_string("crates/protocol/src/lib.rs").map_err(|e| format!("read crates/protocol/src/lib.rs: {e}"))?;
+    src.lines()
+        .find_map(|l| l.trim().strip_prefix("pub const PROTOCOL_VERSION: u32 = "))
+        .and_then(|v| v.trim_end_matches(';').trim().parse().ok())
+        .ok_or_else(|| "couldn't find `pub const PROTOCOL_VERSION: u32 = N;` in crates/protocol/src/lib.rs".into())
 }

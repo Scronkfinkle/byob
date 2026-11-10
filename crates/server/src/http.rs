@@ -136,6 +136,17 @@ pub fn forbidden_page(stream: &mut impl Write, why: &str) -> io::Result<()> {
     respond(stream, 403, "text/html; charset=utf-8", body.as_bytes())
 }
 
+/// Served instead of a UI built for another protocol, which could only say "reload".
+pub fn stale_ui_page(stream: &mut impl Write, why: &str) -> io::Result<()> {
+    let why = why.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let body = format!(
+        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>byob: browser UI out of date</title>\
+         <body style=\"font-family:system-ui,sans-serif;background:#16171a;color:#ddd;max-width:36em;margin:4em auto;padding:0 1em\">\
+         <h1>This byob's browser UI is out of date</h1><p>{why}.</p></body></html>"
+    );
+    respond(stream, 503, "text/html; charset=utf-8", body.as_bytes())
+}
+
 /// A static file chosen for a request: what to read, and how to label it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Chosen {

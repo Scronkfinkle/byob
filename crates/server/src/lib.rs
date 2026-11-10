@@ -13,6 +13,7 @@
 pub mod artifact;
 mod auth;
 mod http;
+pub mod webui;
 
 pub use http::embedded_web_available;
 
@@ -93,6 +94,7 @@ pub fn spawn(engine: EngineHandle, config: ServerConfig) -> io::Result<SocketAdd
     if !config.allowed_users.is_empty() {
         log::info!("only admitting Tailscale users: {}", config.allowed_users.join(", "));
     }
+    let ui = Arc::new(if config.artifacts_only { webui::UiCheck::Fine } else { webui::UiCheck::of(config.web_dir.as_deref()) });
     let config = Arc::new(config);
     let live = Arc::new(AtomicUsize::new(0));
     thread::Builder::new().name("byob-server".into()).spawn(move || {
@@ -102,10 +104,10 @@ pub fn spawn(engine: EngineHandle, config: ServerConfig) -> io::Result<SocketAdd
                 refuse_busy(stream);
                 continue;
             };
-            let (engine, config) = (engine.clone(), Arc::clone(&config));
+            let (engine, config, ui) = (engine.clone(), Arc::clone(&config), Arc::clone(&ui));
             let spawned = thread::Builder::new().name("byob-conn".into()).spawn(move || {
                 let _slot = slot;
-                let result = catch_unwind(AssertUnwindSafe(|| handle(stream, &engine, &config)));
+                let result = catch_unwind(AssertUnwindSafe(|| handle(stream, &engine, &config, &ui)));
                 match result {
                     Ok(Err(e)) => log::debug!("connection ended: {e}"),
                     Err(_) => log::error!("connection thread panicked"),
@@ -143,7 +145,7 @@ fn refuse_busy(mut stream: TcpStream) {
     drain(&mut stream);
 }
 
-fn handle(mut stream: TcpStream, engine: &EngineHandle, config: &ServerConfig) -> io::Result<()> {
+fn handle(mut stream: TcpStream, engine: &EngineHandle, config: &ServerConfig, ui: &webui::UiCheck) -> io::Result<()> {
     let peer = stream.peer_addr()?;
     stream.set_write_timeout(Some(config.write_timeout))?;
     let (req, leftover) = http::read_request(&mut stream, config.head_timeout)?;
@@ -185,6 +187,11 @@ fn handle(mut stream: TcpStream, engine: &EngineHandle, config: &ServerConfig) -
         return result;
     }
     log::debug!("GET {} by {who} from {peer}", req.path);
+    if let webui::UiCheck::Stale { .. } = ui
+        && matches!(req.path.split(['?', '#']).next(), Some("/" | "/index.html"))
+    {
+        return http::stale_ui_page(&mut stream, &ui.warning().unwrap_or_default());
+    }
     http::serve_static(&mut stream, config.web_dir.as_deref(), &req)
 }
 
@@ -477,6 +484,22 @@ mod tests {
         assert!(get(addr, &format!("/artifact/c1/{id}/1"), "").starts_with("HTTP/1.1 200"));
         assert!(raw(addr, &upgrade(addr, "")).starts_with("HTTP/1.1 404"));
         assert!(get(addr, "/", "").starts_with("HTTP/1.1 404"));
+    }
+
+    /// Regression: a UI built for an older protocol was served and could only say "reload
+    /// the page"; now the page explains what to rebuild, and a current UI is served as usual.
+    #[test]
+    fn a_ui_built_for_another_protocol_is_not_served() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<meta name=\"byob-protocol\" content=\"7\"><p>old ui</p>").unwrap();
+        let addr = start_with(ServerConfig { web_dir: Some(dir.path().to_path_buf()), ..Default::default() });
+        let page = get(addr, "/", "");
+        assert!(page.starts_with("HTTP/1.1 503") && page.contains("protocol 7") && page.contains("cargo xtask web") && !page.contains("old ui"), "{page}");
+
+        let current = format!("<meta name=\"byob-protocol\" content=\"{}\"><p>new ui</p>", byob_protocol::PROTOCOL_VERSION);
+        std::fs::write(dir.path().join("index.html"), current).unwrap();
+        let addr = start_with(ServerConfig { web_dir: Some(dir.path().to_path_buf()), ..Default::default() });
+        assert!(get(addr, "/", "").contains("new ui"));
     }
 
     #[test]
