@@ -520,7 +520,7 @@ impl NewWorkspaceForm {
         ui.label(RichText::new("Folder").color(t.text));
         let root_shown = if root.is_empty() { "~/byob-workspaces".to_owned() } else { root.trim_end_matches('/').to_owned() };
         ui.radio_value(&mut self.fresh, true, format!("New folder: {root_shown}/{}", slug(&self.name)));
-        ui.radio_value(&mut self.fresh, false, "An existing folder");
+        ui.radio_value(&mut self.fresh, false, "A folder of your choice").on_hover_text("Made if it doesn't exist yet");
         if !self.fresh {
             ui.horizontal_wrapped(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.path).hint_text("/home/me/project").desired_width((field_w - 150.0).max(140.0)));

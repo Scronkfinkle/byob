@@ -47,12 +47,15 @@ fn next_key(old_url: Option<&str>, new_url: Option<&str>, given: Option<&str>, e
     }
 }
 
-/// A folder named by a client: absolute (a leading `~/` is the home folder), existing,
-/// and not the filesystem root.
-pub(crate) fn existing_folder(path: &str) -> Result<PathBuf, String> {
+/// A folder named by a client: absolute (a leading `~/` is the home folder) and not the
+/// filesystem root. Created (with its parents) if it doesn't exist yet.
+pub(crate) fn chosen_folder(path: &str) -> Result<PathBuf, String> {
     let p = byob_store::expand_home(Path::new(path.trim()));
     if !p.is_absolute() {
         return Err(format!("{path:?} isn't a full path (like /home/me/project)"));
+    }
+    if !p.exists() {
+        std::fs::create_dir_all(&p).map_err(|e| format!("couldn't create {}: {e}", p.display()))?;
     }
     let real = p.canonicalize().map_err(|e| format!("{}: {e}", p.display()))?;
     if !real.is_dir() {
@@ -354,7 +357,7 @@ impl Engine {
             let layer = config.validated(Level::Workspace)?;
             let name = byob_store::clean_name(name).map_err(|e| e.to_string())?;
             let folder = match folder {
-                NewFolder::Existing { path } => existing_folder(&path)?,
+                NewFolder::Existing { path } => chosen_folder(&path)?,
                 NewFolder::Create => {
                     let root = self.workspaces_root.clone().ok_or("byob has no folder for new workspaces here; pick an existing folder")?;
                     fresh_folder(&root, &name)?
@@ -637,12 +640,15 @@ mod tests {
     fn folders_from_clients_are_checked_and_fresh_ones_get_free_names() {
         let d = tempfile::tempdir().unwrap();
         let real = d.path().canonicalize().unwrap();
-        assert_eq!(existing_folder(real.to_str().unwrap()).unwrap(), real);
-        assert!(existing_folder("relative/path").is_err());
-        assert!(existing_folder(real.join("missing").to_str().unwrap()).is_err());
+        assert_eq!(chosen_folder(real.to_str().unwrap()).unwrap(), real);
+        assert!(chosen_folder("relative/path").is_err());
+        // A folder that doesn't exist yet is made, parents included.
+        let made = real.join("new/nested");
+        assert_eq!(chosen_folder(made.to_str().unwrap()).unwrap(), made);
+        assert!(made.is_dir());
         std::fs::write(real.join("file"), "x").unwrap();
-        assert!(existing_folder(real.join("file").to_str().unwrap()).is_err());
-        assert!(existing_folder("/").is_err());
+        assert!(chosen_folder(real.join("file").to_str().unwrap()).is_err());
+        assert!(chosen_folder("/").is_err());
         let a = fresh_folder(&real.join("root"), "My Data!").unwrap();
         let b = fresh_folder(&real.join("root"), "my data").unwrap();
         assert_eq!((a.file_name().unwrap().to_str(), b.file_name().unwrap().to_str()), (Some("my-data"), Some("my-data-2")));
