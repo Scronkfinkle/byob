@@ -182,6 +182,13 @@ fn a_made_tool_is_callable_in_the_next_round_of_the_same_turn() {
     assert!(seen.iter().any(
         |m| matches!(m, ServerMsg::Extensions(e) if e.plugins.iter().any(|p| p.id == "scratch" && p.tools == ["add"] && p.origin == PluginOrigin::Agent))
     ));
+    // The scratch plugin goes with its chat.
+    let chat = seen.iter().find_map(|m| if let ServerMsg::ChatUpdated(s) = m { Some(s.id.clone()) } else { None }).unwrap();
+    let scratch = h.home.path().join("chats").join(&chat).join("plugins/scratch");
+    assert!(scratch.join("tools/add.py").is_file());
+    c.send(ClientMsg::DeleteChat { id: chat.clone() });
+    while !matches!(recv(&mut c), ServerMsg::ChatDeleted { .. }) {}
+    assert!(!h.home.path().join("chats").join(&chat).exists());
 }
 
 #[test]

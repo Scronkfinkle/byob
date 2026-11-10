@@ -278,7 +278,7 @@ impl Tool for PythonTool {
     fn title(&self, args: &Value) -> String {
         match &self.decl.title {
             Some(t) => fill_title(t, args),
-            None => format!("Used {}", self.plugin.name),
+            None => format!("Used {}: {}", self.plugin.name, self.decl.name),
         }
     }
 
