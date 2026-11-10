@@ -1,3 +1,7 @@
+> [!NOTE]
+> Heads up: this project, README included, is influenced heavily by AI agents. If LLM-flavoured
+> prose isn't your thing, fair warning. Human-written docs will come once things settle.
+
 # byob — bring your own brain
 
 A native Rust desktop AI coworker. A rewrite of hob that points at **any OpenAI-compatible
