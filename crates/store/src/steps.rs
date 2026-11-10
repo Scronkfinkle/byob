@@ -26,7 +26,7 @@ pub(crate) fn bound(s: &str, max: usize) -> String {
     format!("{cut}\n… [{} more bytes not saved]", s.len() - end)
 }
 
-struct Raw {
+pub(crate) struct Raw {
     message_id: i64,
     seq: i64,
     tool: String,
@@ -38,7 +38,7 @@ struct Raw {
     changes: String,
 }
 
-fn raw_row(r: &Row<'_>) -> rusqlite::Result<Raw> {
+pub(crate) fn raw_row(r: &Row<'_>) -> rusqlite::Result<Raw> {
     Ok(Raw {
         message_id: r.get(0)?,
         seq: r.get(1)?,
@@ -53,7 +53,7 @@ fn raw_row(r: &Row<'_>) -> rusqlite::Result<Raw> {
 }
 
 impl Raw {
-    fn decode(self) -> Result<Step> {
+    pub(crate) fn decode(self) -> Result<Step> {
         let access = StepAccess::parse(&self.access)
             .ok_or_else(|| StoreError::BadValue { column: "steps.access", detail: format!("unknown access {:?}", self.access) })?;
         // Args came from the model and may not have been JSON at all; keep the raw text.

@@ -1,6 +1,7 @@
 //! Load what the model can use: built-in file and artifact tools, the code-running tools (sandboxed),
-//! then plugins (skills, Python tools, MCP connectors) from the config folder,
-//! `settings.json` `plugin_dirs`, and `--plugin`.
+//! then plugins (skills, Python tools, MCP connectors, subagents) from the config folder,
+//! `settings.json` `plugin_dirs`, and `--plugin`; and the user's own subagents
+//! (`<config>/agents/*.md`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -8,11 +9,19 @@ use std::sync::Arc;
 
 use byob_exec::{Exec, Mode};
 use byob_plugins::mcp::{McpConnector, McpSandbox};
-use byob_plugins::{PluginSources, ToolNames, UseSkillTool};
+use byob_plugins::{AgentDef, PluginSources, ToolNames, UseSkillTool};
 use byob_tools::Registry;
 
-/// Register everything into `tools`; returns text to append to the system prompt.
-pub fn load(tools: &mut Registry, linked: Vec<PathBuf>, workspace: &Path) -> String {
+/// What [`load`] found besides tools.
+pub struct Loaded {
+    /// Text to append to the system prompt.
+    pub prompt: String,
+    /// Subagents from `<config>/agents` and plugins, the user's first.
+    pub agents: Vec<AgentDef>,
+}
+
+/// Register everything into `tools`.
+pub fn load(tools: &mut Registry, linked: Vec<PathBuf>, workspace: &Path) -> Loaded {
     byob_tools::register_builtins(tools);
 
     let paths = byob_store::Paths::resolve();
@@ -79,5 +88,19 @@ pub fn load(tools: &mut Registry, linked: Vec<PathBuf>, workspace: &Path) -> Str
         prompt.push_str(&byob_plugins::skills_prompt(&skills));
         tools.register(Arc::new(UseSkillTool::new(skills)));
     }
-    prompt.trim().to_owned()
+    let mine = match &paths {
+        Ok(paths) => {
+            let (agents, errors) = byob_plugins::load_agents_dir(&paths.config_dir.join("agents"));
+            for e in errors {
+                log::warn!("agent {e}");
+            }
+            agents
+        }
+        Err(_) => Vec::new(),
+    };
+    let agents = byob_plugins::merge_agents([mine, found.agents()]);
+    if !agents.is_empty() {
+        log::info!("{} subagent(s): {}", agents.len(), agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "));
+    }
+    Loaded { prompt: prompt.trim().to_owned(), agents }
 }

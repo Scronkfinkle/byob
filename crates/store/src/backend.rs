@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use crate::error::Result;
 use crate::folder::FolderStore;
 use crate::model::{
-    Chat, ChatCursor, ChatPage, Compaction, GrantScope, MessageId, MessageStats, NewCompaction, NewMessage, NewStep, Step, StepResult, StoredMessage, UndoOp,
+    AgentRun, Chat, ChatCursor, ChatPage, Compaction, GrantScope, MessageId, MessageStats, NewAgentRun, NewCompaction, NewMessage, NewStep, Step, StepResult,
+    StoredMessage, UndoOp,
 };
 use crate::paths::Paths;
 use crate::settings::{Settings, StorageKind};
@@ -64,6 +65,20 @@ pub trait ChatStore: Send {
     /// drops the compactions that covered any of them; deleting the chat drops them all.
     fn compactions(&self, chat_id: &str) -> Result<Vec<Compaction>>;
 
+    // ---- subagent runs ----
+    /// Record a subagent run (a child thread) started by step `run.step_seq` of message
+    /// `run.parent`, which must be in `chat_id`. Deleting that message (or the chat) drops it.
+    fn add_agent_run(&self, chat_id: &str, run: &NewAgentRun) -> Result<()>;
+    /// Append batched stream deltas of a run.
+    fn append_agent_text(&self, chat_id: &str, run_id: &str, content: &str, reasoning: &str) -> Result<()>;
+    /// Record a run's tool call before it runs; returns its 1-based `seq` within the run.
+    fn add_agent_step(&self, chat_id: &str, run_id: &str, step: &NewStep) -> Result<i64>;
+    fn finish_agent_step(&self, chat_id: &str, run_id: &str, seq: i64, result: &StepResult) -> Result<()>;
+    fn finish_agent_run(&self, chat_id: &str, run_id: &str, error: Option<&str>, stats: Option<&MessageStats>) -> Result<()>;
+    /// A chat's runs, oldest first, with their steps (empty for an unknown chat). Runs whose
+    /// parent message is gone are not listed.
+    fn agent_runs(&self, chat_id: &str) -> Result<Vec<AgentRun>>;
+
     // ---- grants ----
     fn grant(&self, scope: &GrantScope, tool: &str) -> Result<()>;
     fn revoke(&self, scope: &GrantScope, tool: &str) -> Result<bool>;
@@ -97,7 +112,12 @@ pub trait ChatStore: Send {
             .into_iter()
             .map(|c| ExportedCompaction { covers: messages.iter().filter(|m| m.id <= c.through).count(), compaction: c })
             .collect();
-        Ok(Some(ChatExport { chat, messages, grants, undo, compactions }))
+        let agent_runs = self
+            .agent_runs(id)?
+            .into_iter()
+            .filter_map(|run| Some(ExportedAgentRun { parent: messages.iter().position(|m| m.id == run.parent)?, run }))
+            .collect();
+        Ok(Some(ChatExport { chat, messages, grants, undo, compactions, agent_runs }))
     }
 
     /// Recreate a chat exactly (timestamps, flags, steps, grants, undo journal, compactions).
@@ -118,6 +138,17 @@ pub struct ChatExport {
     pub undo: Vec<(String, Vec<UndoOp>)>,
     /// Context compactions, oldest first.
     pub compactions: Vec<ExportedCompaction>,
+    /// Subagent runs, oldest first.
+    pub agent_runs: Vec<ExportedAgentRun>,
+}
+
+/// A subagent run in a [`ChatExport`]. Its `parent` (and its steps' `message_id`) are the
+/// source store's and are ignored on import; `parent` here is the index of the parent
+/// message in the export's `messages`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportedAgentRun {
+    pub parent: usize,
+    pub run: AgentRun,
 }
 
 /// A compaction in a [`ChatExport`]. Its `id` and `through` are the source store's and are
@@ -269,6 +300,24 @@ impl ChatStore for Store {
     }
     fn compactions(&self, chat_id: &str) -> Result<Vec<Compaction>> {
         Store::compactions(self, chat_id)
+    }
+    fn add_agent_run(&self, chat_id: &str, run: &NewAgentRun) -> Result<()> {
+        Store::add_agent_run(self, chat_id, run)
+    }
+    fn append_agent_text(&self, chat_id: &str, run_id: &str, content: &str, reasoning: &str) -> Result<()> {
+        Store::append_agent_text(self, chat_id, run_id, content, reasoning)
+    }
+    fn add_agent_step(&self, chat_id: &str, run_id: &str, step: &NewStep) -> Result<i64> {
+        Store::add_agent_step(self, chat_id, run_id, step)
+    }
+    fn finish_agent_step(&self, chat_id: &str, run_id: &str, seq: i64, result: &StepResult) -> Result<()> {
+        Store::finish_agent_step(self, chat_id, run_id, seq, result)
+    }
+    fn finish_agent_run(&self, chat_id: &str, run_id: &str, error: Option<&str>, stats: Option<&MessageStats>) -> Result<()> {
+        Store::finish_agent_run(self, chat_id, run_id, error, stats)
+    }
+    fn agent_runs(&self, chat_id: &str) -> Result<Vec<AgentRun>> {
+        Store::agent_runs(self, chat_id)
     }
     fn grant(&self, scope: &GrantScope, tool: &str) -> Result<()> {
         Store::grant(self, scope, tool)

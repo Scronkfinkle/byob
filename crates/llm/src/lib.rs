@@ -155,6 +155,8 @@ fn read_stream(mut reader: impl BufRead, cancel: &AtomicBool, on_event: &mut imp
         on_event(ev);
     };
     let mut line = Vec::new();
+    // Whether the server sent anything at all (a data chunk or `[DONE]`).
+    let mut answered = false;
     loop {
         if cancel.load(Ordering::Relaxed) {
             out.cancelled = true;
@@ -170,9 +172,13 @@ fn read_stream(mut reader: impl BufRead, cancel: &AtomicBool, on_event: &mut imp
         }
         let text = String::from_utf8_lossy(&line);
         match sse::parse_line(&text) {
-            sse::Line::Done => break,
+            sse::Line::Done => {
+                answered = true;
+                break;
+            }
             sse::Line::Skip => {}
             sse::Line::Data(json) => {
+                answered = true;
                 let chunk = wire::Chunk::parse(json).map_err(LlmError::Stream)?;
                 if let Some(reasoning) = chunk.reasoning {
                     emit(&mut out, StreamEvent::Reasoning(reasoning));
@@ -193,6 +199,11 @@ fn read_stream(mut reader: impl BufRead, cancel: &AtomicBool, on_event: &mut imp
                 }
             }
         }
+    }
+    // A stream that ends with neither data nor `[DONE]` is a dropped connection, not an
+    // empty answer: say so instead of returning a silent blank reply.
+    if !answered && !out.cancelled {
+        return Err(LlmError::Stream("the server closed the connection without replying".into()));
     }
     for ev in think.finish() {
         emit(&mut out, ev);

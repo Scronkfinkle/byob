@@ -255,6 +255,23 @@ fn inference_config(args: &Args, settings: &Settings, secrets: &Secrets) -> Infe
     }
 }
 
+/// `settings.json` `models`: each role's endpoint, defaulting to the main one. A role's key
+/// is `secrets.json` `model_keys.<role>`, else the main key if it is on the main endpoint.
+fn model_roles(main: &InferenceConfig, settings: &Settings, secrets: &Secrets) -> std::collections::BTreeMap<String, InferenceConfig> {
+    settings
+        .models
+        .iter()
+        .filter(|(name, _)| !name.trim().is_empty())
+        .map(|(name, role)| {
+            let base_url = role.base_url.clone().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| main.base_url.clone());
+            let same = base_url.trim_end_matches('/') == main.base_url.trim_end_matches('/');
+            let api_key = secrets.model_keys.get(name).filter(|k| !k.is_empty()).cloned().or_else(|| main.api_key.clone().filter(|_| same));
+            let model = role.model.clone().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| main.model.clone());
+            (name.clone(), InferenceConfig { base_url, model, api_key })
+        })
+        .collect()
+}
+
 /// `--workspace`, else the saved default, else the current directory.
 fn workspace(args: &Args, settings: &Settings) -> Result<Option<PathBuf>, String> {
     let (dir, from_flag) = match (&args.workspace, &settings.workspace) {
@@ -351,9 +368,18 @@ fn run() -> Result<(), String> {
     let themes_dir = config.paths.as_ref().map(Paths::themes_dir);
     let plugins = args.plugins.clone();
     let extra = extensions::load(&mut config.tools, plugins, &config.workspace);
-    if !extra.is_empty() {
-        config.system_prompt = format!("{}\n\n{extra}", config.system_prompt);
+    if !extra.prompt.is_empty() {
+        config.system_prompt = format!("{}\n\n{}", config.system_prompt, extra.prompt);
     }
+    config.agents = extra.agents;
+    config.models = model_roles(&config.inference, &saved.settings, &saved.secrets);
+    let sub = saved.settings.subagents;
+    config.subagents = byob_agent::SubagentOptions {
+        enabled: sub.enabled,
+        max_parallel: sub.max_parallel.map(usize::from),
+        max_calls: usize::from(sub.max_tool_calls.max(1)),
+        time_limit: std::time::Duration::from_secs(u64::from(sub.time_limit_minutes.max(1)) * 60),
+    };
     if args.dev_tools {
         byob_agent::dev_tools::register(&mut config.tools);
     }
@@ -469,6 +495,21 @@ mod tests {
         settings.inference.model = model.map(Into::into);
         let secrets = Secrets { api_key: key.map(Into::into), ..Default::default() };
         (settings, secrets)
+    }
+
+    #[test]
+    fn model_roles_default_to_the_main_endpoint() {
+        let main = InferenceConfig { base_url: "http://main/v1".into(), model: "big".into(), api_key: Some("sk-main".into()) };
+        let mut settings = Settings::default();
+        settings.models.insert("fast".into(), byob_store::ModelRole { model: Some("small".into()), ..Default::default() });
+        settings.models.insert("remote".into(), byob_store::ModelRole { base_url: Some("http://other/v1".into()), ..Default::default() });
+        settings.models.insert("keyed".into(), byob_store::ModelRole { base_url: Some("http://third/v1".into()), ..Default::default() });
+        let secrets = Secrets { model_keys: [("keyed".to_owned(), "sk-third".to_owned())].into(), ..Default::default() };
+        let roles = model_roles(&main, &settings, &secrets);
+        assert_eq!(roles["fast"], InferenceConfig { model: "small".into(), ..main.clone() });
+        // Another endpoint never gets the main key; its own comes from secrets.json.
+        assert_eq!(roles["remote"], InferenceConfig { base_url: "http://other/v1".into(), model: "big".into(), api_key: None });
+        assert_eq!(roles["keyed"].api_key.as_deref(), Some("sk-third"));
     }
 
     #[test]

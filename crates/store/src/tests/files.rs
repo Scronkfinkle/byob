@@ -104,6 +104,30 @@ fn api_keys_never_land_in_settings() {
 }
 
 #[test]
+fn model_roles_load_without_their_keys() {
+    let dir = TempDir::new();
+    let p = dir.path().join("settings.json");
+    let text = r#"{"models":{"fast":{"base_url":"http://h:1/v1","model":"small","api_key":"sk-role"},"vision":{"model":"vl"}},"subagents":{"max_parallel":2}}"#;
+    std::fs::write(&p, text).unwrap();
+    let l = Settings::load(&p);
+    assert_eq!(l.warnings.len(), 1, "{:?}", l.warnings);
+    let fast = &l.value.models["fast"];
+    assert_eq!((fast.base_url.as_deref(), fast.model.as_deref()), (Some("http://h:1/v1"), Some("small")));
+    assert!(fast.extra.is_empty());
+    assert_eq!(l.value.models["vision"].base_url, None);
+    assert_eq!(l.value.subagents, SubagentSettings { max_parallel: Some(2), ..Default::default() });
+    l.value.save(&p).unwrap();
+    let saved = std::fs::read_to_string(&p).unwrap();
+    assert!(!saved.contains("sk-") && saved.contains("\"small\""), "{saved}");
+    // Role keys belong in secrets.json.
+    let sp = Paths::at(dir.path()).secrets();
+    let s = Secrets { model_keys: [("fast".to_owned(), "sk-fast".to_owned())].into(), ..Default::default() };
+    assert!(!format!("{s:?}").contains("sk-fast"));
+    s.save(&sp).unwrap();
+    assert_eq!(Secrets::load(&sp).value.model_keys["fast"], "sk-fast");
+}
+
+#[test]
 fn secrets_round_trip_private_and_redacted() {
     let dir = TempDir::new();
     let p = Paths::at(dir.path()).secrets();

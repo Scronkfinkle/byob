@@ -78,6 +78,9 @@ impl Usage {
                 ui.label(RichText::new("compacting…").small().color(t.text_dim));
             } else if !narrow {
                 ui.label(RichText::new(u.label()).small().color(t.text_dim));
+                if let Some(split) = u.split_label() {
+                    ui.label(RichText::new(split).small().color(t.text_faint));
+                }
             }
         });
         let response = row.response.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -162,6 +165,9 @@ fn breakdown(ui: &mut egui::Ui, t: &Tokens, u: &ChatUsage) {
         row(ui, "Completion tokens", u.completion_tokens.to_string());
         row(ui, "Model calls", u.model_calls.to_string());
         row(ui, "Compactions", u.compactions.to_string());
+        if u.agent_calls > 0 {
+            row(ui, "Subagents", format!("{} in · {} out · {} calls", u.agent_prompt_tokens, u.agent_completion_tokens, u.agent_calls));
+        }
         #[allow(clippy::cast_precision_loss)] // display only
         let secs = u.elapsed_ms as f64 / 1000.0;
         row(ui, "Time", if secs >= 60.0 { format!("{}m {:.0}s", (secs / 60.0).floor(), secs % 60.0) } else { format!("{secs:.1}s") });

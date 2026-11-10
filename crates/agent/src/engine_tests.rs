@@ -83,6 +83,25 @@ fn text_of(msgs: &[ServerMsg]) -> String {
     msgs.iter().filter_map(|m| if let ServerMsg::EntryDelta { content, .. } = m { Some(content.as_str()) } else { None }).collect()
 }
 
+/// Read a whole HTTP request (head + `Content-Length` body). Replying after a partial read
+/// and closing makes the kernel reset the connection under the client's feet.
+fn read_request(s: &mut std::net::TcpStream) {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    while let Ok(n) = s.read(&mut chunk) {
+        if n == 0 {
+            return;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+        let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+        let len = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(0);
+        if buf.len() >= end + 4 + len {
+            return;
+        }
+    }
+}
+
 fn respond(s: &mut std::net::TcpStream, chunks: &str) {
     let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{chunks}");
 }
@@ -98,8 +117,7 @@ fn fake_llm(reply: &'static str) -> String {
     thread::spawn(move || {
         for stream in listener.incoming() {
             let mut s = stream.unwrap();
-            let mut buf = [0u8; 65536];
-            let _ = s.read(&mut buf);
+            read_request(&mut s);
             respond(&mut s, &format!("{}data: [DONE]\n\n", sse_words(reply)));
         }
     });
@@ -406,14 +424,12 @@ fn first_reply_names_the_chat() {
     let mut a = engine.connect(Arc::new(|| {}));
     hello(&mut a);
     a.send(ClientMsg::SendMessage { text: "plan a trip".into(), attachments: vec![] });
-    finish(&mut a);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let (ServerMsg::ChatUpdated(s), _) = recv_until(&mut a, |m| matches!(m, ServerMsg::ChatUpdated(_))) else { panic!() };
-        if s.title == "Trip Planning" {
-            break;
-        }
-        assert!(Instant::now() < deadline);
+    // The title request can finish before the reply's EntryFinished reaches us, so the
+    // titled ChatUpdated may be among the messages `finish` skipped.
+    let titled = |m: &ServerMsg| matches!(m, ServerMsg::ChatUpdated(s) if s.title == "Trip Planning");
+    let (_, skipped) = finish(&mut a);
+    if !skipped.iter().any(titled) {
+        recv_until(&mut a, titled);
     }
 }
 

@@ -16,9 +16,9 @@ use byob_protocol::{FileChange, Step, StepStatus, ToolAccess, TurnStats};
 use byob_tools::{Access, Journal, Registry, Tool, ToolContext, ToolOutput, UndoOp};
 use serde_json::Value;
 
-use crate::{Input, adapt, compact};
+use crate::{Input, adapt, compact, delegate};
 
-use crate::limits::{DETAIL_CHARS, MAX_CALLS, MAX_OUTPUT, MAX_REPEATS, MAX_ROUNDS, REPEAT_QUOTE, TURN_OUTPUT_BUDGET, cap, one_line, prefix};
+use crate::limits::{DETAIL_CHARS, MAX_OUTPUT, MAX_REPEATS, MAX_ROUNDS, REPEAT_QUOTE, TURN_OUTPUT_BUDGET, cap, one_line, prefix};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are byob, a helpful assistant running inside a desktop harness. Be concise and accurate. \
 Use the provided tools when they help; when a tool fails or the user declines it, explain instead of retrying the same call.";
@@ -132,6 +132,57 @@ pub struct Setup {
     pub prior: u64,
     /// Compact automatically (`None`: never).
     pub compact: Option<AutoCompact>,
+    /// This is the child turn of `delegate` step `child` (its events go to that step).
+    pub child: Option<u64>,
+    /// A child turn also stops when its parent's flag is set (checked between steps; a
+    /// watchdog copies it into `cancel` for the model stream).
+    pub parent_cancel: Option<Arc<AtomicBool>>,
+    /// Most tool calls this turn may make.
+    pub max_calls: usize,
+    /// The turn may hand tasks to subagents (top-level turns only: subagents can't delegate).
+    pub delegate: Option<Arc<delegate::Env>>,
+}
+
+/// Send a turn's event to the engine, as a child's event if `child` is set.
+pub(crate) fn emit_to(inbox: &Sender<Input>, child: Option<u64>, event: TurnEvent) {
+    let _ = inbox.send(match child {
+        Some(step) => Input::Child { step, event },
+        None => Input::Turn(event),
+    });
+}
+
+/// How a child turn ended, for its report.
+pub(crate) struct ChildOutcome {
+    /// `None`: it answered. Otherwise why not, and whether it was stopped (rather than failed).
+    pub failure: Option<(String, bool)>,
+    /// Its final answer (the last round's text); empty if it never got there.
+    pub answer: String,
+    /// Everything it streamed.
+    pub content: String,
+    /// Tools it ran, by name, with counts.
+    pub ran: BTreeMap<String, usize>,
+    pub calls: usize,
+    pub usage: Usage,
+}
+
+/// Run a child turn on this thread (a `delegate` step's subagent).
+pub(crate) fn run_child(setup: Setup) -> ChildOutcome {
+    let mut turn = Turn::new(setup);
+    let result = catch_unwind(AssertUnwindSafe(|| turn.run()));
+    let failure = match result {
+        Ok(Ok(())) => None,
+        Ok(Err(End::Stopped)) => Some(("stopped".to_owned(), true)),
+        Ok(Err(End::Error(e))) => Some((e, false)),
+        Err(_) => Some(("internal error: the subagent crashed".to_owned(), false)),
+    };
+    ChildOutcome {
+        failure,
+        answer: std::mem::take(&mut turn.answer),
+        content: std::mem::take(&mut turn.content),
+        ran: std::mem::take(&mut turn.ran),
+        calls: turn.calls,
+        usage: turn.usage,
+    }
 }
 
 pub fn spawn(setup: Setup) -> std::io::Result<()> {
@@ -186,13 +237,28 @@ struct Turn {
     compact_failed: bool,
     /// Estimated request tokens right after this turn's last compaction.
     compacted_to: usize,
+    /// The final answer (text of the round that made no tool calls).
+    answer: String,
+    /// All visible text streamed (kept for child turns' reports).
+    content: String,
+    /// Tools that ran, with counts.
+    ran: BTreeMap<String, usize>,
+}
+
+/// A `delegate` call as the tool loop sees it.
+enum Delegated {
+    /// Running in the background; the report arrives on the receiver.
+    Started { key: String, report: Receiver<String> },
+    /// Refused or failed at once; this is the result.
+    Done(String),
 }
 
 impl Turn {
     fn new(s: Setup) -> Self {
         let messages = s.history.clone();
         let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-        let journal = Journal::new(s.workspace.as_path(), &format!("{}-{started}", s.entry));
+        let tag = s.child.map(|c| format!("-a{c}")).unwrap_or_default();
+        let journal = Journal::new(s.workspace.as_path(), &format!("{}-{started}{tag}", s.entry));
         Self {
             s,
             messages,
@@ -209,25 +275,37 @@ impl Turn {
             compactions: 0,
             compact_failed: false,
             compacted_to: 0,
+            answer: String::new(),
+            content: String::new(),
+            ran: BTreeMap::new(),
         }
     }
 
     fn cancelled(&self) -> bool {
-        self.s.cancel.load(Ordering::Relaxed)
+        self.s.cancel.load(Ordering::Relaxed) || self.s.parent_cancel.as_ref().is_some_and(|p| p.load(Ordering::Relaxed))
     }
 
     fn emit(&self, event: TurnEvent) {
-        let _ = self.s.inbox.send(Input::Turn(event));
+        emit_to(&self.s.inbox, self.s.child, event);
     }
 
     fn tools_on(&self) -> bool {
-        !self.s.tools.is_empty() && self.calls < MAX_CALLS && self.repeats < MAX_REPEATS
+        (!self.s.tools.is_empty() || self.s.delegate.is_some()) && self.calls < self.s.max_calls && self.repeats < MAX_REPEATS
+    }
+
+    /// The tool definitions of a request: the registry's, plus `delegate` if allowed.
+    fn specs(&self) -> Vec<byob_llm::ToolSpec> {
+        let mut out = specs(&self.s.tools);
+        if let Some(env) = &self.s.delegate {
+            out.push(env.spec());
+        }
+        out
     }
 
     fn run(&mut self) -> Result<(), End> {
         for round in 0..MAX_ROUNDS {
             let tools_on = self.tools_on();
-            let specs = if tools_on { specs(&self.s.tools) } else { Vec::new() };
+            let specs = if tools_on { self.specs() } else { Vec::new() };
             self.maybe_compact(&specs, round)?;
             let out = self.model_call(&specs)?;
             if out.cancelled {
@@ -245,6 +323,7 @@ impl Turn {
             let calls = usable_calls(calls, self.s.entry);
             // With tools off, calls the model makes anyway are ignored: its text is the answer.
             if calls.is_empty() || !tools_on {
+                self.answer = text;
                 return Ok(());
             }
             if prompt {
@@ -253,8 +332,7 @@ impl Turn {
                 let text = Some(text).filter(|c| !c.trim().is_empty());
                 self.messages.push(ChatMessage::assistant_tool_calls(text, &calls));
             }
-            for call in &calls {
-                let result = self.call(call);
+            for (call, result) in calls.iter().zip(self.call_all(&calls)) {
                 self.messages.push(if prompt { toolprompt::fallback_tool_result(call, &result) } else { ChatMessage::tool_result(call.id.clone(), result) });
             }
             if self.cancelled() {
@@ -292,6 +370,8 @@ impl Turn {
         let mut shown = Shown::new(self.content_len);
         shown.tail_newlines = self.tail_newlines;
         let mut filter = (prompt && !specs.is_empty()).then(ToolCallFilter::default);
+        let child = self.s.child;
+        let streamed = &mut self.content;
         let result = self.s.llm.stream_chat(&request, wire_specs, &self.s.cancel, |ev| {
             let (content, reasoning) = match ev {
                 StreamEvent::Content(t) => (t, String::new()),
@@ -301,10 +381,13 @@ impl Turn {
                 Some(f) => f.push(&content),
                 None => content,
             };
-            shown.send(inbox, id, content, reasoning);
+            streamed.push_str(&content);
+            shown.send(inbox, child, id, content, reasoning);
         });
         if let Some(f) = filter.as_mut() {
-            shown.send(inbox, id, f.finish(), String::new());
+            let rest = f.finish();
+            streamed.push_str(&rest);
+            shown.send(inbox, child, id, rest, String::new());
         }
         self.content_len = shown.len;
         self.tail_newlines = shown.tail_newlines;
@@ -407,19 +490,113 @@ impl Turn {
         Ok(())
     }
 
+    /// Run one round's calls and return their results in order. Delegations run in the
+    /// background, side by side (as many at once as there are free inference slots); the
+    /// other calls run one after another meanwhile, in order.
+    fn call_all(&mut self, calls: &[ToolCall]) -> Vec<String> {
+        let mut results: Vec<Option<String>> = vec![None; calls.len()];
+        let mut waiting: Vec<(usize, String, Receiver<String>)> = Vec::new();
+        for (i, call) in calls.iter().enumerate() {
+            if self.s.delegate.is_some() && call.name.trim() == delegate::TOOL {
+                match self.delegate(call) {
+                    Delegated::Started { key, report } => waiting.push((i, key, report)),
+                    Delegated::Done(text) => results[i] = Some(text),
+                }
+            }
+        }
+        for (i, call) in calls.iter().enumerate() {
+            if results[i].is_none() && !waiting.iter().any(|w| w.0 == i) {
+                results[i] = Some(self.call(call));
+            }
+        }
+        for (i, key, report) in waiting {
+            // The subagent thread always answers; a closed channel means it crashed.
+            let text = report.recv().unwrap_or_else(|_| "Error: the subagent stopped unexpectedly; no report.".to_owned());
+            let text = self.charge(text);
+            self.seen.insert(key, text.clone());
+            results[i] = Some(text);
+        }
+        results.into_iter().map(Option::unwrap_or_default).collect()
+    }
+
+    /// Count a call against the turn's limit. `Some(refusal)` if it is over.
+    fn count_call(&mut self) -> Option<String> {
+        self.calls = self.calls.saturating_add(1);
+        let max = self.s.max_calls;
+        (self.calls > max).then(|| format!("Not run: the limit of {max} tool calls per turn is reached. Answer with what you have."))
+    }
+
+    /// Bound a result by the per-call cap and what is left of the turn's output budget.
+    fn charge(&mut self, text: String) -> String {
+        let text = cap(text, MAX_OUTPUT, "the tool's output is longer than one call may return");
+        let remaining = TURN_OUTPUT_BUDGET.saturating_sub(self.output_used);
+        let text = cap(text, remaining, "this turn's tool output budget is used up; answer with what you have");
+        self.output_used = self.output_used.saturating_add(text.len());
+        text
+    }
+
+    /// Start a `delegate` call: check it here, then run the subagent on its own thread.
+    fn delegate(&mut self, call: &ToolCall) -> Delegated {
+        if self.cancelled() {
+            return Delegated::Done("Stopped by the user.".into());
+        }
+        if let Some(refused) = self.count_call() {
+            return Delegated::Done(refused);
+        }
+        let Some(env) = self.s.delegate.clone() else { return Delegated::Done("Error: delegation is not available here.".into()) };
+        let args = match parse_arguments(&call.arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                self.failed_step(delegate::TOOL, "delegate: unreadable arguments".into(), ToolAccess::Read, &e);
+                return Delegated::Done(format!("Error: {e}. Call delegate again with a JSON object matching its parameters."));
+            }
+        };
+        let key = format!("{}:{args}", delegate::TOOL);
+        if let Some(earlier) = self.seen.get(&key) {
+            self.repeats = self.repeats.saturating_add(1);
+            return Delegated::Done(format!(
+                "You already delegated exactly this in this turn. The report was:\n{}\nDon't repeat it; continue with something else or answer.",
+                prefix(earlier, REPEAT_QUOTE)
+            ));
+        }
+        let job = match env.prepare(&args, &self.s.tools) {
+            Ok(job) => job,
+            Err(e) => {
+                self.failed_step(delegate::TOOL, "delegate: not started".into(), ToolAccess::Read, &e);
+                return Delegated::Done(format!("Error: {e}"));
+            }
+        };
+        let launch = delegate::Launch {
+            entry: self.s.entry,
+            step_id: self.s.step_ids.fetch_add(1, Ordering::Relaxed),
+            at: self.content_len,
+            inbox: self.s.inbox.clone(),
+            cancel: Arc::clone(&self.s.cancel),
+            workspace: Arc::clone(&self.s.workspace),
+            chat: self.s.chat.clone(),
+            step_ids: Arc::clone(&self.s.step_ids),
+        };
+        match delegate::launch(&env, job, launch) {
+            Ok(report) => {
+                *self.ran.entry(delegate::TOOL.to_owned()).or_default() += 1;
+                Delegated::Started { key, report }
+            }
+            Err(e) => Delegated::Done(format!("Error: couldn't start the subagent: {e}")),
+        }
+    }
+
     /// Run one call and return what the model sees.
     fn call(&mut self, call: &ToolCall) -> String {
         if self.cancelled() {
             return "Stopped by the user.".into();
         }
-        self.calls = self.calls.saturating_add(1);
-        if self.calls > MAX_CALLS {
-            return format!("Not run: the limit of {MAX_CALLS} tool calls per turn is reached. Answer with what you have.");
+        if let Some(refused) = self.count_call() {
+            return refused;
         }
         let name = call.name.trim();
         let Some(tool) = self.s.tools.get(name).cloned() else {
             self.failed_step(name, format!("Unknown tool {name:?}"), ToolAccess::Read, "no such tool");
-            let known: Vec<String> = self.s.tools.specs().into_iter().map(|s| s.name).collect();
+            let known: Vec<String> = self.specs().into_iter().map(|s| s.name).collect();
             return format!("Error: there is no tool called {name:?}. Available tools: {}.", known.join(", "));
         };
         let args = match parse_arguments(&call.arguments) {
@@ -460,6 +637,7 @@ impl Turn {
             preview,
             media: Vec::new(),
             artifacts: Vec::new(),
+            delegation: None,
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step: step.clone() });
         if let Verdict::Deny(reason) = self.gate(&step) {
@@ -477,10 +655,8 @@ impl Turn {
         if !ops.is_empty() || !complete {
             self.emit(TurnEvent::Undo { id: self.s.entry, ops, complete });
         }
-        let mut text = cap(output.text, MAX_OUTPUT, "the tool's output is longer than one call may return");
-        let remaining = TURN_OUTPUT_BUDGET.saturating_sub(self.output_used);
-        text = cap(text, remaining, "this turn's tool output budget is used up; answer with what you have");
-        self.output_used = self.output_used.saturating_add(text.len());
+        *self.ran.entry(name.to_owned()).or_default() += 1;
+        let mut text = self.charge(output.text);
         step.status = if output.failed { StepStatus::Failed } else { StepStatus::Done };
         if !output.failed {
             let done = catch_unwind(AssertUnwindSafe(|| tool.title(args))).unwrap_or_else(|_| name.to_owned());
@@ -520,6 +696,7 @@ impl Turn {
             preview: None,
             media: Vec::new(),
             artifacts: Vec::new(),
+            delegation: None,
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step });
     }
@@ -540,7 +717,7 @@ impl Shown {
         Self { len, separate: len > 0, tail_newlines: 0 }
     }
 
-    fn send(&mut self, inbox: &Sender<Input>, id: u64, mut content: String, reasoning: String) {
+    fn send(&mut self, inbox: &Sender<Input>, child: Option<u64>, id: u64, mut content: String, reasoning: String) {
         if content.is_empty() && reasoning.is_empty() {
             return;
         }
@@ -553,7 +730,7 @@ impl Shown {
             self.tail_newlines = if trailing == content.len() { self.tail_newlines.saturating_add(trailing) } else { trailing };
         }
         self.len = self.len.saturating_add(content.len());
-        let _ = inbox.send(Input::Turn(TurnEvent::Delta { id, content, reasoning }));
+        emit_to(inbox, child, TurnEvent::Delta { id, content, reasoning });
     }
 }
 

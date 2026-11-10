@@ -208,6 +208,11 @@ impl Endpoints {
         Plan { key, prompt_tools, fallback, context, reserve, vision }
     }
 
+    /// How many requests the endpoint runs in parallel, if its probe found out.
+    pub fn slots(&self, config: &InferenceConfig) -> Option<u64> {
+        self.cache.get(&key(config)).and_then(|c| c.slots)
+    }
+
     pub fn info(&self, config: &InferenceConfig) -> EndpointInfo {
         let plan = self.plan(config);
         let caps = self.cache.get(&plan.key);
@@ -323,5 +328,9 @@ mod tests {
         let info = e.info(&config());
         assert_eq!(info.summary(), "llama.cpp · 262k ctx · native tools · vision");
         assert_eq!(e.plan(&config()).reserve, 16_384);
+        assert_eq!(e.slots(&config()), None);
+        let caps = Capabilities { slots: Some(4), ..Default::default() };
+        e.handle(Event::Probed { key: key(&config()), caps: Box::new(caps) });
+        assert_eq!(e.slots(&config()), Some(4));
     }
 }

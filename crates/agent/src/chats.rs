@@ -8,8 +8,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use byob_llm::{ChatMessage, StreamEvent};
-use byob_protocol::{ArtifactRef, ChatSummary, Entry, EntryRole, FileChange, MediaKind, MediaRef, Step, StepStatus, ToolAccess, TurnStats};
-use byob_store::{Chat, MessageStats, NewStep, Role, StepAccess, StepChange, StepResult, StoredMessage};
+use byob_protocol::{
+    ArtifactRef, ChatSummary, Delegation, DelegationState, Entry, EntryRole, FileChange, MediaKind, MediaRef, Step, StepStatus, ToolAccess, TurnStats,
+};
+use byob_store::{AgentRun, Chat, MessageStats, NewStep, Role, StepAccess, StepChange, StepResult, StoredMessage};
 use serde_json::{Value, json};
 
 use crate::Input;
@@ -127,6 +129,51 @@ fn step(s: byob_store::Step, step_ids: &AtomicU64) -> Step {
         preview: None,
         media: Vec::new(),
         artifacts: Vec::new(),
+        delegation: None,
+    }
+}
+
+/// Where each stored run belongs: (entry id, index into that entry's steps). Runs whose
+/// step can't be found are left out (`None`).
+pub fn run_links(messages: &[StoredMessage], runs: &[AgentRun]) -> Vec<Option<(u64, usize)>> {
+    runs.iter()
+        .map(|r| {
+            let m = messages.iter().find(|m| m.id == r.parent)?;
+            let i = m.steps.iter().position(|s| s.seq == r.step_seq)?;
+            Some((entry_id(m.id), i))
+        })
+        .collect()
+}
+
+/// Put stored subagent runs into the `delegate` steps that started them.
+pub fn attach_runs(entries: &mut [Entry], links: Vec<Option<(u64, usize)>>, runs: Vec<AgentRun>, step_ids: &AtomicU64) {
+    for (link, run) in links.into_iter().zip(runs) {
+        let Some((entry, i)) = link else { continue };
+        let Some(step) = entries.iter_mut().find(|e| e.id == entry).and_then(|e| e.steps.get_mut(i)) else { continue };
+        step.delegation = Some(Box::new(delegation(run, step_ids)));
+    }
+}
+
+/// A stored run as a step's delegation. One that never finished was cut off when byob stopped.
+fn delegation(run: AgentRun, step_ids: &AtomicU64) -> Delegation {
+    let (state, error) = match (run.done, run.error) {
+        (false, _) => (DelegationState::Stopped, Some("interrupted".to_owned())),
+        (true, None) => (DelegationState::Done, None),
+        (true, Some(e)) if e == "stopped" || e.starts_with("time limit") => (DelegationState::Stopped, Some(e)),
+        (true, Some(e)) => (DelegationState::Failed, Some(e)),
+    };
+    let stats = run.stats.unwrap_or_default();
+    Delegation {
+        agent: run.agent,
+        task: run.task,
+        model: run.model,
+        state,
+        content: run.content,
+        reasoning: run.reasoning,
+        steps: run.steps.into_iter().map(|s| step(s, step_ids)).collect(),
+        prompt_tokens: stats.prompt_tokens,
+        completion_tokens: stats.completion_tokens,
+        error,
     }
 }
 
@@ -306,6 +353,7 @@ mod tests {
             preview: None,
             media: vec![],
             artifacts: vec![],
+            delegation: None,
         };
         let new = new_step(&s);
         let stored = byob_store::Step {

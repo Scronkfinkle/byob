@@ -4,6 +4,7 @@
 //! <root>/chats/<YYYY-MM-DD>-<slug>-<shortid>/
 //!     events.jsonl   canonical, append-only (see `event.rs`)
 //!     chat.md        generated, read-only view; never read back
+//!     agents/<run>/events.jsonl   one subagent run each (see `agents.rs`)
 //! <root>/grants.json global always-allow grants
 //! <root>/undo.jsonl  undo entries of tasks no chat message names (rare)
 //! <root>/.index.json listing cache (derived; safe to delete)
@@ -15,6 +16,7 @@
 //! size + mtime; a chat's full state is replayed lazily the first time it's needed.
 //! `list_chats` (first page) rescans the folders, so chats synced in from elsewhere show up.
 
+mod agents;
 mod event;
 mod render;
 mod state;
@@ -32,7 +34,8 @@ use crate::compactions::MAX_SUMMARY;
 use crate::error::{Result, StoreError};
 use crate::files::{load_json, save_json, write_atomic};
 use crate::model::{
-    Chat, ChatCursor, ChatPage, Compaction, GrantScope, MessageId, MessageStats, NewCompaction, NewMessage, NewStep, Step, StepResult, StoredMessage, UndoOp,
+    AgentRun, Chat, ChatCursor, ChatPage, Compaction, GrantScope, MessageId, MessageStats, NewAgentRun, NewCompaction, NewMessage, NewStep, Step, StepResult,
+    StoredMessage, UndoOp, agent_run_id_ok,
 };
 use crate::settings::StorageKind;
 use crate::steps::{MAX_STEP_OUTPUT, bound};
@@ -117,6 +120,8 @@ struct Inner {
     orphans: Journal,
     tick: u64,
     index_dirty: bool,
+    /// Agent run id → (chat, highest step seq), for runs written this session.
+    runs: HashMap<String, (String, i64)>,
 }
 
 fn not_found(what: impl Into<String>) -> StoreError {
@@ -149,6 +154,7 @@ impl FolderStore {
             orphans: Journal::default(),
             tick: 0,
             index_dirty: false,
+            runs: HashMap::new(),
         };
         inner.load_orphans();
         let cache = inner.read_index();
@@ -538,6 +544,28 @@ impl Inner {
         Ok(state)
     }
 
+    fn chat_dir(&self, id: &str) -> Option<PathBuf> {
+        self.entries.get(id).map(|e| self.chats_dir.join(&e.folder))
+    }
+
+    /// A run's chat folder, checking the run belongs to `chat` and exists.
+    fn run_chat_dir(&mut self, chat: &str, run_id: &str) -> Result<PathBuf> {
+        let missing = || not_found(format!("agent run {run_id}"));
+        if !agent_run_id_ok(run_id) {
+            return Err(missing());
+        }
+        let dir = self.chat_dir(chat).ok_or_else(missing)?;
+        if !self.runs.contains_key(run_id) {
+            let rec = agents::replay(&agents::run_file(&dir, run_id), run_id, chat).ok_or_else(missing)?;
+            let last = rec.run.steps.iter().map(|s| s.seq).max().unwrap_or(0);
+            self.runs.insert(run_id.to_owned(), (chat.to_owned(), last));
+        }
+        match self.runs.get(run_id) {
+            Some((c, _)) if c == chat => Ok(dir),
+            _ => Err(missing()),
+        }
+    }
+
     fn save_grants(&self) -> Result<()> {
         save_json(&self.root.join("grants.json"), &GrantsFile { v: 1, global: self.global.clone() }, None)
     }
@@ -919,6 +947,90 @@ impl ChatStore for FolderStore {
         Ok(inner.state(chat_id).map(|s| s.compactions.iter().map(|c| s.compaction(slot, c)).collect()).unwrap_or_default())
     }
 
+    fn add_agent_run(&self, chat_id: &str, run: &NewAgentRun) -> Result<()> {
+        if !agent_run_id_ok(&run.id) {
+            return Err(crate::agent_runs::bad_run_id(&run.id));
+        }
+        let mut inner = self.lock();
+        let (chat, _, m) = inner.resolve(run.parent)?.ok_or_else(|| msg_not_found(run.parent))?;
+        if chat != chat_id {
+            return Err(not_found(format!("message {} in chat {chat_id}", run.parent.0)));
+        }
+        let dir = inner.chat_dir(chat_id).ok_or_else(|| not_found(format!("chat {chat_id}")))?;
+        let event = agents::RunEvent::Started {
+            parent: m,
+            step_seq: run.step_seq,
+            agent: run.agent.clone(),
+            task: bound(&run.task, crate::agent_runs::MAX_AGENT_TASK),
+            model: run.model.clone(),
+        };
+        agents::create(&dir, &run.id, &agents::encode(now(), event)?)?;
+        inner.runs.insert(run.id.clone(), (chat_id.to_owned(), 0));
+        Ok(())
+    }
+
+    fn append_agent_text(&self, chat_id: &str, run_id: &str, content: &str, reasoning: &str) -> Result<()> {
+        if content.is_empty() && reasoning.is_empty() {
+            return Ok(());
+        }
+        let mut inner = self.lock();
+        let dir = inner.run_chat_dir(chat_id, run_id)?;
+        let event = agents::RunEvent::Delta { content: content.to_owned(), reasoning: reasoning.to_owned() };
+        agents::append(&dir, run_id, &agents::encode(now(), event)?, false)
+    }
+
+    fn add_agent_step(&self, chat_id: &str, run_id: &str, step: &NewStep) -> Result<i64> {
+        let mut inner = self.lock();
+        let dir = inner.run_chat_dir(chat_id, run_id)?;
+        let seq = inner.runs.get(run_id).map_or(0, |(_, s)| *s).saturating_add(1);
+        agents::append(&dir, run_id, &agents::encode(now(), agents::step_added(seq, step))?, false)?;
+        if let Some(r) = inner.runs.get_mut(run_id) {
+            r.1 = seq;
+        }
+        Ok(seq)
+    }
+
+    fn finish_agent_step(&self, chat_id: &str, run_id: &str, seq: i64, result: &StepResult) -> Result<()> {
+        let mut inner = self.lock();
+        let dir = inner.run_chat_dir(chat_id, run_id)?;
+        if seq < 1 || inner.runs.get(run_id).is_none_or(|(_, last)| seq > *last) {
+            return Err(not_found(format!("agent step {run_id}/{seq}")));
+        }
+        let event =
+            agents::RunEvent::StepFinished { seq, output: bound(&result.output, MAX_STEP_OUTPUT), failed: result.failed, changes: result.changes.clone() };
+        agents::append(&dir, run_id, &agents::encode(now(), event)?, false)
+    }
+
+    fn finish_agent_run(&self, chat_id: &str, run_id: &str, error: Option<&str>, stats: Option<&MessageStats>) -> Result<()> {
+        let mut inner = self.lock();
+        let dir = inner.run_chat_dir(chat_id, run_id)?;
+        let event = agents::RunEvent::Finished { error: error.map(str::to_owned), stats: stats.copied() };
+        agents::append(&dir, run_id, &agents::encode(now(), event)?, true)
+    }
+
+    fn agent_runs(&self, chat_id: &str) -> Result<Vec<AgentRun>> {
+        let mut inner = self.lock();
+        if !inner.ensure_loaded(chat_id)? {
+            return Ok(Vec::new());
+        }
+        let (Some(dir), Some(slot)) = (inner.chat_dir(chat_id), inner.entries.get(chat_id).map(|e| e.slot)) else { return Ok(Vec::new()) };
+        let Some(state) = inner.state(chat_id) else { return Ok(Vec::new()) };
+        let mut runs: Vec<AgentRun> = agents::list(&dir, chat_id)
+            .into_iter()
+            .filter(|r| state.messages.contains_key(&r.parent))
+            .map(|mut r| {
+                let parent = message_id(slot, r.parent);
+                r.run.parent = parent;
+                for s in &mut r.run.steps {
+                    s.message_id = parent;
+                }
+                r.run
+            })
+            .collect();
+        runs.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        Ok(runs)
+    }
+
     fn grant(&self, scope: &GrantScope, tool: &str) -> Result<()> {
         let mut inner = self.lock();
         match scope {
@@ -1026,7 +1138,17 @@ impl ChatStore for FolderStore {
 
     fn import_chat(&self, e: &ChatExport) -> Result<()> {
         let lines = import_lines(e)?;
-        self.lock().create_from_lines(&e.chat.id, &e.chat.title, e.chat.created_at, &lines)?;
+        let mut inner = self.lock();
+        inner.create_from_lines(&e.chat.id, &e.chat.title, e.chat.created_at, &lines)?;
+        let Some(dir) = inner.chat_dir(&e.chat.id) else { return Ok(()) };
+        for x in &e.agent_runs {
+            if !agent_run_id_ok(&x.run.id) {
+                return Err(crate::agent_runs::bad_run_id(&x.run.id));
+            }
+            // Messages were numbered 1.. by `import_lines`.
+            let Some(m) = x.parent.checked_add(1).and_then(|m| u32::try_from(m).ok()).filter(|_| x.parent < e.messages.len()) else { continue };
+            agents::create(&dir, &x.run.id, &agents::import_text(&x.run, m)?)?;
+        }
         Ok(())
     }
 }

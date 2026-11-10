@@ -134,6 +134,9 @@ fn engine(url: String, compaction: CompactOptions, tools: bool, paths: Option<Pa
         storage: byob_store::StorageKind::default(),
         chats_folder: None,
         compaction,
+        agents: Vec::new(),
+        models: Default::default(),
+        subagents: Default::default(),
     };
     EngineHandle::spawn_with(config).unwrap()
 }

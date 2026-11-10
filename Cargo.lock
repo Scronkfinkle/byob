@@ -633,6 +633,7 @@ name = "byob-agent"
 version = "0.1.0"
 dependencies = [
  "byob-llm",
+ "byob-plugins",
  "byob-protocol",
  "byob-store",
  "byob-tools",
@@ -697,6 +698,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
