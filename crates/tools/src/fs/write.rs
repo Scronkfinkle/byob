@@ -142,6 +142,20 @@ mod tests {
     }
 
     #[test]
+    fn writes_the_workspace_extensions_but_not_byobs_own_data() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        for p in [".byob/plugins/weather/byob-plugin.json", ".byob/plugins/weather/tools/get.py", ".byob/agents/explorer.md", ".byob/skills/plan/SKILL.md"] {
+            let out = run(&WriteFile, d.path(), json!({"path": p, "content": "x"}));
+            assert!(!out.failed, "{p}: {}", out.text);
+            assert_eq!(fs::read_to_string(root.join(p)).unwrap(), "x");
+        }
+        for p in [".byob/undo/t/x", ".byob/x.json", ".byob/artifacts/a/v1.html"] {
+            assert!(run(&WriteFile, d.path(), json!({"path": p, "content": "x"})).failed, "{p}");
+        }
+    }
+
+    #[test]
     fn refusals() {
         let d = tempfile::tempdir().unwrap();
         fs::create_dir(d.path().join("dir")).unwrap();

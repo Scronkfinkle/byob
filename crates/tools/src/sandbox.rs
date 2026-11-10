@@ -22,8 +22,13 @@ use std::path::{Component, Path, PathBuf};
 /// Longest path we accept from the model, in bytes.
 pub const MAX_PATH_LEN: usize = 4096;
 
-/// Hidden folder for byob's own bookkeeping (trash, undo). File tools may not touch it.
+/// Hidden folder for byob's own bookkeeping (trash, undo). File tools may not touch it,
+/// except the parts that are the workspace's own extensions ([`EDITABLE_DIRS`]).
 pub const RESERVED_DIR: &str = ".byob";
+
+/// Folders inside [`RESERVED_DIR`] that file tools may read and write: the workspace's
+/// plugins, subagents and skills (the model builds them with the ordinary file tools).
+pub const EDITABLE_DIRS: [&str; 3] = ["plugins", "agents", "skills"];
 
 /// A (workspace-relative) path as text with `/` separators on every platform — what the
 /// model writes and what the protocol carries, so messages read the same on Windows.
@@ -64,9 +69,16 @@ impl Resolved {
         self.abs == self.root
     }
 
-    /// True if this is byob's own `.byob` folder or inside it.
+    /// True if this is byob's own `.byob` folder or inside it, apart from the folders in
+    /// [`EDITABLE_DIRS`] and what they hold (`.byob/plugins/x/…` is fair game; `.byob`,
+    /// `.byob/trash` and `.byob/undo` are not).
     pub fn is_reserved(&self) -> bool {
-        self.abs.strip_prefix(&self.root).ok().and_then(|r| r.components().next()).is_some_and(|c| c.as_os_str() == RESERVED_DIR)
+        let Ok(rel) = self.abs.strip_prefix(&self.root) else { return false };
+        let mut parts = rel.components();
+        if parts.next().is_none_or(|c| c.as_os_str() != RESERVED_DIR) {
+            return false;
+        }
+        !parts.next().is_some_and(|c| EDITABLE_DIRS.iter().any(|d| c.as_os_str() == *d))
     }
 }
 
@@ -256,6 +268,11 @@ mod tests {
         assert!(resolve(d.path(), ".byob").unwrap().is_reserved());
         assert!(!resolve(d.path(), "a/.byob").unwrap().is_reserved());
         assert!(!resolve(d.path(), ".").unwrap().is_reserved());
+        assert!(resolve(d.path(), ".byob/undo/t1/x").unwrap().is_reserved());
+        assert!(resolve(d.path(), ".byob/pluginsx/a").unwrap().is_reserved());
+        for p in [".byob/plugins", ".byob/plugins/weather/byob-plugin.json", ".byob/agents/explorer.md", ".byob/skills/plan/SKILL.md"] {
+            assert!(!resolve(d.path(), p).unwrap().is_reserved(), "{p}");
+        }
     }
 
     #[test]
