@@ -181,8 +181,14 @@ impl Workspaces {
         self.data.workspaces.iter().find(|w| w.id == id)
     }
 
+    /// The workspace of `folder`, matching the same folder by another path too (a symlink,
+    /// macOS's /var vs /private/var, Windows' `\\?\` form). Exact matches win.
     pub fn by_folder(&self, folder: &Path) -> Option<&WorkspaceRow> {
-        self.data.workspaces.iter().find(|w| w.folder == folder)
+        let list = &self.data.workspaces;
+        list.iter().find(|w| w.folder == folder).or_else(|| {
+            let real = folder.canonicalize().ok()?;
+            list.iter().find(|w| w.folder.canonicalize().is_ok_and(|f| f == real))
+        })
     }
 
     /// The workspace of `folder`, registering it (named after the folder, no settings of
@@ -334,6 +340,26 @@ mod tests {
         assert_eq!(gone.folder, Path::new("/srv/data"));
         assert!(back.remove(&b.id).is_err());
         assert_eq!(Workspaces::open(Some(&p)).value.list().len(), 1);
+    }
+
+    /// Regression: a folder reached through a symlink (macOS's /var → /private/var, or
+    /// Windows' `\\?\` canonical form) could be registered as a second workspace.
+    #[cfg(unix)]
+    #[test]
+    fn the_same_folder_by_another_path_is_one_workspace() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(d.path());
+        let real = d.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = d.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut w = Workspaces::open(Some(&p)).value;
+        let (a, _) = w.ensure(&link).unwrap();
+        assert_eq!(w.by_folder(&real.canonicalize().unwrap()).map(|r| r.id.clone()), Some(a.id.clone()));
+        assert!(matches!(w.create("dup", &real.canonicalize().unwrap(), Layer::default()), Err(StoreError::Exists(_))));
+        assert!(!w.ensure(&real).unwrap().1, "ensure found it too");
+        // Folders that don't exist (any more) still match exactly.
+        assert!(w.by_folder(Path::new("/nowhere/at/all")).is_none());
     }
 
     #[test]
