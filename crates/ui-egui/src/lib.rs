@@ -8,6 +8,7 @@ pub mod chart;
 pub mod connect;
 mod envpanel;
 pub mod export;
+pub mod header;
 mod highlight;
 mod icons;
 pub mod markdown;
@@ -70,8 +71,8 @@ pub struct ByobApp {
     reveal_connection: bool,
     /// The connection form (welcome screen and settings).
     connect: connect::ConnectForm,
-    /// Where the Settings button was last drawn (tests check it stays on screen).
-    settings_button: egui::Rect,
+    /// Where the header's buttons were last drawn.
+    header_rects: header::Rects,
     /// Charts and images shown in the transcript.
     media: media::Cache,
     /// Files attached in the composer.
@@ -83,8 +84,6 @@ pub struct ByobApp {
     /// Workspaces: the new-workspace form, workspace settings, the chat settings popover,
     /// the global defaults.
     workspaces: workspace::WorkspaceUi,
-    /// Where the chat settings button was last drawn (the popover opens below it).
-    chat_button: egui::Rect,
 }
 
 impl ByobApp {
@@ -110,13 +109,12 @@ impl ByobApp {
             show_settings: false,
             reveal_connection: false,
             connect: connect::ConnectForm::default(),
-            settings_button: egui::Rect::NOTHING,
+            header_rects: header::Rects::default(),
             media: media::Cache::default(),
             uploads: upload::Uploads::default(),
             artifacts: artifact::Artifacts::default(),
             usage: usage::Usage::default(),
             workspaces: workspace::WorkspaceUi::default(),
-            chat_button: egui::Rect::NOTHING,
         }
     }
 
@@ -307,7 +305,8 @@ impl ByobApp {
     }
 
     /// Scripted runs: open a workspace view: `new-workspace`, `new-workspace-container`,
-    /// `workspace-settings` (of the chat in view's workspace), `chat-settings`. False for an
+    /// `workspace-settings` (of the chat in view's workspace), `chat-settings`, `more-menu` (the
+    /// header's "⋯" menu). False for an
     /// unknown name, or a workspace view before the workspace list arrived.
     pub fn open_panel(&mut self, name: &str) -> bool {
         use byob_protocol::workspace::EnvKind;
@@ -321,6 +320,7 @@ impl ByobApp {
                 Some(id) => self.workspaces.open_settings(&id, false),
                 None => return false,
             },
+            "more-menu" => self.header_rects.open_menu = true,
             "chat-settings" => {
                 if self.workspaces.chat.is_none() {
                     self.workspaces.toggle_chat();
@@ -348,7 +348,7 @@ impl ByobApp {
     }
 
     /// The names [`ByobApp::open_panel`] knows.
-    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings";
+    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu";
 
     /// Scripted runs: open the settings at an appearance section (`knobs`, `advanced`).
     pub fn reveal_settings(&mut self, section: &str) {
@@ -392,7 +392,8 @@ impl ByobApp {
         let narrow = ui.available_width() < sidebar::NARROW;
         self.artifacts.begin_frame(ui.ctx(), &self.tokens, narrow);
         let list_open = self.sidebar.is_open(narrow);
-        self.header(ui, narrow);
+        self.header_shortcuts(ui.ctx());
+        self.header(ui);
         upload::drop_overlay(ui.ctx(), &self.tokens);
         if self.show_settings {
             // Tall on purpose (gallery, knobs, every colour role): scrolls within most of the window.
@@ -451,12 +452,14 @@ impl ByobApp {
             match r {
                 sidebar::Request::NewWorkspace => self.workspaces.open_new(byob_protocol::workspace::EnvKind::Auto),
                 sidebar::Request::WorkspaceSettings { id, remove } => self.workspaces.open_settings(&id, remove),
+                sidebar::Request::AppSettings => self.show_settings = true,
             }
         }
         let t = self.tokens;
         let title = self.sidebar.current().map_or("New chat", |c| c.title.as_str()).to_owned();
-        let anchor = egui::pos2(self.chat_button.left(), self.chat_button.bottom() + 6.0);
-        let anchor = if self.chat_button.is_positive() { anchor } else { egui::pos2(ctx.content_rect().center().x - 200.0, 48.0) };
+        let gear = self.header_rects.chat_settings;
+        let anchor = egui::pos2(gear.left(), gear.bottom() + 6.0);
+        let anchor = if gear.is_positive() { anchor } else { egui::pos2(ctx.content_rect().center().x - 200.0, 48.0) };
         let msgs = self.workspaces.windows(ctx, &t, self.sidebar.workspaces(), &title, anchor);
         self.send_all(msgs);
         self.artifacts.end_frame(ctx);
@@ -472,91 +475,6 @@ impl ByobApp {
     fn send_all(&mut self, msgs: Vec<ClientMsg>) {
         for m in msgs {
             self.conn.send(m);
-        }
-    }
-
-    fn header(&mut self, ui: &mut egui::Ui, narrow: bool) {
-        let t = self.tokens;
-        egui::Panel::top("header").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                // The right-hand buttons first, so a long title or URL can never push
-                // Settings off screen; the rest shares what is left.
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let settings = ui.toggle_value(&mut self.show_settings, "Settings").on_hover_text("Connection and appearance");
-                    self.settings_button = settings.rect;
-                    self.artifacts.header_buttons(ui, &t);
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| self.header_left(ui, &t, narrow));
-                });
-            });
-        });
-    }
-
-    /// Chats, name, status, chat title and endpoint details, dropping the optional ones
-    /// (and shortening the rest) when the window is narrow.
-    fn header_left(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, narrow: bool) {
-        if ui.button("Chats").on_hover_text("Show or hide the chat list").clicked() {
-            self.sidebar.toggle();
-        }
-        ui.label(egui::RichText::new("byob").strong().size(t.text_size(18.0)).color(t.accent));
-        if steps::awaiting_approval(&self.entries) {
-            steps::waiting_badge(ui, t);
-        } else if self.busy() {
-            theme::spinner(ui, t, None);
-        }
-        let title = self.sidebar.current().map_or("New chat", |c| c.title.as_str()).to_owned();
-        // "Workspace / title", the workspace dimmed (dropped on phones).
-        let ws = self.sidebar.current_workspace().map(|w| w.name.clone()).filter(|_| !narrow);
-        let room = ui.available_width();
-        ui.scope(|ui| {
-            ui.set_max_width((room * 0.4).max(40.0));
-            let mut job = egui::text::LayoutJob::default();
-            let font = egui::TextStyle::Body.resolve(ui.style());
-            if let Some(ws) = &ws {
-                job.append(&format!("{ws} / "), 0.0, egui::TextFormat::simple(font.clone(), t.text_dim));
-            }
-            job.append(&title, 0.0, egui::TextFormat::simple(font, t.text_strong));
-            let tip = ws.as_ref().map_or_else(|| title.clone(), |w| format!("{title}\nin the workspace {w}"));
-            ui.add(egui::Label::new(job).truncate()).on_hover_text(tip);
-        });
-        let gear = icons::settings_button(ui, t).on_hover_text("This chat's settings: model, approvals, where commands run…");
-        self.chat_button = gear.rect;
-        if gear.clicked() {
-            self.workspaces.toggle_chat();
-        }
-        // The connection: its status dot, model and server; a click opens its settings.
-        let room = ui.available_width();
-        let clicked = ui
-            .scope(|ui| {
-                ui.set_max_width((room * 0.6).max(40.0));
-                match &self.state {
-                    Some(s) => connect::chip(ui, t, s, narrow),
-                    None => {
-                        ui.label(egui::RichText::new("connecting…").color(t.text_dim));
-                        None
-                    }
-                }
-            })
-            .inner;
-        match clicked {
-            Some(connect::ChipClick::Connection) => self.open_connection(),
-            Some(connect::ChipClick::ChatSettings) if self.workspaces.chat.is_none() => self.workspaces.toggle_chat(),
-            Some(connect::ChipClick::ChatSettings) | None => {}
-        }
-        let info = self.state.as_ref().and_then(|s| match &s.chat_endpoint {
-            Some(e) => e.link.is_ok().then_some(e.info.as_ref()).flatten().map(byob_protocol::EndpointInfo::summary),
-            None => s.link.is_ok().then_some(s.endpoint_info.as_ref()).flatten().map(byob_protocol::EndpointInfo::summary),
-        });
-        if let Some(info) = info.filter(|_| !narrow && ui.available_width() > 360.0) {
-            let room = ui.available_width() - 160.0;
-            ui.scope(|ui| {
-                ui.set_max_width(room);
-                ui.add(egui::Label::new(egui::RichText::new(&info).small().color(t.text_dim)).truncate());
-            });
-        }
-        if ui.available_width() > 60.0
-            && let Some(msg) = self.usage.meter(ui, t, narrow)
-        {
-            self.conn.send(msg);
         }
     }
 
@@ -832,45 +750,107 @@ mod app_tests {
         }
     }
 
-    #[test]
-    fn settings_stays_on_screen_however_crowded_the_header() {
-        for width in [320.0, 480.0, 720.0, 1000.0, 1600.0] {
-            let fake = Fake::default();
-            let title = "A chat with a remarkably long title that would never fit in any header at all, really".to_owned();
-            // In a workspace with a long name, with its own endpoint (the chip shows that one).
-            let ws = byob_protocol::WorkspaceSummary {
-                id: "w".into(),
-                name: "A workspace whose name is also much longer than anyone would reasonably type".into(),
-                folder: "/w".into(),
-                chats: 1,
-                updated_at: 1,
-                env: byob_protocol::workspace::EnvKind::Container,
-            };
-            let mut s = state(Link::Ok, true);
-            s.chat_endpoint = Some(byob_protocol::ChatEndpoint {
-                base_url: "https://another-very-long-hostname.example.com/v1".into(),
-                model: "yet-another-extremely-long-model-name".into(),
-                from: byob_protocol::workspace::Level::Workspace,
+    /// A chat as crowded as the header gets: long workspace name and title, its own endpoint
+    /// with long names, a context meter, an artifact.
+    fn crowded_app() -> ByobApp {
+        let fake = Fake::default();
+        let title = "A chat with a remarkably long title that would never fit in any header at all, really".to_owned();
+        let ws = byob_protocol::WorkspaceSummary {
+            id: "w".into(),
+            name: "A workspace whose name is also much longer than anyone would reasonably type".into(),
+            folder: "/w".into(),
+            chats: 1,
+            updated_at: 1,
+            env: byob_protocol::workspace::EnvKind::Container,
+        };
+        let mut s = state(Link::Ok, true);
+        s.chat_endpoint = Some(byob_protocol::ChatEndpoint {
+            base_url: "https://another-very-long-hostname.example.com/v1".into(),
+            model: "yet-another-extremely-long-model-name".into(),
+            from: byob_protocol::workspace::Level::Workspace,
+            ..Default::default()
+        });
+        let artifact = byob_protocol::artifact::Artifact {
+            id: "a".into(),
+            kind: byob_protocol::artifact::ArtifactKind::Markdown,
+            title: "Notes".into(),
+            filename: "notes.md".into(),
+            versions: vec![byob_protocol::artifact::ArtifactVersion { n: 1, path: "a/v1.md".into(), created_at: 1, note: String::new(), size: 1 }],
+        };
+        fake.inbox.lock().unwrap().extend([
+            ServerMsg::State(s),
+            ServerMsg::Workspaces { items: vec![ws], current: None, root: String::new(), support: Default::default() },
+            ServerMsg::ChatOpened {
+                chat: Some(ChatSummary { id: "c".into(), title, updated_at: 1, pinned_at: None, busy: false, workspace: Some("w".into()) }),
+                workspace: Some("w".into()),
+            },
+            ServerMsg::Usage(byob_protocol::usage::ChatUsage {
+                chat: "c".into(),
+                context_used: 3400,
+                context_window: 262_144,
+                compact_at: 200_000,
                 ..Default::default()
-            });
-            fake.inbox.lock().unwrap().extend([
-                ServerMsg::State(s),
-                ServerMsg::Workspaces { items: vec![ws], current: None, root: String::new(), support: Default::default() },
-                ServerMsg::ChatOpened {
-                    chat: Some(ChatSummary { id: "c".into(), title, updated_at: 1, pinned_at: None, busy: false, workspace: Some("w".into()) }),
-                    workspace: Some("w".into()),
-                },
-            ]);
-            let ctx = egui::Context::default();
-            let mut app = ByobApp::new(Box::new(fake), "test");
+            }),
+            ServerMsg::Artifacts { chat: Some("c".into()), artifacts: vec![artifact] },
+        ]);
+        ByobApp::new(Box::new(fake), "test")
+    }
+
+    #[test]
+    fn header_buttons_stay_on_screen_and_apart_at_every_width() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        for width in (320..=1600).step_by(10) {
+            #[allow(clippy::cast_precision_loss)] // small
+            let width = width as f32;
             for _ in 0..3 {
                 frame(&ctx, &mut app, width);
             }
-            let r = app.settings_button;
-            assert!(r.is_positive() && r.min.x >= 0.0 && r.max.x <= width + 0.5, "width {width}: Settings at {r:?}");
-            let gear = app.chat_button;
-            assert!(gear.is_positive() && gear.max.x <= r.min.x, "width {width}: the chat settings button at {gear:?}");
+            let r = app.header_rects;
+            for (name, rect) in [("chat list", r.chats), ("chat settings", r.chat_settings), ("Settings", r.settings), ("more", r.more)] {
+                assert!(rect.is_positive() && rect.min.x >= 0.0 && rect.max.x <= width + 0.5, "width {width}: {name} at {rect:?}");
+            }
+            assert!(r.chats.max.x <= r.chat_settings.min.x, "width {width}: {r:?}");
+            assert!(r.chat_settings.max.x <= r.settings.min.x, "width {width}: {r:?}");
+            assert!(r.settings.max.x <= r.more.min.x, "width {width}: {r:?}");
+            // "Settings" is spelled out wherever it is not a phone.
+            let labelled = r.settings.width() > 40.0;
+            assert_eq!(labelled, header::Layout::for_width(width).settings_label, "width {width}: {r:?}");
         }
+    }
+
+    #[test]
+    fn ctrl_comma_opens_and_closes_the_settings() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        frame(&ctx, &mut app, 1000.0);
+        assert!(!app.show_settings);
+        let press = |ctx: &egui::Context, app: &mut ByobApp| {
+            let key = egui::Event::Key { key: egui::Key::Comma, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+                events: vec![key],
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+            out.textures_delta.clear();
+        };
+        press(&ctx, &mut app);
+        assert!(app.show_settings);
+        frame(&ctx, &mut app, 1000.0);
+        assert!(app.show_settings, "a frame without the key leaves it open");
+        press(&ctx, &mut app);
+        assert!(!app.show_settings);
+    }
+
+    #[test]
+    fn settings_at_the_bottom_of_the_chat_list_opens_the_app_settings() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        frame(&ctx, &mut app, 1000.0);
+        app.sidebar.request(sidebar::Request::AppSettings);
+        frame(&ctx, &mut app, 1000.0);
+        assert!(app.show_settings);
     }
 
     #[test]

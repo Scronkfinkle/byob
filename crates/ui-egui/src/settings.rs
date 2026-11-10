@@ -45,6 +45,18 @@ impl ByobApp {
     pub(crate) fn settings(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
         ui.add_space(4.0);
+        // Which settings these are (a chat and a workspace have their own), and the way out.
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("App settings").size(t.text_size(16.0)).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
+            ui.label(RichText::new("connection and defaults for every chat; appearance on this device").small().color(t.text_dim));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let shortcut = crate::header::settings_shortcut(ui.ctx());
+                if ui.button("Close").on_hover_text(format!("Close the settings ({shortcut})")).clicked() {
+                    self.show_settings = false;
+                }
+            });
+        });
+        ui.add_space(6.0);
         if std::mem::take(&mut self.reveal_connection) {
             ui.scroll_to_cursor(Some(egui::Align::Min));
         }
@@ -65,7 +77,7 @@ impl ByobApp {
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             ui.label(
-                RichText::new("Workspaces override these, and choose where commands run (Docker, Nix, …): the … menu of each workspace in the chat list. A chat: the settings button next to its title.")
+                RichText::new("Workspaces override these, and choose where commands run (Docker, Nix, …): the … menu of each workspace in the chat list. A chat: the sliders next to its title in the header.")
                     .small()
                     .color(t.text_dim),
             );

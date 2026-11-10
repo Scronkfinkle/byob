@@ -2,7 +2,8 @@
 //! recently active first) with its chats newest first, a "+" per group for a new chat
 //! there, and a menu for the workspace's settings. Rename / pin / delete from each chat
 //! row's context menu (right click, or long press on touch screens). On narrow screens (a
-//! phone over Tailscale) the list replaces the conversation while open.
+//! phone over Tailscale) the list replaces the conversation while open. Settings sits at
+//! the bottom of the list, where it is easy to find on every screen size.
 //!
 //! The engine pages the chat list most recent first, across workspaces; groups fill as
 //! pages arrive, and a group that has more chats than are loaded offers "Show more".
@@ -27,6 +28,8 @@ pub enum Request {
         id: String,
         remove: bool,
     },
+    /// The app settings (connection, defaults, appearance).
+    AppSettings,
 }
 
 #[derive(Default)]
@@ -177,6 +180,12 @@ impl Sidebar {
         std::mem::take(&mut self.requests)
     }
 
+    /// Tests: as if the list asked for this.
+    #[cfg(test)]
+    pub(crate) fn request(&mut self, r: Request) {
+        self.requests.push(r);
+    }
+
     /// Is the list open, given the screen width? Changing between wide and narrow resets
     /// it: open beside the chat on wide screens, closed on phones.
     pub fn is_open(&mut self, narrow: bool) -> bool {
@@ -194,6 +203,14 @@ impl Sidebar {
     /// Draw the list. Returns messages for the engine.
     pub fn show(&mut self, ui: &mut egui::Ui, t: &Tokens, narrow: bool) -> Vec<ClientMsg> {
         let mut out = Vec::new();
+        // Settings at the bottom, always visible below the scrolling list.
+        egui::Panel::bottom("sidebar-footer").frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 6))).show(ui, |ui| {
+            let button = crate::icons::icon_button(ui, t, crate::icons::gear, Some("Settings"), false).on_hover_text(crate::header::settings_tip(ui.ctx()));
+            if button.clicked() {
+                self.requests.push(Request::AppSettings);
+                self.after_pick(narrow);
+            }
+        });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             let ws = ui.button(egui::RichText::new("+ Workspace").color(t.text)).on_hover_text("New workspace: a folder with its own settings and environment");

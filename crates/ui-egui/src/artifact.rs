@@ -240,6 +240,11 @@ impl Artifacts {
         self.files.values().any(|f| matches!(f, File::Requested))
     }
 
+    /// The chat in view has no artifacts.
+    pub fn is_empty(&self) -> bool {
+        self.list.is_empty()
+    }
+
     /// The pane is open (full screen on phones).
     pub fn is_open(&self) -> bool {
         self.pane.shown(self.narrow) == PaneShown::Open && self.selected_artifact().is_some()
@@ -416,29 +421,41 @@ impl Artifacts {
 
     // ---- header, rail, floating button ---------------------------------------------------
 
-    /// Header buttons (in a right-to-left layout): the pane toggle and "Collapse all".
-    pub fn header_buttons(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+    /// The header's "Artifacts N" toggle (wide windows; phones have the floating button).
+    pub fn header_toggle(&mut self, ui: &mut egui::Ui) {
+        if self.list.is_empty() || self.narrow {
+            return;
+        }
+        let open = self.pane.shown(false) == PaneShown::Open;
+        let label = format!("Artifacts {}", self.list.len());
+        let shortcut = ui.ctx().format_shortcut(&PANE_SHORTCUT);
+        if ui.selectable_label(open, label).on_hover_text(format!("Show or hide the artifact pane ({shortcut})")).clicked() {
+            self.actions.push(Action::Toggle);
+        }
+    }
+
+    /// The header's overflow menu entries: show the pane (phones), collapse or expand every
+    /// artifact card. Nothing when the chat has no artifacts.
+    pub fn menu_items(&mut self, ui: &mut egui::Ui) {
         if self.list.is_empty() {
             return;
         }
-        if !self.narrow {
-            let open = self.pane.shown(false) == PaneShown::Open;
-            let label = format!("Artifacts {}", self.list.len());
-            let shortcut = ui.ctx().format_shortcut(&PANE_SHORTCUT);
-            if ui.selectable_label(open, label).on_hover_text(format!("Show or hide the artifact pane ({shortcut})")).clicked() {
-                self.actions.push(Action::Toggle);
+        if self.narrow {
+            let label = format!("Show artifacts ({})", self.list.len());
+            if ui.button(label).clicked() {
+                self.actions.push(Action::Expand);
+                ui.close();
             }
         }
         let all = self.list.iter().all(|a| self.pane.is_minimized(&a.id));
-        // Phones: short labels, the header is crowded there.
-        let (label, tip) = match (all, self.narrow) {
-            (true, false) => ("Expand all", "Show every artifact in this chat in full"),
-            (true, true) => ("Expand", "Show every artifact in this chat in full"),
-            (false, false) => ("Collapse all", "Minimize every artifact in this chat to one line"),
-            (false, true) => ("Collapse", "Minimize every artifact in this chat to one line"),
+        let (label, tip) = if all {
+            ("Expand all artifacts", "Show every artifact in this chat in full")
+        } else {
+            ("Collapse all artifacts", "Minimize every artifact in this chat to one line")
         };
-        if ui.button(RichText::new(label).color(t.text_dim)).on_hover_text(tip).clicked() {
+        if ui.button(label).on_hover_text(tip).clicked() {
             self.actions.push(Action::MinimizeAll(!all));
+            ui.close();
         }
     }
 

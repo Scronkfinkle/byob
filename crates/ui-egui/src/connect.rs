@@ -456,9 +456,10 @@ fn problem_lines(ui: &mut egui::Ui, t: &Tokens, problem: Option<Problem>, detail
 
 /// The header's connection status: a dot (green: answers, amber: checking, red: failing)
 /// and the model and server of the chat in view (its own or its workspace's endpoint, if it
-/// has one). Clicking it opens the connection settings, or the chat's settings when the
+/// has one), as much of it as `detail` asks for; the rest, and what the server can do, is in
+/// its tooltip. Clicking it opens the connection settings, or the chat's settings when the
 /// endpoint isn't the global one ([`ChipClick`]).
-pub fn chip(ui: &mut egui::Ui, t: &Tokens, state: &EngineState, narrow: bool) -> Option<ChipClick> {
+pub fn chip(ui: &mut egui::Ui, t: &Tokens, state: &EngineState, detail: ChipDetail) -> Option<ChipClick> {
     let own = state.chat_endpoint.as_ref();
     let (base_url, model, link, info) = match own {
         Some(e) => (&e.base_url, &e.model, &e.link, e.info.as_ref()),
@@ -471,9 +472,13 @@ pub fn chip(ui: &mut egui::Ui, t: &Tokens, state: &EngineState, narrow: bool) ->
         Link::Unknown => t.text_faint,
     };
     let server = short_url(base_url);
-    let text = if narrow { model.clone() } else { format!("{model} · {server}") };
+    let text = match detail {
+        ChipDetail::Dot => String::new(),
+        ChipDetail::Model => model.clone(),
+        ChipDetail::Full => format!("{model} · {server}"),
+    };
     let mut job = LayoutJob::default();
-    job.append("● ", 0.0, fmt(ui, color));
+    job.append(if text.is_empty() { "●" } else { "● " }, 0.0, fmt(ui, color));
     job.append(&text, 0.0, fmt(ui, t.text_dim));
     job.wrap = egui::text::TextWrapping::truncate_at_width(ui.available_width().max(40.0));
     let mut tip = format!("{base_url}\n{model}");
@@ -498,6 +503,17 @@ pub fn chip(ui: &mut egui::Ui, t: &Tokens, state: &EngineState, narrow: bool) ->
     tip.push_str(if own.is_some() { "\n\nClick to change this chat's model" } else { "\n\nClick to change the connection" });
     let clicked = ui.add(egui::Button::new(job).frame(false)).on_hover_text(tip).clicked();
     clicked.then_some(if own.is_some() { ChipClick::ChatSettings } else { ChipClick::Connection })
+}
+
+/// How much the status chip spells out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipDetail {
+    /// Only the status dot (phones).
+    Dot,
+    /// The dot and the model.
+    Model,
+    /// The dot, the model and the server.
+    Full,
 }
 
 /// What a click on the status chip opens.
@@ -700,7 +716,9 @@ mod tests {
             let mut out = ctx.run_ui(input, |ui| {
                 let t = Tokens::dark();
                 f.welcome(ui, &t, &s);
-                assert!(chip(ui, &t, &s, width < 500.0).is_none());
+                for detail in [ChipDetail::Dot, ChipDetail::Model, ChipDetail::Full] {
+                    assert!(chip(ui, &t, &s, detail).is_none());
+                }
                 assert_eq!(trouble(ui, &t, &s), None);
                 assert_eq!(error_card(ui, &t, "could not reach x: refused", true), None);
                 assert_eq!(error_card(ui, &t, "tool loop", false), None);

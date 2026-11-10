@@ -37,8 +37,9 @@
 //!     --test-connection URL MODEL  fill the connection form and press Test connection
 //!     --new-workspace NAME ENV  create workspace NAME (auto | host | nix | container) in a fresh
 //!                             folder through the New workspace form, then send the messages in it
-//!     --open-panel NAME       open new-workspace, new-workspace-container, workspace-settings
-//!                             or chat-settings once the messages are done
+//!     --open-panel NAME       open new-workspace, new-workspace-container, workspace-settings,
+//!                             chat-settings or more-menu (the header's ⋯ menu) once the
+//!                             messages are done
 //! ```
 //!
 //! Chats live in `byob.db` (or, with `storage = "folder"`, in plain files); preferences in `settings.json` and the API key in `secrets.json`
