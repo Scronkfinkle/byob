@@ -40,6 +40,13 @@ presets for those and for hosted APIs (which need a key), and a Test connection 
 Once something answers it goes straight to your chats; the connection lives at the top of
 Settings, or click the status dot in the header.
 
+Chats are grouped by **workspace**: a folder with its own settings. **+ Workspace** makes
+one (a fresh folder or an existing one, and where commands run: this machine, a Nix dev
+shell, or a Docker/Podman container); `byob --workspace DIR` starts in the one for `DIR`.
+Settings apply global → workspace → chat (model, approvals, tool calling, compaction,
+subagents, extra instructions); each workspace's `…` menu and the settings button next to a
+chat's title show what's inherited and what's set there.
+
 ## Develop
 
 ```sh

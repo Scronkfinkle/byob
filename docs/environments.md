@@ -1,6 +1,6 @@
 # Workspace environments: getting tools on every OS
 
-Last updated: 2026-11-10. Code: `crates/exec/src/env/`. Overview: `docs/architecture.md`
+Last updated: 2026-11-10 (workspace environments). Code: `crates/exec/src/env/`. Overview: `docs/architecture.md`
 ("Workspace environments").
 
 ## Goal
@@ -24,10 +24,12 @@ models follow tools and concrete next steps much better than prose, so the desig
 
 For each `run_command` / `run_python` call:
 
-1. **Where does it run?** In the workspace's **container** if the user opted in (the
-   question for a workspace with a devcontainer.json, or the Settings checkbox for any
-   workspace), otherwise here, in byob's sandbox. In a container, steps 2–4 don't apply:
-   the container is the environment, and `install_packages` installs into it.
+1. **Where does it run?** The workspace's **environment** setting decides (New workspace
+   form, or its settings): **Container** runs every command in the workspace's container,
+   **This machine** and **Nix** never do, and **Auto** (the default) asks once when the
+   folder has a devcontainer.json. A chat can override it with This machine or Container.
+   Otherwise here, in byob's sandbox. In a container, steps 2–4 don't apply: the container
+   is the environment, and `install_packages` installs into it.
 2. **The workspace's own environment** (`flake.nix` / `shell.nix`, `pixi.toml`, mise,
    `.venv`), once the user agreed to load it. The `.venv` needs no question (nothing runs to
    load it).
@@ -53,10 +55,13 @@ builds an image. So before the first load byob asks, with an approval card that 
   restarts.
 - Declining runs commands without it. The model is told once per session ("the user chose
   not to load it… don't load it yourself"), so it doesn't try `nix develop` instead.
-- **Settings → Workspace environment** (desktop and browser) shows the workspace's project
-  files, the remembered answers, the container and its state, with **Load it / Don't load it
-  / Ask again**, a **Run commands in a container** checkbox, and **Stop / Remove** for the
-  container.
+- **A chosen environment is the answer.** A workspace set to Container (or Nix) never gets
+  the question: the person chose it when making the workspace or in its settings, so byob
+  records it as the folder's answer too. Nix loads the folder's dev shell without asking.
+- **Workspace settings → Environment state** (the workspace's `…` menu in the chat list,
+  desktop and browser) shows the folder's project files, the remembered answers, the
+  container and its state, with **Load it / Don't load it / Ask again** and **Stop / Remove**
+  for the container. Where commands run is the Environment setting above it.
 - `BYOB_WORKSPACE_ENV=off` never loads project environments or asks about devcontainers;
   `on` loads them (and uses a devcontainer) without asking; unset or `ask` asks.
 - **`--auto-approve` and headless runs**: the permission policy answers the question, so
@@ -140,18 +145,23 @@ gated the same way before they run, and the policy can't allow them either.
 Most people who want reproducible tooling reach for dev containers; Nix is one of the few
 exceptions. So byob can run a workspace's `run_command` / `run_python` in a container.
 
-- **Opt-in per workspace.** A workspace with `.devcontainer/devcontainer.json` (or
-  `.devcontainer.json`) gets the ask-once question; any workspace can be switched on in
-  Settings → Workspace environment. Without a devcontainer.json the image is
-  `python:3-slim` (Debian, apt, Python 3), or `containers.image` in settings.json.
+- **Opt-in per workspace.** Choose **Container** when making a workspace (**+ Workspace**
+  in the chat list: name, a fresh or existing folder, where commands run; the form checks
+  that Docker or Podman answers) or later in its settings; the first command then runs in
+  the container with no question. A workspace left on **Auto** with
+  `.devcontainer/devcontainer.json` (or `.devcontainer.json`) gets the ask-once question.
+  The image: the workspace's own (the Image field), else its devcontainer.json, else
+  `python:3-slim` (Debian, apt, Python 3) or `containers.image` in settings.json. A chat in
+  a container workspace can run its commands on this machine instead (its settings), and
+  the other way round.
 - **One long-lived container per workspace**, created on the first command, reused across
   commands and byob restarts. It's named `byob-<folder>-<hash of the path>` and labelled
   `byob.managed=1`, `byob.workspace=<path>`, `byob.config=<stamp>`; a changed
   devcontainer.json, Dockerfile or image setting recreates it (the model is told installed
   packages are gone). Find byob's containers with
-  `docker ps -a --filter label=byob.managed=1`. Settings can stop it (it starts again on the
-  next command) or remove it. byob has no list of workspaces to remove, so there's no
-  automatic removal; that's a later feature if workspaces become first-class.
+  `docker ps -a --filter label=byob.managed=1`. The workspace's settings can stop it (it
+  starts again on the next command) or remove it; removing the workspace with "also delete
+  what byob keeps for it" removes its container and installed packages too.
 - **The workspace is mounted at the same path** (not `/workspaces/<name>`), so paths in
   output, scripts and the changed-files report mean the same thing inside and out.
   `workspaceFolder` / `workspaceMount` are ignored for that reason.

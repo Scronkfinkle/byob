@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10
+Last updated: 2026-11-10 (workspaces)
 
 ## Shape
 
@@ -262,8 +262,9 @@ MCP servers get a looser policy (read anything, network on, writes confined).
 ### Workspace environments (getting tools)
 
 `byob_exec::env::Envs` prepares every `run_command` / `run_python` call. First it decides
-*where* the call runs: in the workspace's **container** (Docker/Podman, opt-in per workspace,
-asked once when there is a `.devcontainer/devcontainer.json`; `env/container.rs`,
+*where* the call runs: in the workspace's **container** (Docker/Podman: the workspace's
+Container environment, a chat's override, or asked once when there is a
+`.devcontainer/devcontainer.json` and the environment is Auto; `env/container.rs`,
 `env/devcontainer.rs`), or here in the sandbox. Here, it stacks layers (`PATH` entries,
 variables, sandbox access) onto that clean environment, first match winning:
 
@@ -297,8 +298,78 @@ Failed runs get a one-line hint naming the call to make (`jq: not found`,
 `install_system_packages` (Homebrew/winget, system-wide), is a tool whose `always_ask` makes
 every call an approval card that no grant or `--auto-approve` answers. Tools ask such
 questions mid-call through `ToolContext::ask` (a `Step` with `ask` set, Allow/Deny only);
-Settings shows and changes the per-workspace answers through `ClientMsg::WorkspaceEnv` and
+A workspace's settings window shows and changes the answers through `ClientMsg::WorkspaceEnv` and
 the `byob_tools::EnvControl` the engine is given. Details and plans: `docs/environments.md`.
+
+## Workspaces and layered settings
+
+A **workspace** is a folder with a name and its own settings. Chats belong to the workspace
+of the folder they were created in (`Chat::workspace`, unchanged since before workspaces
+existed): any folder seen on a chat becomes a workspace by itself, named after the folder, so
+old chats group without a migration. Workspaces live in byob's own files, never in the folder:
+`<config>/workspaces.json` (`{id, name, folder, created_at, config}`; the id is derived from
+the folder path) and `<data>/chat-settings.json` (each chat's own settings). Keys of
+workspaces and chats with their own endpoint are in `secrets.json` `scoped_keys`
+(`workspace:<id>`, `chat:<id>`) and never reach clients.
+
+**Settings resolve global → workspace → chat** with one pure function,
+`byob_types::config::resolve` (each level a `Layer` of `Option`s; the result says where every
+value came from). The engine asks it everywhere it needs a chat's settings
+(`byob-agent::workspaces`, `Engine::chat_settings`): the turn (endpoint and key, tool mode,
+approvals → permission policy, compaction, subagents, system prompt), manual compaction, the
+usage meter, the header (`EngineState.chat_endpoint`), the environment of `run_command`.
+
+| Setting | Global (settings.json) | Workspace | Chat |
+|---|---|---|---|
+| Endpoint: URL + model (+ key, engine-side) | `inference` | ✓ | ✓ |
+| Tool calling (auto / native / prompt) | `tool_mode` | ✓ | ✓ |
+| Approvals (ask / allow edits / allow all / read only) | `approvals` | ✓ | ✓ |
+| Compaction (on/off, threshold %) | `compaction` | ✓ | ✓ |
+| Subagents on/off | `subagents.enabled` | ✓ | ✓ |
+| Extra instructions | `instructions` | ✓ | ✓ |
+| Environment (Auto / this machine / Nix / container) | — | ✓ | this machine or container |
+| Container image | `containers.image` (default) | ✓ (else devcontainer.json) | — |
+| Name, folder, project-env answers, installed packages, container | — | ✓ only | — |
+
+- **Most specific wins**, per field. **Instructions are appended**, never replaced: global,
+  then workspace, then chat, all in the system prompt.
+- **Keys follow their server.** A key belongs to the URL its level points at and is used only
+  when the effective URL has the same scheme, host and port (the most specific such level
+  wins); changing a level's URL to another server drops its key.
+- **Global only**: theme, storage, plugin folders, server options, container runtime, the
+  workspaces folder (`workspaces_root`, default `~/byob-workspaces`), model roles, subagent
+  limits and slots (one engine-wide semaphore, so not per chat).
+- **Testing flags beat every level** for the run: `--auto-approve`, `--tool-mode`; and
+  `--inference-url` / `--model` stand in for the global endpoint.
+- **Environment.** Auto is today's behaviour (asked once per folder). Host never uses a
+  container; Nix loads the folder's dev shell without asking; Container runs every command
+  in the workspace's container, no question (the choice is also recorded as the folder's
+  answer). A chat can move its commands to this machine or into the container; the Nix
+  shell still follows the workspace. The plan travels as `byob_tools::EnvPlan` in the
+  `ToolContext` (subagents get the same).
+
+**Protocol** (version 10): `NewChat { workspace? }`, `CreateWorkspace { name, folder:
+Existing{path} | Create, config }` (answered with `WorkspaceCreated`; the client then looks at
+a new chat there), `RenameWorkspace`, `RemoveWorkspace { clean }` (deletes its chats from
+byob, never the folder; `clean` also forgets its answers, installed packages and container),
+`GetConfig` / `SetConfig { scope: global | workspace | chat, layer, api_key? }` (answered with
+`Config`: own layer, effective values with sources), `ListFolders { path? }` (the engine's
+subfolders, hidden ones left out, at most 500: a browser picks folders on the engine's
+machine), `CheckContainers`. `Workspaces` lists them with chat counts, most recently active
+first. Clients' messages are size-checked first (`ClientMsg::check_sizes`); the engine checks
+the rest (unknown ids, settings that don't exist at a level, relative or missing folders, the
+filesystem root, image references).
+
+**UI.** The chat list groups chats by workspace (collapsible; most recently active first; a
+`+` per group; a `…` menu: New chat here, Workspace settings, Rename, Remove), pinned chats
+stay on top. Groups fill as the recent-first pages arrive; a group with more chats than loaded
+offers "N more…". **+ Workspace** opens the form: name, a fresh folder in the workspaces folder
+or an existing one (Browse… lists the engine's folders, Choose… is the desktop's own dialog),
+and where commands run (Container: devcontainer.json or an image, and a check that Docker or
+Podman answers). Workspace settings and the chat settings popover (the sliders button next to
+the chat title) show each value's source with a Reset per field; Settings has the global
+defaults. Moving a chat to another workspace isn't offered: its transcript, artifacts
+(`.byob/artifacts` in the folder), uploads and undo backups refer to the old folder.
 
 ## Inference
 

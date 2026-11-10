@@ -434,11 +434,19 @@ impl Engine {
             return;
         }
         self.set_scoped_key(&format!("workspace:{id}"), None);
-        for c in self.clients.values_mut().filter(|c| c.new_in.as_deref() == Some(id)) {
+        let mut moved = Vec::new();
+        for (cid, c) in self.clients.iter_mut().filter(|(_, c)| c.new_in.as_deref() == Some(id)) {
             c.new_in = None;
+            if c.chat.is_none() && c.attached {
+                moved.push(*cid);
+            }
         }
         self.refresh_folder_stats();
         self.broadcast_workspaces();
+        // Their new chat now starts in the default workspace.
+        for cid in moved {
+            self.show_chat(cid, None);
+        }
         let n = chats.len();
         let text = format!(
             "Removed the workspace {:?} and its {n} chat{} from byob; {} and its files are untouched.",

@@ -211,6 +211,10 @@ fn chats_group_by_their_folder_and_workspaces_can_be_renamed_and_removed() {
     let items = wait(&mut c, |m| if let ServerMsg::Workspaces { items, .. } = m { Some(items) } else { None });
     assert!(!items.iter().any(|w| w.id == wb));
     assert_eq!(std::fs::read_to_string(b.path().join("keep.txt")).unwrap(), "mine");
+    // The new chat this client was about to start there moves to the default workspace.
+    let moved = wait(&mut c, |m| if let ServerMsg::ChatOpened { chat: None, workspace } = m { Some(workspace) } else { None });
+    let wa = items.iter().find(|w| Path::new(&w.folder) == a.path()).map(|w| w.id.clone());
+    assert_eq!(moved, wa);
 
     // Folder browsing on the engine's machine: subfolders only.
     std::fs::create_dir(a.path().join("sub")).unwrap();
