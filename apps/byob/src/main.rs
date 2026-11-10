@@ -38,8 +38,8 @@
 //!     --new-workspace NAME ENV  create workspace NAME (auto | host | nix | container) in a fresh
 //!                             folder through the New workspace form, then send the messages in it
 //!     --open-panel NAME       open new-workspace, new-workspace-container, workspace-settings,
-//!                             chat-settings or more-menu (the header's ⋯ menu) once the
-//!                             messages are done
+//!                             chat-settings, more-menu (the header's ⋯ menu) or plugins
+//!                             (Settings → Plugins) once the messages are done
 //! ```
 //!
 //! Chats live in `byob.db` (or, with `storage = "folder"`, in plain files); preferences in `settings.json` and the API key in `secrets.json`

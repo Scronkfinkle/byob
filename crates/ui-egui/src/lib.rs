@@ -14,9 +14,11 @@ mod icons;
 pub mod markdown;
 pub mod media;
 pub mod pane;
+pub mod plugins;
 pub mod queue;
 mod settings;
 pub mod sidebar;
+pub mod slash;
 pub mod steps;
 pub mod theme;
 pub mod upload;
@@ -87,6 +89,10 @@ pub struct ByobApp {
     workspaces: workspace::WorkspaceUi,
     /// Follow-ups queued while a reply runs.
     queue: queue::QueueUi,
+    /// Plugins: cards, the panel, the first-open card, the header chip.
+    plugins: plugins::PluginsUi,
+    /// The composer's `/` menu.
+    slash: slash::SlashMenu,
 }
 
 impl ByobApp {
@@ -119,6 +125,8 @@ impl ByobApp {
             usage: usage::Usage::default(),
             workspaces: workspace::WorkspaceUi::default(),
             queue: queue::QueueUi::default(),
+            plugins: plugins::PluginsUi::default(),
+            slash: slash::SlashMenu::default(),
         }
     }
 
@@ -172,7 +180,7 @@ impl ByobApp {
                 self.queue_changed();
                 continue;
             }
-            if self.usage.apply(&msg) || self.workspaces.apply(&msg) || self.sidebar.apply(&msg) || self.artifacts.apply(&msg) {
+            if self.usage.apply(&msg) || self.workspaces.apply(&msg) || self.sidebar.apply(&msg) || self.artifacts.apply(&msg) || self.plugins.apply(&msg) {
                 continue;
             }
             match msg {
@@ -221,7 +229,7 @@ impl ByobApp {
                 ServerMsg::InferenceTested(test) => self.connect.tested(test),
                 // Handled by the queue above.
                 ServerMsg::Queue(_) => {}
-                // Not shown yet (the Plugins panel and plugin cards come later).
+                // Handled by the plugins above.
                 ServerMsg::Extensions(_) => {}
                 // Handled by the workspace views and the sidebar above.
                 ServerMsg::WorkspaceEnv(_)
@@ -320,7 +328,7 @@ impl ByobApp {
 
     /// Scripted runs: open a workspace view: `new-workspace`, `new-workspace-container`,
     /// `workspace-settings` (of the chat in view's workspace), `chat-settings`, `more-menu` (the
-    /// header's "⋯" menu). False for an
+    /// header's "⋯" menu), `plugins` (Settings → Plugins). False for an
     /// unknown name, or a workspace view before the workspace list arrived.
     pub fn open_panel(&mut self, name: &str) -> bool {
         use byob_protocol::workspace::EnvKind;
@@ -335,6 +343,7 @@ impl ByobApp {
                 None => return false,
             },
             "more-menu" => self.header_rects.open_menu = true,
+            "plugins" => self.plugins.open_on_trouble(),
             "chat-settings" => {
                 if self.workspaces.chat.is_none() {
                     self.workspaces.toggle_chat();
@@ -362,7 +371,7 @@ impl ByobApp {
     }
 
     /// The names [`ByobApp::open_panel`] knows.
-    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu";
+    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu, plugins";
 
     /// Scripted runs: open the settings at an appearance section (`knobs`, `advanced`).
     pub fn reveal_settings(&mut self, section: &str) {
@@ -535,7 +544,10 @@ impl ByobApp {
             self.artifacts.side_panel(ui, &t);
         }
         egui::Panel::bottom("composer").show(ui, |ui| self.composer(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.transcript(ui));
+        egui::CentralPanel::default().show(ui, |ui| {
+            self.plugins.trust_card(ui, &t, &self.entries);
+            self.transcript(ui);
+        });
         if narrow {
             self.artifacts.floating_button(ui.ctx(), &t);
         }
@@ -556,13 +568,18 @@ impl ByobApp {
         let gear = self.header_rects.chat_settings;
         let anchor = egui::pos2(gear.left(), gear.bottom() + 6.0);
         let anchor = if gear.is_positive() { anchor } else { egui::pos2(ctx.content_rect().center().x - 200.0, 48.0) };
-        let msgs = self.workspaces.windows(ctx, &t, self.sidebar.workspaces(), &title, anchor);
+        let msgs = self.workspaces.windows(ctx, &t, self.sidebar.workspaces(), &title, anchor, &mut self.plugins);
         self.send_all(msgs);
         self.artifacts.end_frame(ctx);
         let (msgs, notices) = self.artifacts.take_output();
         self.send_all(msgs);
         let msgs = self.connect.take();
         self.send_all(msgs);
+        let msgs = self.plugins.take();
+        self.send_all(msgs);
+        if self.plugins.take_open_request() {
+            self.show_settings = true;
+        }
         for (level, text) in notices {
             self.notice(level, text);
         }
@@ -583,13 +600,23 @@ impl ByobApp {
         }
         let id = egui::Id::unique("composer");
         // Enter sends (queues while a reply runs); Shift+Enter inserts a newline (consume
-        // Enter before the editor sees it). Escape stops editing a queued message.
+        // Enter before the editor sees it). Escape stops editing a queued message. While the
+        // `/` menu is open it takes ↑/↓/Enter/Tab/Esc instead.
         let focused = ui.memory(|m| m.has_focus(id));
-        let enter = focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        let commands: Vec<byob_protocol::SlashItem> = slash::matches(self.plugins.slash(), &self.input).into_iter().cloned().collect();
+        // egui drops the focus on Esc before we see the key: the menu still takes that Esc.
+        let escaped = !focused && self.slash.had_focus && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let menu = self.slash.open(&self.input, commands.len()) && (focused || escaped);
+        self.slash.had_focus = focused;
+        let mut picked = if menu { self.slash.keys(ui, &self.input, commands.len()) } else { None };
+        if escaped && menu {
+            ui.memory_mut(|m| m.request_focus(id));
+        }
+        let enter = focused && !menu && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let busy = self.busy();
         let editing = self.queue.editing;
         let mut send = enter;
-        let mut cancel_edit = editing.is_some() && focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let mut cancel_edit = editing.is_some() && focused && !menu && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let actions = self.queue.show(ui, &t);
         self.queue_actions(actions);
         self.uploads.chips(ui, &t);
@@ -602,7 +629,12 @@ impl ByobApp {
             self.uploads.button(ui);
             let buttons = if editing.is_some() || busy { 132.0 } else { 72.0 };
             let width = (ui.available_width() - buttons).max(100.0);
-            ui.add(egui::TextEdit::multiline(&mut self.input).id(id).desired_rows(2).desired_width(width).hint_text(hint));
+            let field = ui.add(egui::TextEdit::multiline(&mut self.input).id(id).desired_rows(2).desired_width(width).hint_text(hint));
+            // Still open after this frame's typing (and not just picked): draw it.
+            if menu && picked.is_none() && slash::query(&self.input).is_some() {
+                let shown: Vec<&byob_protocol::SlashItem> = commands.iter().collect();
+                picked = self.slash.show(ui, &t, field.rect, &shown);
+            }
             if editing.is_some() {
                 send |= ui.button("Save").on_hover_text("Save the queued message").clicked();
                 cancel_edit |= ui.button("Cancel").clicked();
@@ -615,6 +647,15 @@ impl ByobApp {
                 send |= ui.button("Send").clicked();
             }
         });
+        if let Some(item) = picked.and_then(|k| commands.get(k)) {
+            self.slash.reset();
+            self.input = slash::insert(item);
+            let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            let end = egui::text::CCursor::new(self.input.chars().count());
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+            egui::TextEdit::store_state(ui.ctx(), id, state);
+            ui.memory_mut(|m| m.request_focus(id));
+        }
         if cancel_edit {
             self.end_edit();
         }
@@ -654,6 +695,10 @@ impl ByobApp {
         let media = &mut self.media;
         let artifacts = &mut self.artifacts;
         let usage = &mut self.usage;
+        let plugins = &mut self.plugins;
+        // Each plugin's latest card is the one that offers its settings and Keep.
+        let latest_cards: std::collections::BTreeMap<&str, u64> =
+            self.entries.iter().flat_map(|e| &e.steps).filter_map(|s| s.plugin.as_deref().map(|c| (c.plugin.as_str(), s.id))).collect();
         let mut answers = Vec::new();
         let mut card = None;
         // Only the last reply, failed before it produced anything, can be run again.
@@ -664,7 +709,7 @@ impl ByobApp {
                 ui.add_space(t.pad(8.0));
                 usage.dividers(ui, &t, 0);
                 for entry in &self.entries {
-                    answers.extend(entry_view(ui, &t, entry, markdown, media, artifacts, retry_id == Some(entry.id), &mut card));
+                    answers.extend(entry_view(ui, &t, entry, markdown, media, artifacts, (plugins, &latest_cards), retry_id == Some(entry.id), &mut card));
                     ui.add_space(t.pad(8.0));
                     usage.dividers(ui, &t, entry.id);
                 }
@@ -725,6 +770,7 @@ fn entry_view(
     markdown: &mut markdown::Cache,
     media: &mut media::Cache,
     artifacts: &mut artifact::Artifacts,
+    (plugins, latest_cards): (&mut plugins::PluginsUi, &std::collections::BTreeMap<&str, u64>),
     retry: bool,
     card: &mut Option<connect::CardAction>,
 ) -> Option<ClientMsg> {
@@ -777,7 +823,15 @@ fn entry_view(
                 }
                 match entry.role {
                     // reply text with its tool steps where they happened, approval cards, undo
-                    EntryRole::Assistant => answer = steps::body(ui, t, entry, markdown, &mut |ui, step| artifacts.cards(ui, t, &step.artifacts)),
+                    EntryRole::Assistant => {
+                        answer = steps::body(ui, t, entry, markdown, &mut |ui, step| {
+                            artifacts.cards(ui, t, &step.artifacts);
+                            if let Some(card) = &step.plugin {
+                                let latest = latest_cards.get(card.plugin.as_str()) == Some(&step.id);
+                                plugins.card(ui, t, step.id, card, latest);
+                            }
+                        });
+                    }
                     EntryRole::User if !entry.content.is_empty() => {
                         ui.add(egui::Label::new(egui::RichText::new(&entry.content).color(t.text)).selectable(true));
                     }
@@ -914,8 +968,15 @@ mod app_tests {
                 ..Default::default()
             }),
             ServerMsg::Artifacts { chat: Some("c".into()), artifacts: vec![artifact] },
+            plugins::tests::ext(vec![troubled_plugin()]),
         ]);
         ByobApp::new(Box::new(fake), "test")
+    }
+
+    fn troubled_plugin() -> byob_protocol::PluginInfo {
+        let mut p = plugins::tests::info("weather", byob_protocol::PluginScope::Workspace, byob_protocol::PluginOrigin::Agent);
+        p.problems = vec!["tools/x.py is missing".into()];
+        p
     }
 
     #[test]
@@ -935,6 +996,8 @@ mod app_tests {
             assert!(r.chats.max.x <= r.chat_settings.min.x, "width {width}: {r:?}");
             assert!(r.chat_settings.max.x <= r.settings.min.x, "width {width}: {r:?}");
             assert!(r.settings.max.x <= r.more.min.x, "width {width}: {r:?}");
+            // The plugins chip, between the chat's settings and the app's.
+            assert!(r.plugins.is_positive() && r.chat_settings.max.x <= r.plugins.min.x && r.plugins.max.x <= r.settings.min.x, "width {width}: {r:?}");
             // "Settings" is spelled out wherever it is not a phone.
             let labelled = r.settings.width() > 40.0;
             assert_eq!(labelled, header::Layout::for_width(width).settings_label, "width {width}: {r:?}");
@@ -1014,9 +1077,14 @@ mod app_tests {
     }
 
     fn press_enter(ctx: &egui::Context, app: &mut ByobApp) {
+        press(ctx, app, egui::Key::Enter);
+    }
+
+    /// Focus the composer and press `key` in it.
+    fn press(ctx: &egui::Context, app: &mut ByobApp, key: egui::Key) {
         ctx.memory_mut(|m| m.request_focus(egui::Id::unique("composer")));
         frame(ctx, app, 1000.0);
-        let key = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let key = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
             events: vec![key],
@@ -1076,6 +1144,67 @@ mod app_tests {
         // Narrow and light: the rows still draw.
         app.set_prefs(theme::Prefs { theme: theme::ThemeKind::Light, ..Default::default() });
         frame(&ctx, &mut app, 320.0);
+    }
+
+    #[test]
+    fn the_slash_menu_inserts_with_the_keyboard_and_enter_still_sends() {
+        use byob_protocol::{PluginScope, SlashItem, SlashKind};
+        let fake = Fake::default();
+        let item =
+            |name: &str, kind, scope| SlashItem { name: name.into(), kind, description: format!("{name} things"), hint: String::new(), scope, plugin: None };
+        let mut ext = plugins::tests::ext(vec![]);
+        if let ServerMsg::Extensions(e) = &mut ext {
+            e.slash = vec![
+                item("compact", SlashKind::Builtin, None),
+                item("review", SlashKind::Command, Some(PluginScope::Workspace)),
+                item("trip-plan", SlashKind::Skill, Some(PluginScope::Global)),
+            ];
+        }
+        fake.inbox.lock().unwrap().extend([ServerMsg::State(state(Link::Ok, true)), ext]);
+        let ctx = egui::Context::default();
+        let mut app = ByobApp::new(Box::new(fake.clone()), "test");
+        frame(&ctx, &mut app, 1000.0);
+        let sent = |fake: &Fake| fake.sent.lock().unwrap().iter().filter(|m| matches!(m, ClientMsg::SendMessage { .. })).count();
+        // Enter picks the only match instead of sending.
+        app.input = "/re".into();
+        press_enter(&ctx, &mut app);
+        assert_eq!((app.input.as_str(), sent(&fake)), ("/review ", 0));
+        // With arguments the menu is gone: Enter sends, and the engine expands it.
+        app.input.push_str("src/a.rs");
+        press_enter(&ctx, &mut app);
+        assert_eq!(fake.sent.lock().unwrap().last(), Some(&ClientMsg::SendMessage { text: "/review src/a.rs".into(), attachments: vec![] }));
+        assert!(app.input.is_empty());
+        // ↓↓ then Tab: the third entry; ↑ from the top wraps to the last.
+        app.input = "/".into();
+        press(&ctx, &mut app, egui::Key::ArrowDown);
+        press(&ctx, &mut app, egui::Key::ArrowDown);
+        press(&ctx, &mut app, egui::Key::Tab);
+        assert_eq!(app.input, "/trip-plan ");
+        app.input = "/".into();
+        press(&ctx, &mut app, egui::Key::ArrowUp);
+        press_enter(&ctx, &mut app);
+        assert_eq!((app.input.as_str(), sent(&fake)), ("/trip-plan ", 1));
+        // Esc closes it; Enter then sends what is typed.
+        app.input = "/co".into();
+        press(&ctx, &mut app, egui::Key::Escape);
+        press_enter(&ctx, &mut app);
+        assert_eq!(fake.sent.lock().unwrap().last(), Some(&ClientMsg::SendMessage { text: "/co".into(), attachments: vec![] }));
+        // Nothing matches: an ordinary message.
+        app.input = "/zzz".into();
+        press_enter(&ctx, &mut app);
+        assert_eq!(fake.sent.lock().unwrap().last(), Some(&ClientMsg::SendMessage { text: "/zzz".into(), attachments: vec![] }));
+    }
+
+    #[test]
+    fn the_plugins_panel_opens_from_the_header_and_scripts() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        frame(&ctx, &mut app, 1000.0);
+        assert!(!app.show_settings);
+        assert_eq!(app.plugins.summary(), Some((1, true)));
+        assert!(app.open_panel("plugins"));
+        frame(&ctx, &mut app, 1000.0);
+        assert!(app.show_settings);
     }
 
     #[test]

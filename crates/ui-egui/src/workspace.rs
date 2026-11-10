@@ -708,7 +708,7 @@ impl WorkspaceWindow {
     }
 
     /// Draw; returns messages and whether to close.
-    fn show(&mut self, ui: &mut egui::Ui, t: &Tokens, ws: Option<&WorkspaceSummary>) -> FormOutput {
+    fn show(&mut self, ui: &mut egui::Ui, t: &Tokens, ws: Option<&WorkspaceSummary>, plugins: &mut crate::plugins::PluginsUi) -> FormOutput {
         let mut out = FormOutput::default();
         let Some(ws) = ws else {
             ui.label(RichText::new("This workspace was removed.").color(t.text_dim));
@@ -740,6 +740,11 @@ impl WorkspaceWindow {
             if let Some(m) = self.env.show(ui, t, &ws.id) {
                 out.msgs.push(m);
             }
+        });
+        ui.add_space(6.0);
+        egui::CollapsingHeader::new(RichText::new("Plugins").color(t.text)).id_salt(("wsplugins", &ws.id)).default_open(true).show(ui, |ui| {
+            ui.label(RichText::new("Its .byob/plugins folder, committed with the repository; switches here apply to its chats.").small().color(t.text_faint));
+            plugins.panel(ui, t, &crate::plugins::Filter::Workspace(ws.id.clone()));
         });
         ui.add_space(8.0);
         if self.removing {
@@ -856,7 +861,15 @@ impl WorkspaceUi {
     }
 
     /// Draw the windows that are open; returns messages for the engine.
-    pub fn windows(&mut self, ctx: &egui::Context, t: &Tokens, workspaces: &[WorkspaceSummary], chat_title: &str, anchor: egui::Pos2) -> Vec<ClientMsg> {
+    pub fn windows(
+        &mut self,
+        ctx: &egui::Context,
+        t: &Tokens,
+        workspaces: &[WorkspaceSummary],
+        chat_title: &str,
+        anchor: egui::Pos2,
+        plugins: &mut crate::plugins::PluginsUi,
+    ) -> Vec<ClientMsg> {
         let mut msgs = Vec::new();
         let screen = ctx.content_rect();
         let max_w = (screen.width() - 24.0).clamp(240.0, 520.0);
@@ -903,7 +916,7 @@ impl WorkspaceUi {
                 .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 50.0))
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().max_height(max_h - 40.0).min_scrolled_height((max_h - 40.0).min(560.0)).show(ui, |ui| {
-                        let o = w.show(ui, t, ws);
+                        let o = w.show(ui, t, ws, plugins);
                         msgs.extend(o.msgs);
                         close = o.close;
                     });
@@ -942,6 +955,7 @@ impl WorkspaceUi {
                         if let Some(m) = editor.show(ui, t, CHAT_FIELDS) {
                             msgs.push(m);
                         }
+                        plugins.chat_switches(ui, t);
                     });
                 });
             if !open {

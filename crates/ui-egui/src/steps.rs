@@ -74,7 +74,7 @@ pub fn segments<'a>(content: &'a str, steps: &[Step]) -> Vec<Segment<'a>> {
 
 /// Draw an assistant entry's text and steps, interleaved, plus the undo action. Returns a
 /// message to send if the user answered a card or asked to undo.
-/// `cards` draws the artifact cards of a step that made any, right below its row.
+/// `cards` draws the artifact and plugin cards of a step that has any, right below its row.
 pub fn body(ui: &mut egui::Ui, t: &Tokens, entry: &Entry, cache: &mut markdown::Cache, cards: &mut dyn FnMut(&mut egui::Ui, &Step)) -> Option<ClientMsg> {
     let mut msg = transcript(ui, t, Thread { key: entry.id, content: &entry.content, steps: &entry.steps, done: entry.done, agent: None }, cache, cards);
     if entry.done && (entry.undoable || entry.undone) {
@@ -119,7 +119,7 @@ fn transcript(ui: &mut egui::Ui, t: &Tokens, th: Thread<'_>, cache: &mut markdow
                         msg = msg.or(delegation(ui, t, step, d, cache, cards));
                     } else {
                         row(ui, t, step);
-                        if !step.artifacts.is_empty() {
+                        if !step.artifacts.is_empty() || step.plugin.is_some() {
                             cards(ui, step);
                         }
                     }

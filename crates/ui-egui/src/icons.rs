@@ -1,6 +1,6 @@
 //! Small icons drawn with shapes, for glyphs the UI fonts don't have (the app settings
 //! gear, chat settings sliders, the chat list and overflow buttons, a disclosure triangle,
-//! where a workspace runs its commands).
+//! where a workspace runs its commands, the plugins puzzle piece).
 
 use byob_protocol::workspace::EnvKind;
 use egui::{Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
@@ -59,6 +59,30 @@ pub fn more(painter: &egui::Painter, r: Rect, color: Color32) {
     for dx in [-0.32_f32, 0.0, 0.32] {
         painter.circle_filled(c + vec2(dx * s, 0.0), (s * 0.085).max(1.4), color);
     }
+}
+
+/// "Plugins": a jigsaw piece with a knob on top and one on the right.
+pub fn puzzle(painter: &egui::Painter, r: Rect, color: Color32) {
+    use std::f32::consts::PI;
+    let s = r.width().min(r.height());
+    let stroke = Stroke::new((s * 0.1).max(1.2), color);
+    let o = r.center() - vec2(s * 0.47, s * 0.53);
+    let at = |x: f32, y: f32| o + vec2(x * s, y * s);
+    let (left, top, right, bottom, knob) = (0.1_f32, 0.32_f32, 0.72_f32, 0.92_f32, 0.11_f32);
+    let mut points = vec![at(left, bottom), at(left, top), at(0.41 - knob, top)];
+    for k in 0..=8 {
+        #[allow(clippy::cast_precision_loss)] // 0..=8
+        let a = PI + PI * k as f32 / 8.0;
+        points.push(at(0.41 + knob * a.cos(), top + knob * 1.3 * a.sin()));
+    }
+    points.extend([at(right, top), at(right, 0.62 - knob)]);
+    for k in 0..=8 {
+        #[allow(clippy::cast_precision_loss)] // 0..=8
+        let a = -PI / 2.0 + PI * k as f32 / 8.0;
+        points.push(at(right + knob * 1.3 * a.cos(), 0.62 + knob * a.sin()));
+    }
+    points.push(at(right, bottom));
+    painter.add(Shape::closed_line(points, stroke));
 }
 
 /// The height of a text button (what egui gives `ui.button`).

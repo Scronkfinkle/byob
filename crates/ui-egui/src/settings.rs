@@ -1,4 +1,5 @@
-//! The settings panel: inference endpoint (engine-wide) and appearance (this device only):
+//! The settings panel: inference endpoint (engine-wide), defaults for every chat, plugins,
+//! and appearance (this device only):
 //! a theme gallery, the knobs, theme files, and every colour role under Advanced.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -87,6 +88,13 @@ impl ByobApp {
                 self.workspaces.open_settings(&ws, false);
             }
         });
+        ui.add_space(10.0);
+        if std::mem::take(&mut self.plugins.reveal) {
+            ui.scroll_to_cursor(Some(egui::Align::Min));
+        }
+        ui.label(RichText::new("Plugins").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong))
+            .on_hover_text("What the chat in view can use: plugins of this chat, its workspace and every chat");
+        self.plugins.panel(ui, &t, &crate::plugins::Filter::All);
         ui.add_space(10.0);
         ui.label(RichText::new("Appearance").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong)).on_hover_text("Saved on this device only");
         self.appearance_settings(ui);
