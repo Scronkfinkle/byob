@@ -1,11 +1,21 @@
 [package]
 name = "byob"
-description = "byob desktop app; optionally serves the web UI (L5)"
+description = "byob (bring your own brain): a native desktop AI coworker for any OpenAI-compatible endpoint"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-publish = false
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# The browser UI (`byob --serve`), compiled in. `--no-default-features` builds the slim
+# desktop-only binary.
+default = ["web"]
+web = ["byob-server/embedded-web"]
 
 [dependencies]
 byob-types.workspace = true

@@ -234,7 +234,7 @@ fn output(r: &ConnectorResult, dir: &Path, label: &str) -> ToolOutput {
             ConnectorContent::Text(t) => texts.push(t.clone()),
             ConnectorContent::Image { data, mime_type } => match save_image(dir, label, changes.len() + 1, data, mime_type) {
                 Ok(path) => {
-                    let shown = path.strip_prefix(dir).unwrap_or(&path).display().to_string();
+                    let shown = byob_tools::sandbox::slash(path.strip_prefix(dir).unwrap_or(&path));
                     texts.push(format!("[image saved as {shown}]"));
                     changes.push(FileChange::Created(path));
                 }

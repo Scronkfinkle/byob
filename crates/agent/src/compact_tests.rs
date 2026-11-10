@@ -449,50 +449,61 @@ fn stopping_a_manual_compaction() {
     let held = Arc::new(AtomicUsize::new(0));
     let h = Arc::clone(&held);
     std::thread::spawn(move || {
-        let mut keep = Vec::new();
+        // One thread per connection, like a real server: the summary stream that's being
+        // stopped mustn't hold up the next request.
         for stream in listener.incoming() {
             let Ok(mut s) = stream else { continue };
-            let body = read_body(&mut s);
-            if is_summary_request(&body) {
-                // Start the stream, then go quiet (the client checks its flag between chunks).
-                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
-                for _ in 0..200 {
-                    let _ = write!(s, "data: {}\n\n", json!({"choices":[{"delta":{"reasoning_content":"hmm "}}]}));
-                    let _ = s.flush();
-                    std::thread::sleep(Duration::from_millis(20));
+            let h = Arc::clone(&h);
+            std::thread::spawn(move || {
+                let body = read_body(&mut s);
+                if is_summary_request(&body) {
+                    h.fetch_add(1, Ordering::SeqCst);
+                    // Start the stream, then trickle thoughts and never finish.
+                    let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
+                    for _ in 0..200 {
+                        let _ = write!(s, "data: {}\n\n", json!({"choices":[{"delta":{"reasoning_content":"hmm "}}]}));
+                        let _ = s.flush();
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    // Hold the connection open (silent) until the test process exits.
+                    std::thread::sleep(Duration::from_secs(600));
+                    return;
                 }
-                h.fetch_add(1, Ordering::SeqCst);
-                keep.push(s);
-                continue;
-            }
-            let _ = write!(
-                s,
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {}\n\ndata: [DONE]\n\n",
-                json!({"choices":[{"delta":{"content":"hi"}}]})
-            );
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {}\n\ndata: [DONE]\n\n",
+                    json!({"choices":[{"delta":{"content":"hi"}}]})
+                );
+            });
         }
     });
     let engine = engine(format!("http://{addr}/v1"), CompactOptions::default(), false, None);
     let (mut c, mut v) = connect(&engine);
+    let t0 = Instant::now();
     turn(&mut c, &mut v, "first");
+    eprintln!("[stopping +{:?}] first turn done; asking for a compaction", t0.elapsed());
     c.send(ClientMsg::Compact { focus: None });
     loop {
-        if let ServerMsg::State(s) = recv(&mut c)
-            && s.busy
-        {
-            break;
+        match recv(&mut c) {
+            ServerMsg::State(s) if s.busy => break,
+            other => eprintln!("[stopping] waiting for busy, got {other:?}"),
         }
     }
+    eprintln!("[stopping +{:?}] busy; stopping it (summary requests received: {})", t0.elapsed(), held.load(Ordering::SeqCst));
     c.send(ClientMsg::Cancel);
     let text = loop {
-        if let ServerMsg::Notice { text, .. } = recv(&mut c) {
-            break text;
+        match recv(&mut c) {
+            ServerMsg::Notice { text, .. } => break text,
+            other => eprintln!("[stopping +{:?}] waiting for the notice, got {other:?}", t0.elapsed()),
         }
     };
+    eprintln!("[stopping +{:?}] notice: {text:?} (summary requests received: {})", t0.elapsed(), held.load(Ordering::SeqCst));
     assert_eq!(text, "Compaction stopped.");
     settle(&mut c, &mut v);
+    eprintln!("[stopping +{:?}] settled; second turn", t0.elapsed());
     assert!(v.compactions.is_empty());
     turn(&mut c, &mut v, "second");
+    eprintln!("[stopping +{:?}] second turn done", t0.elapsed());
 }
 
 // The same tests on the folder backend.

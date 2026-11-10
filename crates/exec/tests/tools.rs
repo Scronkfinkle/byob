@@ -58,6 +58,12 @@ fn tools() -> Registry {
     reg
 }
 
+/// The `stdout:` section of a tool's output text.
+fn stdout_of(text: &str) -> &str {
+    let rest = text.split_once("stdout:\n").map_or("", |(_, r)| r);
+    rest.split("\n\n").next().unwrap_or("")
+}
+
 fn call(ws: &TempDir, tool: &str, args: serde_json::Value) -> ToolOutput {
     let cancel = AtomicBool::new(false);
     let ctx = ToolContext::new(ws.path(), &cancel);
@@ -69,7 +75,8 @@ fn command_output_and_created_files() {
     std::fs::write(ws.path().join("data.csv"), "a,b\n1,2\n3,4\n").unwrap();
     let out = call(&ws, "run_command", json!({"command": "wc -l < data.csv; mkdir -p out && echo hi > out/x.txt && echo more >> data.csv"}));
     assert!(!out.failed, "{out:?}");
-    assert!(out.text.starts_with("Exit code: 0") && out.text.contains("stdout:\n3"), "{}", out.text);
+    // BSD `wc` (macOS) pads its count with spaces.
+    assert!(out.text.starts_with("Exit code: 0") && out.text.contains("stdout:\n") && stdout_of(&out.text).trim() == "3", "{}", out.text);
     assert!(out.text.contains("Files created: out/x.txt") && out.text.contains("Files modified: data.csv"), "{}", out.text);
     assert!(out.changes.contains(&FileChange::Created(ws.path().join("out/x.txt"))));
     assert!(out.changes.contains(&FileChange::Modified(ws.path().join("data.csv"))));

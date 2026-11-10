@@ -14,6 +14,8 @@ pub mod artifact;
 mod auth;
 mod http;
 
+pub use http::embedded_web_available;
+
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -329,8 +331,9 @@ mod tests {
         // Forwarded by a proxy with no identity (e.g. a tagged device): refused.
         let tagged = get(addr, "/", &format!("X-Forwarded-Host: {addr}\r\n"));
         assert!(tagged.starts_with("HTTP/1.1 403"), "{tagged}");
-        // Direct local access still works (404 only because no web dir is configured).
-        assert!(get(addr, "/", "").starts_with("HTTP/1.1 404"));
+        // Direct local access still works (200 with the built-in UI, 404 without one).
+        let direct = get(addr, "/", "");
+        assert!(direct.starts_with("HTTP/1.1 200") || direct.starts_with("HTTP/1.1 404"), "{direct}");
     }
 
     #[test]
@@ -352,7 +355,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let out = get(addr, "/", "");
-            if out.starts_with("HTTP/1.1 404") {
+            // Served normally again (200 with the built-in UI, 404 without one).
+            if out.starts_with("HTTP/1.1 200") || out.starts_with("HTTP/1.1 404") {
                 break;
             }
             assert!(Instant::now() < deadline, "slots never released: {out}");

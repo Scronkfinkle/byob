@@ -178,40 +178,50 @@
           };
         };
 
-        byob = rustPlatform.buildRustPackage {
-          pname = "byob";
-          version = cargoToml.workspace.package.version;
-          src = lib.cleanSource ./.;
-          cargoLock.lockFile = ./Cargo.lock;
-          cargoBuildFlags = [
-            "-p"
-            "byob"
-          ];
-          # The full suite runs via `cargo xtask ci` in the dev shell.
-          doCheck = false;
-          nativeBuildInputs = [ pkgs.pkg-config ] ++ lib.optionals isLinux [ pkgs.makeWrapper ];
-          # nixpkgs' cargo hooks point libsqlite3-sys at the system SQLite (overriding
-          # rusqlite's `bundled`), so it has to be an input here.
-          buildInputs = buildInputs ++ [ pkgs.sqlite ];
-          postFixup = lib.optionalString isLinux ''
-            wrapProgram $out/bin/byob --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs} \
-              --set-default GSETTINGS_SCHEMA_DIR ${gsettingsSchemaDir} \
-              --set-default BYOB_WEB_DIR ${byob-web} ${lib.optionalString hasHost "--set-default BYOB_ARTIFACT_HOST ${byob-artifact-host}/bin/byob-artifact-host"}
-          '';
-          meta = {
-            description = "Native Rust AI agent harness";
-            license = with lib.licenses; [
-              mit
-              asl20
-            ];
-            mainProgram = "byob";
+        # The desktop app. `slim`: without the browser UI compiled in (`--no-default-features`).
+        mkByob =
+          { slim ? false }:
+          rustPlatform.buildRustPackage {
+            pname = if slim then "byob-slim" else "byob";
+            version = cargoToml.workspace.package.version;
+            src = lib.cleanSource ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            cargoBuildFlags = [
+              "-p"
+              "byob"
+            ]
+            ++ lib.optionals slim [ "--no-default-features" ];
+            # byob-web-assets embeds whatever is in crates/web-assets/assets/ at build time.
+            preBuild = lib.optionalString (!slim) ''
+              mkdir -p crates/web-assets/assets
+              cp ${byob-web}/* crates/web-assets/assets/
+            '';
+            # The full suite runs via `cargo xtask ci` in the dev shell.
+            doCheck = false;
+            nativeBuildInputs = [ pkgs.pkg-config ] ++ lib.optionals isLinux [ pkgs.makeWrapper ];
+            # nixpkgs' cargo hooks point libsqlite3-sys at the system SQLite (overriding
+            # rusqlite's `bundled`), so it has to be an input here.
+            buildInputs = buildInputs ++ [ pkgs.sqlite ];
+            postFixup = lib.optionalString isLinux ''
+              wrapProgram $out/bin/byob --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs} \
+                --set-default GSETTINGS_SCHEMA_DIR ${gsettingsSchemaDir} ${lib.optionalString hasHost "--set-default BYOB_ARTIFACT_HOST ${byob-artifact-host}/bin/byob-artifact-host"}
+            '';
+            meta = {
+              description = "Native Rust AI agent harness" + lib.optionalString slim " (without the browser UI)";
+              license = with lib.licenses; [
+                mit
+                asl20
+              ];
+              mainProgram = "byob";
+            };
           };
-        };
+        byob = mkByob { };
+        byob-slim = mkByob { slim = true; };
       in
       {
         packages =
           lib.optionalAttrs hasWorkspace {
-            inherit byob byob-web;
+            inherit byob byob-slim byob-web;
             default = byob;
           }
           // lib.optionalAttrs hasHost { inherit byob-artifact-host; };

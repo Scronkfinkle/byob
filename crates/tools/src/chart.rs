@@ -114,7 +114,7 @@ fn make(args: &Value, workspace: &Path) -> Result<ToolOutput, String> {
     let spec = chart::validate(&Value::Object(input))?;
     let saved = save(workspace, &spec)?;
     let rel = saved.strip_prefix(sandbox::root(workspace)?).map(Path::to_path_buf).unwrap_or_else(|_| saved.clone());
-    let mut text = format!("Made the chart \"{}\" ({} rows, saved as {}).", spec.title, spec.data.len(), rel.display());
+    let mut text = format!("Made the chart \"{}\" ({} rows, saved as {}).", spec.title, spec.data.len(), crate::sandbox::slash(&rel));
     if !note.is_empty() {
         text.push(' ');
         text.push_str(&note);

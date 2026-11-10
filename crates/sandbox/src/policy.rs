@@ -225,6 +225,8 @@ pub fn system_write_paths() -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    // The policy's system paths (`/usr`, …) are Unix paths; there is no Windows sandbox.
+    #[cfg(unix)]
     #[test]
     fn json_round_trip_and_checks() {
         let p = Policy::for_workspace(Path::new("/w"), Path::new("/t")).network(true).limits(Limits::for_timeout(10)).remove_env("BYOB_API_KEY");

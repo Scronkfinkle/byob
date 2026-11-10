@@ -10,23 +10,27 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
-repository = "https://github.com/jesse/byob"
+repository = "https://github.com/Scronkfinkle/byob"
+homepage = "https://github.com/Scronkfinkle/byob"
+keywords = ["ai", "llm", "agent", "desktop", "egui"]
+categories = ["gui", "development-tools"]
 
 [workspace.dependencies]
 # Internal crates (see docs/architecture.md for layering).
-byob-types = { path = "crates/types" }
-byob-protocol = { path = "crates/protocol" }
-byob-server = { path = "crates/server" }
-byob-llm = { path = "crates/llm" }
-byob-store = { path = "crates/store" }
-byob-tools = { path = "crates/tools" }
-byob-mcp = { path = "crates/mcp" }
-byob-plugins = { path = "crates/plugins" }
-byob-sandbox = { path = "crates/sandbox" }
-byob-exec = { path = "crates/exec" }
-byob-agent = { path = "crates/agent" }
-byob-ui-egui = { path = "crates/ui-egui" }
-byob-artifact-wire = { path = "crates/artifact-wire" }
+byob-types = { path = "crates/types", version = "0.1.0" }
+byob-web-assets = { path = "crates/web-assets", version = "0.1.0" }
+byob-protocol = { path = "crates/protocol", version = "0.1.0" }
+byob-server = { path = "crates/server", version = "0.1.0" }
+byob-llm = { path = "crates/llm", version = "0.1.0" }
+byob-store = { path = "crates/store", version = "0.1.0" }
+byob-tools = { path = "crates/tools", version = "0.1.0" }
+byob-mcp = { path = "crates/mcp", version = "0.1.0" }
+byob-plugins = { path = "crates/plugins", version = "0.1.0" }
+byob-sandbox = { path = "crates/sandbox", version = "0.1.0" }
+byob-exec = { path = "crates/exec", version = "0.1.0" }
+byob-agent = { path = "crates/agent", version = "0.1.0" }
+byob-ui-egui = { path = "crates/ui-egui", version = "0.1.0" }
+byob-artifact-wire = { path = "crates/artifact-wire", version = "0.1.0" }
 
 # Foundation.
 thiserror = "2"
@@ -46,6 +50,8 @@ ureq = { version = "3", features = ["json"] }
 # serves a handful of clients, so thread-per-connection is plenty.
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 httparse = "1"
+# Decompressing the embedded (gzipped) web UI for the rare client without gzip support.
+flate2 = "1"
 ewebsock = "0.8"
 # wasm-safe `Instant` (std::time::Instant panics on wasm32-unknown-unknown).
 web-time = "1"

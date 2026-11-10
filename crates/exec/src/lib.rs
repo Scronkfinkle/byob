@@ -193,7 +193,7 @@ fn describe(out: &Outcome, changes: &byob_sandbox::Changes, root: &Path, timeout
             text.push_str(&format!("\n{name}:\n{}\n", t.trim_end()));
         }
     }
-    let rel = |p: &PathBuf| p.strip_prefix(root).unwrap_or(p).display().to_string();
+    let rel = |p: &PathBuf| byob_tools::sandbox::slash(p.strip_prefix(root).unwrap_or(p));
     for (label, list) in [("Files created", &changes.created), ("Files modified", &changes.modified), ("Files deleted", &changes.deleted)] {
         if list.is_empty() {
             continue;

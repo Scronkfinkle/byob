@@ -5,9 +5,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-publish = false
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+# Serve the browser UI compiled into the binary (byob-web-assets) when no --web-dir is set.
+embedded-web = ["dep:byob-web-assets", "dep:flate2"]
 
 [dependencies]
+byob-web-assets = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
 byob-agent.workspace = true
 byob-protocol.workspace = true
 tungstenite.workspace = true

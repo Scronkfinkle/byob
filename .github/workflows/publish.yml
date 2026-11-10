@@ -1,0 +1,53 @@
+# Publishes every crate to crates.io (in dependency order) when a GitHub release is
+# published. Needs the repository secret CARGO_REGISTRY_TOKEN (a crates.io API token with
+# publish-new and publish-update scopes). Run it by hand with dry_run to check first.
+name: Publish crates
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Package and verify only; don't upload"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+      - name: Release tag matches Cargo.toml
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [[ "$TAG" == "v$version" ]] || { echo "::error::release $TAG != v$version"; exit 1; }
+      # Builds the browser UI into crates/web-assets/assets/ so the published
+      # byob-web-assets crate carries it (the folder is gitignored, hence --allow-dirty).
+      - name: Build the browser UI
+        run: nix develop --command cargo xtask web
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          flags=(--workspace --exclude byob-web --exclude xtask --locked --allow-dirty)
+          # Upload only for a published release or a manual run with dry_run off;
+          # anything else (including test triggers) is a dry run.
+          if [[ "${{ github.event_name }}" == release ]] || [[ "${{ github.event_name }}" == workflow_dispatch && "${{ inputs.dry_run }}" == false ]]; then
+            echo "Publishing to crates.io"
+          else
+            flags+=(--dry-run)
+          fi
+          nix develop --command cargo publish "${flags[@]}"

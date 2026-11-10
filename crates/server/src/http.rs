@@ -177,7 +177,7 @@ fn etag(meta: &std::fs::Metadata, variant: &str) -> String {
 
 pub fn serve_static(stream: &mut TcpStream, web_dir: Option<&Path>, req: &Request) -> io::Result<()> {
     let Some(web_dir) = web_dir else {
-        return respond(stream, 404, "text/plain", b"web UI not configured: build it with `cargo xtask web` (or pass --web-dir)");
+        return serve_embedded(stream, req);
     };
     let Some(chosen) = choose_static(web_dir, &req.path, req.accepts_gzip()) else {
         return respond(stream, 404, "text/plain", b"not found");
@@ -194,6 +194,52 @@ pub fn serve_static(stream: &mut TcpStream, web_dir: Option<&Path>, req: &Reques
     match std::fs::read(&chosen.file) {
         Ok(body) => respond_with(stream, 200, chosen.content_type, &extra, &body),
         Err(_) => respond(stream, 404, "text/plain", b"not found"),
+    }
+}
+
+/// The browser UI compiled into the binary (feature `embedded-web`).
+#[cfg(feature = "embedded-web")]
+fn serve_embedded(stream: &mut TcpStream, req: &Request) -> io::Result<()> {
+    if !byob_web_assets::available() {
+        return respond(stream, 404, "text/plain", b"this build has no web UI: run `cargo xtask web` and rebuild, or pass --web-dir");
+    }
+    let path = req.path.split(['?', '#']).next().unwrap_or("/");
+    let Some(asset) = byob_web_assets::get(path) else {
+        return respond(stream, 404, "text/plain", b"not found");
+    };
+    let content_type = content_type(Path::new(asset.path));
+    let mut extra = vec!["Cache-Control: no-cache".to_owned(), format!("ETag: {}", asset.etag), "Vary: Accept-Encoding".to_owned()];
+    if req.header("if-none-match").is_some_and(|v| v.split(',').any(|t| t.trim() == asset.etag || t.trim() == "*")) {
+        return respond_with(stream, 304, content_type, &extra, b"");
+    }
+    if !asset.gzip {
+        return respond_with(stream, 200, content_type, &extra, asset.bytes);
+    }
+    if req.accepts_gzip() {
+        extra.push("Content-Encoding: gzip".to_owned());
+        return respond_with(stream, 200, content_type, &extra, asset.bytes);
+    }
+    let mut body = Vec::new();
+    match io::Read::read_to_end(&mut flate2::read::GzDecoder::new(asset.bytes), &mut body) {
+        Ok(_) => respond_with(stream, 200, content_type, &extra, &body),
+        Err(_) => respond(stream, 500, "text/plain", b"couldn't decompress the web UI"),
+    }
+}
+
+#[cfg(not(feature = "embedded-web"))]
+fn serve_embedded(stream: &mut TcpStream, _req: &Request) -> io::Result<()> {
+    respond(stream, 404, "text/plain", b"this is the slim build of byob, without the browser UI: pass --web-dir, or install the full build")
+}
+
+/// Whether this binary carries the browser UI (feature `embedded-web`, built with `cargo xtask web`).
+pub fn embedded_web_available() -> bool {
+    #[cfg(feature = "embedded-web")]
+    {
+        byob_web_assets::available()
+    }
+    #[cfg(not(feature = "embedded-web"))]
+    {
+        false
     }
 }
 

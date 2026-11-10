@@ -14,6 +14,7 @@ mod wire;
 
 use std::io::{BufRead, BufReader, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 pub use budget::{estimate_history_tokens, estimate_message_tokens, estimate_tokens, fit_history};
@@ -124,24 +125,116 @@ impl Client {
         messages: &[ChatMessage],
         tools: &[ToolSpec],
         cancel: &AtomicBool,
+        on_event: impl FnMut(StreamEvent),
+    ) -> Result<ChatOutcome, LlmError> {
+        self.stream_chat_until(messages, tools, StopWhen { cancel, also: None, deadline: None }, on_event)
+    }
+
+    /// [`Client::stream_chat`] that also stops on a second flag (e.g. a caller's own size
+    /// limit set from `on_event`) or at a deadline. All are checked every 50 ms, so they
+    /// work even while the server sends nothing.
+    pub fn stream_chat_until(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        stop_when: StopWhen<'_>,
         mut on_event: impl FnMut(StreamEvent),
     ) -> Result<ChatOutcome, LlmError> {
+        let cancel = &stop_when;
         let request = ChatRequest::new(&self.config.model, messages, tools);
         let body = serde_json::to_vec(&request).map_err(|e| LlmError::Stream(format!("encoding request: {e}")))?;
-        let mut req = self.agent.post(self.endpoint.as_str()).header("Accept", "text/event-stream").header("Content-Type", "application/json");
-        if let Some(key) = &self.config.api_key {
-            req = req.header("Authorization", &format!("Bearer {key}"));
+        if cancel.now() {
+            return Ok(ChatOutcome { cancelled: true, ..ChatOutcome::default() });
         }
-        let resp = req.send(&body[..]).map_err(|e| LlmError::Transport { url: self.endpoint.to_string(), source: Box::new(e) })?;
-        let status = resp.status().as_u16();
-        if status >= 400 {
-            let mut body = String::new();
-            let _ = resp.into_body().into_reader().take(MAX_ERROR_BODY).read_to_string(&mut body);
-            return Err(LlmError::Http { status, message: wire::error_message(&body) });
+        // The blocking HTTP exchange runs on its own thread so Stop works even while the
+        // server is silent (e.g. processing a long prompt before the first token): we
+        // check `cancel` every POLL instead of only when a chunk arrives.
+        let (tx, rx) = mpsc::channel::<Progress>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (agent, endpoint, key, worker_stop) = (self.agent.clone(), self.endpoint.clone(), self.config.api_key.clone(), Arc::clone(&stop));
+        let spawned = std::thread::Builder::new().name("byob-llm".into()).spawn(move || {
+            let events = tx.clone();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                exchange(&agent, &endpoint, key.as_deref(), &body, &worker_stop, &mut |ev| {
+                    let _ = events.send(Progress::Event(ev));
+                })
+            }))
+            .unwrap_or_else(|_| Err(LlmError::Stream("internal error while reading the reply".into())));
+            let _ = tx.send(Progress::Done(result));
+        });
+        if let Err(e) = spawned {
+            return Err(LlmError::Stream(format!("couldn't start the request: {e}")));
         }
-        let reader = BufReader::new(resp.into_body().into_reader());
-        read_stream(reader, cancel, &mut on_event)
+        // What arrived so far, returned if the caller stops us.
+        let mut partial = ChatOutcome::default();
+        loop {
+            if cancel.now() {
+                stop.store(true, Ordering::Relaxed);
+                partial.cancelled = true;
+                return Ok(partial);
+            }
+            match rx.recv_timeout(POLL) {
+                Ok(Progress::Event(ev)) => {
+                    match &ev {
+                        StreamEvent::Content(t) => partial.content.push_str(t),
+                        StreamEvent::Reasoning(t) => partial.reasoning.push_str(t),
+                    }
+                    on_event(ev);
+                }
+                Ok(Progress::Done(result)) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(LlmError::Stream("the request ended unexpectedly".into())),
+            }
+        }
     }
+}
+
+/// When [`Client::stream_chat_until`] gives up: either flag set, or the deadline passed.
+#[derive(Clone, Copy)]
+pub struct StopWhen<'a> {
+    pub cancel: &'a AtomicBool,
+    pub also: Option<&'a AtomicBool>,
+    pub deadline: Option<std::time::Instant>,
+}
+
+impl StopWhen<'_> {
+    fn now(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+            || self.also.is_some_and(|f| f.load(Ordering::Relaxed))
+            || self.deadline.is_some_and(|d| std::time::Instant::now() >= d)
+    }
+}
+
+/// How often a waiting [`Client::stream_chat`] checks its cancel flag.
+const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+enum Progress {
+    Event(StreamEvent),
+    Done(Result<ChatOutcome, LlmError>),
+}
+
+/// One chat-completions request and its streamed reply (on the request thread).
+fn exchange(
+    agent: &ureq::Agent,
+    endpoint: &url::Url,
+    api_key: Option<&str>,
+    body: &[u8],
+    stop: &AtomicBool,
+    on_event: &mut impl FnMut(StreamEvent),
+) -> Result<ChatOutcome, LlmError> {
+    let mut req = agent.post(endpoint.as_str()).header("Accept", "text/event-stream").header("Content-Type", "application/json");
+    if let Some(key) = api_key {
+        req = req.header("Authorization", &format!("Bearer {key}"));
+    }
+    let resp = req.send(body).map_err(|e| LlmError::Transport { url: endpoint.to_string(), source: Box::new(e) })?;
+    let status = resp.status().as_u16();
+    if status >= 400 {
+        let mut text = String::new();
+        let _ = resp.into_body().into_reader().take(MAX_ERROR_BODY).read_to_string(&mut text);
+        return Err(LlmError::Http { status, message: wire::error_message(&text) });
+    }
+    let reader = BufReader::new(resp.into_body().into_reader());
+    read_stream(reader, stop, on_event)
 }
 
 fn read_stream(mut reader: impl BufRead, cancel: &AtomicBool, on_event: &mut impl FnMut(StreamEvent)) -> Result<ChatOutcome, LlmError> {
