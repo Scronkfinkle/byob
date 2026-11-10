@@ -182,7 +182,7 @@ fn the_panel_switches_resets_removes_and_shows_errors() {
     assert_eq!(p.take(), [ClientMsg::RemovePlugin { plugin: "lint".into(), scope: PluginScope::Workspace }]);
     // A workspace's own settings list only its plugins (for the chat in view's workspace).
     let only = frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::Workspace("w".into())));
-    assert!(has(&only, "lint") && !has(&only, "pdf") && !has(&only, "bad JSON"));
+    assert!(has(&only, "lint") && !has(&only, "pdf") && !has(&only, "bad JSON") && has(&only, "0 of 1 on"));
     let other = frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::Workspace("x".into())));
     assert!(has(&other, "Open a chat in this workspace"));
     // The chat popover's switches act for the chat.

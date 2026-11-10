@@ -269,8 +269,12 @@ impl PluginsUi {
             ui.label(RichText::new("Open a chat in this workspace to see its plugins.").small().color(t.text_dim));
             return;
         }
+        let scopes: &[PluginScope] = match filter {
+            Filter::All => &[PluginScope::Chat, PluginScope::Workspace, PluginScope::Global],
+            Filter::Workspace(_) => &[PluginScope::Workspace],
+        };
         ui.horizontal_wrapped(|ui| {
-            let used: Vec<&PluginInfo> = ext.plugins.iter().filter(|p| p.shadowed_by.is_none()).collect();
+            let used: Vec<&PluginInfo> = ext.plugins.iter().filter(|p| p.shadowed_by.is_none() && scopes.contains(&p.scope)).collect();
             let on = used.iter().filter(|p| p.enabled).count();
             let trouble = used.iter().filter(|p| has_trouble(p)).count();
             let mut text = format!("{on} of {} on", used.len());
@@ -287,10 +291,6 @@ impl PluginsUi {
                 ui.add(egui::Label::new(RichText::new(format!("✗ {} ({}): {}", e.path, e.scope.label(), e.message)).small().color(t.danger)).wrap());
             }
         }
-        let scopes: &[PluginScope] = match filter {
-            Filter::All => &[PluginScope::Chat, PluginScope::Workspace, PluginScope::Global],
-            Filter::Workspace(_) => &[PluginScope::Workspace],
-        };
         let mut any = false;
         for scope in scopes {
             let list: Vec<&PluginInfo> = ext.plugins.iter().filter(|p| p.scope == *scope).collect();
