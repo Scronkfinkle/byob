@@ -7,7 +7,6 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-  pull_request: # TEMPORARY: validate the platform builds on PR #1 (the release job needs a tag)
 
 permissions:
   contents: read

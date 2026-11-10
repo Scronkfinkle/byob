@@ -6,7 +6,6 @@ name: Publish crates
 on:
   release:
     types: [published]
-  pull_request: # TEMPORARY: dry-run validation on PR #1
   workflow_dispatch:
     inputs:
       dry_run:
