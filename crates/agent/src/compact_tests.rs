@@ -475,14 +475,15 @@ fn stopping_a_manual_compaction() {
     let engine = engine(format!("http://{addr}/v1"), CompactOptions::default(), false, None);
     let (mut c, mut v) = connect(&engine);
     turn(&mut c, &mut v, "first");
+    eprintln!("[stopping] first turn done; asking for a compaction");
     c.send(ClientMsg::Compact { focus: None });
     loop {
-        if let ServerMsg::State(s) = recv(&mut c)
-            && s.busy
-        {
-            break;
+        match recv(&mut c) {
+            ServerMsg::State(s) if s.busy => break,
+            other => eprintln!("[stopping] waiting for busy, got {other:?}"),
         }
     }
+    eprintln!("[stopping] busy; stopping it (summary requests seen: {})", held.load(Ordering::SeqCst));
     c.send(ClientMsg::Cancel);
     let text = loop {
         if let ServerMsg::Notice { text, .. } = recv(&mut c) {

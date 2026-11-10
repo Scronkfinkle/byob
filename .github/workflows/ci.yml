@@ -27,6 +27,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # TEMPORARY (PR #1): why does a sandboxed fork fail with ENOMEM on this runner?
+      - name: Sandbox diagnostics
+        continue-on-error: true
+        run: |
+          uname -a
+          for f in /proc/sys/kernel/apparmor_restrict_unprivileged_userns /proc/sys/kernel/unprivileged_userns_clone /proc/sys/user/max_user_namespaces /proc/sys/user/max_pid_namespaces /proc/sys/vm/overcommit_memory; do echo "$f = $(cat "$f" 2>/dev/null || echo n/a)"; done
+          ulimit -a
+          nix develop --command cargo nextest run -p byob-exec -p byob-sandbox --no-fail-fast -j 1 || true
       - name: cargo xtask ci
         run: nix develop --command cargo xtask ci
       - name: Crates package cleanly
