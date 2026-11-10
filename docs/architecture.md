@@ -390,6 +390,28 @@ step (`steps.card`, SQLite schema v5; `card` on the folder store's `step_finishe
 transcript loaded from storage shows it too. The trust question is an ordinary approval card on
 a step named `plugins` with `ask.text` listing the plugins.
 
+**In the UI** (`crates/ui-egui/src/plugins.rs`, `slash.rs`; desktop and browser alike):
+
+- the plugin card under such a step: scope, tools added/removed, the test run (a failure's
+  output open), problems, missing settings as fields (secret ones masked; the typed value is
+  dropped once `SetPluginSetting` is sent, and the field turns into "set ✓" when the next
+  `Extensions` says so), Keep in this workspace / everywhere (the scratch plugin gets a name,
+  from its first tool) and Files. Only a plugin's latest card in the chat offers actions;
+- Settings → Plugins (also "Plugins…" in the ⋯ menu, the header chip, `--open-panel plugins`):
+  load errors, then each scope's plugins with origin, switch (acting at the level that decides
+  it; Reset; "Switch…" for any level), tools, skills, subagents, commands, servers, settings,
+  problems, folder, keep / trust / remove (confirmed) and Reload. A workspace's settings list
+  its own plugins with switches for the workspace; the chat settings popover has per-chat
+  switches;
+- a first-open card above the chat when the workspace's folder brought plugins nobody decided
+  on (Enable all / Choose… / Not now → `TrustPlugins`). It hides while the turn's `plugins`
+  approval card is waiting, and either answer makes the other go away (the engine's next
+  `Extensions` has them decided);
+- a header puzzle chip: plugins on, with a red badge for load errors, problems, a last error or
+  a failed server; it opens the panel on the first plugin in trouble;
+- the composer's `/` menu while the message is `/` and a name: ↑/↓, Enter or Tab inserts
+  `/name `, Esc closes; Enter sends as usual when it is closed.
+
 ### The model's side
 
 One system-prompt line points at `make_tool` and the built-in `plugin-authoring` skill

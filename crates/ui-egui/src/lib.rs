@@ -93,6 +93,8 @@ pub struct ByobApp {
     plugins: plugins::PluginsUi,
     /// The composer's `/` menu.
     slash: slash::SlashMenu,
+    /// Put the keyboard focus in the composer on the next frame (scripted drafts).
+    focus_composer: bool,
 }
 
 impl ByobApp {
@@ -127,6 +129,7 @@ impl ByobApp {
             queue: queue::QueueUi::default(),
             plugins: plugins::PluginsUi::default(),
             slash: slash::SlashMenu::default(),
+            focus_composer: false,
         }
     }
 
@@ -343,7 +346,10 @@ impl ByobApp {
                 None => return false,
             },
             "more-menu" => self.header_rects.open_menu = true,
-            "plugins" => self.plugins.open_on_trouble(),
+            "plugins" => {
+                self.plugins.open_on_trouble();
+                self.show_settings = true;
+            }
             "chat-settings" => {
                 if self.workspaces.chat.is_none() {
                     self.workspaces.toggle_chat();
@@ -377,6 +383,13 @@ impl ByobApp {
     pub fn reveal_settings(&mut self, section: &str) {
         self.show_settings = true;
         self.appearance.reveal = Some(section.to_owned());
+    }
+
+    /// Type `text` into the composer without sending it, as a person would (scripted runs:
+    /// `/` shows the menu).
+    pub fn set_draft(&mut self, text: &str) {
+        text.clone_into(&mut self.input);
+        self.focus_composer = true;
     }
 
     /// Send a user message, as if typed into the composer.
@@ -599,6 +612,9 @@ impl ByobApp {
             ui.label(egui::RichText::new(text).color(color));
         }
         let id = egui::Id::unique("composer");
+        if std::mem::take(&mut self.focus_composer) {
+            ui.memory_mut(|m| m.request_focus(id));
+        }
         // Enter sends (queues while a reply runs); Shift+Enter inserts a newline (consume
         // Enter before the editor sees it). Escape stops editing a queued message. While the
         // `/` menu is open it takes ↑/↓/Enter/Tab/Esc instead.

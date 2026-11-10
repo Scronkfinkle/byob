@@ -115,7 +115,13 @@ impl SlashMenu {
                         job.wrap.max_rows = 1;
                         job.wrap.max_width = width - 12.0;
                         job.wrap.break_anywhere = true;
-                        let row = ui.add(egui::Button::selectable(k == self.selected, job).wrap_mode(egui::TextWrapMode::Truncate));
+                        // A full-width row: the selection spans the menu.
+                        let galley = ui.painter().layout_job(job);
+                        let (rect, row) = ui.allocate_exact_size(egui::vec2(width, galley.size().y + 6.0), egui::Sense::click());
+                        if k == self.selected {
+                            ui.painter().rect_filled(rect, t.round(4.0), t.selection);
+                        }
+                        ui.painter().galley(egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0), galley, t.text);
                         if row.hovered() {
                             self.selected = k;
                         }

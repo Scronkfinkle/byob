@@ -40,6 +40,7 @@
 //!     --open-panel NAME       open new-workspace, new-workspace-container, workspace-settings,
 //!                             chat-settings, more-menu (the header's ⋯ menu) or plugins
 //!                             (Settings → Plugins) once the messages are done
+//!     --draft TEXT            type TEXT into the composer once the messages are done, unsent
 //! ```
 //!
 //! Chats live in `byob.db` (or, with `storage = "folder"`, in plain files); preferences in `settings.json` and the API key in `secrets.json`
@@ -219,6 +220,8 @@ fn parse_args() -> Result<Args, String> {
                 }
                 args.script.open_panel = Some(v);
             }
+            // Hidden, for testing: type into the composer without sending (`/` opens the menu).
+            "--draft" => args.script.draft = Some(it.next().ok_or("--draft needs text")?),
             "--attach" => args.script.attach.push(it.next().ok_or("--attach needs a file")?.into()),
             "--screenshot" => args.script.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into()),
             // Hidden, for testing: act on the artifacts once the conversation settles.

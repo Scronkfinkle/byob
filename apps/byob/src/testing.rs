@@ -34,6 +34,8 @@ pub struct Script {
     pub test_connection: Option<(String, String)>,
     /// Open this workspace view once the messages are done (`--open-panel`).
     pub open_panel: Option<String>,
+    /// Type this into the composer once the messages are done, without sending (`--draft`).
+    pub draft: Option<String>,
     /// Create this workspace (name, environment) through the New workspace form first,
     /// then send the messages in it (`--new-workspace`).
     pub new_workspace: Option<(String, byob_types::config::EnvKind)>,
@@ -183,6 +185,9 @@ impl Runner {
             && app.open_panel(&name)
         {
             self.script.open_panel = None;
+        }
+        if let Some(text) = self.script.draft.take_if(|_| app.settled()) {
+            app.set_draft(&text);
         }
         if self.script.screenshot.is_none() {
             return;

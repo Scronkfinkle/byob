@@ -52,6 +52,8 @@ pub struct PluginsUi {
     choosing: Option<BTreeSet<String>>,
     /// The plugin the panel shows open (a card's "Files").
     focus: Option<String>,
+    /// Open the first plugin with trouble once the list is known.
+    focus_trouble: bool,
     /// Scroll the settings to the Plugins section on the next frame.
     pub(crate) reveal: bool,
     /// Open the settings at the Plugins section.
@@ -97,8 +99,8 @@ impl PluginsUi {
 
     /// Show the Plugins panel, open on the first plugin with trouble (if any).
     pub fn open_on_trouble(&mut self) {
-        let first = self.ext.as_ref().and_then(|e| e.plugins.iter().find(|p| p.shadowed_by.is_none() && p.enabled && has_trouble(p)).map(|p| p.id.clone()));
-        self.open(first.as_deref());
+        self.focus_trouble = true;
+        self.open(None);
     }
 
     /// The copy of `id` the chat uses.
@@ -255,6 +257,12 @@ impl PluginsUi {
             ui.label(RichText::new("Waiting for the engine…").small().color(t.text_dim));
             return;
         };
+        if std::mem::take(&mut self.focus_trouble) {
+            let first = ext.plugins.iter().find(|p| p.shadowed_by.is_none() && p.enabled && has_trouble(p));
+            if let Some(p) = first {
+                self.focus = Some(p.id.clone());
+            }
+        }
         if let Filter::Workspace(id) = filter
             && ext.workspace.as_deref() != Some(id.as_str())
         {
