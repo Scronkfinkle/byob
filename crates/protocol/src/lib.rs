@@ -10,6 +10,7 @@ pub mod connect;
 pub mod delegation;
 pub mod env;
 pub mod media;
+pub mod queue;
 pub mod usage;
 pub mod workspace;
 
@@ -20,11 +21,12 @@ pub use connect::{Detected, InferenceTest, Link, PRESETS, Preset, Problem};
 pub use delegation::{Delegation, DelegationState, DelegationUpdate};
 pub use env::{ContainerEnv, EnvAction, EnvSupport, WorkspaceEnv};
 pub use media::{MediaContent, MediaKind, MediaRef};
+pub use queue::{ChatQueue, QueuePause, QueuedMessage};
 pub use usage::{ChatUsage, Compaction};
 pub use workspace::{ChatEndpoint, ConfigScope, ConfigView, FolderList, NewFolder, WorkspaceSummary};
 
 /// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -60,15 +62,39 @@ pub enum ClientMsg {
     /// Run the last message of the chat in view again, after its reply failed before
     /// producing anything (e.g. the server was down). The failed reply is removed.
     Retry,
-    /// Send a user message and start a turn. `attachments` are paths the engine returned
-    /// in [`ServerMsg::Uploaded`].
+    /// Send a user message and start a turn; while a reply runs in the chat, queue it
+    /// instead (see [`queue`]). `attachments` are paths the engine returned in
+    /// [`ServerMsg::Uploaded`].
     SendMessage {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<String>,
     },
-    /// Stop the running turn. Pending approvals are denied.
+    /// Stop the running turn. Pending approvals are denied; the chat's queue pauses.
     Cancel,
+    /// Take queued message `id` out of the queue of the chat in view.
+    Unqueue {
+        id: u64,
+    },
+    /// Replace the text and attachments of queued message `id` (in place). Empty text and no
+    /// attachments removes it.
+    EditQueued {
+        id: u64,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<String>,
+    },
+    /// Move queued message `id` to position `to` (0 = next; past the end = last).
+    MoveQueued {
+        id: u64,
+        to: u32,
+    },
+    /// Run queued message `id` next, now: stop the running turn (if any) and resume the queue.
+    SendQueuedNow {
+        id: u64,
+    },
+    /// Let a paused queue go on (starts the next message if the chat is free).
+    ResumeQueue,
     /// Answer a pending approval (a [`Step`] with status [`StepStatus::Waiting`]). Any
     /// client may answer; the first answer wins and later ones are ignored.
     Approve {
@@ -259,6 +285,9 @@ pub enum ServerMsg {
     ContainersChecked { ok: bool, message: String },
     /// Answer to [`ClientMsg::CreateWorkspace`].
     WorkspaceCreated { id: Option<String>, error: Option<String> },
+    /// The queue of the chat in view; sent after [`ServerMsg::Transcript`] and whenever it
+    /// changes.
+    Queue(ChatQueue),
 }
 
 /// A chat as shown in the sidebar.

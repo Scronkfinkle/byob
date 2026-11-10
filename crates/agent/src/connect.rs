@@ -321,6 +321,8 @@ impl Engine {
             None => Vec::new(),
         };
         self.send_viewers(&chat, ServerMsg::Transcript { entries });
+        // Retrying a failed reply lets a queue it paused go on after it.
+        self.unpause_queue(&chat);
         self.begin_turn(client, text, attached);
     }
 }

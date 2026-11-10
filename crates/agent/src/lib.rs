@@ -35,6 +35,9 @@ mod limits;
 #[cfg(test)]
 mod loop_tests;
 pub mod permissions;
+mod queue;
+#[cfg(test)]
+mod queue_tests;
 mod steps;
 mod subagents;
 #[cfg(test)]
@@ -448,6 +451,10 @@ struct Engine {
     detecting: bool,
     /// Clients with a connection test running.
     testing: BTreeSet<ClientId>,
+    /// Messages waiting for their chat to be free, by chat (in memory only).
+    queues: BTreeMap<String, queue::Queue>,
+    /// Last id given to a queued message.
+    queue_ids: u64,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -503,6 +510,8 @@ impl Engine {
             detected: Vec::new(),
             detecting: false,
             testing: BTreeSet::new(),
+            queues: BTreeMap::new(),
+            queue_ids: 0,
             endpoints,
             config: config.inference,
             llm,
@@ -641,6 +650,7 @@ impl Engine {
         if let Some(usage) = chat.as_deref().and_then(|c| self.usage(c)) {
             self.send_to(id, ServerMsg::Usage(usage));
         }
+        self.send_to(id, ServerMsg::Queue(self.queue_view(chat.as_deref())));
         // Artifacts come last: clients take it as the end of opening a chat.
         self.send_to(id, ServerMsg::Artifacts { chat, artifacts });
         self.gc();
@@ -748,6 +758,7 @@ impl Engine {
             Err(e) => return Err(format!("couldn't delete the chat: {e}")),
         }
         self.live.remove(chat);
+        self.queues.remove(chat);
         self.provisional.remove(chat);
         if let Err(e) = self.workspaces.forget_chat(chat) {
             log::warn!("forgetting the settings of chat {chat}: {e}");
@@ -906,15 +917,14 @@ impl Engine {
             ClientMsg::DetectEndpoints => self.detect_endpoints(),
             ClientMsg::Retry => self.retry(id),
             ClientMsg::SendMessage { text, attachments } => self.start_turn(id, text, &attachments),
+            ClientMsg::Unqueue { id: item } => self.unqueue(id, item),
+            ClientMsg::EditQueued { id: item, text, attachments } => self.edit_queued(id, item, text, &attachments),
+            ClientMsg::MoveQueued { id: item, to } => self.move_queued(id, item, to),
+            ClientMsg::SendQueuedNow { id: item } => self.send_queued_now(id, item),
+            ClientMsg::ResumeQueue => self.resume_queue(id),
             ClientMsg::Cancel => {
                 if let Some(chat) = self.client_chat(id) {
-                    for t in self.turns.values().filter(|t| t.chat == chat) {
-                        t.cancel.store(true, Ordering::Relaxed);
-                    }
-                    if let Some(flag) = self.compacting.get(&chat) {
-                        flag.store(true, Ordering::Relaxed);
-                    }
-                    self.deny_pending(|_, t| t.is_some_and(|t| t.chat == chat), "stopped");
+                    self.stop_chat(&chat);
                 }
             }
             ClientMsg::Approve { step, answer } => self.answer(step, answer),
@@ -944,6 +954,17 @@ impl Engine {
             ClientMsg::ListFolders { path } => self.list_folders(id, path),
             ClientMsg::CheckContainers => self.check_containers(id),
         }
+    }
+
+    /// Stop what runs in `chat` (its turn, or a manual compaction); pending approvals are denied.
+    pub(crate) fn stop_chat(&mut self, chat: &str) {
+        for t in self.turns.values().filter(|t| t.chat == chat) {
+            t.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(flag) = self.compacting.get(chat) {
+            flag.store(true, Ordering::Relaxed);
+        }
+        self.deny_pending(|_, t| t.is_some_and(|t| t.chat == chat), "stopped");
     }
 
     /// `ClientMsg::WorkspaceEnv`: apply `action` to workspace `workspace` (default: the one
@@ -1282,9 +1303,13 @@ impl Engine {
         Ok(id)
     }
 
+    /// `ClientMsg::SendMessage`: start a turn, or queue the message while one runs.
     fn start_turn(&mut self, client: ClientId, text: String, attached: &[String]) {
         let text = text.trim().to_owned();
-        if let Some(focus) = compact::command(&text) {
+        let busy = self.client_chat(client).filter(|c| self.chat_busy(c));
+        if busy.is_none()
+            && let Some(focus) = compact::command(&text)
+        {
             self.compact_chat(client, focus);
             return;
         }
@@ -1298,39 +1323,52 @@ impl Engine {
         if text.is_empty() && attached.is_empty() {
             return;
         }
-        self.begin_turn(client, text, attached);
+        match busy {
+            Some(chat) => self.enqueue(client, &chat, text, attached),
+            None => self.begin_turn(client, text, attached),
+        }
     }
 
     /// Add the user's message (and a reply entry) to the client's chat, creating the chat if
     /// it is new, and start the turn.
     fn begin_turn(&mut self, client: ClientId, text: String, attached: Vec<MediaRef>) {
-        // The chat's settings: global, then its workspace's, then its own.
-        let settings = self.chat_settings(self.client_chat(client).as_deref(), Some(client));
-        let llm = match self.llm_for(&settings.inference) {
-            Ok(llm) => llm,
-            Err(e) => {
-                let text = format!("inference URL is invalid: {e}");
-                self.notice(client, text);
-                return;
-            }
-        };
         let chat = match self.client_chat(client) {
             Some(chat) => chat,
-            None => match self.create_chat(client, &text) {
-                Ok(chat) => {
-                    self.show_chat(client, Some(chat.clone()));
-                    chat
-                }
-                Err(e) => {
-                    self.notice(client, format!("couldn't create the chat: {e}"));
+            None => {
+                // Check the endpoint the new chat would use before creating it.
+                let settings = self.chat_settings(None, Some(client));
+                if let Err(e) = self.llm_for(&settings.inference) {
+                    self.notice(client, format!("inference URL is invalid: {e}"));
                     return;
                 }
-            },
+                match self.create_chat(client, &text) {
+                    Ok(chat) => {
+                        self.show_chat(client, Some(chat.clone()));
+                        chat
+                    }
+                    Err(e) => {
+                        self.notice(client, format!("couldn't create the chat: {e}"));
+                        return;
+                    }
+                }
+            }
         };
         if self.chat_busy(&chat) {
             self.notice(client, "a reply is still running in this chat; stop it first".into());
             return;
         }
+        if let Err(e) = self.begin_turn_in(&chat, text, attached) {
+            self.notice(client, e);
+        }
+    }
+
+    /// Add the user's message (and a reply entry) to `chat`, which isn't busy, and start the
+    /// turn. Nothing is added if it can't start.
+    pub(crate) fn begin_turn_in(&mut self, chat: &str, text: String, attached: Vec<MediaRef>) -> Result<(), String> {
+        let chat = chat.to_owned();
+        // The chat's settings: global, then its workspace's, then its own.
+        let settings = self.chat_settings(Some(&chat), None);
+        let llm = self.llm_for(&settings.inference).map_err(|e| format!("inference URL is invalid: {e}"))?;
         let eff = &settings.effective;
         let plan = self.endpoints.plan_with(&settings.inference, eff.tool_mode.value);
         let workspace_dir = self.live(&chat).map(|l| Arc::clone(&l.workspace)).ok();
@@ -1341,28 +1379,17 @@ impl Engine {
         }
         let compaction = self.compact_options(eff);
         let policy = self.policy_for(eff);
-        let (history, ids, prior, workspace, first) = match self.live(&chat) {
-            Ok(live) => {
-                let system_prompt = system_prompt(&base_prompt, live);
-                let (history, ids) = compact::history(&live.entries, latest(live), Some(&text), &system_prompt);
-                let prior = live.entries.last().map_or(0, |e| e.id);
-                (history, ids, prior, Arc::clone(&live.workspace), live.entries.is_empty())
-            }
-            Err(e) => {
-                self.notice(client, e);
-                return;
-            }
+        let (history, ids, prior, workspace, first) = {
+            let live = self.live(&chat)?;
+            let system_prompt = system_prompt(&base_prompt, live);
+            let (history, ids) = compact::history(&live.entries, latest(live), Some(&text), &system_prompt);
+            let prior = live.entries.last().map_or(0, |e| e.id);
+            (history, ids, prior, Arc::clone(&live.workspace), live.entries.is_empty())
         };
         let added = self
             .add_message(&chat, &NewMessage::user(text.clone()), attached.clone())
             .and_then(|_| self.add_message(&chat, &NewMessage::assistant_streaming(None), Vec::new()));
-        let reply = match added {
-            Ok(reply) => reply,
-            Err(e) => {
-                self.notice(client, format!("couldn't save the message: {e}"));
-                return;
-            }
-        };
+        let reply = added.map_err(|e| format!("couldn't save the message: {e}"))?;
         let mut history = history;
         if let Some(last) = history.last_mut().filter(|_| !attached.is_empty()) {
             *last = attachments::user_message(&workspace, &text, &attached);
@@ -1408,6 +1435,7 @@ impl Engine {
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });
         }
+        Ok(())
     }
 
     fn handle_turn(&mut self, event: turn::TurnEvent) {
@@ -1496,17 +1524,22 @@ impl Engine {
             self.send_to(client, ServerMsg::Notice { level: NoticeLevel::Info, text: "Nothing to compact yet.".into() });
             return;
         };
+        if let Err((level, text)) = self.compact_chat_in(&chat, focus) {
+            self.send_to(client, ServerMsg::Notice { level, text });
+        }
+    }
+
+    /// Start summarising `chat` (see [`Self::compact_chat`]), or say why not.
+    pub(crate) fn compact_chat_in(&mut self, chat: &str, focus: Option<String>) -> Result<(), (NoticeLevel, String)> {
+        let chat = chat.to_owned();
+        let error = |text: String| Err((NoticeLevel::Error, text));
         if self.chat_busy(&chat) {
-            self.notice(client, "a reply is still running in this chat; stop it first".into());
-            return;
+            return error("a reply is still running in this chat; stop it first".into());
         }
         let settings = self.chat_settings(Some(&chat), None);
         let llm = match self.llm_for(&settings.inference) {
             Ok(llm) => llm,
-            Err(e) => {
-                self.notice(client, format!("inference URL is invalid: {e}"));
-                return;
-            }
+            Err(e) => return error(format!("inference URL is invalid: {e}")),
         };
         let plan = self.endpoints.plan_with(&settings.inference, settings.effective.tool_mode.value);
         let specs = turn::specs(&self.tools);
@@ -1516,17 +1549,13 @@ impl Engine {
                 let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base_prompt, live));
                 (messages, live.entries.last().map_or(0, |e| e.id))
             }
-            Err(e) => {
-                self.notice(client, e);
-                return;
-            }
+            Err(e) => return error(e),
         };
         let start = compact::content_start(&messages);
         let fresh = messages.iter().skip(start).filter(|m| m.content.as_deref() != Some(compact::SUMMARY_ACK)).count();
         let has_summary = messages.get(start).is_some_and(|m| m.content.as_deref().is_some_and(|c| c.starts_with(compact::SUMMARY_HEADER)));
         if fresh <= usize::from(has_summary) {
-            self.send_to(client, ServerMsg::Notice { level: NoticeLevel::Info, text: "Nothing new to compact.".into() });
-            return;
+            return Err((NoticeLevel::Info, "Nothing new to compact.".into()));
         }
         let tokens_before = plan.raw_tokens(&messages, &specs);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1547,8 +1576,7 @@ impl Engine {
             let _ = inbox.send(Input::Compacted(Box::new(ManualDone { chat: c, through, focus: f, tokens_before, elapsed_ms, result })));
         });
         if let Err(e) = spawned {
-            self.notice(client, format!("could not start the compaction: {e}"));
-            return;
+            return error(format!("could not start the compaction: {e}"));
         }
         self.compacting.insert(chat.clone(), cancel);
         if let Some(live) = self.live.get_mut(&chat) {
@@ -1557,10 +1585,12 @@ impl Engine {
         self.chat_changed(&chat);
         self.viewer_states(&chat);
         self.send_usage(&chat);
+        Ok(())
     }
 
     fn manual_compacted(&mut self, done: ManualDone) {
         let ManualDone { chat, through, focus, tokens_before, elapsed_ms, result } = done;
+        let mut pause = None;
         self.compacting.remove(&chat);
         if let Some(live) = self.live.get_mut(&chat) {
             live.tally.compacting = false;
@@ -1578,6 +1608,7 @@ impl Engine {
                     self.chat_changed(&chat);
                     self.viewer_states(&chat);
                     self.send_usage(&chat);
+                    self.queue_turn_ended(&chat, None);
                     self.gc();
                     return;
                 }
@@ -1594,16 +1625,18 @@ impl Engine {
                 self.record_compaction(&chat, &new);
             }
             Err(failure) => {
-                let (level, text) = match failure {
-                    compact::Failure::Stopped => (NoticeLevel::Info, "Compaction stopped.".to_owned()),
-                    compact::Failure::Error(e) => (NoticeLevel::Error, format!("couldn't compact the conversation: {e}")),
+                let (level, text, why) = match failure {
+                    compact::Failure::Stopped => (NoticeLevel::Info, "Compaction stopped.".to_owned(), byob_protocol::QueuePause::Stopped),
+                    compact::Failure::Error(e) => (NoticeLevel::Error, format!("couldn't compact the conversation: {e}"), byob_protocol::QueuePause::Failed),
                 };
                 self.send_viewers(&chat, ServerMsg::Notice { level, text });
+                pause = Some(why);
             }
         }
         self.chat_changed(&chat);
         self.viewer_states(&chat);
         self.send_usage(&chat);
+        self.queue_turn_ended(&chat, pause);
         self.gc();
     }
 
@@ -1693,6 +1726,13 @@ impl Engine {
         if let (Some(user), Some(reply), None) = (run.title_from, content, &error) {
             chats::spawn_titler(run.llm.clone(), run.chat.clone(), user, reply, self.inbox.clone());
         }
+        // On to the next queued message, unless the turn was stopped or failed.
+        let pause = if run.cancel.load(Ordering::Relaxed) {
+            Some(byob_protocol::QueuePause::Stopped)
+        } else {
+            error.as_ref().map(|_| byob_protocol::QueuePause::Failed)
+        };
+        self.queue_turn_ended(&run.chat, pause);
         self.gc();
     }
 

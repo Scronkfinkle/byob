@@ -211,6 +211,8 @@ impl ByobApp {
                 // Handled by the usage meter above.
                 ServerMsg::Usage(_) | ServerMsg::Compactions { .. } | ServerMsg::Compacted(_) => {}
                 ServerMsg::InferenceTested(test) => self.connect.tested(test),
+                // Not shown yet.
+                ServerMsg::Queue(_) => {}
                 // Handled by the workspace views and the sidebar above.
                 ServerMsg::WorkspaceEnv(_)
                 | ServerMsg::Workspaces { .. }
