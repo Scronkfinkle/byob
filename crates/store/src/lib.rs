@@ -61,6 +61,8 @@ pub use model::{
 };
 pub use paths::{HOME_ENV, Paths, migrate_workspace};
 pub use schema::LATEST as SCHEMA_VERSION;
-pub use settings::{CompactionSettings, InferenceSettings, ModelRole, SECRETS_MODE, Secrets, Settings, StorageKind, SubagentSettings, Theme};
+pub use settings::{
+    CompactionSettings, ContainerSettings, InferenceSettings, ModelRole, SECRETS_MODE, Secrets, Settings, StorageKind, SubagentSettings, Theme,
+};
 pub use steps::MAX_STEP_OUTPUT;
 pub use store::{BUSY_TIMEOUT, MAX_PAGE, Store};

@@ -21,6 +21,8 @@
 //! tool to call, because small models follow an explicit next step far better than prose.
 
 pub mod choices;
+pub mod container;
+pub mod devcontainer;
 pub mod hints;
 pub mod nix;
 pub mod pixi;
@@ -136,6 +138,10 @@ pub(crate) trait Runner {
     /// Ask the user (see [`byob_tools::ToolContext::ask`]).
     fn ask(&self, _q: &Question) -> Answer {
         Answer::AutoNo
+    }
+    /// The user pressed Stop.
+    fn cancelled(&self) -> bool {
+        false
     }
 }
 
@@ -274,11 +280,21 @@ pub struct Found {
     pub mise: Option<PathBuf>,
     /// Homebrew or winget, for `install_system_packages` (the last resort).
     pub system: Option<system::SystemInstaller>,
+    /// Docker or Podman, for workspaces whose commands run in a container.
+    pub containers: Option<container::Runtime>,
+    /// The image for containers without a devcontainer.json (default [`container::DEFAULT_IMAGE`]).
+    pub container_image: Option<String>,
 }
 
 impl Found {
     /// Look for everything. `data_dir` holds caches and installed packages.
     pub fn detect(data_dir: Option<&Path>) -> Self {
+        Self::detect_with(data_dir, None, None)
+    }
+
+    /// Like [`Found::detect`], with the settings for containers: the default image and
+    /// `docker` / `podman` (else Podman if installed, else Docker).
+    pub fn detect_with(data_dir: Option<&Path>, container_image: Option<String>, container_runtime: Option<&str>) -> Self {
         let nix = nix::Nix::detect(data_dir);
         if let Some(n) = &nix {
             log::info!("environments: Nix {} ({})", n.binary().display(), if n.daemon() { "daemon" } else { "single-user" });
@@ -294,7 +310,11 @@ impl Found {
         if let Some(s) = &system {
             log::info!("environments: {} ({}), only as an approved last resort", s.name(), s.program.display());
         }
-        Self { nix, pixi, mise, system }
+        let containers = container::Runtime::detect(container_runtime);
+        if let Some(c) = &containers {
+            log::info!("environments: containers with {} ({}), opt-in per workspace", c.name(), c.program.display());
+        }
+        Self { nix, pixi, mise, system, containers, container_image }
     }
 }
 
@@ -314,6 +334,10 @@ pub struct Envs {
     /// Workspaces whose declined environment the model was told about.
     told: Mutex<BTreeSet<PathBuf>>,
     system: Option<system::SystemInstaller>,
+    containers: Option<container::Containers>,
+    /// Workspaces whose container the model was told about (or whose declined
+    /// devcontainer it was told about).
+    told_container: Mutex<BTreeSet<PathBuf>>,
     /// Per workspace: names `install_packages` couldn't find (the only ones
     /// `install_system_packages` may install while there is a workspace installer).
     missing: Mutex<BTreeMap<PathBuf, BTreeSet<String>>>,
@@ -352,7 +376,9 @@ impl Envs {
             (None, Some(program), Some(data)) => Some(pixi::Pixi::new(program.clone(), data)),
             _ => None,
         };
-        Self { nix: found.nix, pixi, projects, state, mode, choices, system: found.system, ..Self::default() }
+        // Containers keep their temp folders in the data folder.
+        let containers = found.containers.filter(|_| data_dir.is_some()).map(|rt| container::Containers::new(rt, found.container_image));
+        Self { nix: found.nix, pixi, projects, state, mode, choices, system: found.system, containers, ..Self::default() }
     }
 
     /// No package managers (tests, or a machine without any).
@@ -366,9 +392,14 @@ impl Envs {
         if self.nix.is_some() { Some("Nix") } else { self.pixi.as_ref().map(|_| "pixi") }
     }
 
+    /// Docker or Podman, if workspaces can run their commands in a container.
+    pub fn containers(&self) -> Option<&container::Containers> {
+        self.containers.as_ref()
+    }
+
     /// A short paragraph for the system prompt.
     pub fn prompt(&self) -> Option<String> {
-        let name = self.installer()?;
+        let name = self.installer().or_else(|| self.containers.as_ref().map(|_| "the container's package manager"))?;
         Some(format!(
             "Software: run_command and run_python only have what is installed. When a program or a Python library is missing \
              (\"command not found\", ModuleNotFoundError), call install_packages — it uses {name} and keeps the packages for this \
@@ -404,6 +435,9 @@ impl Envs {
     /// May `install_system_packages` install `packages` for `ws`? Only what the workspace
     /// installer couldn't find, or anything where there is none.
     pub(crate) fn system_allowed(&self, ws: &Path, packages: &[String]) -> Result<(), String> {
+        if self.containers.is_some() && self.choices.get(ws).container == Some(true) {
+            return Err("This workspace's commands run in its container: call install_packages, which installs there.".into());
+        }
         let Some(installer) = self.installer() else { return Ok(()) };
         let missing = self.missing.lock().unwrap_or_else(PoisonError::into_inner);
         let known = missing.get(ws);
@@ -452,6 +486,71 @@ impl Envs {
             }
         }
         out
+    }
+
+    /// Whether `ws`'s commands run in its container, and if so the container (created or
+    /// started as needed). `None`: on this machine. Asks once per workspace when it has a
+    /// devcontainer.json; without one, only the user's setting turns it on. `notes` gets
+    /// what the model should hear once.
+    pub(crate) fn container(&self, ws: &Path, run: &dyn Runner, notes: &mut Vec<String>) -> Option<Result<container::Ready, String>> {
+        let devcontainer = devcontainer::find(ws);
+        let choice = self.choices.get(ws).container;
+        let Some(c) = &self.containers else {
+            return (choice == Some(true)).then(|| {
+                Err("This workspace is set to run commands in a container, but neither Docker nor Podman is installed. Nothing ran. \
+                     Install one, or turn containers off in Settings → Workspace environment."
+                    .to_owned())
+            });
+        };
+        let dir = self.ws_dir(ws)?;
+        let want = match (choice, devcontainer, self.mode) {
+            (Some(v), ..) => v,
+            (None, None, _) | (None, Some(_), ProjectMode::Never) => false,
+            (None, Some(_), ProjectMode::Always) => true,
+            (None, Some(file), ProjectMode::Ask) => {
+                let _one = self.asking.lock().unwrap_or_else(PoisonError::into_inner);
+                match self.choices.get(ws).container {
+                    Some(v) => v,
+                    None => {
+                        let answer = run.ask(&container_question(file, c.runtime.name()));
+                        if let Err(e) = self.choices.set(ws, choices::Field::Container, Some(answer.allowed()), answer.by_user()) {
+                            log::warn!("environments: {e}");
+                        }
+                        answer.allowed()
+                    }
+                }
+            }
+        };
+        let first = self.told_container.lock().unwrap_or_else(PoisonError::into_inner).insert(ws.to_path_buf());
+        if !want {
+            if let (Some(file), true) = (devcontainer, first) {
+                notes.push(format!("This workspace has {file}, but the user chose to run commands on their machine, not in the dev container."));
+            }
+            return None;
+        }
+        let spec = match devcontainer::Spec::for_workspace(ws, &c.default_image) {
+            Ok(s) => s,
+            Err(e) => return Some(Err(format!("The workspace's dev container can't be used: {e}. Nothing ran."))),
+        };
+        let ready = c.ensure(ws, &spec, &dir.join("ctmp"), &|| run.cancelled());
+        if let Ok(r) = &ready {
+            if first || r.fresh {
+                let mut n = format!(
+                    "Commands run inside this workspace's {} container {} (image {}), as the user, not on their machine; the workspace is \
+                     mounted at the same path. install_packages installs with the container's package manager or pip. No internet unless a \
+                     call sets network: true.",
+                    c.runtime.name(),
+                    r.name,
+                    r.image
+                );
+                if !spec.ignored.is_empty() {
+                    n.push_str(&format!(" Settings in {} that byob ignores: {}.", spec.file.unwrap_or("devcontainer.json"), spec.ignored.join(", ")));
+                }
+                notes.push(n);
+            }
+            notes.extend(r.notes.iter().cloned());
+        }
+        Some(ready)
     }
 
     /// Remember what an install couldn't find, and point at the last resort.
@@ -513,6 +612,16 @@ impl Envs {
 
     /// Install `packages` for workspace `ws`.
     pub(crate) fn install(&self, ws: &Path, packages: &[String], run: &dyn Runner) -> Result<Installed, String> {
+        let mut notes = Vec::new();
+        if let Some(ready) = self.container(ws, run, &mut notes) {
+            let ready = ready?;
+            let c = self.containers.as_ref().ok_or("no container runtime")?;
+            let mut done = c.install(&ready, ws, packages, &|| run.cancelled())?;
+            if !notes.is_empty() {
+                done.text = format!("({})\n\n{}", notes.join(")\n("), done.text);
+            }
+            return Ok(done);
+        }
         let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(dir) = self.ws_dir(ws) else { return Err("byob has no data folder to install packages into".into()) };
         let mut done = match (&self.nix, &self.pixi) {
@@ -544,7 +653,16 @@ impl EnvControl for Envs {
                 ProjectMode::Ask => None,
             },
             installer: self.installer().map(str::to_owned),
-            container: ContainerEnv::default(),
+            container: match &self.containers {
+                None => ContainerEnv { use_container: c.container, devcontainer: devcontainer::find(&ws).map(str::to_owned), ..ContainerEnv::default() },
+                Some(k) => ContainerEnv {
+                    runtime: Some(k.runtime.name().to_owned()),
+                    devcontainer: devcontainer::find(&ws).map(str::to_owned),
+                    use_container: c.container,
+                    image: devcontainer::Spec::for_workspace(&ws, &k.default_image).map_or_else(|e| e, |s| s.describe(&ws)),
+                    state: k.state(&ws),
+                },
+            },
             message: None,
             failed: false,
         }
@@ -563,8 +681,34 @@ impl EnvControl for Envs {
                 }
                 .into())
             }
-            EnvAction::Container { .. } | EnvAction::StopContainer | EnvAction::RemoveContainer => Err("Containers aren't available in this build.".into()),
+            EnvAction::Container { on } => {
+                self.choices.set(&ws, choices::Field::Container, *on, true)?;
+                self.told_container.lock().unwrap_or_else(PoisonError::into_inner).remove(&ws);
+                Ok(match on {
+                    Some(true) => "Commands run in the workspace's container from the next one on.",
+                    Some(false) => "Commands run on this machine (the container is kept until you remove it).",
+                    None => "byob asks again if the workspace has a devcontainer.json.",
+                }
+                .into())
+            }
+            EnvAction::StopContainer => self.containers.as_ref().ok_or("Neither Docker nor Podman is installed.")?.stop(&ws),
+            EnvAction::RemoveContainer => self.containers.as_ref().ok_or("Neither Docker nor Podman is installed.")?.remove(&ws),
         }
+    }
+}
+
+/// "Run commands in the dev container?", asked once per workspace with a devcontainer.json.
+fn container_question(file: &str, runtime: &str) -> Question {
+    Question {
+        title: format!("Run this workspace's commands in its dev container ({file})"),
+        text: format!(
+            "byob would create a long-lived {runtime} container from {file} for this workspace and run run_command and run_python inside it, \
+             as your user, with the workspace mounted at the same path. Getting or building the image can take minutes and uses the \
+             internet; its setup commands run once. Your answer is remembered for this workspace; change it in Settings → Workspace environment."
+        ),
+        warning: None,
+        access: Access::Execute,
+        always_ask: false,
     }
 }
 

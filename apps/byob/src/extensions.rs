@@ -27,14 +27,18 @@ pub fn load(tools: &mut Registry, linked: Vec<PathBuf>, workspace: &Path) -> Loa
     byob_tools::register_builtins(tools);
 
     let paths = byob_store::Paths::resolve();
-    // run_command / run_python (+ install_packages with Nix, else install_python_packages
-    // with uv). The sandbox helper is this binary (`byob __sandbox-exec`, see main).
+    // run_command / run_python (+ install_packages with Nix or pixi, else
+    // install_python_packages with uv; install_system_packages where brew/winget is the
+    // last resort; containers with Docker/Podman). The sandbox helper is this binary
+    // (`byob __sandbox-exec`, see main).
     let mode = Mode::from_env();
     let mut exec_prompt = None;
     let mut envs: Option<Arc<dyn byob_tools::EnvControl>> = None;
+    let containers = paths.as_ref().map(|p| byob_store::Settings::load(&p.settings()).value.containers).unwrap_or_default();
     match &mode {
         Ok(mode) => {
-            let exec = Exec::new(mode.clone(), paths.as_ref().ok().map(|p| p.data_dir.clone()));
+            let data = paths.as_ref().ok().map(|p| p.data_dir.clone());
+            let exec = Exec::with_containers(mode.clone(), data, containers.image, containers.runtime.as_deref());
             exec_prompt = exec.prompt();
             envs = Some(exec.envs.clone());
             byob_exec::register(tools, exec);

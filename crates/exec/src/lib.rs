@@ -102,6 +102,13 @@ impl Exec {
         Self { mode, data_dir, envs }
     }
 
+    /// Like [`Exec::new`], with the container settings (default image; `docker` or `podman`).
+    pub fn with_containers(mode: Mode, data_dir: Option<PathBuf>, image: Option<String>, runtime: Option<&str>) -> Self {
+        let found = env::Found::detect_with(data_dir.as_deref(), image, runtime);
+        let envs = Arc::new(Envs::new(data_dir.as_deref(), found, env::ProjectMode::from_env()));
+        Self { mode, data_dir, envs }
+    }
+
     /// What the system prompt should say about getting software, if anything.
     pub fn prompt(&self) -> Option<String> {
         self.envs.prompt()
@@ -129,6 +136,10 @@ pub fn register(reg: &mut Registry, exec: Exec) {
         hints::Fix::Packages => reg.register(Arc::new(InstallPackages(Arc::clone(&exec)))),
         hints::Fix::PythonOnly => reg.register(Arc::new(InstallPythonPackages(Arc::clone(&exec)))),
         hints::Fix::None => {}
+    }
+    // Workspaces that run in a container install there.
+    if exec.envs.containers().is_some() && reg.get("install_packages").is_none() {
+        reg.register(Arc::new(InstallPackages(Arc::clone(&exec))));
     }
     if exec.envs.system().is_some() {
         reg.register(Arc::new(InstallSystemPackages(exec)));
@@ -175,6 +186,10 @@ impl Runner for CallRunner<'_> {
 
     fn ask(&self, q: &byob_tools::Question) -> byob_tools::Answer {
         self.ctx.ask(q)
+    }
+
+    fn cancelled(&self) -> bool {
+        self.ctx.cancelled()
     }
 }
 
@@ -238,7 +253,7 @@ impl Exec {
     /// arguments once the run's temp folder exists.
     fn run_in_workspace(
         &self,
-        build: impl FnOnce(&Layer) -> Result<Job, String>,
+        build: impl FnOnce(&Layer, Where) -> Result<Job, String>,
         prepare: impl FnOnce(&Path) -> Result<Vec<OsString>, String>,
         command: Option<&str>,
         ctx: &ToolContext<'_>,
@@ -250,11 +265,21 @@ impl Exec {
             Ok(r) => r,
             Err(e) => return ToolOutput::err(e),
         };
-        let prepared = self.envs.prepare(&root, &CallRunner { exec: self, ctx });
+        let mut notes = Vec::new();
+        if let Some(ready) = self.envs.container(&root, &CallRunner { exec: self, ctx }, &mut notes) {
+            let out = match ready {
+                Ok(r) => self.run_in_container(&r, build, prepare, command, &root, ctx),
+                Err(e) => ToolOutput::err(e),
+            };
+            return with_notes(out, &notes);
+        }
+        let mut prepared = self.envs.prepare(&root, &CallRunner { exec: self, ctx });
+        notes.append(&mut prepared.notes);
+        prepared.notes = notes;
         if ctx.cancelled() {
             return ToolOutput::err("Stopped by the user.");
         }
-        let mut job = match build(&prepared.layer) {
+        let mut job = match build(&prepared.layer, Where::Host) {
             Ok(j) => j,
             Err(e) => return with_notes(ToolOutput::err(e), &prepared.notes),
         };
@@ -283,6 +308,57 @@ impl Exec {
         }
         with_notes(res, &prepared.notes)
     }
+}
+
+impl Exec {
+    /// [`Exec::run_in_workspace`] inside the workspace's container.
+    fn run_in_container(
+        &self,
+        ready: &env::container::Ready,
+        build: impl FnOnce(&Layer, Where) -> Result<Job, String>,
+        prepare: impl FnOnce(&Path) -> Result<Vec<OsString>, String>,
+        command: Option<&str>,
+        root: &Path,
+        ctx: &ToolContext<'_>,
+    ) -> ToolOutput {
+        let Some(containers) = self.envs.containers() else { return ToolOutput::err("no container runtime") };
+        let job = match build(&Layer::default(), Where::Container) {
+            Ok(j) => j,
+            Err(e) => return ToolOutput::err(e),
+        };
+        let tmp = match env::container::RunTmp::new(&ready.tmp_base) {
+            Ok(t) => t,
+            Err(e) => return ToolOutput::err(e),
+        };
+        let mut argv = vec![job.program];
+        argv.extend(job.args);
+        match prepare(tmp.path()) {
+            Ok(extra) => argv.extend(extra),
+            Err(e) => return ToolOutput::err(e),
+        }
+        let timeout = job.timeout;
+        let run = env::container::Exec { argv, env: job.env, network: job.network, timeout };
+        let before = Snapshot::take(root);
+        let (out, problem) = match containers.exec(ready, run, root, tmp.path(), &|| ctx.cancelled()) {
+            Ok(o) => o,
+            Err(e) => return ToolOutput::err(e),
+        };
+        let changes = before.changes(&Snapshot::take(root));
+        let mut res = describe(&out, &changes, root, timeout, problem);
+        if res.failed
+            && let Some(h) = hints::hint(&out.stdout.text(), &out.stderr.text(), command, hints::Fix::Packages, None)
+        {
+            res.text.push_str(&format!("\n\n{h}"));
+        }
+        res
+    }
+}
+
+/// Where a job runs: here (in the sandbox) or in the workspace's container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Where {
+    Host,
+    Container,
 }
 
 /// Put the environment's one-time notes in front of a tool's output.
@@ -419,7 +495,7 @@ impl Tool for RunCommand {
             return ToolOutput::err(format!("the command must be non-empty text of at most {MAX_COMMAND_LEN} bytes"));
         }
         let command = a.command.clone();
-        let build = |_: &Layer| {
+        let build = |_: &Layer, _: Where| {
             let mut job = Job::new("sh".into(), vec!["-c".into(), a.command.into()], timeout_of(a.timeout_s));
             job.network = a.network;
             Ok(job)
@@ -506,7 +582,12 @@ impl Tool for RunPython {
         let user_args: Vec<OsString> = a.args.into_iter().map(OsString::from).collect();
         let data_dir = self.0.data_dir.clone();
         let fix = self.0.fix();
-        let build = move |layer: &Layer| {
+        let build = move |layer: &Layer, at: Where| {
+            if at == Where::Container {
+                let mut job = Job::new("python3".into(), Vec::new(), timeout_of(a.timeout_s));
+                job.network = a.network;
+                return Ok(job);
+            }
             let Some(py) = Python::resolve_in(data_dir.as_deref(), &layer.path) else {
                 return Err(match fix {
                     hints::Fix::Packages => "No Python found. Call install_packages with {\"packages\": [\"python3\"]} (add the libraries you need, e.g. \"matplotlib\"), then try again.".to_owned(),
@@ -938,6 +1019,69 @@ mod tests {
         assert!(!out.failed, "{}", out.text);
         assert_eq!(std::fs::read_to_string(brew.with_extension("log")).unwrap(), "install sometool\n");
         assert!(std::fs::read_dir(ws.path()).unwrap().next().is_none(), "the workspace is untouched");
+    }
+
+    /// Answers every question with `.0`.
+    struct Says(byob_tools::Answer);
+    impl byob_tools::Asker for Says {
+        fn ask(&self, _q: &byob_tools::Question) -> byob_tools::Answer {
+            self.0
+        }
+    }
+
+    /// A workspace with containers through a fake `docker` whose daemon is down.
+    #[cfg(unix)]
+    fn fake_docker_world(d: &Path, runtime: bool) -> (Registry, Arc<Envs>, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let docker = d.join("bin/docker");
+        std::fs::create_dir_all(d.join("bin")).unwrap();
+        std::fs::write(&docker, "#!/bin/sh\necho \"$@\" >> \"$0.log\"\necho 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let rt = env::container::Runtime { kind: env::container::RuntimeKind::Docker, program: docker.clone() };
+        let found = env::Found { containers: runtime.then_some(rt), ..Default::default() };
+        let envs = Arc::new(Envs::new(Some(d), found, env::ProjectMode::Ask));
+        let mut reg = Registry::default();
+        register(&mut reg, Exec { mode: Mode::Unsandboxed, data_dir: Some(d.to_path_buf()), envs: Arc::clone(&envs) });
+        (reg, envs, docker.with_extension("log"))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn container_problems_are_clear_and_nothing_runs() {
+        use byob_tools::EnvControl;
+        let d = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let ws = ws.path().canonicalize().unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let (reg, envs, log) = fake_docker_world(d.path(), true);
+        assert!(reg.get("install_packages").is_some(), "containers install there");
+        let run = |reg: &Registry, answer| {
+            let says = Says(answer);
+            let ctx = ToolContext::new(&ws, &cancel).with_asker(&says);
+            reg.get("run_command").unwrap().run(&json!({"command": "touch ran.txt"}), &ctx)
+        };
+        // A devcontainer.json the user declines: runs here, no docker call, told once.
+        std::fs::write(ws.join(".devcontainer.json"), r#"{"image": "alpine"}"#).unwrap();
+        let out = run(&reg, byob_tools::Answer::No);
+        assert!(!out.failed && out.text.contains("chose to run commands on their machine"), "{}", out.text);
+        assert!(!log.exists(), "docker wasn't called");
+        assert!(!run(&reg, byob_tools::Answer::Yes).text.contains("chose to run"), "told once, and the answer stuck");
+        assert_eq!(envs.describe(&ws).container.use_container, Some(false));
+        std::fs::remove_file(ws.join("ran.txt")).unwrap();
+        // Turned on, but the daemon is down: a clear error, nothing ran.
+        envs.apply(&ws, &byob_protocol::EnvAction::Container { on: Some(true) }).unwrap();
+        let out = run(&reg, byob_tools::Answer::Yes);
+        assert!(out.failed && out.text.contains("Docker isn't running") && out.text.contains("Cannot connect"), "{}", out.text);
+        assert!(!ws.join("ran.txt").exists());
+        let d = envs.describe(&ws).container;
+        assert_eq!((d.runtime.as_deref(), d.use_container, d.state, d.image.as_str()), (Some("docker"), Some(true), None, "alpine"));
+        // Turned on where there's no runtime at all.
+        let d2 = tempfile::tempdir().unwrap();
+        let (reg2, envs2, _) = fake_docker_world(d2.path(), false);
+        envs2.apply(&ws, &byob_protocol::EnvAction::Container { on: Some(true) }).unwrap();
+        let out = run(&reg2, byob_tools::Answer::Yes);
+        assert!(out.failed && out.text.contains("neither Docker nor Podman is installed"), "{}", out.text);
+        assert!(envs2.apply(&ws, &byob_protocol::EnvAction::StopContainer).is_err());
     }
 
     #[test]

@@ -144,6 +144,24 @@ impl SubagentSettings {
     }
 }
 
+/// Containers for workspaces that run their commands in one (opt-in per workspace).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContainerSettings {
+    /// Image for workspaces without a devcontainer.json (default `python:3-slim`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// `docker` or `podman` (default: podman if installed, else docker).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+}
+
+impl ContainerSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "InferenceSettings::is_empty")]
@@ -171,6 +189,8 @@ pub struct Settings {
     pub models: BTreeMap<String, ModelRole>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "SubagentSettings::is_default")]
     pub subagents: SubagentSettings,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "ContainerSettings::is_default")]
+    pub containers: ContainerSettings,
     /// Fields this build doesn't know; preserved across load/save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
