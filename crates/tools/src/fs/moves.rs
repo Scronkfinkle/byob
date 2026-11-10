@@ -1,6 +1,6 @@
 //! `move_file` and `move_files`: move or rename inside the workspace.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Value, json};
 
@@ -203,7 +203,8 @@ fn moves_of(args: &Value) -> Result<Vec<(String, String)>, String> {
     }
     let folder = opt_string(args, "folder")?.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
     let within = |p: &str| match &folder {
-        Some(dir) if !Path::new(p.trim()).has_root() => PathBuf::from(dir).join(p.trim()).to_string_lossy().into_owned(),
+        // Joined as text with `/` (accepted everywhere, and what the model wrote).
+        Some(dir) if !Path::new(p.trim()).has_root() => format!("{}/{}", dir.trim_end_matches(['/', '\\']), p.trim()),
         _ => p.to_string(),
     };
     list.iter()
@@ -281,7 +282,7 @@ mod tests {
     use super::*;
     use crate::fs::testutil::run;
 
-    fn ws() -> (tempfile::TempDir, PathBuf) {
+    fn ws() -> (tempfile::TempDir, std::path::PathBuf) {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().canonicalize().unwrap();
         fs::write(root.join("a.txt"), "a").unwrap();
