@@ -185,6 +185,9 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
         chats_folder: None,
         // These tests are about fit_history; compaction has its own (compact_tests).
         compaction: crate::CompactOptions { auto: false, ..Default::default() },
+        agents: Vec::new(),
+        models: Default::default(),
+        subagents: Default::default(),
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), seen, runs }
 }

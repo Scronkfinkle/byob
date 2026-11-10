@@ -241,3 +241,45 @@ pub enum UndoOp {
         backup: Option<PathBuf>,
     },
 }
+
+/// A subagent run to record: a child thread started by a `delegate` step (`step_seq`) of
+/// assistant message `parent`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAgentRun {
+    /// Unique in the store; `[A-Za-z0-9_-]{1,64}` (it names a folder in the folder backend).
+    pub id: String,
+    pub parent: MessageId,
+    pub step_seq: i64,
+    /// The agent definition's name (`general` for the default worker).
+    pub agent: String,
+    /// What the parent asked it to do.
+    pub task: String,
+    /// The model it ran on.
+    pub model: String,
+}
+
+/// A recorded subagent run with its streamed text and tool steps.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentRun {
+    pub id: String,
+    pub chat_id: String,
+    pub parent: MessageId,
+    pub step_seq: i64,
+    pub agent: String,
+    pub task: String,
+    pub model: String,
+    pub content: String,
+    pub reasoning: String,
+    /// False while running, or if yah stopped during it.
+    pub done: bool,
+    pub error: Option<String>,
+    pub stats: Option<MessageStats>,
+    pub created_at: Millis,
+    /// Its tool calls by `seq` (`message_id` is `parent`).
+    pub steps: Vec<Step>,
+}
+
+/// Is `id` usable as an agent run id?
+pub fn agent_run_id_ok(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}

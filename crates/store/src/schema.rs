@@ -82,7 +82,40 @@ CREATE TABLE compactions (
 CREATE INDEX compactions_chat ON compactions (chat_id, id);
 ";
 
-pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3];
+/// v4: subagent runs (child threads of a `delegate` step) and their tool steps.
+const V4: &str = "
+CREATE TABLE agent_runs (
+    id         TEXT PRIMARY KEY,
+    chat_id    TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
+    parent_id  INTEGER NOT NULL REFERENCES messages (id) ON DELETE CASCADE,
+    step_seq   INTEGER NOT NULL,
+    agent      TEXT NOT NULL,
+    task       TEXT NOT NULL,
+    model      TEXT NOT NULL DEFAULT '',
+    content    TEXT NOT NULL DEFAULT '',
+    reasoning  TEXT NOT NULL DEFAULT '',
+    done       INTEGER NOT NULL DEFAULT 0,
+    error      TEXT,
+    stats      TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX agent_runs_chat ON agent_runs (chat_id, created_at);
+CREATE INDEX agent_runs_parent ON agent_runs (parent_id);
+CREATE TABLE agent_steps (
+    run_id  TEXT NOT NULL REFERENCES agent_runs (id) ON DELETE CASCADE,
+    seq     INTEGER NOT NULL,
+    tool    TEXT NOT NULL,
+    title   TEXT NOT NULL,
+    access  TEXT NOT NULL,
+    args    TEXT NOT NULL,
+    output  TEXT,
+    failed  INTEGER NOT NULL DEFAULT 0,
+    changes TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (run_id, seq)
+);
+";
+
+pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
 
 /// Schema version this build reads and writes.
 pub const LATEST: i64 = MIGRATIONS.len() as i64;

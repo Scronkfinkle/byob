@@ -73,6 +73,53 @@ impl Store {
                 k.created_at
             ])?;
         }
+        for x in &e.agent_runs {
+            let Some(parent) = ids.get(x.parent) else { continue };
+            let r = &x.run;
+            if !crate::model::agent_run_id_ok(&r.id) {
+                return Err(crate::agent_runs::bad_run_id(&r.id));
+            }
+            let stats = r.stats.as_ref().map(serde_json::to_string).transpose()?;
+            tx.prepare_cached(
+                "INSERT INTO agent_runs (id, chat_id, parent_id, step_seq, agent, task, model, content, reasoning, done, error, stats, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            )?
+            .execute(params![
+                r.id,
+                c.id,
+                parent,
+                r.step_seq,
+                r.agent,
+                bound(&r.task, crate::agent_runs::MAX_AGENT_TASK),
+                r.model,
+                r.content,
+                r.reasoning,
+                r.done,
+                r.error,
+                stats,
+                r.created_at
+            ])?;
+            for s in &r.steps {
+                let (output, failed, changes) = match &s.result {
+                    Some(res) => (Some(bound(&res.output, MAX_STEP_OUTPUT)), res.failed, serde_json::to_string(&res.changes)?),
+                    None => (None, false, "[]".to_owned()),
+                };
+                tx.prepare_cached(
+                    "INSERT INTO agent_steps (run_id, seq, tool, title, access, args, output, failed, changes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                )?
+                .execute(params![
+                    r.id,
+                    s.seq,
+                    s.tool,
+                    s.title,
+                    s.access.as_str(),
+                    serde_json::to_string(&s.args)?,
+                    output,
+                    failed,
+                    changes
+                ])?;
+            }
+        }
         tx.commit()?;
         Ok(())
     }

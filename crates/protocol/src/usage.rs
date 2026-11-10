@@ -70,6 +70,14 @@ pub struct ChatUsage {
     /// A compaction is running in this chat.
     #[serde(default)]
     pub compacting: bool,
+    /// Tokens subagents used (not in the chat's context; not in the totals above).
+    #[serde(default)]
+    pub agent_prompt_tokens: u64,
+    #[serde(default)]
+    pub agent_completion_tokens: u64,
+    /// Model requests subagents made.
+    #[serde(default)]
+    pub agent_calls: u64,
 }
 
 impl ChatUsage {
@@ -86,6 +94,16 @@ impl ChatUsage {
     /// "34k / 262k".
     pub fn label(&self) -> String {
         format!("{}{} / {}", if self.estimated { "~" } else { "" }, short_tokens(self.context_used), short_tokens(self.context_window))
+    }
+
+    /// "main 34k · agents 120k" (tokens in and out), or `None` if no subagent ran.
+    pub fn split_label(&self) -> Option<String> {
+        let agents = self.agent_prompt_tokens.saturating_add(self.agent_completion_tokens);
+        if agents == 0 && self.agent_calls == 0 {
+            return None;
+        }
+        let main = self.prompt_tokens.saturating_add(self.completion_tokens);
+        Some(format!("main {} · agents {}", short_tokens(main), short_tokens(agents)))
     }
 }
 
@@ -121,6 +139,9 @@ mod tests {
         assert!((u.pressure() - 0.17).abs() < 0.001);
         assert_eq!(ChatUsage { estimated: true, ..u.clone() }.label(), "~34k / 262k");
         assert_eq!(ChatUsage::default().fraction(), 0.0);
+        assert_eq!(u.split_label(), None);
+        let split = ChatUsage { prompt_tokens: 30_000, completion_tokens: 4_000, agent_prompt_tokens: 110_000, agent_completion_tokens: 10_000, ..u.clone() };
+        assert_eq!(split.split_label().as_deref(), Some("main 34k · agents 120k"));
         let c = Compaction {
             id: 1,
             after_entry: 4,

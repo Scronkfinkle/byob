@@ -33,8 +33,16 @@ Last updated: 2026-11-09
   `export` between them, one contract test suite for both. The engine holds a
   `Box<dyn ChatStore>` (`--storage`, `--chats-folder`, `--export-chats-to` to migrate);
   compactions in both backends; engine tests run on both.
+- Subagents: `delegate` tool runs a child turn with a fresh context and returns its report;
+  delegations of one round run in parallel up to the endpoint's slots − 1 (`/props`
+  `total_slots`); shared workspace/permissions/approvals, Stop cancels the tree, depth 1, caps;
+  Claude Code compatible agent files (`.yah/agents`, `.claude/agents`, `<config>/agents`,
+  plugins' `agents/`); model roles (`settings.json` `models`); nested live view per step,
+  child runs persisted in both backends; "main · agents" token split.
 
 ## Next
+- **Subagent follow-ups**: settings UI for `subagents`/`models`; roles for titles and
+  summaries too; background (non-blocking) delegations; a per-agent permission mode.
 0. **Folder storage follow-ups**: settings UI for `storage`/`chats_folder` + "copy my chats" (`export`);
    pass the model so `chat.md` frontmatter can name it; a file watcher so open chats update
    live; a lock file against two yah processes on one folder.

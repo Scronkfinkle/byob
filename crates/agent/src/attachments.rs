@@ -553,6 +553,7 @@ mod tests {
             preview: None,
             media,
             artifacts: vec![],
+            delegation: None,
         };
         let entry = Entry {
             id: 0,

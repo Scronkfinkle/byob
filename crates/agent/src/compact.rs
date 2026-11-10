@@ -363,6 +363,10 @@ pub struct Tally {
     /// ran (the engine estimates the next request then).
     pub context: Option<(u64, bool)>,
     pub compacting: bool,
+    /// Subagents' token use and requests (kept apart from the chat's own).
+    pub agent_prompt: u64,
+    pub agent_completion: u64,
+    pub agent_calls: u64,
 }
 
 impl Tally {
@@ -386,6 +390,22 @@ impl Tally {
             }
         }
         t
+    }
+
+    /// Add what stored subagent runs used.
+    pub fn add_runs(&mut self, runs: &[yah_store::AgentRun]) {
+        for s in runs.iter().filter_map(|r| r.stats.as_ref()) {
+            self.agent_prompt = self.agent_prompt.saturating_add(s.prompt_tokens);
+            self.agent_completion = self.agent_completion.saturating_add(s.completion_tokens);
+            self.agent_calls = self.agent_calls.saturating_add(s.model_calls);
+        }
+    }
+
+    /// One subagent model request finished.
+    pub fn agent_call(&mut self, prompt: u64, completion: u64) {
+        self.agent_prompt = self.agent_prompt.saturating_add(prompt);
+        self.agent_completion = self.agent_completion.saturating_add(completion);
+        self.agent_calls = self.agent_calls.saturating_add(1);
     }
 
     /// One model request finished.

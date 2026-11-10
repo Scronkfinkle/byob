@@ -4,6 +4,7 @@
 //! - **skills** (`skills/<name>/SKILL.md`, the Agent Skills format) → [`skills`],
 //!   [`UseSkillTool`], [`skills_prompt`];
 //! - **Python tools** (`tools[].run`) → [`python::PythonTool`];
+//! - **subagents** (`agents/*.md`, Claude Code's format) → [`agents`];
 //! - **connectors** (`mcpServers`, MCP) → [`connectors::ConnectorToolAdapter`] over the
 //!   [`connectors::Connector`] trait, which `yah-mcp`'s client implements.
 //!
@@ -15,6 +16,7 @@
 //!    [`Discovery::prompt`] in the system prompt.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod agents;
 pub mod connectors;
 pub mod discover;
 pub mod manifest;
@@ -27,6 +29,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
+pub use agents::{AgentDef, load_agents_dir, merge_agents, parse_agent};
 pub use connectors::{Connector, ConnectorContent, ConnectorDraft, ConnectorResult, ConnectorTool, ConnectorToolAdapter, connector_tools, parse_connector};
 pub use discover::{Discovery, Plugin, PluginSources, discover, load_plugin};
 pub use manifest::{MANIFEST, MANIFEST_ALIAS, Manifest, ManifestError, McpServerConfig, parse_manifest};

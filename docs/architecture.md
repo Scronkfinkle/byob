@@ -196,6 +196,53 @@ compacts on demand. A failed or longer-than-before summary changes nothing and
 `fit_history` stays the safety net. `ServerMsg::Usage` feeds the header meter: context in use
 (the server's last prompt + completion, else an estimate), window, threshold, chat totals.
 
+## Subagents
+
+The main model can hand a self-contained task to a subagent with the `delegate` tool
+(`delegate { agent?, task, tools? }`, `crates/agent/src/delegate.rs`). The turn starts a
+**child turn** on its own thread: a fresh context (the agent's prompt plus rules for subagents,
+and the task; not the chat's history), the same tool loop and registry cut down to the agent
+definition's `tools` and the call's `tools`, at most 25 tool calls and 15 minutes
+(`settings.json` `subagents`). Children can't delegate (depth 1). The child's final reply,
+bounded (12 KB) and headed with what it did (`[subagent explorer · 3 tool calls: read_file ×2,
+list_files · 4.1 s]`), is the tool result, so the parent's context grows only by the report.
+
+- **Parallel.** The tool loop runs calls in order, except `delegate`: every delegation of a
+  round starts on its own thread first, the other calls run meanwhile, then results go into
+  the transcript in call order. One engine-wide counting semaphore (`Slots`) caps running
+  children at the endpoint's slots minus one for the main thread (llama.cpp `/props`
+  `total_slots`, 2 assumed when unknown, at least 1; `subagents.max_parallel` overrides).
+  Extra delegations wait in "queued".
+- **Shared world.** Children run in the chat's workspace with its permission policy, grants
+  and sandbox. Their steps go through the same gate; approval cards sit in the child's
+  transcript (labelled "Subagent explorer asks") and are answered with the usual `Approve`
+  from any client. Their file changes join the parent reply's undo journal. Stop sets the
+  parent's flag; children check it between steps and a watchdog copies it (and the time
+  limit) into the child's own flag for the model stream.
+- **Protocol.** The `delegate` step carries a `Delegation` (agent, task, model, state
+  queued/running/done/failed/stopped, the child's streamed text and steps, tokens);
+  `ServerMsg::Delegation { entry, step, update }` streams `Delta`, `Step` and `Status` changes,
+  so a late client gets everything with the transcript. The UI draws it as a framed, nested
+  transcript with a status line ("explorer · 3 tools · running"); running ones scroll on their
+  own so several are visible at once. The meter adds "main 34k · agents 120k".
+- **Storage.** Each child is an agent run linked to its parent message and step `seq`
+  (`ChatStore::add_agent_run` and friends): SQLite tables `agent_runs` + `agent_steps`
+  (schema v4, cascading with the message), folder `chats/<chat>/agents/<run>/events.jsonl`
+  (`run_started`, `run_delta`, `run_step_added`, `run_step_finished`, `run_finished`; parent
+  by message number). Runs come back into their steps when a chat loads (one never finished
+  shows as stopped/interrupted), are exported with the chat, and count towards the agents'
+  token total.
+- **Agent definitions** are Claude Code's format: Markdown with `name`, `description`,
+  optional `tools` (comma or YAML list; `Read`, `Bash`, … map to yah tools, unknown names are
+  ignored) and `model`, unknown keys kept; the body is the prompt. Looked up in
+  `<workspace>/.yah/agents`, `<workspace>/.claude/agents`, `<config>/agents` and plugins'
+  `agents/`, first name wins; descriptions are listed in the main system prompt. Without
+  `agent`, a general-purpose worker runs.
+- **Model roles.** `settings.json` `models: { fast: { base_url?, model? } }` (keys in
+  `secrets.json` `model_keys`), each defaulting to the main endpoint; an agent's `model:`
+  names a role, else Claude Code's `inherit`/`sonnet`/`opus`/`haiku` mean the main model, else
+  it is a model id on the main endpoint.
+
 ## Running code (sandbox)
 
 `run_command`, `run_python`, plugin Python tools and stdio MCP servers start through

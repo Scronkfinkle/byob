@@ -80,5 +80,11 @@ pub(crate) fn normalized(mut e: crate::ChatExport) -> crate::ChatExport {
         c.compaction.id = 0;
         c.compaction.through = crate::MessageId(0);
     }
+    for r in &mut e.agent_runs {
+        r.run.parent = crate::MessageId(0);
+        for s in &mut r.run.steps {
+            s.message_id = crate::MessageId(0);
+        }
+    }
     e
 }

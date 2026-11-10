@@ -1,12 +1,13 @@
 //! An assistant entry's body: reply text interleaved with its tool steps (each step sits
 //! where it happened in the text, by [`Step::at`]), approval cards (Allow / Always / Deny)
 //! for steps waiting on the user, and the "Undo changes" action. Any client can answer a
-//! card.
+//! card. A `delegate` step expands into its subagent's live transcript (text and steps,
+//! the same way), with a status line like "explorer · 3 tools · running".
 
 use std::ops::Range;
 
 use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2, pos2, vec2};
-use yah_protocol::{ApprovalAnswer, ClientMsg, DiffLine, Entry, FileChange, LineKind, Preview, Step, StepStatus, ToolAccess};
+use yah_protocol::{ApprovalAnswer, ClientMsg, Delegation, DelegationState, DiffLine, Entry, FileChange, LineKind, Preview, Step, StepStatus, ToolAccess};
 
 use crate::markdown;
 use crate::theme::{Tokens, bold_family, mix};
@@ -75,20 +76,47 @@ pub fn segments<'a>(content: &'a str, steps: &[Step]) -> Vec<Segment<'a>> {
 /// message to send if the user answered a card or asked to undo.
 /// `cards` draws the artifact cards of a step that made any, right below its row.
 pub fn body(ui: &mut egui::Ui, t: &Tokens, entry: &Entry, cache: &mut markdown::Cache, cards: &mut dyn FnMut(&mut egui::Ui, &Step)) -> Option<ClientMsg> {
+    let mut msg = transcript(ui, t, Thread { key: entry.id, content: &entry.content, steps: &entry.steps, done: entry.done, agent: None }, cache, cards);
+    if entry.done && (entry.undoable || entry.undone) {
+        msg = msg.or(undo_row(ui, t, entry));
+    }
+    msg
+}
+
+/// Text and steps of a reply, or of a subagent's run.
+struct Thread<'a> {
+    /// Markdown cache key (an entry id, or [`delegation_key`]).
+    key: u64,
+    content: &'a str,
+    steps: &'a [Step],
+    done: bool,
+    /// The subagent this is, for its approval cards.
+    agent: Option<&'a str>,
+}
+
+/// Markdown cache key of a delegation's text: step ids and entry ids come from different
+/// counters, so step ids get the top bit.
+fn delegation_key(step: u64) -> u64 {
+    step | (1 << 63)
+}
+
+fn transcript(ui: &mut egui::Ui, t: &Tokens, th: Thread<'_>, cache: &mut markdown::Cache, cards: &mut dyn FnMut(&mut egui::Ui, &Step)) -> Option<ClientMsg> {
     let mut msg = None;
-    let segs = segments(&entry.content, &entry.steps);
+    let segs = segments(th.content, th.steps);
     let last = segs.len().saturating_sub(1);
     for (k, seg) in segs.into_iter().enumerate() {
         match seg {
             Segment::Text { part, text } => {
-                let doc = cache.part(entry.id, part, text, entry.done || k < last);
-                markdown::show(ui, t, doc, egui::Id::unique(("md", entry.id, part)));
+                let doc = cache.part(th.key, part, text, th.done || k < last);
+                markdown::show(ui, t, doc, egui::Id::unique(("md", th.key, part)));
             }
             Segment::Steps(range) => {
                 ui.add_space(2.0);
-                for step in entry.steps.get(range).unwrap_or_default() {
+                for step in th.steps.get(range).unwrap_or_default() {
                     if step.status == StepStatus::Waiting {
-                        msg = msg.or(approval_card(ui, t, step));
+                        msg = msg.or(approval_card(ui, t, step, th.agent));
+                    } else if let Some(d) = step.delegation.as_deref() {
+                        msg = msg.or(delegation(ui, t, step, d, cache, cards));
                     } else {
                         row(ui, t, step);
                         if !step.artifacts.is_empty() {
@@ -100,9 +128,98 @@ pub fn body(ui: &mut egui::Ui, t: &Tokens, entry: &Entry, cache: &mut markdown::
             }
         }
     }
-    if entry.done && (entry.undoable || entry.undone) {
-        msg = msg.or(undo_row(ui, t, entry));
-    }
+    msg
+}
+
+/// Tallest a running subagent's transcript gets before it scrolls (several can run at once).
+const DELEGATION_MAX_HEIGHT: f32 = 260.0;
+/// Lines of a delegation's task shown above its transcript.
+const TASK_LINES: usize = 3;
+
+/// A `delegate` step: a frame with the subagent's status line and task, expanding into its
+/// transcript. Open while it runs (or waits for approval), collapsed once done.
+fn delegation(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    step: &Step,
+    d: &Delegation,
+    cache: &mut markdown::Cache,
+    cards: &mut dyn FnMut(&mut egui::Ui, &Step),
+) -> Option<ClientMsg> {
+    let mut msg = None;
+    let live = !d.state.finished();
+    let waiting = d.steps.iter().any(|s| s.status == StepStatus::Waiting);
+    let edge = match d.state {
+        DelegationState::Failed => t.danger,
+        DelegationState::Stopped => t.text_faint,
+        _ if waiting => t.warning,
+        _ => mix(t.border, t.accent, if live { 0.6 } else { 0.25 }),
+    };
+    let frame =
+        egui::Frame::new().fill(mix(t.assistant_bubble, t.accent, 0.03)).stroke(Stroke::new(1.0, edge)).corner_radius(t.round(6.0)).inner_margin(t.pad(8.0));
+    frame.show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let id = ui.make_persistent_id(("delegation", step.id));
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, live);
+        // A card inside must be seen: open it when the subagent asks.
+        if waiting {
+            state.set_open(true);
+        }
+        state
+            .show_header(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                match d.state {
+                    DelegationState::Queued | DelegationState::Running if !waiting => {
+                        crate::theme::spinner(ui, t, Some(13.0));
+                    }
+                    DelegationState::Done => {
+                        icon(ui, t, Icon::Done, 15.0);
+                    }
+                    DelegationState::Failed => {
+                        icon(ui, t, Icon::Failed, 15.0);
+                    }
+                    DelegationState::Stopped => {
+                        icon(ui, t, Icon::Denied, 15.0);
+                    }
+                    _ => {
+                        icon(ui, t, Icon::Waiting, 15.0);
+                    }
+                }
+                ui.label(RichText::new(d.status_line()).color(if waiting { t.warning } else { t.text }));
+                let tokens = d.prompt_tokens.saturating_add(d.completion_tokens);
+                if tokens > 0 {
+                    ui.label(RichText::new(format!("{} tokens", yah_protocol::usage::short_tokens(tokens))).small().color(t.text_faint));
+                }
+            })
+            .body(|ui| {
+                // The task can be long: its first lines here, all of it on hover.
+                let lines: Vec<&str> = d.task.lines().filter(|l| !l.trim().is_empty()).collect();
+                let mut task = lines.iter().take(TASK_LINES).copied().collect::<Vec<_>>().join("\n");
+                if lines.len() > TASK_LINES {
+                    task.push_str(" …");
+                }
+                ui.add(egui::Label::new(RichText::new(task).small().italics().color(t.text_dim)).wrap()).on_hover_text(&d.task);
+                if let Some(e) = &d.error {
+                    ui.label(RichText::new(e).small().color(if d.state == DelegationState::Failed { t.danger } else { t.text_dim }));
+                }
+                ui.add_space(2.0);
+                let th = Thread { key: delegation_key(step.id), content: &d.content, steps: &d.steps, done: !live, agent: Some(&d.agent) };
+                if live {
+                    egui::ScrollArea::vertical()
+                        .id_salt(("delegation-scroll", step.id))
+                        .max_height(DELEGATION_MAX_HEIGHT)
+                        .auto_shrink([false, true])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| msg = transcript(ui, t, th, cache, cards));
+                } else {
+                    msg = transcript(ui, t, th, cache, cards);
+                }
+                if d.content.is_empty() && d.steps.is_empty() && live {
+                    let text = if d.state == DelegationState::Queued { "waiting for a free slot…" } else { "starting…" };
+                    ui.label(RichText::new(text).small().color(t.text_faint));
+                }
+            });
+    });
     msg
 }
 
@@ -321,11 +438,14 @@ pub fn card_question(step: &Step) -> String {
     format!("{title}?")
 }
 
-fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step) -> Option<ClientMsg> {
+fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step, agent: Option<&str>) -> Option<ClientMsg> {
     let mut answer = None;
     let fill = mix(t.assistant_bubble, t.accent, 0.05);
     egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, mix(t.border, t.accent, 0.6))).corner_radius(t.radius).inner_margin(10.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
+        if let Some(agent) = agent {
+            ui.label(RichText::new(format!("Subagent {agent} asks")).small().color(t.text_dim));
+        }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             icon(ui, t, Icon::Waiting, 16.0);
@@ -517,6 +637,7 @@ mod tests {
             preview: None,
             media: vec![],
             artifacts: vec![],
+            delegation: None,
         }
     }
 
@@ -535,6 +656,12 @@ mod tests {
         assert_eq!(entries[0].steps.len(), 1);
         apply_undo(&mut entries, 1, true, false);
         assert!(entries[0].undoable);
+        // A subagent's card counts too.
+        let mut parent = step(7, StepStatus::Running);
+        parent.delegation = Some(Box::new(Delegation { agent: "explorer".into(), steps: vec![step(8, StepStatus::Waiting)], ..Default::default() }));
+        apply(&mut entries, 1, parent);
+        assert!(awaiting_approval(&entries));
+        assert_ne!(delegation_key(1), 1);
     }
 
     #[test]

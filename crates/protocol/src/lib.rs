@@ -6,17 +6,19 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod artifact;
+pub mod delegation;
 pub mod media;
 pub mod usage;
 
 use serde::{Deserialize, Serialize};
 
 pub use artifact::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion};
+pub use delegation::{Delegation, DelegationState, DelegationUpdate};
 pub use media::{MediaContent, MediaKind, MediaRef};
 pub use usage::{ChatUsage, Compaction};
 
 /// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -159,6 +161,8 @@ pub enum ServerMsg {
     Compactions { chat: Option<String>, items: Vec<Compaction> },
     /// The chat in view was just compacted.
     Compacted(Compaction),
+    /// The subagent run of step `step` (in entry `entry`) changed.
+    Delegation { entry: u64, step: u64, update: DelegationUpdate },
 }
 
 /// A chat as shown in the sidebar.
@@ -236,9 +240,16 @@ impl Entry {
         }
     }
 
-    /// Steps waiting for a user's approval.
+    /// Steps waiting for a user's approval, subagents' steps included.
     pub fn pending_approvals(&self) -> impl Iterator<Item = &Step> {
-        self.steps.iter().filter(|s| s.status == StepStatus::Waiting)
+        self.steps.iter().flat_map(|s| std::iter::once(s).chain(s.delegation.iter().flat_map(|d| d.steps.iter()))).filter(|s| s.status == StepStatus::Waiting)
+    }
+
+    /// Apply a [`ServerMsg::Delegation`] to step `step`'s subagent run.
+    pub fn apply_delegation(&mut self, step: u64, update: &DelegationUpdate) {
+        if let Some(d) = self.steps.iter_mut().find(|s| s.id == step).and_then(|s| s.delegation.as_deref_mut()) {
+            d.apply(update);
+        }
     }
 }
 
@@ -331,6 +342,9 @@ pub struct Step {
     /// Artifact versions this call made, shown as cards where it happened.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ArtifactRef>,
+    /// The subagent run of a `delegate` step: its live transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<Box<Delegation>>,
 }
 
 /// Most lines in a [`Preview`]'s line lists.
@@ -560,7 +574,54 @@ mod tests {
             preview: None,
             media: vec![],
             artifacts: vec![],
+            delegation: None,
         }
+    }
+
+    #[test]
+    fn delegations_stream_into_their_step_and_round_trip() {
+        let mut parent = step(1, StepStatus::Running);
+        parent.delegation = Some(Box::new(Delegation { agent: "explorer".into(), task: "count lines".into(), ..Default::default() }));
+        let mut e = Entry {
+            id: 9,
+            role: EntryRole::Assistant,
+            content: String::new(),
+            reasoning: String::new(),
+            done: false,
+            error: None,
+            stats: None,
+            steps: vec![parent],
+            undoable: false,
+            undone: false,
+            attachments: vec![],
+        };
+        let updates = [
+            DelegationUpdate::Status { state: DelegationState::Running, prompt_tokens: 0, completion_tokens: 0, error: None },
+            DelegationUpdate::Delta { content: "Reading".into(), reasoning: "hm".into() },
+            DelegationUpdate::Step(step(2, StepStatus::Waiting)),
+            DelegationUpdate::Delta { content: " a.txt".into(), reasoning: String::new() },
+        ];
+        for u in &updates {
+            let msg = ServerMsg::Delegation { entry: 9, step: 1, update: u.clone() };
+            assert_eq!(ServerMsg::from_json(&msg.to_json()).unwrap(), msg);
+            e.apply_delegation(1, u);
+        }
+        // An unknown step is ignored.
+        e.apply_delegation(77, &updates[1]);
+        let d = e.steps[0].delegation.as_deref().unwrap();
+        assert_eq!((d.content.as_str(), d.reasoning.as_str(), d.state), ("Reading a.txt", "hm", DelegationState::Running));
+        assert_eq!(d.status_line(), "explorer · 1 tool · waiting for approval");
+        // A child's approval card counts as pending in the entry.
+        assert_eq!(e.pending_approvals().map(|s| s.id).collect::<Vec<_>>(), vec![2]);
+        e.apply_delegation(1, &DelegationUpdate::Step(step(2, StepStatus::Done)));
+        e.apply_delegation(1, &DelegationUpdate::Status { state: DelegationState::Done, prompt_tokens: 50, completion_tokens: 5, error: None });
+        assert_eq!(e.steps[0].delegation.as_deref().unwrap().status_line(), "explorer · 1 tool · done");
+        assert_eq!(e.pending_approvals().count(), 0);
+        let msg = ServerMsg::StepUpdated { entry: 9, step: e.steps[0].clone() };
+        assert_eq!(ServerMsg::from_json(&msg.to_json()).unwrap(), msg);
+        // Steps from an older engine have no delegation.
+        let json = r#"{"id":1,"tool":"t","title":"T","access":"read","status":"done","detail":""}"#;
+        assert!(serde_json::from_str::<Step>(json).unwrap().delegation.is_none());
     }
 
     #[test]

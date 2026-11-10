@@ -252,6 +252,7 @@ fn probes_llama_server() {
     assert_eq!(caps.vision, Some(true));
     assert_eq!(caps.tools, ToolSupport::Native);
     assert!(caps.tokenize);
+    assert_eq!(caps.slots, None, "no total_slots reported");
     let seen: Vec<String> = reqs.try_iter().collect();
     let tool_req = seen.iter().find(|r| r.starts_with("POST /v1/chat/completions")).unwrap();
     assert!(tool_req.contains(r#""max_tokens":512"#) && tool_req.contains("get_magic_number"));
@@ -277,6 +278,7 @@ fn probes_basalt_style_proxy_like_silicon() {
     );
     let caps = client(url).probe_with(quick());
     assert_eq!((caps.server, caps.context_length, caps.vision, caps.tools), (ServerKind::LlamaCpp, Some(262144), Some(true), ToolSupport::Native));
+    assert_eq!(caps.slots, Some(4));
     assert!(!caps.tokenize);
     assert!(caps.notes.iter().any(|n| n.contains("/tokenize: HTTP 404")), "{:?}", caps.notes);
 }
@@ -421,7 +423,7 @@ fn probe_survives_dead_and_hostile_servers() {
         "",
         &[
             ("GET /v1/models", 200, "not json"),
-            ("GET /props", 200, r#"{"default_generation_settings":"x"}"#),
+            ("GET /props", 200, r#"{"default_generation_settings":"x","total_slots":1000000}"#),
             ("GET /api/version", 200, "[]"),
             ("POST /tokenize", 200, r#"{"tokens":"many"}"#),
             ("POST /v1/chat/completions", 200, r#"{"choices":[null]}"#),
@@ -429,6 +431,7 @@ fn probe_survives_dead_and_hostile_servers() {
     );
     let caps = client(url).probe_with(quick());
     assert_eq!(caps.context_length, None);
+    assert_eq!(caps.slots, None);
     assert!(!caps.tokenize);
     assert_eq!(caps.tools, ToolSupport::Unknown);
 }

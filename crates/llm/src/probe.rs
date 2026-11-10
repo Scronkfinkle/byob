@@ -57,6 +57,8 @@ pub struct Capabilities {
     pub tools: ToolSupport,
     /// llama.cpp `/tokenize` works, so [`Client::count_tokens`] gives exact counts.
     pub tokenize: bool,
+    /// Requests the server runs in parallel (llama.cpp `/props` `total_slots`).
+    pub slots: Option<u64>,
     /// Human-readable log of what each step saw, for diagnostics.
     pub notes: Vec<String>,
 }
@@ -285,10 +287,15 @@ impl Prober<'_> {
         }
     }
 
-    /// llama.cpp `GET /props`: runtime `n_ctx` and `modalities.vision`.
+    /// llama.cpp `GET /props`: runtime `n_ctx`, `modalities.vision` and `total_slots`.
     fn props(&mut self) {
         let Some(reply) = self.fetch_path(true, "props", None) else { return };
         let Some(settings) = reply.body.get("default_generation_settings") else { return };
+        // Hostile or silly values are ignored; nobody runs thousands of slots.
+        if let Some(n) = reply.body.get("total_slots").and_then(Value::as_u64).filter(|n| (1..=1024).contains(n)) {
+            self.caps.slots = Some(n);
+            self.note(format!("{n} parallel slots from /props total_slots"));
+        }
         self.set_kind(ServerKind::LlamaCpp, "/props");
         self.set_context(settings.get("n_ctx").and_then(Value::as_u64), "/props n_ctx");
         self.set_vision(reply.body.pointer("/modalities/vision").and_then(Value::as_bool));

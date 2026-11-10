@@ -22,6 +22,9 @@ mod chats;
 mod compact;
 #[cfg(test)]
 mod compact_tests;
+mod delegate;
+#[cfg(test)]
+mod delegate_tests;
 pub mod dev_tools;
 #[cfg(test)]
 mod engine_tests;
@@ -30,6 +33,7 @@ mod limits;
 mod loop_tests;
 pub mod permissions;
 mod steps;
+mod subagents;
 #[cfg(test)]
 mod test_store;
 mod turn;
@@ -45,10 +49,12 @@ use std::time::{Duration, Instant};
 
 pub use adapt::{AdaptOptions, ToolMode};
 pub use compact::CompactOptions;
+pub use delegate::SubagentOptions;
 pub use permissions::{Policy, Rule};
+pub use yah_plugins::AgentDef;
 use yah_protocol::{
-    ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, EngineState, Entry, EntryRole, MediaRef, NoticeLevel,
-    PROTOCOL_VERSION, ServerMsg, Step, StepStatus,
+    ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, DelegationState, EngineState, Entry, EntryRole, MediaRef,
+    NoticeLevel, PROTOCOL_VERSION, ServerMsg, Step, StepStatus,
 };
 use yah_store::{ChatStore, GrantScope, NewMessage, Paths, Role, Secrets, Settings, StorageKind, Store, StoreError};
 use yah_tools::Registry;
@@ -86,6 +92,12 @@ pub struct EngineConfig {
     pub adapt: AdaptOptions,
     /// When to summarise a conversation that outgrows the context window.
     pub compaction: CompactOptions,
+    /// Subagent definitions from the user's config folder and plugins (a chat's workspace
+    /// `.yah/agents` and `.claude/agents` are read per turn and come first).
+    pub agents: Vec<AgentDef>,
+    /// Model roles (`settings.json` `models`): name → endpoint, for agents' `model:`.
+    pub models: BTreeMap<String, InferenceConfig>,
+    pub subagents: SubagentOptions,
 }
 
 impl EngineConfig {
@@ -104,6 +116,9 @@ impl EngineConfig {
             auto_title: true,
             adapt: AdaptOptions::default(),
             compaction: CompactOptions::default(),
+            agents: Vec::new(),
+            models: BTreeMap::new(),
+            subagents: SubagentOptions::default(),
         }
     }
 }
@@ -127,6 +142,11 @@ enum Input {
         msg: ClientMsg,
     },
     Turn(turn::TurnEvent),
+    /// An event of the subagent run shown by step `step` (of the event's entry).
+    Child {
+        step: u64,
+        event: turn::TurnEvent,
+    },
     /// The model suggested a title for a chat.
     Titled {
         chat: String,
@@ -255,6 +275,21 @@ struct Pending {
     entry: u64,
     step: Step,
     reply: Sender<turn::Verdict>,
+    /// The card is a subagent's: the `delegate` step it belongs to.
+    child: Option<u64>,
+}
+
+/// A subagent run of a running turn (keyed by its `delegate` step id).
+struct ChildRun {
+    /// Its id in the store (`None` if it couldn't be recorded).
+    run: Option<String>,
+    /// Streamed (content, reasoning) not yet written to the store.
+    unsaved: (String, String),
+    /// Store `seq` of each of its steps, by step id.
+    steps: BTreeMap<u64, i64>,
+    started: Instant,
+    model_calls: u64,
+    ended: bool,
 }
 
 /// A chat whose transcript is in memory: someone looks at it or a reply runs in it.
@@ -280,6 +315,8 @@ struct Running {
     steps: BTreeMap<u64, i64>,
     /// The user's text, if this is the chat's first reply and it should be named after it.
     title_from: Option<String>,
+    /// Its subagent runs, by `delegate` step id.
+    children: BTreeMap<u64, ChildRun>,
 }
 
 struct Engine {
@@ -314,6 +351,13 @@ struct Engine {
     compaction: CompactOptions,
     /// Manual compactions running, by chat (the flag stops them).
     compacting: BTreeMap<String, Arc<AtomicBool>>,
+    /// Configured subagents (user folder, plugins).
+    agents: Vec<AgentDef>,
+    /// Model roles by name.
+    models: BTreeMap<String, InferenceConfig>,
+    subagents: SubagentOptions,
+    /// Inference slots subagents may use, shared by every chat.
+    slots: Arc<delegate::Slots>,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -343,6 +387,13 @@ impl Engine {
         if let Ok(client) = &llm {
             endpoints.probe(client, &inbox);
         }
+        for (name, role) in &config.models {
+            match yah_llm::Client::new(role.clone()) {
+                Ok(client) => endpoints.probe(&client, &inbox),
+                Err(e) => log::warn!("model role {name}: {e}"),
+            }
+        }
+        let slots = Arc::new(delegate::Slots::new(config.subagents.parallel(None)));
         Self {
             endpoints,
             config: config.inference,
@@ -365,6 +416,10 @@ impl Engine {
             provisional: BTreeMap::new(),
             compaction: config.compaction,
             compacting: BTreeMap::new(),
+            agents: config.agents,
+            models: config.models,
+            subagents: config.subagents,
+            slots,
         }
     }
 
@@ -409,8 +464,15 @@ impl Engine {
                 log::error!("reading the compactions of {chat}: {e}");
                 Vec::new()
             });
-            let tally = compact::Tally::from_store(&messages, &compactions);
+            let runs = self.store.agent_runs(chat).unwrap_or_else(|e| {
+                log::error!("reading the subagent runs of {chat}: {e}");
+                Vec::new()
+            });
+            let mut tally = compact::Tally::from_store(&messages, &compactions);
+            tally.add_runs(&runs);
+            let links = chats::run_links(&messages, &runs);
             let mut entries: Vec<Entry> = messages.into_iter().filter_map(|m| chats::entry(m, &self.step_ids)).collect();
+            chats::attach_runs(&mut entries, links, runs, &self.step_ids);
             let artifacts = artifact::list(&row.workspace, chat);
             chats::restore_step_files(&mut entries, &artifacts);
             self.live.insert(chat.to_owned(), Live { entries, workspace: Arc::new(row.workspace), artifacts, compactions, tally });
@@ -607,9 +669,11 @@ impl Engine {
             }
             Input::Client { id, msg } => self.handle_client(id, msg),
             Input::Turn(event) => self.handle_turn(event),
+            Input::Child { step, event } => self.handle_child(step, event),
             Input::Titled { chat, title } => self.titled(&chat, &title),
             Input::Adapt(event) => {
                 self.endpoints.handle(event);
+                self.slots.set_capacity(self.subagents.parallel(self.endpoints.slots(&self.config)));
                 self.broadcast_state();
                 // The window (and so the threshold) may have changed.
                 let viewed: BTreeSet<String> = self.clients.values().filter_map(|c| c.chat.clone()).collect();
@@ -804,7 +868,7 @@ impl Engine {
 
     /// A client answered an approval card. The first answer wins; late or unknown ids are ignored.
     fn answer(&mut self, step_id: u64, answer: ApprovalAnswer) {
-        let Some(Pending { entry, mut step, reply }) = self.pending.remove(&step_id) else { return };
+        let Some(Pending { entry, mut step, reply, child }) = self.pending.remove(&step_id) else { return };
         let chat = self.turns.get(&entry).map(|t| t.chat.clone());
         let scope = match answer {
             ApprovalAnswer::Always => chat.map(GrantScope::Chat),
@@ -826,23 +890,31 @@ impl Engine {
         }
         // The turn thread may be gone (stopped); the step update still settles the card.
         let _ = reply.send(verdict);
-        self.update_step(entry, step);
+        self.settle_step(entry, child, step);
+    }
+
+    /// Update a step of entry `entry`, or of its subagent run `child`.
+    fn settle_step(&mut self, entry: u64, child: Option<u64>, step: Step) {
+        match child {
+            Some(parent) => self.update_child_step(entry, parent, step),
+            None => self.update_step(entry, step),
+        }
     }
 
     /// Deny the pending approvals of turns matching `which`.
     fn deny_pending(&mut self, which: impl Fn(&Pending, Option<&Running>) -> bool, reason: &str) {
         let ids: Vec<u64> = self.pending.iter().filter(|(_, p)| which(p, self.turns.get(&p.entry))).map(|(id, _)| *id).collect();
         for id in ids {
-            let Some(Pending { entry, mut step, reply }) = self.pending.remove(&id) else { continue };
+            let Some(Pending { entry, mut step, reply, child }) = self.pending.remove(&id) else { continue };
             let _ = reply.send(turn::Verdict::Deny(reason.to_owned()));
             step.status = StepStatus::Denied;
             reason.clone_into(&mut step.detail);
-            self.update_step(entry, step);
+            self.settle_step(entry, child, step);
         }
     }
 
-    /// A turn asks whether a step may run.
-    fn gate(&mut self, entry: u64, mut step: Step, reply: Sender<turn::Verdict>) {
+    /// A turn (or one of its subagents, `child`) asks whether a step may run.
+    fn gate(&mut self, entry: u64, mut step: Step, reply: Sender<turn::Verdict>, child: Option<u64>) {
         let Some(run) = self.turns.get(&entry).filter(|t| !t.cancel.load(Ordering::Relaxed)) else {
             let _ = reply.send(turn::Verdict::Deny("stopped".into()));
             return;
@@ -860,8 +932,8 @@ impl Engine {
             }
             permissions::Gate::Ask => {
                 step.status = StepStatus::Waiting;
-                self.update_step(entry, step.clone());
-                self.pending.insert(step.id, Pending { entry, step, reply });
+                self.settle_step(entry, child, step.clone());
+                self.pending.insert(step.id, Pending { entry, step, reply, child });
             }
         }
     }
@@ -873,8 +945,22 @@ impl Engine {
         self.live.get_mut(chat)?.entries.iter_mut().rev().find(|e| e.id == entry)
     }
 
-    fn update_step(&mut self, entry: u64, step: Step) {
+    fn update_step(&mut self, entry: u64, mut step: Step) {
+        if step.delegation.is_some() {
+            // The turn only reports a delegation's state; its transcript lives here.
+            let existing = self.reply_mut(entry).and_then(|e| e.steps.iter().find(|s| s.id == step.id)).and_then(|s| s.delegation.clone());
+            if let (Some(old), Some(new)) = (existing, step.delegation.as_deref_mut()) {
+                new.content = old.content;
+                new.reasoning = old.reasoning;
+                new.steps = old.steps;
+                new.prompt_tokens = new.prompt_tokens.max(old.prompt_tokens);
+                new.completion_tokens = new.completion_tokens.max(old.completion_tokens);
+            }
+        }
         self.persist_step(entry, &step);
+        if step.delegation.is_some() {
+            self.track_delegation(entry, &step);
+        }
         let Some(chat) = self.turns.get(&entry).map(|t| t.chat.clone()) else { return };
         if step.status.finished() && !step.artifacts.is_empty() {
             self.artifacts_changed(&chat, &step.artifacts);
@@ -973,7 +1059,13 @@ impl Engine {
             self.notice(client, "a reply is still running in this chat; stop it first".into());
             return;
         }
-        let base_prompt = self.system_prompt.clone();
+        let plan = self.endpoints.plan(&self.config);
+        let workspace_dir = self.live(&chat).map(|l| Arc::clone(&l.workspace)).ok();
+        let delegation = workspace_dir.as_deref().and_then(|ws| self.delegation_env(&llm, &plan, ws));
+        let mut base_prompt = self.system_prompt.clone();
+        if let Some(env) = &delegation {
+            base_prompt = format!("{base_prompt}\n\n{}", delegate::prompt_section(&env.agents));
+        }
         let (history, ids, prior, workspace, first) = match self.live(&chat) {
             Ok(live) => {
                 let system_prompt = system_prompt(&base_prompt, live);
@@ -1011,11 +1103,11 @@ impl Engine {
                 saved_at: Instant::now(),
                 steps: BTreeMap::new(),
                 title_from,
+                children: BTreeMap::new(),
             },
         );
         self.chat_changed(&chat);
         self.viewer_states(&chat);
-        let plan = self.endpoints.plan(&self.config);
         let setup = turn::Setup {
             llm,
             history,
@@ -1030,6 +1122,10 @@ impl Engine {
             plan,
             ids,
             prior,
+            child: None,
+            parent_cancel: None,
+            max_calls: limits::MAX_CALLS,
+            delegate: delegation.map(Arc::new),
         };
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });
@@ -1054,7 +1150,7 @@ impl Engine {
                     self.update_step(id, step);
                 }
             }
-            turn::TurnEvent::Gate { id, step, reply } => self.gate(id, step, reply),
+            turn::TurnEvent::Gate { id, step, reply } => self.gate(id, step, reply, None),
             turn::TurnEvent::Undo { id, ops, complete } => self.add_undo(id, ops, complete),
             turn::TurnEvent::Finished { id, error, stats } => self.finish_turn(id, error, stats),
             turn::TurnEvent::Usage { id, prompt, completion, context, estimated } => {
@@ -1256,6 +1352,9 @@ impl Engine {
             compactions: t.compactions,
             elapsed_ms: t.elapsed_ms,
             compacting: t.compacting,
+            agent_prompt_tokens: t.agent_prompt,
+            agent_completion_tokens: t.agent_completion,
+            agent_calls: t.agent_calls,
         })
     }
 
@@ -1267,11 +1366,24 @@ impl Engine {
 
     fn finish_turn(&mut self, id: u64, error: Option<String>, stats: Option<yah_protocol::TurnStats>) {
         self.deny_pending(|p, _| p.entry == id, "stopped");
-        // Nothing may stay "running" or "waiting" in a finished entry.
-        let open: Vec<Step> = self.reply_mut(id).map(|e| e.steps.iter().filter(|s| !s.status.finished()).cloned().collect()).unwrap_or_default();
-        for mut step in open {
-            step.status = StepStatus::Failed;
-            "interrupted".clone_into(&mut step.detail);
+        // Nothing may stay "running" or "waiting" in a finished entry, subagents' steps included.
+        let steps: Vec<Step> = self.reply_mut(id).map(|e| e.steps.clone()).unwrap_or_default();
+        for parent in &steps {
+            for mut step in parent.delegation.iter().flat_map(|d| d.steps.iter()).filter(|s| !s.status.finished()).cloned() {
+                step.status = StepStatus::Failed;
+                "interrupted".clone_into(&mut step.detail);
+                self.update_child_step(id, parent.id, step);
+            }
+        }
+        for mut step in steps.into_iter().filter(|s| !s.status.finished() || s.delegation.as_ref().is_some_and(|d| !d.state.finished())) {
+            if !step.status.finished() {
+                step.status = StepStatus::Failed;
+                "interrupted".clone_into(&mut step.detail);
+            }
+            if let Some(d) = step.delegation.as_deref_mut().filter(|d| !d.state.finished()) {
+                d.state = DelegationState::Stopped;
+                d.error.get_or_insert_with(|| "interrupted".to_owned());
+            }
             self.update_step(id, step);
         }
         self.flush(id);
@@ -1310,6 +1422,15 @@ impl Engine {
     fn flush(&mut self, entry: u64) {
         let Some(run) = self.turns.get_mut(&entry) else { return };
         run.saved_at = Instant::now();
+        let chat = run.chat.clone();
+        for child in run.children.values_mut() {
+            let (content, reasoning) = std::mem::take(&mut child.unsaved);
+            if let Some(id) = child.run.as_deref().filter(|_| !content.is_empty() || !reasoning.is_empty())
+                && let Err(e) = self.store.append_agent_text(&chat, id, &content, &reasoning)
+            {
+                log::error!("saving a subagent's streamed text: {e}");
+            }
+        }
         if run.unsaved.0.is_empty() && run.unsaved.1.is_empty() {
             return;
         }

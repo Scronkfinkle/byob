@@ -13,6 +13,7 @@ yah-llm.workspace = true
 yah-store.workspace = true
 yah-tools.workspace = true
 yah-protocol.workspace = true
+yah-plugins.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

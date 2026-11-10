@@ -40,7 +40,53 @@ for_each_backend!(
     import_keeps_everything,
     compactions_follow_their_messages,
     ids_of_a_deleted_chat_stay_dead,
+    agent_runs_record_child_threads,
 );
+
+fn agent_runs_record_child_threads(s: &dyn ChatStore) {
+    chat(s, "c");
+    chat(s, "other");
+    s.append_message("c", &NewMessage::user("do two things")).unwrap();
+    let reply = s.append_message("c", &NewMessage::assistant_streaming(None)).unwrap();
+    let seq = s.add_step(reply, &NewStep { tool: "delegate".into(), title: "Delegate".into(), access: StepAccess::Read, args: json!({}) }).unwrap();
+    let new = |id: &str| NewAgentRun { id: id.into(), parent: reply, step_seq: seq, agent: "explorer".into(), task: "look".into(), model: "local".into() };
+    s.add_agent_run("c", &new("run-a")).unwrap();
+    s.add_agent_run("c", &new("run-b")).unwrap();
+    // Wrong chat, duplicate or unusable ids are refused.
+    assert!(s.add_agent_run("other", &new("run-c")).is_err());
+    assert!(s.add_agent_run("c", &new("run-a")).is_err());
+    assert!(matches!(s.add_agent_run("c", &new("../x")), Err(StoreError::BadValue { .. })));
+    s.append_agent_text("c", "run-a", "Found ", "thinking").unwrap();
+    s.append_agent_text("c", "run-a", "it.", "").unwrap();
+    let step = NewStep { tool: "read_file".into(), title: "Read a.txt".into(), access: StepAccess::Read, args: json!({"path": "a.txt"}) };
+    assert_eq!(s.add_agent_step("c", "run-a", &step).unwrap(), 1);
+    assert_eq!(s.add_agent_step("c", "run-a", &step).unwrap(), 2);
+    s.finish_agent_step("c", "run-a", 1, &StepResult { output: "hello".into(), failed: false, changes: vec![] }).unwrap();
+    assert!(s.finish_agent_step("c", "run-a", 9, &StepResult::default()).is_err());
+    assert!(s.append_agent_text("other", "run-a", "x", "").is_err(), "runs are per chat");
+    assert!(s.append_agent_text("c", "nope", "x", "").is_err());
+    let stats = MessageStats { prompt_tokens: 100, completion_tokens: 20, elapsed_ms: 900, model_calls: 2 };
+    s.finish_agent_run("c", "run-a", None, Some(&stats)).unwrap();
+    s.finish_agent_run("c", "run-b", Some("stopped"), None).unwrap();
+
+    let runs = s.agent_runs("c").unwrap();
+    assert_eq!(runs.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["run-a", "run-b"]);
+    let a = &runs[0];
+    assert_eq!((a.parent, a.step_seq, a.agent.as_str(), a.task.as_str(), a.model.as_str()), (reply, seq, "explorer", "look", "local"));
+    assert_eq!((a.content.as_str(), a.reasoning.as_str(), a.done, a.stats), ("Found it.", "thinking", true, Some(stats)));
+    assert_eq!(a.steps.len(), 2);
+    assert_eq!(a.steps[0].result.as_ref().map(|r| r.output.as_str()), Some("hello"));
+    assert_eq!((a.steps[1].message_id, a.steps[1].result.is_none()), (reply, true));
+    assert_eq!(runs[1].error.as_deref(), Some("stopped"));
+    assert!(s.agent_runs("other").unwrap().is_empty());
+    assert!(s.agent_runs("missing").unwrap().is_empty());
+
+    // Exported with the chat; dropped with their parent message.
+    let exp = s.export_chat("c").unwrap().unwrap();
+    assert_eq!(exp.agent_runs.iter().map(|r| r.parent).collect::<Vec<_>>(), [1, 1]);
+    s.delete_messages_from("c", reply).unwrap();
+    assert!(s.agent_runs("c").unwrap().is_empty());
+}
 
 fn ids_of_a_deleted_chat_stay_dead(s: &dyn ChatStore) {
     chat(s, "c");
@@ -173,6 +219,25 @@ fn import_keeps_everything(s: &dyn ChatStore) {
             ExportedCompaction { covers: 0, compaction: compaction("nothing yet", 1_700_000_001_500, None, false) },
             ExportedCompaction { covers: 2, compaction: compaction("Q and Done", 1_700_000_004_000, Some("the plan"), true) },
         ],
+        agent_runs: vec![ExportedAgentRun {
+            parent: 1,
+            run: AgentRun {
+                id: "imp-run-1".into(),
+                chat_id: "imp".into(),
+                parent: MessageId(0),
+                step_seq: 2,
+                agent: "explorer".into(),
+                task: "Count lines".into(),
+                model: "local".into(),
+                content: "It has 3 lines.".into(),
+                reasoning: "hmm".into(),
+                done: true,
+                error: None,
+                stats: Some(MessageStats { prompt_tokens: 9, completion_tokens: 3, elapsed_ms: 40, model_calls: 2 }),
+                created_at: 1_700_000_002_500,
+                steps: vec![step(1, Some(StepResult { output: "3".into(), failed: false, changes: vec![] }))],
+            },
+        }],
     };
     s.import_chat(&exp).unwrap();
     assert!(s.import_chat(&exp).is_err(), "ids are unique");

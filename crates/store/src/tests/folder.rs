@@ -327,6 +327,7 @@ fn chat_md_snapshot() {
         grants: vec![],
         undo: vec![],
         compactions: vec![],
+        agent_runs: vec![],
     };
     s.import_chat(&exp).unwrap();
     let md = std::fs::read_to_string(s.chat_dir("snap").unwrap().join("chat.md")).unwrap();

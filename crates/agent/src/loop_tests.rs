@@ -14,7 +14,7 @@ use yah_types::InferenceConfig;
 use crate::{EngineConfig, EngineHandle, LocalConnection, Policy};
 
 #[derive(Clone)]
-enum Reply {
+pub(crate) enum Reply {
     Text(&'static str),
     /// (name, raw arguments)
     Calls(Vec<(String, String)>),
@@ -22,11 +22,11 @@ enum Reply {
     Mixed(&'static str, &'static str, &'static str),
 }
 
-fn call(name: &str, args: &str) -> Reply {
+pub(crate) fn call(name: &str, args: &str) -> Reply {
     Reply::Calls(vec![(name.into(), args.into())])
 }
 
-fn sse(reply: &Reply) -> String {
+pub(crate) fn sse(reply: &Reply) -> String {
     let frame = |v: Value| format!("data: {v}\n\n");
     let mut out = String::new();
     match reply {
@@ -57,7 +57,7 @@ fn sse(reply: &Reply) -> String {
 }
 
 /// Requests the fake server received, as JSON.
-type Requests = Arc<Mutex<Vec<Value>>>;
+pub(crate) type Requests = Arc<Mutex<Vec<Value>>>;
 
 /// Replies with `script` in order (repeating the last one); requests without `tools`
 /// always get `no_tools`.
@@ -81,7 +81,7 @@ fn fake_llm(script: Vec<Reply>, no_tools: &'static str) -> (String, Requests) {
     (format!("http://{addr}/v1"), requests)
 }
 
-fn read_request(s: &mut std::net::TcpStream) -> Value {
+pub(crate) fn read_request(s: &mut std::net::TcpStream) -> Value {
     let mut r = BufReader::new(s);
     let mut len = 0usize;
     loop {
@@ -101,12 +101,12 @@ fn read_request(s: &mut std::net::TcpStream) -> Value {
 }
 
 /// A test tool: returns `text` (or `reply`), counts runs.
-struct Fake {
-    name: &'static str,
-    access: Access,
-    runs: Arc<AtomicUsize>,
-    reply: Option<String>,
-    change: bool,
+pub(crate) struct Fake {
+    pub(crate) name: &'static str,
+    pub(crate) access: Access,
+    pub(crate) runs: Arc<AtomicUsize>,
+    pub(crate) reply: Option<String>,
+    pub(crate) change: bool,
 }
 
 impl Tool for Fake {
@@ -135,7 +135,7 @@ impl Tool for Fake {
 struct Harness {
     engine: EngineHandle,
     requests: Requests,
-    runs: Arc<AtomicUsize>,
+    pub(crate) runs: Arc<AtomicUsize>,
 }
 
 fn harness(script: Vec<Reply>, tool: &'static str, access: Access) -> Harness {
@@ -163,11 +163,14 @@ fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Opt
         chats_folder: None,
         adapt: crate::AdaptOptions::default(),
         compaction: crate::CompactOptions::default(),
+        agents: Vec::new(),
+        models: Default::default(),
+        subagents: Default::default(),
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests, runs }
 }
 
-fn recv(conn: &mut LocalConnection) -> ServerMsg {
+pub(crate) fn recv(conn: &mut LocalConnection) -> ServerMsg {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(m) = conn.try_recv() {
@@ -489,6 +492,9 @@ fn approval_card_then_undo_the_turn() {
         chats_folder: None,
         adapt: crate::AdaptOptions { probe: false, ..Default::default() },
         compaction: crate::CompactOptions::default(),
+        agents: Vec::new(),
+        models: Default::default(),
+        subagents: Default::default(),
     };
     let h = Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests: Arc::default(), runs: Arc::default() };
     let (mut c, _) = client(&h);
@@ -590,6 +596,9 @@ fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: yah_s
         chats_folder: None,
         adapt: crate::AdaptOptions::default(),
         compaction: crate::CompactOptions::default(),
+        agents: Vec::new(),
+        models: Default::default(),
+        subagents: Default::default(),
     };
     (EngineHandle::spawn_with(config).unwrap(), requests)
 }

@@ -176,6 +176,11 @@ impl YahApp {
                     }
                 }
                 ServerMsg::StepUpdated { entry, step } => steps::apply(&mut self.entries, entry, step),
+                ServerMsg::Delegation { entry, step, update } => {
+                    if let Some(e) = self.entry_mut(entry) {
+                        e.apply_delegation(step, &update);
+                    }
+                }
                 ServerMsg::EntryUndo { id, undoable, undone } => steps::apply_undo(&mut self.entries, id, undoable, undone),
                 // Handled by the sidebar above.
                 ServerMsg::Chats { .. } | ServerMsg::ChatUpdated(_) | ServerMsg::ChatDeleted { .. } | ServerMsg::ChatOpened { .. } => {}

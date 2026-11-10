@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::LoadError;
+use crate::agents::{AgentDef, load_agents_dir};
 use crate::manifest::{MANIFEST, MANIFEST_ALIAS, Manifest, ParseOptions, ToolKind, parse_manifest_str};
 use crate::skills::{Skill, load_skills_dir, read_capped};
 
@@ -21,6 +22,8 @@ pub struct Plugin {
     /// Ships with the app (may use `native` tools).
     pub builtin: bool,
     pub skills: Vec<Skill>,
+    /// Subagent definitions from its `agents/*.md` (Claude Code format).
+    pub agents: Vec<AgentDef>,
     /// Non-fatal problems for the plugin's card (a bad skill, a missing script). The parts
     /// that work are still used.
     pub problems: Vec<String>,
@@ -89,7 +92,9 @@ pub fn load_plugin(dir: &Path, builtin: bool) -> Option<Result<Plugin, LoadError
     }
     let (skills, skill_errors) = load_skills_dir(&dir.join("skills"));
     problems.extend(skill_errors.into_iter().map(|e| e.message));
-    Some(Ok(Plugin { manifest, dir: dir.to_path_buf(), builtin, skills, problems }))
+    let (agents, agent_errors) = load_agents_dir(&dir.join("agents"));
+    problems.extend(agent_errors.into_iter().map(|e| e.to_string()));
+    Some(Ok(Plugin { manifest, dir: dir.to_path_buf(), builtin, skills, agents, problems }))
 }
 
 /// Where to look for plugins.
@@ -125,6 +130,11 @@ impl Discovery {
             seen.entry(s.name.clone()).or_insert_with(|| s.clone());
         }
         seen.into_values().collect()
+    }
+
+    /// Subagents of active plugins; the first plugin to define a name wins.
+    pub fn agents(&self) -> Vec<AgentDef> {
+        crate::agents::merge_agents(self.active().map(|p| p.agents.clone()))
     }
 
     /// The `prompt` lines of active plugins, one per line.
@@ -176,6 +186,21 @@ mod tests {
     fn platform_names_match_node() {
         let p = current_platform();
         assert!(!p.is_empty() && p != "macos" && p != "windows");
+    }
+
+    #[test]
+    fn plugins_bring_agents() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("helpers");
+        fs::create_dir_all(dir.join("agents")).unwrap();
+        fs::write(dir.join(MANIFEST), r#"{"id":"helpers","name":"Helpers","version":"1.0.0"}"#).unwrap();
+        fs::write(dir.join("agents/explorer.md"), "---\nname: explorer\ndescription: Finds things\ntools: Read, Glob\n---\nExplore.").unwrap();
+        fs::write(dir.join("agents/broken.md"), "---\nname: broken\n---\n").unwrap();
+        let d = discover(&PluginSources { roots: vec![root.path().to_path_buf()], ..Default::default() });
+        assert!(d.errors.is_empty(), "{:?}", d.errors);
+        let agents = d.agents();
+        assert_eq!(agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["explorer"]);
+        assert_eq!(d.plugins[0].problems.len(), 1, "the broken agent is a problem, not an error");
     }
 
     #[test]

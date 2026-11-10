@@ -5,6 +5,7 @@
 //! file is copied aside and replaced by defaults with a warning. Secrets never go in
 //! `settings.json`; `secrets.json` is written with mode 0600 on unix.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
@@ -94,6 +95,46 @@ impl CompactionSettings {
     }
 }
 
+/// A model role (`settings.json` `models.<name>`): another endpoint or model that subagents
+/// can name in their `model:`. Missing fields default to the main inference settings. Its
+/// API key lives in `secrets.json` `model_keys.<name>` (without one, a role on the main
+/// endpoint uses the main key).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelRole {
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Subagents (the `delegate` tool).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubagentSettings {
+    pub enabled: bool,
+    /// Most subagents at once; unset: the endpoint's slots minus one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_parallel: Option<u16>,
+    /// Most tool calls of one subagent.
+    pub max_tool_calls: u16,
+    /// A subagent is stopped after this many minutes.
+    pub time_limit_minutes: u16,
+}
+
+impl Default for SubagentSettings {
+    fn default() -> Self {
+        Self { enabled: true, max_parallel: None, max_tool_calls: 25, time_limit_minutes: 15 }
+    }
+}
+
+impl SubagentSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "InferenceSettings::is_empty")]
@@ -116,6 +157,11 @@ pub struct Settings {
     /// Automatic context compaction.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "CompactionSettings::is_default")]
     pub compaction: CompactionSettings,
+    /// Model roles by name (`fast`, …) for subagents.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<String, ModelRole>,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "SubagentSettings::is_default")]
+    pub subagents: SubagentSettings,
     /// Fields this build doesn't know; preserved across load/save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -138,6 +184,9 @@ impl Settings {
         let mut loaded: Loaded<Self> = load_json(path);
         strip_secrets(&mut loaded.value.extra, "", &mut loaded.warnings);
         strip_secrets(&mut loaded.value.inference.extra, "inference.", &mut loaded.warnings);
+        for (name, role) in &mut loaded.value.models {
+            strip_secrets(&mut role.extra, &format!("models.{name}."), &mut loaded.warnings);
+        }
         for w in &loaded.warnings {
             log::warn!("yah-store: {w}");
         }
@@ -150,6 +199,9 @@ impl Settings {
         let mut ignored = Vec::new();
         strip_secrets(&mut clean.extra, "", &mut ignored);
         strip_secrets(&mut clean.inference.extra, "inference.", &mut ignored);
+        for role in clean.models.values_mut() {
+            strip_secrets(&mut role.extra, "", &mut ignored);
+        }
         save_json(path, &clean, None)
     }
 
@@ -168,13 +220,20 @@ impl Settings {
 pub struct Secrets {
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// API keys of model roles, by role name.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_keys: BTreeMap<String, String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
 impl std::fmt::Debug for Secrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Secrets").field("api_key", &self.api_key.as_ref().map(|_| "<redacted>")).field("extra", &self.extra.keys().collect::<Vec<_>>()).finish()
+        f.debug_struct("Secrets")
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("model_keys", &self.model_keys.keys().collect::<Vec<_>>())
+            .field("extra", &self.extra.keys().collect::<Vec<_>>())
+            .finish()
     }
 }
 
