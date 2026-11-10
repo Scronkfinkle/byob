@@ -29,7 +29,8 @@ fn main() {
                         ui.set_prefs(prefs);
                     }
                     // So is the artifact pane: width, collapsed, open tabs per chat.
-                    if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::pane::PanePrefs>(s, byob_ui_egui::pane::PanePrefs::STORAGE_KEY))
+                    if let Some(pane) =
+                        cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::pane::PanePrefs>(s, byob_ui_egui::pane::PanePrefs::STORAGE_KEY))
                     {
                         ui.artifacts_mut().set_pane_prefs(pane);
                     }

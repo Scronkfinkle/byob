@@ -17,9 +17,9 @@
 
 use std::collections::HashMap;
 
-use egui::{RichText, Stroke, vec2};
 use byob_protocol::media::{self, ChartSpec};
 use byob_protocol::{Artifact, ArtifactKind, ArtifactRef, ClientMsg, NoticeLevel, ServerMsg};
+use egui::{RichText, Stroke, vec2};
 
 use crate::appview::{self, AppDoc, AppStatus, AppView};
 use crate::export::Exports;

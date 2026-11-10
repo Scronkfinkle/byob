@@ -25,10 +25,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use egui::{RichText, Stroke, vec2};
 use byob_artifact_wire::{self as wire, Input, Request, Viewport};
 use byob_ui_egui::appview::{AppDoc, AppStatus, AppView, AppViewResponse};
 use byob_ui_egui::theme::Tokens;
+use egui::{RichText, Stroke, vec2};
 
 /// On screen this long before a card's app starts.
 const SETTLE: Duration = Duration::from_millis(200);

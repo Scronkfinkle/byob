@@ -10,9 +10,9 @@
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use egui::{Stroke, vec2};
 use byob_protocol::media::{self, MAX_ATTACHMENTS, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_BYTES};
 use byob_protocol::{ClientMsg, Connection, MediaRef};
+use egui::{Stroke, vec2};
 
 use crate::theme::Tokens;
 

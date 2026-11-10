@@ -48,9 +48,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub use adapt::{AdaptOptions, ToolMode};
-pub use compact::CompactOptions;
-pub use delegate::SubagentOptions;
-pub use permissions::{Policy, Rule};
 pub use byob_plugins::AgentDef;
 use byob_protocol::{
     ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, DelegationState, EngineState, Entry, EntryRole, MediaRef,
@@ -60,6 +57,9 @@ use byob_store::{ChatStore, GrantScope, NewMessage, Paths, Role, Secrets, Settin
 use byob_tools::Registry;
 pub use byob_tools::artifact;
 use byob_types::InferenceConfig;
+pub use compact::CompactOptions;
+pub use delegate::SubagentOptions;
+pub use permissions::{Policy, Rule};
 
 /// How often streamed text is written to the database while a reply runs.
 pub const FLUSH_EVERY: Duration = Duration::from_millis(250);

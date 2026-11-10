@@ -16,7 +16,7 @@ ureq.workspace = true
 url.workspace = true
 
 # A scripted MCP server over stdio, used by the integration tests
-# (`CARGO_BIN_EXE_yah-mcp-fake-server`). Not shipped.
+# (`CARGO_BIN_EXE_byob-mcp-fake-server`). Not shipped.
 [[bin]]
 name = "byob-mcp-fake-server"
 path = "tests/support/fake_server.rs"

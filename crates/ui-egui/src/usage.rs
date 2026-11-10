@@ -4,9 +4,9 @@
 
 use std::collections::HashMap;
 
-use egui::{Color32, RichText, Sense, Stroke};
 use byob_protocol::usage::short_tokens;
 use byob_protocol::{ChatUsage, ClientMsg, Compaction, ServerMsg};
+use egui::{Color32, RichText, Sense, Stroke};
 
 use crate::markdown;
 use crate::theme::{Tokens, mix};

@@ -14,8 +14,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use web_time::Instant;
 use byob_protocol::{ClientMsg, Connection, ServerMsg};
+use web_time::Instant;
 
 /// First retry delay; doubles per failed attempt up to [`MAX_BACKOFF`].
 const MIN_BACKOFF: Duration = Duration::from_millis(500);

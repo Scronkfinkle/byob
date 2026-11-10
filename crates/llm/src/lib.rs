@@ -17,11 +17,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub use budget::{estimate_history_tokens, estimate_message_tokens, estimate_tokens, fit_history};
+use byob_types::InferenceConfig;
 pub use probe::{Capabilities, ProbeOptions, ServerKind, ToolSupport};
 pub use think::ThinkSplitter;
 pub use toolprompt::{ParsedToolCalls, ToolCallFilter, parse_tool_calls, tool_prompt};
 pub use wire::{ChatMessage, ChatRequest, ToolCall, ToolSpec, Usage};
-use byob_types::InferenceConfig;
 
 /// Longest single SSE line we accept.
 const MAX_LINE: usize = 4 * 1024 * 1024;

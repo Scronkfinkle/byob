@@ -11,10 +11,10 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
 use byob_llm::{ChatMessage, LlmError, StreamEvent, ToolCall, ToolCallFilter, Usage, toolprompt};
 use byob_protocol::{FileChange, Step, StepStatus, ToolAccess, TurnStats};
 use byob_tools::{Access, Journal, Registry, Tool, ToolContext, ToolOutput, UndoOp};
+use serde_json::Value;
 
 use crate::{Input, adapt, compact, delegate};
 

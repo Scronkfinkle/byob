@@ -20,9 +20,9 @@ use std::io::{ErrorKind, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use byob_protocol::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion, MediaKind, MediaRef, artifact::valid_id};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use byob_protocol::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion, MediaKind, MediaRef, artifact::valid_id};
 
 use crate::sandbox;
 use crate::{Access, FileChange, Tool, ToolContext, ToolOutput, ToolSpec, parse_args};
@@ -854,7 +854,8 @@ mod tests {
     fn version_paths() {
         assert_eq!(parse_version_path(".byob/artifacts/a-1/v12.chart.json"), Some(ArtifactRef { id: "a-1".into(), version: 12 }));
         assert_eq!(parse_version_path("/w/.byob/artifacts/a/v1.html"), Some(ArtifactRef { id: "a".into(), version: 1 }));
-        for bad in [".byob/artifacts/a/artifact.json", ".byob/artifacts/A/v1.md", ".byob/artifacts/a/v0.md", "charts/x.chart.json", ".byob/artifacts/a/b/v1.md"] {
+        for bad in [".byob/artifacts/a/artifact.json", ".byob/artifacts/A/v1.md", ".byob/artifacts/a/v0.md", "charts/x.chart.json", ".byob/artifacts/a/b/v1.md"]
+        {
             assert_eq!(parse_version_path(bad), None, "{bad}");
         }
     }

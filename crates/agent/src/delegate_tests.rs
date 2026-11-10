@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
 use byob_protocol::{ApprovalAnswer, ClientMsg, Connection, DelegationState, DelegationUpdate, Entry, PROTOCOL_VERSION, ServerMsg, Step, StepStatus};
 use byob_tools::{Access, Registry};
 use byob_types::InferenceConfig;
+use serde_json::{Value, json};
 
 use crate::loop_tests::{Fake, Reply, call, read_request, recv, sse};
 use crate::{EngineConfig, EngineHandle, LocalConnection, SubagentOptions};

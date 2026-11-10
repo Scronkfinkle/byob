@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use serde_json::{Value, json};
 use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec, parse_args};
+use serde_json::{Value, json};
 
 /// Register `get_time` (read: runs without asking) and `set_reminder` (write: asks first).
 pub fn register(reg: &mut Registry) {

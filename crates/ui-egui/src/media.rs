@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 
-use egui::{Sense, Stroke, vec2};
 use byob_protocol::media::{self, ChartSpec};
 use byob_protocol::{ClientMsg, Entry, MediaContent, MediaKind, MediaRef};
+use egui::{Sense, Stroke, vec2};
 
 use crate::theme::Tokens;
 

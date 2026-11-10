@@ -3,8 +3,8 @@
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use egui::{Color32, RichText, Stroke, vec2};
 use byob_protocol::ClientMsg;
+use egui::{Color32, RichText, Stroke, vec2};
 
 use crate::ByobApp;
 use crate::theme::file::{self, Origin, ThemeDef};

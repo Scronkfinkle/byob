@@ -19,12 +19,12 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
 use byob_llm::{ChatMessage, ToolSpec};
 use byob_plugins::agents::{AgentDef, load_agents_dir, merge_agents, tool_aliases};
 use byob_protocol::{Delegation, DelegationState, Step, StepStatus, ToolAccess};
 use byob_tools::Registry;
 use byob_types::InferenceConfig;
+use serde_json::{Value, json};
 
 use crate::limits::{DETAIL_CHARS, one_line, prefix};
 use crate::turn::{self, TurnEvent};

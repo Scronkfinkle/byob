@@ -7,12 +7,12 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
 use byob_llm::{ChatMessage, StreamEvent};
 use byob_protocol::{
     ArtifactRef, ChatSummary, Delegation, DelegationState, Entry, EntryRole, FileChange, MediaKind, MediaRef, Step, StepStatus, ToolAccess, TurnStats,
 };
 use byob_store::{AgentRun, Chat, MessageStats, NewStep, Role, StepAccess, StepChange, StepResult, StoredMessage};
+use serde_json::{Value, json};
 
 use crate::Input;
 use crate::limits::{DETAIL_CHARS, one_line, prefix};

@@ -9,13 +9,13 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use serde_json::json;
 use byob_plugins::manifest::ToolKind;
 use byob_plugins::python::ScriptRun;
 use byob_plugins::{
     Discovery, PluginRef, PluginSources, PythonTool, ToolNames, UseSkillTool, discover, load_plugin, python_tools, run_script_unsandboxed, skills_prompt,
 };
 use byob_tools::{Access, FileChange, Tool, ToolContext};
+use serde_json::json;
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -57,7 +57,7 @@ fn hob_builtin_manifests_load_unchanged() {
 fn user_plugins_and_errors() {
     let d = found();
     let ids: Vec<&str> = d.plugins.iter().skip(4).map(|p| p.id()).collect();
-    assert_eq!(ids, ["memory", "missing-script", "recipe-helper", "text-stats", "byob-alias"]);
+    assert_eq!(ids, ["byob-alias", "memory", "missing-script", "recipe-helper", "text-stats"]);
 
     let errors: Vec<String> = d.errors.iter().map(|e| format!("{}: {}", e.path.file_name().unwrap().to_string_lossy(), e.message)).collect();
     assert_eq!(errors.len(), 3, "{errors:?}");

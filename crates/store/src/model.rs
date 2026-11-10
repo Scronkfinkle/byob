@@ -3,9 +3,9 @@
 
 use std::path::PathBuf;
 
+pub use byob_types::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-pub use byob_types::Role;
 
 /// Milliseconds since the Unix epoch (UTC).
 pub type Millis = i64;

@@ -5,9 +5,9 @@
 //! hob's look (rounded bar ends, recessive grid), and must not grab scroll/drag gestures
 //! inside the transcript's scroll area.
 
-use egui::{Align2, Color32, CornerRadius, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2, pos2, vec2};
 use byob_protocol::media::ChartSpec;
 use byob_types::chart::ChartType;
+use egui::{Align2, Color32, CornerRadius, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2, pos2, vec2};
 
 use crate::theme::Tokens;
 

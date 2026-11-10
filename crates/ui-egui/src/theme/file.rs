@@ -2,7 +2,7 @@
 //!
 //! ```json
 //! {
-//!   "yah_theme": 1,
+//!   "byob_theme": 1,
 //!   "name": "Mocha, warmer",
 //!   "base": "catppuccin-mocha",
 //!   "dark": true,
@@ -210,7 +210,7 @@ pub fn parse(text: &str, origin: Origin) -> Result<ThemeFile, String> {
         }
     };
     for key in obj.keys() {
-        if !matches!(key.as_str(), "yah_theme" | "name" | "base" | "dark" | "accent" | "colors" | "knobs") {
+        if !matches!(key.as_str(), "byob_theme" | "yah_theme" | "name" | "base" | "dark" | "accent" | "colors" | "knobs") {
             warnings.push(format!("ignored unknown field {key:?}"));
         }
     }
@@ -275,7 +275,7 @@ pub fn export(def: &ThemeDef, prefs: &Prefs, name: &str) -> String {
     }
     let knobs = serde_json::to_value(prefs.knobs.sanitized()).unwrap_or(Value::Null);
     let mut obj = Map::new();
-    obj.insert("yah_theme".into(), Value::from(1));
+    obj.insert("byob_theme".into(), Value::from(1));
     obj.insert("name".into(), Value::String(name.trim().chars().take(80).collect()));
     obj.insert("base".into(), Value::String(def.base.id.into()));
     obj.insert("dark".into(), Value::Bool(def.dark));

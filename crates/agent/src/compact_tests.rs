@@ -8,11 +8,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
 use byob_protocol::{ChatUsage, ClientMsg, Compaction, Connection, Entry, NoticeLevel, PROTOCOL_VERSION, ServerMsg};
 use byob_store::Paths;
 use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
 use byob_types::InferenceConfig;
+use serde_json::{Value, json};
 
 use crate::compact::{SUMMARY_ACK, SUMMARY_HEADER, SYSTEM};
 use crate::{CompactOptions, EngineConfig, EngineHandle, LocalConnection, Policy};

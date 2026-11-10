@@ -11,8 +11,8 @@
 //!   apps live in chat cards ([`AppView::card`]). Without the helper, [`Placeholder`] shows a
 //!   summary and points at Open (system browser) and Export.
 
-use egui::{RichText, Stroke};
 use byob_protocol::artifact::THEME_VARS;
+use egui::{RichText, Stroke};
 
 use crate::theme::Tokens;
 

@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
 use byob_mcp::{HttpConfig, McpClient, McpError, TokenProvider};
+use serde_json::{Value, json};
 
 const SECS: Duration = Duration::from_secs(10);
 const SESSION: &str = "sess-1";

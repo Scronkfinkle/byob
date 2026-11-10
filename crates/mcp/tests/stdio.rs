@@ -5,13 +5,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::json;
 use byob_mcp::{Content, McpClient, McpError, StdioConfig};
+use serde_json::json;
 
 const SECS: Duration = Duration::from_secs(10);
 
 fn config(mode: &str) -> StdioConfig {
-    let mut cfg = StdioConfig::new(env!("CARGO_BIN_EXE_yah-mcp-fake-server")).env("FAKE_MCP_MODE", mode);
+    let mut cfg = StdioConfig::new(env!("CARGO_BIN_EXE_byob-mcp-fake-server")).env("FAKE_MCP_MODE", mode);
     cfg.init_timeout = SECS;
     cfg.request_timeout = SECS;
     cfg

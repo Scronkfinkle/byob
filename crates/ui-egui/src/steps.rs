@@ -6,8 +6,8 @@
 
 use std::ops::Range;
 
-use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2, pos2, vec2};
 use byob_protocol::{ApprovalAnswer, ClientMsg, Delegation, DelegationState, DiffLine, Entry, FileChange, LineKind, Preview, Step, StepStatus, ToolAccess};
+use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2, pos2, vec2};
 
 use crate::markdown;
 use crate::theme::{Tokens, bold_family, mix};

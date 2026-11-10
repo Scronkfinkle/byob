@@ -43,7 +43,7 @@ const DEFAULT_THEME: &str = ":root{--byob-bg:#16171a;--byob-surface:#1f2125;--by
 /// (the host treats them as untrusted text).
 const SHIM: &str = r"<script>(()=>{
 for(const k of['RTCPeerConnection','webkitRTCPeerConnection','RTCDataChannel','RTCSessionDescription','RTCIceCandidate'])try{Object.defineProperty(window,k,{value:undefined,writable:false,configurable:false})}catch(e){}
-const P=m=>{try{if(parent!==window)parent.postMessage(m,'*');else if(m.t==='error')console.error('\x01yah-error '+(m.line|0)+' '+m.msg)}catch(e){}};
+const P=m=>{try{if(parent!==window)parent.postMessage(m,'*');else if(m.t==='error')console.error('\x01byob-error '+(m.line|0)+' '+m.msg)}catch(e){}};
 const S=(v,n)=>String(v==null?'':v).slice(0,n);
 const setv=o=>{if(!o||typeof o!=='object')return;for(const[k,v]of Object.entries(o))if(/^--byob-[a-z-]{1,30}$/.test(k)&&/^[#a-zA-Z0-9(),. %-]{0,60}$/.test(String(v)))document.documentElement.style.setProperty(k,String(v))};
 try{setv(Object.fromEntries(new URLSearchParams(location.hash.slice(1))))}catch(e){}

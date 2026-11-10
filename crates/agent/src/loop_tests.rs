@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
 use byob_protocol::{ApprovalAnswer, ClientMsg, Connection, Entry, FileChange, PROTOCOL_VERSION, ServerMsg, Step, StepStatus, ToolAccess};
 use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
 use byob_types::InferenceConfig;
+use serde_json::{Value, json};
 
 use crate::{EngineConfig, EngineHandle, LocalConnection, Policy};
 

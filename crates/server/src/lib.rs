@@ -23,10 +23,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tungstenite::protocol::{Role, WebSocketConfig};
-use tungstenite::{Message, WebSocket};
 use byob_agent::EngineHandle;
 use byob_protocol::{ClientMsg, Connection, MAX_FRAME_BYTES, NoticeLevel, ServerMsg};
+use tungstenite::protocol::{Role, WebSocketConfig};
+use tungstenite::{Message, WebSocket};
 
 /// How often a connection thread checks for outgoing engine messages.
 const POLL: Duration = Duration::from_millis(20);
@@ -236,8 +236,8 @@ fn websocket(stream: TcpStream, leftover: Vec<u8>, engine: &EngineHandle, config
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
     use byob_protocol::PROTOCOL_VERSION;
+    use std::io::{Read, Write};
 
     fn start_with(config: ServerConfig) -> SocketAddr {
         let engine = EngineHandle::spawn(byob_types::InferenceConfig::default()).unwrap();
