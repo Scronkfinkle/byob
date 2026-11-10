@@ -814,7 +814,7 @@ mod tests {
             ]
         );
         assert!(!csv.failed);
-        assert!(id_of_path(&chart).ends_with("/v1.chart.json"));
+        assert!(Path::new(&id_of_path(&chart)).ends_with("v1.chart.json"));
         // no chat, no artifacts
         let cancel = AtomicBool::new(false);
         assert!(CreateArtifact.run(&json!({"title": "T", "filename": "a.md", "content": "x"}), &ToolContext::new(ws, &cancel)).failed);

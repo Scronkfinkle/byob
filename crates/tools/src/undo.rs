@@ -199,7 +199,7 @@ fn check_path(ws: &Path, p: &Path) -> Result<String, String> {
     }
     // no links on the way that lead out of the workspace
     sandbox::resolve(ws, &rel.to_string_lossy())?;
-    Ok(rel.display().to_string())
+    Ok(crate::sandbox::slash(rel))
 }
 
 struct Sim<'a> {
@@ -295,7 +295,7 @@ pub fn undo(ops: &[UndoOp], workspace: &Path) -> Result<UndoReport, String> {
         // re-check each op against the real disk just before applying it
         let mut sim = Sim { ws: workspace, slots: BTreeMap::new() };
         sim.step(op).map_err(|e| partial(&done, e))?;
-        let show = |p: &Path| p.strip_prefix(workspace).unwrap_or(p).display().to_string();
+        let show = |p: &Path| crate::sandbox::slash(p.strip_prefix(workspace).unwrap_or(p));
         let line = match op {
             UndoOp::Created { path, .. } => {
                 std::fs::remove_file(path).map_err(|e| partial(&done, format!("can't delete {}: {e}", show(path))))?;

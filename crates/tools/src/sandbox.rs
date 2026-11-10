@@ -25,6 +25,17 @@ pub const MAX_PATH_LEN: usize = 4096;
 /// Hidden folder for byob's own bookkeeping (trash, undo). File tools may not touch it.
 pub const RESERVED_DIR: &str = ".byob";
 
+/// A (workspace-relative) path as text with `/` separators on every platform — what the
+/// model writes and what the protocol carries, so messages read the same on Windows.
+pub fn slash(path: &Path) -> String {
+    // Absolute paths (outside the workspace) keep their native form.
+    if path.has_root() {
+        return path.display().to_string();
+    }
+    let parts: Vec<String> = path.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    if parts.is_empty() { ".".to_owned() } else { parts.join("/") }
+}
+
 /// A path inside the workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
@@ -44,9 +55,9 @@ impl Resolved {
         }
     }
 
-    /// Display form of [`Resolved::rel`].
+    /// Display form of [`Resolved::rel`], with `/` separators on every platform.
     pub fn show(&self) -> String {
-        self.rel().display().to_string()
+        slash(&self.rel())
     }
 
     pub fn is_root(&self) -> bool {
@@ -173,6 +184,14 @@ mod tests {
 
     fn ws() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn slash_uses_forward_slashes_for_relative_paths() {
+        assert_eq!(slash(&Path::new("a").join("b").join("c.txt")), "a/b/c.txt");
+        assert_eq!(slash(Path::new("")), ".");
+        let abs = std::env::temp_dir();
+        assert_eq!(slash(&abs), abs.display().to_string());
     }
 
     #[test]

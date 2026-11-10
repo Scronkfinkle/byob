@@ -299,7 +299,8 @@ pub fn spawn_titler(llm: byob_llm::Client, chat: String, user: String, reply: St
         let started = Instant::now();
         let (mut content, mut reasoning) = (0usize, 0usize);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            llm.stream_chat(&messages, &[], &cancel, |ev| {
+            let until = byob_llm::StopWhen { cancel: &cancel, also: None, deadline: started.checked_add(TITLE_TIMEOUT) };
+            llm.stream_chat_until(&messages, &[], until, |ev| {
                 match ev {
                     StreamEvent::Content(t) => content = content.saturating_add(t.len()),
                     StreamEvent::Reasoning(t) => reasoning = reasoning.saturating_add(t.len()),

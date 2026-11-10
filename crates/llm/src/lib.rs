@@ -125,11 +125,25 @@ impl Client {
         messages: &[ChatMessage],
         tools: &[ToolSpec],
         cancel: &AtomicBool,
+        on_event: impl FnMut(StreamEvent),
+    ) -> Result<ChatOutcome, LlmError> {
+        self.stream_chat_until(messages, tools, StopWhen { cancel, also: None, deadline: None }, on_event)
+    }
+
+    /// [`Client::stream_chat`] that also stops on a second flag (e.g. a caller's own size
+    /// limit set from `on_event`) or at a deadline. All are checked every 50 ms, so they
+    /// work even while the server sends nothing.
+    pub fn stream_chat_until(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        stop_when: StopWhen<'_>,
         mut on_event: impl FnMut(StreamEvent),
     ) -> Result<ChatOutcome, LlmError> {
+        let cancel = &stop_when;
         let request = ChatRequest::new(&self.config.model, messages, tools);
         let body = serde_json::to_vec(&request).map_err(|e| LlmError::Stream(format!("encoding request: {e}")))?;
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.now() {
             return Ok(ChatOutcome { cancelled: true, ..ChatOutcome::default() });
         }
         // The blocking HTTP exchange runs on its own thread so Stop works even while the
@@ -154,7 +168,7 @@ impl Client {
         // What arrived so far, returned if the caller stops us.
         let mut partial = ChatOutcome::default();
         loop {
-            if cancel.load(Ordering::Relaxed) {
+            if cancel.now() {
                 stop.store(true, Ordering::Relaxed);
                 partial.cancelled = true;
                 return Ok(partial);
@@ -172,6 +186,22 @@ impl Client {
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Err(LlmError::Stream("the request ended unexpectedly".into())),
             }
         }
+    }
+}
+
+/// When [`Client::stream_chat_until`] gives up: either flag set, or the deadline passed.
+#[derive(Clone, Copy)]
+pub struct StopWhen<'a> {
+    pub cancel: &'a AtomicBool,
+    pub also: Option<&'a AtomicBool>,
+    pub deadline: Option<std::time::Instant>,
+}
+
+impl StopWhen<'_> {
+    fn now(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+            || self.also.is_some_and(|f| f.load(Ordering::Relaxed))
+            || self.deadline.is_some_and(|d| std::time::Instant::now() >= d)
     }
 }
 

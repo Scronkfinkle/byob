@@ -221,7 +221,8 @@ pub fn summarize(llm: &byob_llm::Client, messages: &[ChatMessage], focus: Option
     let (mut content, mut reasoning) = (0usize, 0usize);
     let mut overthought = false;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        llm.stream_chat(&request, &[], &stop, |ev| {
+        let until = byob_llm::StopWhen { cancel, also: Some(&stop), deadline: started.checked_add(SUMMARY_TIMEOUT) };
+        llm.stream_chat_until(&request, &[], until, |ev| {
             match ev {
                 StreamEvent::Content(t) => content = content.saturating_add(t.len()),
                 StreamEvent::Reasoning(t) => reasoning = reasoning.saturating_add(t.len()),
