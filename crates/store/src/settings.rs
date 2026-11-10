@@ -256,17 +256,18 @@ impl Settings {
     }
 
     /// The global level of the layered settings (see [`byob_types::config`]). Compaction and
-    /// subagents always have a value here (their sections have defaults).
+    /// subagents count as set only where they differ from the built-in defaults.
     pub fn global_layer(&self) -> Layer {
         let text = |v: &Option<String>| v.clone().filter(|s| !s.trim().is_empty());
+        let (compaction, subagents) = (CompactionSettings::default(), SubagentSettings::default());
         Layer {
             base_url: text(&self.inference.base_url),
             model: text(&self.inference.model),
             tool_mode: self.tool_mode,
             approvals: self.approvals,
-            auto_compact: Some(self.compaction.auto),
-            compact_percent: Some(self.compaction.threshold_percent),
-            subagents: Some(self.subagents.enabled),
+            auto_compact: Some(self.compaction.auto).filter(|a| *a != compaction.auto),
+            compact_percent: Some(self.compaction.threshold_percent).filter(|p| *p != compaction.threshold_percent),
+            subagents: Some(self.subagents.enabled).filter(|s| *s != subagents.enabled),
             instructions: text(&self.instructions),
             env: None,
             image: None,

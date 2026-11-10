@@ -221,10 +221,7 @@ fn global_layer_maps_to_settings_and_back() {
     let mut s = Settings::default();
     s.inference.base_url = Some("http://h/v1".into());
     let l = s.global_layer();
-    assert_eq!(
-        (l.base_url.as_deref(), l.auto_compact, l.compact_percent, l.subagents, l.approvals),
-        (Some("http://h/v1"), Some(true), Some(80), Some(true), None)
-    );
+    assert_eq!((l.base_url.as_deref(), l.auto_compact, l.compact_percent, l.subagents, l.approvals), (Some("http://h/v1"), None, None, None, None));
     let changed = Layer {
         base_url: Some("http://ignored/v1".into()),
         approvals: Some(Approvals::AllowEdits),

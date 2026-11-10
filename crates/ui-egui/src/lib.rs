@@ -371,6 +371,11 @@ impl ByobApp {
                 || (!self.busy() && self.entries.iter().all(|e| e.done) && !self.uploads.busy() && !self.media.loading() && !self.artifacts.loading()))
     }
 
+    /// The engine has answered (its state arrived).
+    pub fn connected(&self) -> bool {
+        self.state.is_some()
+    }
+
     /// A reply or compaction is running in the chat in view.
     pub fn busy(&self) -> bool {
         self.state.as_ref().is_some_and(|s| s.busy)
@@ -832,11 +837,28 @@ mod app_tests {
         for width in [320.0, 480.0, 720.0, 1000.0, 1600.0] {
             let fake = Fake::default();
             let title = "A chat with a remarkably long title that would never fit in any header at all, really".to_owned();
+            // In a workspace with a long name, with its own endpoint (the chip shows that one).
+            let ws = byob_protocol::WorkspaceSummary {
+                id: "w".into(),
+                name: "A workspace whose name is also much longer than anyone would reasonably type".into(),
+                folder: "/w".into(),
+                chats: 1,
+                updated_at: 1,
+                env: byob_protocol::workspace::EnvKind::Container,
+            };
+            let mut s = state(Link::Ok, true);
+            s.chat_endpoint = Some(byob_protocol::ChatEndpoint {
+                base_url: "https://another-very-long-hostname.example.com/v1".into(),
+                model: "yet-another-extremely-long-model-name".into(),
+                from: byob_protocol::workspace::Level::Workspace,
+                ..Default::default()
+            });
             fake.inbox.lock().unwrap().extend([
-                ServerMsg::State(state(Link::Ok, true)),
+                ServerMsg::State(s),
+                ServerMsg::Workspaces { items: vec![ws], current: None, root: String::new(), support: Default::default() },
                 ServerMsg::ChatOpened {
-                    chat: Some(ChatSummary { id: "c".into(), title, updated_at: 1, pinned_at: None, busy: false, workspace: None }),
-                    workspace: None,
+                    chat: Some(ChatSummary { id: "c".into(), title, updated_at: 1, pinned_at: None, busy: false, workspace: Some("w".into()) }),
+                    workspace: Some("w".into()),
                 },
             ]);
             let ctx = egui::Context::default();
@@ -846,7 +868,47 @@ mod app_tests {
             }
             let r = app.settings_button;
             assert!(r.is_positive() && r.min.x >= 0.0 && r.max.x <= width + 0.5, "width {width}: Settings at {r:?}");
+            let gear = app.chat_button;
+            assert!(gear.is_positive() && gear.max.x <= r.min.x, "width {width}: the chat settings button at {gear:?}");
         }
+    }
+
+    #[test]
+    fn workspace_views_open_and_send_what_the_engine_needs() {
+        let fake = Fake::default();
+        let ws = byob_protocol::WorkspaceSummary {
+            id: "w".into(),
+            name: "Data".into(),
+            folder: "/data".into(),
+            chats: 0,
+            updated_at: 1,
+            env: byob_protocol::workspace::EnvKind::Auto,
+        };
+        fake.inbox.lock().unwrap().extend([
+            ServerMsg::State(state(Link::Ok, true)),
+            ServerMsg::Workspaces { items: vec![ws], current: Some("w".into()), root: "/home/me/byob-workspaces".into(), support: Default::default() },
+            ServerMsg::ChatOpened { chat: None, workspace: Some("w".into()) },
+        ]);
+        let ctx = egui::Context::default();
+        let mut app = ByobApp::new(Box::new(fake.clone()), "test");
+        frame(&ctx, &mut app, 1000.0);
+        assert!(app.in_workspace("Data"));
+        for panel in ByobApp::PANELS.split(", ") {
+            assert!(app.open_panel(panel), "{panel}");
+        }
+        assert!(!app.open_panel("nope"));
+        for _ in 0..2 {
+            frame(&ctx, &mut app, 1000.0);
+        }
+        let sent = fake.sent.lock().unwrap().clone();
+        assert!(sent.contains(&ClientMsg::GetConfig { scope: byob_protocol::ConfigScope::Chat }));
+        assert!(sent.contains(&ClientMsg::GetConfig { scope: byob_protocol::ConfigScope::Workspace { id: "w".into() } }));
+        assert!(sent.contains(&ClientMsg::WorkspaceEnv { action: None, workspace: Some("w".into()) }));
+        assert!(sent.contains(&ClientMsg::CheckContainers));
+        app.create_workspace("Fresh", byob_protocol::workspace::EnvKind::Container);
+        let last = fake.sent.lock().unwrap().last().cloned();
+        let Some(ClientMsg::CreateWorkspace { name, folder, config }) = last else { panic!("{last:?}") };
+        assert_eq!((name.as_str(), folder, config.env), ("Fresh", byob_protocol::NewFolder::Create, Some(byob_protocol::workspace::EnvKind::Container)));
     }
 
     #[test]

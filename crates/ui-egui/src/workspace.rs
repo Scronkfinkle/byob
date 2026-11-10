@@ -158,7 +158,7 @@ impl LayerEditor {
                 self.endpoint_open = self.draft.base_url.is_some();
                 return Some(self.send(if f == Field::Endpoint { Some(String::new()) } else { None }));
             }
-        } else if f != Field::Instructions && f != Field::Image {
+        } else if f != Field::Instructions && f != Field::Image && !(level == Level::Global && from == Level::Default) {
             ui.label(RichText::new(inherited(from)).small().color(t.text_faint));
         }
         None
@@ -166,13 +166,15 @@ impl LayerEditor {
 
     fn field(&mut self, ui: &mut egui::Ui, t: &Tokens, view: &ConfigView, level: Level, f: Field) -> Option<ClientMsg> {
         let e = &view.effective;
+        // The global level inherits only the built-in defaults.
+        let inh = if level == Level::Global { "Default" } else { "Inherit" };
         let mut out = None;
         ui.horizontal_wrapped(|ui| {
             match f {
                 Field::Endpoint => out = self.endpoint(ui, t, view),
                 Field::ToolMode => {
                     let mut v = self.draft.tool_mode;
-                    let shown = |m: Option<ToolMode>| m.map_or_else(|| format!("Inherit ({})", e.tool_mode.value.label()), |m| m.label().to_owned());
+                    let shown = |m: Option<ToolMode>| m.map_or_else(|| format!("{inh} ({})", e.tool_mode.value.label()), |m| m.label().to_owned());
                     egui::ComboBox::from_id_salt(("tool_mode", level)).selected_text(shown(v)).show_ui(ui, |ui| {
                         ui.selectable_value(&mut v, None, shown(None));
                         for m in ToolMode::ALL {
@@ -186,7 +188,7 @@ impl LayerEditor {
                 }
                 Field::Approvals => {
                     let mut v = self.draft.approvals;
-                    let shown = |a: Option<Approvals>| a.map_or_else(|| format!("Inherit ({})", e.approvals.value.label()), |a| a.label().to_owned());
+                    let shown = |a: Option<Approvals>| a.map_or_else(|| format!("{inh} ({})", e.approvals.value.label()), |a| a.label().to_owned());
                     egui::ComboBox::from_id_salt(("approvals", level)).selected_text(shown(v)).show_ui(ui, |ui| {
                         ui.selectable_value(&mut v, None, shown(None));
                         for a in Approvals::ALL {
@@ -201,7 +203,7 @@ impl LayerEditor {
                 Field::Compaction => {
                     let mut auto = self.draft.auto_compact;
                     let shown = |a: Option<bool>| match a {
-                        None => format!("Inherit ({})", if e.auto_compact.value { "on" } else { "off" }),
+                        None => format!("{inh} ({})", if e.auto_compact.value { "on" } else { "off" }),
                         Some(true) => "On".into(),
                         Some(false) => "Off".into(),
                     };
@@ -217,7 +219,11 @@ impl LayerEditor {
                     if e.auto_compact.value || auto == Some(true) {
                         let mut p = self.draft.compact_percent.unwrap_or(e.compact_percent.value);
                         let r = ui
-                            .add(egui::Slider::new(&mut p, 10..=95).suffix("% of the window"))
+                            .scope(|ui| {
+                                ui.spacing_mut().slider_width = 80.0;
+                                ui.add(egui::Slider::new(&mut p, 10..=95).suffix("%"))
+                            })
+                            .inner
                             .on_hover_text("Summarise older messages when a request passes this much of the context window");
                         if (r.drag_stopped() || (r.changed() && !r.dragged())) && Some(p) != self.draft.compact_percent {
                             self.draft.compact_percent = Some(p);
@@ -230,7 +236,7 @@ impl LayerEditor {
                 Field::Subagents => {
                     let mut v = self.draft.subagents;
                     let shown = |s: Option<bool>| match s {
-                        None => format!("Inherit ({})", if e.subagents.value { "on" } else { "off" }),
+                        None => format!("{inh} ({})", if e.subagents.value { "on" } else { "off" }),
                         Some(true) => "On".into(),
                         Some(false) => "Off".into(),
                     };
@@ -255,7 +261,11 @@ impl LayerEditor {
                             let more = if text.chars().count() > 120 { "…" } else { "" };
                             ui.label(RichText::new(format!("{} adds: {first}{more}", from.label())).small().color(t.text_faint)).on_hover_text(text);
                         }
-                        let hint = format!("Added to the system prompt for this {}", level.label());
+                        let hint = match level {
+                            Level::Global => "Added to the system prompt of every chat",
+                            Level::Workspace => "Added to the system prompt of this workspace's chats",
+                            _ => "Added to the system prompt of this chat",
+                        };
                         let r = ui.add(
                             egui::TextEdit::multiline(&mut self.instructions).desired_rows(2).desired_width(ui.available_width().min(420.0)).hint_text(hint),
                         );
@@ -270,7 +280,7 @@ impl LayerEditor {
                     let chat = level == Level::Chat;
                     let mut v = self.draft.env;
                     let shown = |k: Option<EnvKind>| match k {
-                        None if chat => format!("Inherit ({})", e.env.value.label()),
+                        None if chat => format!("{inh} ({})", e.env.value.label()),
                         None => "Auto".to_owned(),
                         Some(k) => k.label().to_owned(),
                     };
@@ -852,6 +862,7 @@ impl WorkspaceUi {
                 .id(egui::Id::unique("new-workspace"))
                 .open(&mut open)
                 .collapsible(false)
+                .fade_in(false)
                 .resizable(false)
                 .default_width(max_w.min(460.0))
                 .max_width(max_w)
@@ -877,6 +888,7 @@ impl WorkspaceUi {
                 .id(egui::Id::unique("workspace-settings"))
                 .open(&mut open)
                 .collapsible(false)
+                .fade_in(false)
                 .resizable(false)
                 .default_width(max_w)
                 .max_width(max_w)
@@ -901,6 +913,7 @@ impl WorkspaceUi {
                 .id(egui::Id::unique("chat-settings"))
                 .open(&mut open)
                 .collapsible(false)
+                .fade_in(false)
                 .resizable(false)
                 .title_bar(true)
                 .default_width(w)
