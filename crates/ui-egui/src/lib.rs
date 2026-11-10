@@ -420,6 +420,13 @@ impl ByobApp {
             self.end_frame(ui.ctx());
             return;
         }
+        if self.artifacts.is_maximized() {
+            // Maximized: the artifact takes the whole window below the header (same pane, so
+            // a running app just gets resized).
+            egui::CentralPanel::default().show(ui, |ui| self.artifacts.pane(ui, &t, false));
+            self.end_frame(ui.ctx());
+            return;
+        }
         if list_open {
             // The id carries the width knob so changing it resizes the panel (egui remembers dragged sizes per id).
             let w = t.knobs.sidebar_width;

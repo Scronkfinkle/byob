@@ -131,7 +131,11 @@ chat's list with the transcript (`Artifacts`), `ArtifactUpdated` on new versions
 `GetArtifact` (for display and Export). Each turn's system prompt lists the chat's artifacts by
 id. The pane has tabs (per chat), collapses to a rail of icons with live/paused dots (a
 floating button with a count on phones; Ctrl+Backslash toggles), and any artifact can be
-minimized to a one-line chip in the chat and the pane ("Collapse all" in the header). Pane
+minimized to a one-line chip in the chat and the pane ("Collapse all" in the header). On
+wide windows the pane can be maximized over the chat and the chat list (its maximize button,
+Ctrl+Shift+F; Restore, Esc or the shortcut again go back — Esc first leaves an app or field
+that has keyboard focus); it is the same pane, so a running app is only resized, and the
+state is per session. Pane
 width, open/collapsed, and tabs + minimized artifacts per chat are device prefs
 (`byob-ui-egui::pane`, stored like the appearance prefs). HTML apps render through the
 `AppView` seam in `byob-ui-egui`: an iframe overlay in the
