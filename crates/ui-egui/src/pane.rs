@@ -10,6 +10,10 @@
 //! On narrow screens (phones) the pane is full screen when open, so it is never opened by
 //! itself there: it opens from the floating button and "← Chat" closes it again. That flag
 //! is per session ([`Pane::narrow_open`]).
+//!
+//! On wide windows the open pane can be maximized to take the whole window below the header
+//! (chat and chat list hidden); that too is per session, and only while the pane is open
+//! ([`Pane::maximized`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -127,6 +131,8 @@ pub struct Pane {
     cur: ChatTabs,
     /// Phones: the pane covers the chat (per session; it never opens by itself there).
     pub narrow_open: bool,
+    /// Wide windows: the pane covers the chat and the chat list (per session).
+    maximized: bool,
 }
 
 impl Pane {
@@ -149,6 +155,7 @@ impl Pane {
         self.prefs = prefs.sanitized();
         self.cur = ChatTabs::default();
         self.narrow_open = false;
+        self.maximized = false;
         self.switch_chat((!chat.is_empty()).then_some(chat.as_str()));
     }
 
@@ -174,6 +181,7 @@ impl Pane {
             None => ChatTabs { chat: chat.to_owned(), ..ChatTabs::default() },
         };
         self.narrow_open = false;
+        self.maximized = false;
     }
 
     /// Forget tabs and minimized marks of artifacts the chat no longer has.
@@ -274,6 +282,7 @@ impl Pane {
         }
         if self.cur.tabs.is_empty() {
             self.narrow_open = false;
+            self.maximized = false;
         }
     }
 
@@ -282,6 +291,7 @@ impl Pane {
             self.narrow_open = false;
         } else {
             self.prefs.collapsed = true;
+            self.maximized = false;
         }
     }
 
@@ -304,6 +314,22 @@ impl Pane {
                 }
             }
         }
+    }
+
+    /// The pane covers the whole window below the header (wide windows, pane open).
+    pub fn maximized(&self, narrow: bool) -> bool {
+        self.maximized && !narrow && self.shown(false) == Shown::Open
+    }
+
+    /// Maximize (opening the pane, if it has a tab to show) or restore.
+    pub fn set_maximized(&mut self, maximized: bool) {
+        if maximized && self.shown(false) == Shown::Hidden {
+            return;
+        }
+        if maximized {
+            self.prefs.collapsed = false;
+        }
+        self.maximized = maximized;
     }
 
     pub fn is_minimized(&self, id: &str) -> bool {
@@ -402,6 +428,39 @@ mod tests {
         assert_eq!((p.shown(true), p.shown(false)), (Shown::Open, Shown::Open));
         p.collapse(true);
         assert_eq!((p.shown(true), p.shown(false)), (Shown::Rail, Shown::Open), "the desktop state is untouched");
+    }
+
+    #[test]
+    fn maximize_and_restore() {
+        let mut p = pane("c");
+        p.set_maximized(true);
+        assert!(!p.maximized(false), "nothing to maximize");
+        p.show("a", false);
+        let stored = p.prefs();
+        p.set_maximized(true);
+        assert!(p.maximized(false));
+        assert!(!p.maximized(true), "phones: the open pane is full screen anyway");
+        assert_eq!(p.prefs(), stored, "not stored");
+        // Collapsing restores; maximizing from the rail opens the pane again.
+        p.collapse(false);
+        assert!(!p.maximized(false));
+        p.set_maximized(true);
+        assert_eq!((p.shown(false), p.maximized(false)), (Shown::Open, true));
+        // Another tab keeps it; closing the last tab or switching chats ends it.
+        p.show("b", false);
+        p.close("a");
+        assert!(p.maximized(false));
+        p.close("b");
+        assert!(!p.maximized(false));
+        p.show("b", false);
+        assert!(!p.maximized(false), "a new tab doesn't maximize by itself");
+        p.set_maximized(true);
+        p.switch_chat(Some("other"));
+        p.switch_chat(Some("c"));
+        assert_eq!((p.shown(false), p.maximized(false)), (Shown::Open, false));
+        p.set_maximized(true);
+        p.set_maximized(false);
+        assert_eq!((p.shown(false), p.maximized(false)), (Shown::Open, false), "restore keeps the pane open");
     }
 
     #[test]

@@ -131,7 +131,11 @@ chat's list with the transcript (`Artifacts`), `ArtifactUpdated` on new versions
 `GetArtifact` (for display and Export). Each turn's system prompt lists the chat's artifacts by
 id. The pane has tabs (per chat), collapses to a rail of icons with live/paused dots (a
 floating button with a count on phones; Ctrl+Backslash toggles), and any artifact can be
-minimized to a one-line chip in the chat and the pane ("Collapse all artifacts" in the header's ⋯ menu). Pane
+minimized to a one-line chip in the chat and the pane ("Collapse all artifacts" in the header's ⋯ menu). On
+wide windows the pane can be maximized over the chat and the chat list (its maximize button,
+Ctrl+Shift+F; Restore, Esc or the shortcut again go back — Esc first leaves an app or field
+that has keyboard focus); it is the same pane, so a running app is only resized, and the
+state is per session. Pane
 width, open/collapsed, and tabs + minimized artifacts per chat are device prefs
 (`byob-ui-egui::pane`, stored like the appearance prefs). HTML apps render through the
 `AppView` seam in `byob-ui-egui`: an iframe overlay in the
@@ -159,7 +163,11 @@ Servo's MPL-2.0 code and tokio never enter byob; see AGENTS.md §3). The helper 
   helper never blocks the UI.
 - **Document**: the same wrapper the server uses (theme defaults + helper script) as a
   `data:` URL with the theme in the hash; theme changes are applied live by script. Script
-  errors come back as marked `console.error` lines and feed "Send error to byob".
+  errors come back as marked `console.error` lines and feed "Send error to byob". The helper
+  puts one Servo workaround first in the document (`SELECTION_FIX`): Servo 0.8 paints a
+  replaced element (canvas, img, …) with the selection tint when a collapsed caret sits
+  inside it — which a plain click on a `<canvas>` causes — so a caret landing there is moved
+  to just before the element.
 - **Sandbox**: `data:` origin is opaque (no storage outlives the process); every
   navigation after the document and every non-`data:`/`blob:` load is refused in
   `load_web_resource`; Servo's HTTP(S) proxy points at a dead port as a second layer;

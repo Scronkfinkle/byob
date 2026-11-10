@@ -46,12 +46,14 @@ pub enum Command {
     TogglePane,
     CollapseAll,
     ExpandAll,
+    /// Maximize the pane, or restore it.
+    Maximize,
     /// Let this many seconds pass before the next command.
     Wait(u64),
 }
 
 impl Command {
-    pub const NAMES: &'static str = "open-all, toggle-pane, collapse-all, expand-all, wait:SECONDS";
+    pub const NAMES: &'static str = "open-all, toggle-pane, collapse-all, expand-all, maximize, wait:SECONDS";
 
     pub fn parse(s: &str) -> Option<Self> {
         if let Some(n) = s.strip_prefix("wait:") {
@@ -62,6 +64,7 @@ impl Command {
             "toggle-pane" => Self::TogglePane,
             "collapse-all" => Self::CollapseAll,
             "expand-all" => Self::ExpandAll,
+            "maximize" => Self::Maximize,
             _ => return None,
         })
     }
@@ -73,6 +76,7 @@ impl Command {
             Self::TogglePane => a.toggle_pane(),
             Self::CollapseAll => a.minimize_all(true),
             Self::ExpandAll => a.minimize_all(false),
+            Self::Maximize => a.toggle_maximized(),
             Self::Wait(_) => {}
         }
     }

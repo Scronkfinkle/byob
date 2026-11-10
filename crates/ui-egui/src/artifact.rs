@@ -5,7 +5,9 @@
 //! through the [`AppView`] seam.
 //!
 //! The pane has tabs (closing one keeps the artifact) and collapses to a rail of icons on
-//! the right (a floating button with a count on phones); Ctrl+Backslash (Cmd on macOS) toggles it. Any
+//! the right (a floating button with a count on phones); Ctrl+Backslash (Cmd on macOS) toggles it.
+//! On wide windows it can be maximized over the chat and the chat list (Ctrl+Shift+F, Esc or
+//! Restore to go back; per session, and the running app keeps its state). Any
 //! artifact can be minimized to a one-line chip, in the chat and the pane; "Collapse all"
 //! in the header does that for the whole chat. Minimized apps, background tabs and apps
 //! behind the rail are [held](AppView::hold): they keep running without rendering for a
@@ -41,6 +43,8 @@ const RAIL_ICON: f32 = 32.0;
 const TAB_CHARS: usize = 22;
 /// Toggles the pane.
 pub const PANE_SHORTCUT: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Backslash);
+/// Maximizes the pane or restores it.
+pub const MAXIMIZE_SHORTCUT: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::F);
 
 /// Produces the base URL (`http://127.0.0.1:PORT`) the desktop app serves artifacts at,
 /// starting a server if needed. The browser client uses its own origin.
@@ -89,6 +93,8 @@ enum Action {
         minimized: bool,
     },
     MinimizeAll(bool),
+    /// Maximize the pane over the chat, or restore it.
+    Maximize(bool),
 }
 
 pub struct Artifacts {
@@ -120,6 +126,9 @@ pub struct Artifacts {
     actions: Vec<Action>,
     /// For repaints when an export or open finishes.
     ctx: egui::Context,
+    /// A widget (an app, a text field) had keyboard focus at the end of the last frame: Esc
+    /// is its to take (egui drops the focus on Esc before we see the key).
+    focus_held: bool,
 }
 
 impl Default for Artifacts {
@@ -144,6 +153,7 @@ impl Default for Artifacts {
             notices: Vec::new(),
             actions: Vec::new(),
             ctx: egui::Context::default(),
+            focus_held: false,
         }
     }
 }
@@ -171,6 +181,11 @@ impl Artifacts {
     /// Show or collapse the pane (as the shortcut does).
     pub fn toggle_pane(&mut self) {
         self.actions.push(Action::Toggle);
+    }
+
+    /// Maximize the pane or restore it, as the shortcut does.
+    pub fn toggle_maximized(&mut self) {
+        self.actions.push(Action::Maximize(!self.pane.maximized(self.narrow)));
     }
 
     /// Minimize (or restore) every artifact in this chat, as "Collapse all" does.
@@ -248,6 +263,11 @@ impl Artifacts {
     /// The pane is open (full screen on phones).
     pub fn is_open(&self) -> bool {
         self.pane.shown(self.narrow) == PaneShown::Open && self.selected_artifact().is_some()
+    }
+
+    /// The pane is maximized: draw only it (with [`Artifacts::pane`]) below the header.
+    pub fn is_maximized(&self) -> bool {
+        self.pane.maximized(self.narrow) && self.selected_artifact().is_some()
     }
 
     /// Messages to send and notices to show, collected while drawing.
@@ -360,6 +380,7 @@ impl Artifacts {
                 self.versions.remove(&id);
             }
             Action::Minimize { id, minimized } => self.pane.set_minimized(&id, minimized),
+            Action::Maximize(maximized) => self.pane.set_maximized(maximized),
             Action::MinimizeAll(minimized) => {
                 let ids: Vec<String> = self.list.iter().map(|a| a.id.clone()).collect();
                 self.pane.set_all_minimized(ids.iter().map(String::as_str), minimized);
@@ -395,8 +416,21 @@ impl Artifacts {
             self.versions.remove(&id);
             self.pane.reveal(&id, narrow);
         }
+        if !narrow && ctx.input_mut(|i| i.consume_shortcut(&MAXIMIZE_SHORTCUT)) {
+            let maximized = self.pane.maximized(narrow);
+            self.handle(ctx, Action::Maximize(!maximized));
+        }
         if ctx.input_mut(|i| i.consume_shortcut(&PANE_SHORTCUT)) {
             self.handle(ctx, Action::Toggle);
+        }
+        // Esc restores, unless something else wants it: an app or text field that had focus
+        // (Esc leaves it first), or an open menu.
+        if self.pane.maximized(narrow)
+            && !self.focus_held
+            && !egui::Popup::is_any_open(ctx)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.handle(ctx, Action::Maximize(false));
         }
     }
 
@@ -417,6 +451,7 @@ impl Artifacts {
             }
         }
         self.view.end_frame(ctx);
+        self.focus_held = ctx.memory(|m| m.focused().is_some());
     }
 
     // ---- header, rail, floating button ---------------------------------------------------
@@ -768,13 +803,25 @@ impl Artifacts {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !narrow {
-                    let shortcut = ui.ctx().format_shortcut(&PANE_SHORTCUT);
-                    if ui
-                        .add(egui::Button::new(RichText::new("»").size(16.0)).frame(false))
-                        .on_hover_text(format!("Collapse to the rail ({shortcut})"))
-                        .clicked()
-                    {
-                        self.actions.push(Action::Close);
+                    let maximized = self.pane.maximized(false);
+                    let max_keys = ui.ctx().format_shortcut(&MAXIMIZE_SHORTCUT);
+                    if maximized {
+                        // Obvious way back: a labelled button where the collapse arrow was.
+                        if ui.button(RichText::new("Restore").color(t.text_strong)).on_hover_text(format!("Back to the chat (Esc or {max_keys})")).clicked() {
+                            self.actions.push(Action::Maximize(false));
+                        }
+                    } else {
+                        let shortcut = ui.ctx().format_shortcut(&PANE_SHORTCUT);
+                        if ui
+                            .add(egui::Button::new(RichText::new("»").size(16.0)).frame(false))
+                            .on_hover_text(format!("Collapse to the rail ({shortcut})"))
+                            .clicked()
+                        {
+                            self.actions.push(Action::Close);
+                        }
+                        if maximize_button(ui, t).on_hover_text(format!("Maximize: use the whole window ({max_keys})")).clicked() {
+                            self.actions.push(Action::Maximize(true));
+                        }
                     }
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -918,6 +965,22 @@ fn version_label(v: &byob_protocol::ArtifactVersion) -> String {
 }
 
 /// The "–" that minimizes a card or the pane's artifact.
+/// A frameless button with a window-maximize glyph (a square with a thick top edge).
+fn maximize_button(ui: &mut egui::Ui, t: &Tokens) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::click());
+    let hovered = resp.hovered();
+    let p = ui.painter();
+    if hovered {
+        p.rect_filled(rect, t.round(4.0), ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let color = if hovered { t.text_strong } else { t.text_dim };
+    let square = egui::Rect::from_center_size(rect.center(), vec2(11.0, 10.0));
+    p.rect_stroke(square, 1.0, Stroke::new(1.3, color), egui::StrokeKind::Inside);
+    p.rect_filled(egui::Rect::from_min_size(square.min, vec2(square.width(), 2.5)), 1.0, color);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Maximize"));
+    resp
+}
+
 fn minimize_button(ui: &mut egui::Ui, t: &Tokens, kind: ArtifactKind) -> egui::Response {
     let tip = if kind == ArtifactKind::Html { "Minimize (it keeps running for a minute, then pauses)" } else { "Minimize to one line" };
     ui.add(egui::Button::new(RichText::new("–").strong().color(t.text_dim)).frame(false)).on_hover_text(tip)
@@ -1109,11 +1172,14 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         log: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+        /// The width the pane gave the app, each time.
+        widths: std::rc::Rc<std::cell::RefCell<Vec<f32>>>,
     }
 
     impl AppView for Recorder {
-        fn show(&mut self, _ui: &mut egui::Ui, _t: &Tokens, doc: &AppDoc<'_>) -> appview::AppViewResponse {
+        fn show(&mut self, ui: &mut egui::Ui, _t: &Tokens, doc: &AppDoc<'_>) -> appview::AppViewResponse {
             self.log.borrow_mut().push(format!("show {}", doc.id));
+            self.widths.borrow_mut().push(ui.available_width());
             appview::AppViewResponse::default()
         }
         fn card(&mut self, _ui: &mut egui::Ui, _t: &Tokens, doc: &AppDoc<'_>) -> Option<appview::AppViewResponse> {
@@ -1249,6 +1315,88 @@ mod tests {
         s.handle(&ctx, Action::CloseTab("app".into()));
         run(&mut s);
         assert_eq!(drain(&log), ["card app/1", "card app/2"]);
+    }
+
+    /// Maximize: the pane takes the window (drawn the way `ByobApp::ui` does), the same app
+    /// keeps running at the new size; Esc restores unless a widget had focus (Esc leaves that
+    /// first); collapsing restores too; phones ignore it.
+    #[test]
+    fn maximize_toggles_with_the_shortcut_and_esc_restores() {
+        let mut s = Artifacts::default();
+        let rec = Recorder::default();
+        let (log, widths) = (std::rc::Rc::clone(&rec.log), std::rc::Rc::clone(&rec.widths));
+        s.set_app_view(Box::new(rec));
+        s.apply(&ServerMsg::Artifacts { chat: Some("c".into()), artifacts: vec![artifact("app", ArtifactKind::Html, "app.html", &[1])] });
+        let ctx = egui::Context::default();
+        let t = Tokens::dark();
+        let key = |key, modifiers| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        let maximize = key(egui::Key::F, egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT));
+        let esc = key(egui::Key::Escape, egui::Modifiers::NONE);
+        let field = egui::Id::unique("field");
+        // `focus`: a text field (standing in for a focused app) takes keyboard focus.
+        let run = |s: &mut Artifacts, events: Vec<egui::Event>, width: f32, focus: bool| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 700.0))), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                let narrow = width < 600.0;
+                s.begin_frame(ui.ctx(), &t, narrow);
+                let field = |ui: &mut egui::Ui| {
+                    let r = ui.add(egui::TextEdit::singleline(&mut String::new()).id(field));
+                    if focus {
+                        r.request_focus();
+                    }
+                };
+                if s.is_maximized() {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        field(ui);
+                        s.pane(ui, &t, false);
+                    });
+                } else if !narrow {
+                    s.side_panel(ui, &t);
+                    egui::CentralPanel::default().show(ui, field);
+                }
+            });
+            out.textures_delta.clear();
+            s.end_frame(&ctx);
+        };
+        s.handle(&ctx, Action::Select { id: "app".into(), version: None });
+        run(&mut s, vec![], 1200.0, false);
+        let beside = widths.borrow_mut().pop().unwrap();
+        assert!(!s.is_maximized() && beside < 900.0, "{beside}");
+        drain(&log);
+
+        run(&mut s, vec![maximize.clone()], 1200.0, false);
+        assert!(s.is_maximized());
+        run(&mut s, vec![], 1200.0, false);
+        let full = widths.borrow_mut().pop().unwrap();
+        assert!(full > 1150.0, "the whole window: {full}");
+        assert_eq!(drain(&log), ["show app"], "the same app, never held or restarted");
+        assert!(s.pane_prefs().chats.iter().all(|c| c.tabs == ["app"]) && !s.pane_prefs().collapsed);
+
+        // Esc with nothing focused restores; the shortcut maximizes again.
+        run(&mut s, vec![esc.clone()], 1200.0, false);
+        assert!(!s.is_maximized());
+        run(&mut s, vec![maximize.clone()], 1200.0, false);
+        assert!(s.is_maximized());
+        // A widget with focus (an app, a text field) takes the first Esc.
+        run(&mut s, vec![], 1200.0, true);
+        run(&mut s, vec![], 1200.0, false);
+        assert!(ctx.memory(|m| m.has_focus(field)));
+        run(&mut s, vec![esc.clone()], 1200.0, false);
+        assert!(s.is_maximized(), "the first Esc leaves the focused widget");
+        run(&mut s, vec![esc.clone()], 1200.0, false);
+        assert!(!s.is_maximized(), "the next one restores");
+        assert!(s.is_open(), "restored beside the chat, not collapsed");
+
+        // Collapsing (Ctrl+\\) ends it; the pane shortcut still works while maximized.
+        run(&mut s, vec![maximize.clone()], 1200.0, false);
+        run(&mut s, vec![key(egui::Key::Backslash, egui::Modifiers::COMMAND)], 1200.0, false);
+        assert!(!s.is_maximized() && !s.is_open());
+        run(&mut s, vec![key(egui::Key::Backslash, egui::Modifiers::COMMAND)], 1200.0, false);
+        assert!(s.is_open() && !s.is_maximized(), "reopened beside the chat");
+
+        // Phones: the open pane is already full screen; the shortcut does nothing.
+        run(&mut s, vec![maximize], 400.0, false);
+        assert!(!s.is_maximized());
     }
 
     #[test]
