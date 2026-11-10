@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10 (message queue)
+Last updated: 2026-11-10 (open protocol: negotiation, caps, views, plugin channel)
 
 ## Shape
 
@@ -21,6 +21,49 @@ There is one engine; every window or tab is just a client of it.
 - All state lives in the engine. A client that connects late gets `State` + `Transcript`,
   then live deltas. Turns keep running when a tab closes.
 - Secrets (API keys) never leave the engine; `EngineState` only says `has_api_key`.
+
+## Protocol: negotiation, caps, views, plugin channel
+
+The protocol is open so additions (new cards, renderers, plugin backends) don't need breaking
+bumps (`crates/protocol/src/version.rs`, `view.rs`).
+
+- **Handshake.** A client opens with `Hello { protocol: PROTOCOL_MAJOR, minor, client, caps }`.
+  The engine answers `Welcome { protocol, minor, caps }` first, then `State`, the workspace and
+  chat lists and the chat in view. A different **major** gets one error notice ("protocol
+  mismatch: client 12, engine 13; reload the page") and nothing else; protocol-12 clients sent
+  only `protocol`, which still parses (`minor`/`caps` default), so they get that notice. The
+  minor is informational.
+- **Caps** are feature strings (`[a-z0-9_.-]`, ≤ 64 of ≤ 64 chars). A feature both sides must
+  understand is used only when both list its cap (`version::shared`); unknown caps are
+  ignored. Today: `views`, `plugin_channel`.
+- **Compatibility rules.** Bump the major only for changes an older peer can't survive (a
+  renamed/removed field, a changed meaning). Everything else is additive: new fields are
+  `#[serde(default)]` (and skipped when empty); new messages and features go behind a cap
+  where the receiver must act on them; enums that grow decode unknown values into a fallback
+  with `#[serde(other)]`: `ServerMsg::Unknown` (clients skip it, logging once per type),
+  `ClientMsg::Unknown` (the engine answers with a notice), `ArtifactKind` → `Text`,
+  `MediaKind` → `File`, `NoticeLevel` → `Info`, `ApprovalAnswer::Unknown` (= deny),
+  `SlashKind::Other`, `PluginAction::Other`, `EnvAction::Unsupported`, `Preview::Other`,
+  `FileChange::Other`, `DelegationUpdate::Other` (not shown / ignored).
+- **Views.** `View { kind, v, data, fallback }` is an open payload: a namespaced kind
+  (`byob.plugin_card`, `<plugin>.<name>`; `byob.*` is byob's), a schema version of `data`, the
+  data (any JSON, ≤ 256 KiB) and a markdown fallback (≤ 16k chars). Steps carry `views:
+  Vec<View>` (≤ 16). byob's own views keep a typed struct as the data schema (`ViewData`:
+  `View::of`, `View::get`, `Step::view::<T>()`); a renderer reads `v <= V` and an incompatible
+  schema change bumps `V`. Clients draw views through `byob-ui-egui`'s `ViewRegistry` (kind →
+  renderer, built-ins registered at startup, an optional key so only the newest view of a
+  thing offers actions); a kind without a renderer, or data a renderer can't read, shows the
+  fallback as markdown in a card frame. Delegations (`Step::delegation`) and questions
+  (`Step::ask`) stay typed fields: they stream and carry approvals the engine acts on.
+- **Plugin channel.** `ClientMsg::Plugin { plugin, msg }` / `ServerMsg::Plugin { plugin, msg }`
+  carry free-form JSON (≤ 256 KiB, `plugin` a plugin id) behind `plugin_channel`. The engine
+  routes a client's message to the handler registered for that plugin
+  (`EngineConfig::channels`, `PluginHandler::handle` → `PluginOut::Reply`/`Broadcast`); there
+  are none built in yet, and a plugin without one gets "no plugin "x" takes messages in this
+  engine". Plugin messages only go to clients that listed the cap; the UI sends them only
+  when the engine did (`ByobApp::send_plugin`). Long-lived plugin backends will register here.
+- **Stale browser UIs.** `cargo xtask web` stamps the major into `index.html`; byob refuses to
+  serve a UI built for another major (`byob-server`'s `webui.rs`) and explains how to rebuild.
 
 ## Concurrency: no async runtime
 
@@ -336,7 +379,7 @@ settings marked `secret`, `secrets.json` `plugin_settings."plugin:<id>"`. They r
 plugin's own processes (environment variables of its scripts, `${KEY}` in MCP server
 configs). Clients and the model only see whether each is set.
 
-### For clients (protocol 12)
+### For clients (protocol 13)
 
 `ServerMsg::Extensions(Extensions { chat, workspace, plugins: Vec<PluginInfo>, errors })` comes
 after `ChatOpened` (before `Artifacts`), on `GetExtensions`, and whenever plugins change (a
@@ -383,11 +426,13 @@ Client messages (all validated; ids are plugin ids `[a-z0-9-]{1,48}`):
 - `ReloadPlugins`: read every folder again; failed servers retry.
 - `TrustPlugins { workspace, plugins (empty: all from the folder), trust }`.
 
-**Plugin cards.** A finished step of an authoring tool carries `Step::plugin:
-Option<Box<PluginCard>>` with `{ plugin, scope, action: made/edited/kept/removed, tools, added,
-removed, test: Option<{ ok, output }>, problems, missing_settings }`. The card is stored with the
-step (`steps.card`, SQLite schema v5; `card` on the folder store's `step_finished` line), so a
-transcript loaded from storage shows it too. The trust question is an ordinary approval card on
+**Plugin cards.** A finished step of an authoring tool carries a `byob.plugin_card` view (see
+Protocol above) whose data is a `PluginCard` `{ plugin, scope, action: made/edited/kept/removed,
+tools, added, removed, test: Option<{ ok, output }>, problems, missing_settings }`. Tools
+attach views with `Input::StepView` (checked against the view caps). A step's views are stored
+with it as a JSON array (`steps.card`, SQLite schema v5; `card` on the folder store's
+`step_finished` line), so a transcript loaded from storage shows them too; rows from protocol
+12 hold a bare `PluginCard` and are read as its view. The trust question is an ordinary approval card on
 a step named `plugins` with `ask.text` listing the plugins.
 
 **In the UI** (`crates/ui-egui/src/plugins.rs`, `slash.rs`; desktop and browser alike):
