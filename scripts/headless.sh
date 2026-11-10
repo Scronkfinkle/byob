@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the byob desktop app on a virtual X display (no window on your screen).
 # Takes the same options as byob. Always pass --screenshot so the run ends:
-#   scripts/headless.sh --inference-url http://silicon:9931/v1 --model local \
+#   scripts/headless.sh --inference-url http://localhost:8080/v1 --model local \
 #       --send "hello" --screenshot /tmp/byob.png
 # HEADLESS_SOFTWARE=1 renders with Mesa lavapipe instead of the GPU.
 # HEADLESS_TIMEOUT (default 300 s) kills a stuck run. HEADLESS_DRIVE=script.sh runs alongside

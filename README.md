@@ -30,10 +30,10 @@ nix build            # release package (byob + bundled web UI + the artifact hos
 (cd host/artifact-host && cargo build --release)   # scripts/headless.sh picks it up
 
 # desktop GUI on a virtual display, scripted, with a screenshot
-scripts/headless.sh --inference-url http://silicon:9931/v1 --model local --send "hi" --screenshot /tmp/byob.png
+scripts/headless.sh --inference-url http://localhost:8080/v1 --model local --send "hi" --screenshot /tmp/byob.png
 
 # live test against a real server
-BYOB_LIVE_URL=http://silicon:9931/v1 cargo test -p byob-llm -- --ignored
+BYOB_LIVE_URL=http://localhost:8080/v1 cargo test -p byob-llm -- --ignored
 ```
 
 See `AGENTS.md` for rules, `docs/architecture.md` for the design, `ROADMAP.md` for what's next.

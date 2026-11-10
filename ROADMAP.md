@@ -54,10 +54,10 @@ Last updated: 2026-11-09
   `--jinja`; Ollama/vLLM have their own parsers). Probe at connect (`/models`, `/props`, a
   tiny tool-call test) and fall back to prompt-based tool calling + JSON extraction.
 - **Context budget from the server.** hob used a 40k-character history budget for small local
-  models; read `n_ctx`/`max_model_len` (silicon reports 262144) and budget by tokens instead.
+  models; read `n_ctx`/`max_model_len` (e.g. 262144 on a large llama.cpp setup) and budget by tokens instead.
 - **Model roles.** Main model, cheap model for titles/summaries, vision model — each an
   optional URL+model, defaulting to the main one. Vision is just `image_url` parts.
-- **Parallel turns.** Servers expose slots (silicon has 4). Let multiple chats/sub-agents run
+- **Parallel turns.** Servers expose slots (llama.cpp `--parallel N`). Let multiple chats/sub-agents run
   concurrently instead of one turn per engine.
 - **Remote auth.** Check `Tailscale-User-Login` from `tailscale serve`; allowlist users;
   optional read-only devices. Verify the Origin check behind `tailscale serve` for real.

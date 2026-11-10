@@ -303,6 +303,6 @@ metadata and the UI's per-device pane prefs name only chat and artifact ids.
 ## GUI choice
 
 egui/eframe 0.37 (wgpu; WebGPU with WebGL2 fallback on the web). gpui, iced, Slint,
-Freya, Xilem and Floem were prototyped on 2026-11-09 (`~/code/rust/yah-proto/`). gpui
+Freya, Xilem and Floem were prototyped on 2026-11-09 (prototypes kept outside this repo). gpui
 scored best for chat UX but is Zed-internal with only a third-party crates.io republish;
 the others lacked selectable text, accessibility, virtualization, or a clean licence.

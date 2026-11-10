@@ -22,7 +22,7 @@ fn settings_round_trip() {
     let dir = TempDir::new();
     let p = Paths::at(dir.path().join("cfg")).settings();
     let s = Settings {
-        inference: InferenceSettings { base_url: Some("http://silicon:9931/v1".into()), model: Some("local".into()), ..Default::default() },
+        inference: InferenceSettings { base_url: Some("http://localhost:8080/v1".into()), model: Some("local".into()), ..Default::default() },
         theme: Theme::Dark,
         workspace: Some(PathBuf::from("/home/me/Documents/byob")),
         plugin_dirs: vec!["/opt/plugins".into(), "/home/me/ünï plugins".into()],

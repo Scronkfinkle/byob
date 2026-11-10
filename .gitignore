@@ -7,3 +7,4 @@ plan/
 .DS_Store
 .claude/worktrees/
 /host/artifact-host/target
+CLAUDE.local.md

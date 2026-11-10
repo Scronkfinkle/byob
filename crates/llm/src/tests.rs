@@ -453,7 +453,7 @@ fn root_strips_v1() {
     assert_eq!(client("http://h:1/openai".into()).root().as_str(), "http://h:1/openai/");
 }
 
-/// Live probe: `BYOB_LIVE_URL=http://silicon:9931/v1 cargo test -p byob-llm live_probe -- --ignored --nocapture`
+/// Live probe: `BYOB_LIVE_URL=http://localhost:8080/v1 cargo test -p byob-llm live_probe -- --ignored --nocapture`
 #[test]
 #[ignore = "needs a live inference server (BYOB_LIVE_URL)"]
 fn live_probe() {
@@ -469,7 +469,7 @@ fn live_probe() {
     assert!(!caps.models.is_empty());
 }
 
-/// Live check against a real server: `BYOB_LIVE_URL=http://silicon:9931/v1 cargo test -p byob-llm -- --ignored`
+/// Live check against a real server: `BYOB_LIVE_URL=http://localhost:8080/v1 cargo test -p byob-llm -- --ignored`
 #[test]
 #[ignore = "needs a live inference server (BYOB_LIVE_URL)"]
 fn live_server_streams() {

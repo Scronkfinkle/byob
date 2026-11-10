@@ -40,8 +40,9 @@ Conventions are adapted from filmcraft. When this file and other docs disagree, 
   the run ends (it waits for the conversation to settle); drive it with `--send TEXT`.
   The mouse does nothing there. For the browser UI, run `byob --headless` and screenshot with
   `chromium --headless=new --use-angle=swiftshader --enable-unsafe-swiftshader`.
-- A free local inference server for testing is at `http://silicon:9931/v1` (model `local`,
-  4 slots, ~256k context; IP 192.168.1.171). Unit tests use in-process fake servers instead.
+- Live tests and headless runs need an OpenAI-compatible endpoint: pass `--inference-url`
+  or set `BYOB_LIVE_URL`. Machine-specific details (e.g. a local test server) belong in the
+  gitignored `CLAUDE.local.md`. Unit tests use in-process fake servers instead.
 - Quality gate before every commit: `cargo xtask ci` (fmt, clippy `-D warnings`, tests, doc tests, layers).
 - New crates: put them under `crates/` as `byob-<dir>`, add `[lints] workspace = true`, the
   crate-root deny attribute, and a layer entry in `xtask/src/main.rs`.
