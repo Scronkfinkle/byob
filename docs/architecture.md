@@ -26,8 +26,8 @@ There is one engine; every window or tab is just a client of it.
 
 Deliberately std-only: `std::thread` + `mpsc` channels + `catch_unwind`. A personal
 harness serves a handful of clients, so thread-per-connection and thread-per-turn are
-cheap. `cargo xtask layers` fails if `tokio`, `async-std` or `smol` enter the dependency
-graph of a shipped target.
+cheap. `cargo xtask layers` fails if one of our crates depends directly on `tokio`, `async-std` or
+`smol` (libraries that use a runtime internally are fine; see AGENTS.md).
 
 - engine: one thread owns all state; turn threads and connections talk to it via its inbox.
 - inference: blocking `ureq`, SSE read line by line, cancel flag checked between chunks.
@@ -280,6 +280,132 @@ list_files · 4.1 s]`), is the tool result, so the parent's context grows only b
   `secrets.json` `model_keys`), each defaulting to the main endpoint; an agent's `model:`
   names a role, else Claude Code's `inherit`/`sonnet`/`opus`/`haiku` mean the main model, else
   it is a model id on the main endpoint.
+
+## Plugins
+
+A plugin is a folder with a `byob-plugin.json` (format and loader: `crates/plugins`) that adds
+Python tools (`tools[].run`, JSON on stdin), MCP servers (`mcpServers`), skills
+(`skills/<name>/SKILL.md`), subagents (`agents/*.md`), settings (`settings`, passed as
+environment variables) and one system-prompt line (`prompt`). The engine loads them itself
+(`crates/agent/src/extensions.rs`, `plugins.rs`); the app only says where to look
+(`PluginsConfig`) and registers the base tools (file, artifact, code-running) once.
+
+**Scopes.** Three sets of folders, most specific first; the same id resolves chat > workspace
+> global, and the losing copies are listed as `shadowed_by`:
+
+| scope | folder | written by |
+|---|---|---|
+| chat (scratch) | `<data>/chats/<chat>/plugins/<id>` (gone with the chat) | the model (`make_tool` & co.), never asked |
+| workspace | `<workspace>/.byob/plugins/<id>` (+ standalone skills `.byob/skills`) | committed with the repo; the model's file tools may edit `.byob/{plugins,agents,skills}` |
+| global | `<config>/plugins/<id>`, `settings.json` `plugin_dirs`, `--plugin DIR` (+ `<config>/skills`) | the user, or `keep_plugin … global` |
+
+**Switches.** `Layer::plugins: {id: bool}` at every settings level (`settings.json`
+`plugins`, the workspace's and the chat's own config); the most specific level that names a
+plugin wins, unnamed plugins are on (`Effective::plugin_on`). They change only through
+`SetPluginEnabled`; `SetConfig` keeps them. Built-in and authoring tools are not plugins: they
+can't be switched off, and a plugin tool whose name is taken (by them or another plugin) gets
+`<plugin>__<tool>`.
+
+**Loading and live reload.** Each set keeps a fingerprint (names, sizes, mtimes of its files)
+and is read again only when it changes: at turn start, after an authoring tool or a file
+tool touched `.byob/plugins`, on `ReloadPlugins`. A turn composes its tools (base + switched-on
+plugins' tools + `use_skill`) and its prompt part (plugin prompt lines, the skills list, one
+line about `make_tool`, then the workspace's `AGENTS.md`, capped at 16 KB) in `begin_turn_in`.
+The turn holds its tools in a swappable `ToolSet`; each round takes a snapshot when it starts,
+so a reload never changes tools under a running call, and a tool made in round *n* is callable
+in round *n+1*. The system prompt stays as it was until the next turn (KV cache).
+
+**MCP servers** start on worker threads (`Input::Connected` brings the result back); until
+then they show as `connecting` and their tools join from the next round. Connections are
+pooled by (plugin, server, configuration with settings filled in, folder, workspace for local
+servers): unchanged servers survive reloads, a changed plugin's servers restart. Local
+(stdio) servers run in the sandbox of the chat's workspace (`McpSandbox`).
+
+**Trust.** Chat plugins and global ones run. A workspace plugin runs its code only if byob
+wrote it (`make_tool`/`keep_plugin` into the workspace, or a manifest created by the file
+tools) or the user trusted it; the record lives in `workspaces.json`
+(`plugin_trust: {id: made|trusted|declined}`), never in the repo. A plugin that arrived with
+the folder (clone, pull) brings only its skills, prompt line and subagents until then; the
+first turn in that workspace asks once (an approval card on a `plugins` step; `--auto-approve`
+answers yes), and `TrustPlugins` decides from the UI. When a plugin's files change, the
+"always allow" grants of its tools are withdrawn (globally and in the chats that see it).
+
+**Settings and secrets.** Values come from `settings.json` `plugin_settings.<id>` and, for
+settings marked `secret`, `secrets.json` `plugin_settings."plugin:<id>"`. They reach only the
+plugin's own processes (environment variables of its scripts, `${KEY}` in MCP server
+configs). Clients and the model only see whether each is set.
+
+### For clients (protocol 12)
+
+`ServerMsg::Extensions(Extensions { chat, workspace, plugins: Vec<PluginInfo>, errors })` comes
+after `ChatOpened` (before `Artifacts`), on `GetExtensions`, and whenever plugins change (a
+reload, a switch, a setting, a server connecting, an authoring tool). It describes the chat in
+view (or the new chat a client is about to start). `PluginInfo`:
+
+| field | meaning |
+|---|---|
+| `id`, `name`, `version`, `description`, `icon` | from the manifest |
+| `scope` | `chat` / `workspace` / `global` |
+| `origin` | `bundled` / `user` / `agent` (byob made it) / `repo` (came with the workspace) |
+| `dir` | folder, for display |
+| `enabled`, `enabled_from` | the switch and the level that set it (`default`: nobody, on) |
+| `trusted`, `declined` | may its code run; did the user say no (repo plugins) |
+| `shadowed_by` | a more specific copy with the same id is used instead |
+| `tools` | model-facing tool names in use (empty when off or untrusted) |
+| `skills`, `agents`, `commands` | names (`commands` reserved for `commands/*.md`) |
+| `servers` | `{ name, state: connecting/ready/failed/off, tools, error }` |
+| `settings` | `{ key, label, help, secret, required, set }`, never the value |
+| `network` | its tools may use the internet |
+| `problems` | the loader's messages (missing script, bad skill, "needs settings: …") |
+| `last_error` | the last failed run of one of its tools in this engine run |
+| `fingerprint` | changes whenever a file of it changes |
+
+`errors: Vec<PluginLoadError { scope, path, message }>`: folders that couldn't load at all.
+
+Client messages (all validated; ids are plugin ids `[a-z0-9-]{1,48}`):
+
+- `GetExtensions` → `Extensions`.
+- `SetPluginEnabled { scope: ConfigScope, plugin, enabled: Option<bool> }` (`None` inherits).
+- `SetPluginSetting { plugin, key, value: Option<String> }` (≤ 8192 chars; `None` clears). The
+  key must be one the plugin declares.
+- `KeepPlugin { plugin, scope: workspace|global, new_id? }`: the user keeps the chat's copy
+  (moved from scratch); no approval card, the user asked.
+- `RemovePlugin { plugin, scope }`: deletes that copy (not bundled ones).
+- `ReloadPlugins`: read every folder again; failed servers retry.
+- `TrustPlugins { workspace, plugins (empty: all from the folder), trust }`.
+
+**Plugin cards.** A finished step of an authoring tool carries `Step::plugin:
+Option<Box<PluginCard>>` with `{ plugin, scope, action: made/edited/kept/removed, tools, added,
+removed, test: Option<{ ok, output }>, problems, missing_settings }` (live only: a transcript
+loaded from storage shows the plain step). The trust question is an ordinary approval card on
+a step named `plugins` with `ask.text` listing the plugins.
+
+### The model's side
+
+One system-prompt line points at `make_tool` and the built-in `plugin-authoring` skill
+(`crates/agent/src/plugin_authoring.md`: manifest format, a Python tool, MCP servers, skills,
+subagents, settings). Tools (`crates/agent/src/authoring.rs`):
+
+- `make_tool(name, description?, code, try_args?, network?, settings?, plugin?)`: `code`
+  defines `def run(arg: type = default, …)`; the schema comes from the type hints, defaults and
+  the docstring's `Args:` lines (`byob_plugins::authoring::derive_schema`, a Python shim that
+  parses, never runs, the code). Writes `tools/<name>.py` (code + a runner footer) and the
+  manifest entry into the chat's `scratch` plugin (or `plugin`), reloads, and runs `try_args`
+  if given: the output, or the last 40 lines of the traceback. Access: read without
+  `try_args`, execute with it.
+- `edit_plugin(plugin, file, find, replace)` (one exact match) and
+  `write_plugin_file(plugin, path, content)` (a new id starts a chat plugin): reload and return
+  the loader's problems verbatim.
+- `plugin_status(plugin?, file?)`: scope, switch, origin, tools/skills/agents, servers,
+  settings set/missing, problems, last error; with `file`, that file's text.
+- `keep_plugin(plugin, scope: workspace|global, new_id?)`: moves it with a file list on the
+  approval card; workspace follows the approvals policy, global must be allowed by a person.
+- `remove_plugin(plugin)`: chat copies go at once, others ask.
+- `save_skill(…, scope: chat|workspace|global)`: chat → the scratch plugin's `skills/`,
+  workspace → `.byob/skills`, global → `<config>/skills`.
+
+Changes to a workspace's or the global plugins (edit, write, make into a named plugin) ask
+first; the chat's own scratch plugins never do.
 
 ## Running code (sandbox)
 
