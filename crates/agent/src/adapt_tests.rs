@@ -195,6 +195,7 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
         onboarded: false,
         detect_local: false,
         envs: None,
+        plugins: None,
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), seen, runs }
 }

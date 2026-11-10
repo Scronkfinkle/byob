@@ -18,6 +18,7 @@ mod adapt;
 #[cfg(test)]
 mod adapt_tests;
 pub mod attachments;
+mod authoring;
 mod chats;
 mod compact;
 #[cfg(test)]
@@ -31,10 +32,14 @@ mod delegate_tests;
 pub mod dev_tools;
 #[cfg(test)]
 mod engine_tests;
+mod extensions;
+#[cfg(test)]
+mod extensions_tests;
 mod limits;
 #[cfg(test)]
 mod loop_tests;
 pub mod permissions;
+mod plugins;
 mod queue;
 #[cfg(test)]
 mod queue_tests;
@@ -69,6 +74,7 @@ use byob_types::InferenceConfig;
 pub use byob_types::config::Layer;
 pub use compact::CompactOptions;
 pub use delegate::SubagentOptions;
+pub use extensions::PluginsConfig;
 pub use permissions::{Policy, Rule};
 
 /// How often streamed text is written to the database while a reply runs.
@@ -129,6 +135,8 @@ pub struct EngineConfig {
     pub detect_local: bool,
     /// Workspace environment settings clients can see and change (`byob-exec`).
     pub envs: Option<Arc<dyn byob_tools::EnvControl>>,
+    /// Plugins (and the model's authoring tools). `None`: none at all (most unit tests).
+    pub plugins: Option<PluginsConfig>,
 }
 
 impl EngineConfig {
@@ -157,6 +165,7 @@ impl EngineConfig {
             onboarded: false,
             detect_local: !cfg!(test),
             envs: None,
+            plugins: None,
         }
     }
 }
@@ -209,6 +218,23 @@ enum Input {
     Reply {
         client: ClientId,
         msg: Box<ServerMsg>,
+    },
+    /// An authoring tool (or a turn) asks about the chat's plugins.
+    Plugins {
+        chat: String,
+        op: plugins::PluginOp,
+        reply: Sender<plugins::PluginReply>,
+    },
+    /// The plugin card for the next finished step of `tool` in `chat`.
+    PluginCard {
+        chat: String,
+        tool: String,
+        card: byob_protocol::PluginCard,
+    },
+    /// An MCP server connected (or failed) on a worker thread.
+    Connected {
+        key: String,
+        result: Result<(Arc<dyn byob_plugins::Connector>, Vec<byob_plugins::ConnectorTool>), String>,
     },
 }
 
@@ -382,6 +408,10 @@ struct Running {
     /// endpoint it talks to (for the title and the link status).
     policy: Policy,
     llm: byob_llm::Client,
+    /// Its tools, swapped when plugins change (picked up between rounds).
+    tools: Arc<turn::ToolSet>,
+    /// Which plugin each of its plugin tools belongs to.
+    owners: BTreeMap<String, extensions::Owner>,
 }
 
 struct Engine {
@@ -455,6 +485,14 @@ struct Engine {
     queues: BTreeMap<String, queue::Queue>,
     /// Last id given to a queued message.
     queue_ids: u64,
+    /// Plugins (`None`: turned off).
+    ext: Option<extensions::Extensions>,
+    /// Plugin settings by plugin id, then key (secret ones included; never sent to clients).
+    plugin_values: BTreeMap<String, BTreeMap<String, String>>,
+    /// Plugin cards waiting for their step to finish, by chat: (tool, card).
+    cards: BTreeMap<String, (String, byob_protocol::PluginCard)>,
+    /// Each chat's plugin prompt part at its last turn (for usage and compaction estimates).
+    ext_prompts: BTreeMap<String, String>,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -494,7 +532,22 @@ impl Engine {
         let detect = config.detect_local && !config.onboarded;
         let workspaces = byob_store::Workspaces::open(config.paths.as_ref()).value;
         let forced = byob_types::config::Forced { approvals: None, tool_mode: Some(config.adapt.tool_mode).filter(|m| *m != ToolMode::Auto) };
+        let mut tools = config.tools;
+        if let Some(p) = &config.plugins {
+            let env = Arc::new(authoring::AuthorEnv {
+                inbox: inbox.clone(),
+                python: p.python.clone(),
+                sandbox: p.sandbox.clone(),
+                global_skills: p.global_skills.clone(),
+            });
+            authoring::register(&mut tools, &env);
+        }
+        let plugin_values = Self::load_plugin_values(config.paths.as_ref());
         let mut engine = Self {
+            ext: config.plugins.map(extensions::Extensions::new),
+            plugin_values,
+            cards: BTreeMap::new(),
+            ext_prompts: BTreeMap::new(),
             forced_policy: config.policy,
             defaults: config.defaults,
             forced,
@@ -522,7 +575,7 @@ impl Engine {
             default_workspace: config.workspace,
             live: BTreeMap::new(),
             turns: BTreeMap::new(),
-            tools: config.tools,
+            tools,
             system_prompt: config.system_prompt,
             pending: BTreeMap::new(),
             step_ids: Arc::default(),
@@ -651,6 +704,7 @@ impl Engine {
             self.send_to(id, ServerMsg::Usage(usage));
         }
         self.send_to(id, ServerMsg::Queue(self.queue_view(chat.as_deref())));
+        self.send_extensions(id, true);
         // Artifacts come last: clients take it as the end of opening a chat.
         self.send_to(id, ServerMsg::Artifacts { chat, artifacts });
         self.gc();
@@ -760,6 +814,11 @@ impl Engine {
         self.live.remove(chat);
         self.queues.remove(chat);
         self.provisional.remove(chat);
+        self.ext_prompts.remove(chat);
+        self.cards.remove(chat);
+        if let Some(ext) = self.ext.as_mut() {
+            ext.forget_chat(chat);
+        }
         if let Err(e) = self.workspaces.forget_chat(chat) {
             log::warn!("forgetting the settings of chat {chat}: {e}");
         }
@@ -877,6 +936,11 @@ impl Engine {
             Input::Link(event) => self.handle_connect(event),
             Input::Env { client, env } => self.send_to(client, ServerMsg::WorkspaceEnv(env)),
             Input::Reply { client, msg } => self.send_to(client, *msg),
+            Input::Plugins { chat, op, reply } => self.plugin_op(&chat, op, &reply),
+            Input::PluginCard { chat, tool, card } => {
+                self.cards.insert(chat, (tool, card));
+            }
+            Input::Connected { key, result } => self.server_connected(&key, result),
         }
     }
 
@@ -953,6 +1017,13 @@ impl Engine {
             ClientMsg::SetConfig { scope, layer, api_key } => self.set_config(id, scope, layer, api_key),
             ClientMsg::ListFolders { path } => self.list_folders(id, path),
             ClientMsg::CheckContainers => self.check_containers(id),
+            ClientMsg::GetExtensions => self.send_extensions(id, true),
+            ClientMsg::SetPluginEnabled { scope, plugin, enabled } => self.set_plugin_enabled(id, scope, &plugin, enabled),
+            ClientMsg::SetPluginSetting { plugin, key, value } => self.set_plugin_setting(id, &plugin, &key, value),
+            ClientMsg::KeepPlugin { plugin, scope, new_id } => self.keep_plugin_msg(id, &plugin, scope, new_id),
+            ClientMsg::RemovePlugin { plugin, scope } => self.remove_plugin_msg(id, &plugin, scope),
+            ClientMsg::ReloadPlugins => self.reload_plugins(id),
+            ClientMsg::TrustPlugins { workspace, plugins, trust } => self.trust_plugins(id, &workspace, plugins, trust),
         }
     }
 
@@ -1242,6 +1313,7 @@ impl Engine {
                 new.completion_tokens = new.completion_tokens.max(old.completion_tokens);
             }
         }
+        self.plugin_step(entry, &mut step);
         self.persist_step(entry, &step);
         if step.delegation.is_some() {
             self.track_delegation(entry, &step);
@@ -1372,13 +1444,28 @@ impl Engine {
         let eff = &settings.effective;
         let plan = self.endpoints.plan_with(&settings.inference, eff.tool_mode.value);
         let workspace_dir = self.live(&chat).map(|l| Arc::clone(&l.workspace)).ok();
-        let delegation = workspace_dir.as_deref().filter(|_| eff.subagents.value).and_then(|ws| self.delegation_env(&settings.inference, &llm, &plan, ws));
-        let mut base_prompt = self.prompt_with_instructions(eff);
+        // Plugins: read again where their files changed, then this turn's tools and prompt.
+        let composed = self.compose_for(Some(&chat), None, true);
+        let mut extra = composed.as_ref().map(|c| c.prompt.clone()).unwrap_or_default();
+        if let Some(md) = workspace_dir.as_deref().and_then(|w| extensions::agents_md(w)) {
+            extra = if extra.is_empty() { md } else { format!("{extra}\n\n{md}") };
+        }
+        self.ext_prompts.insert(chat.clone(), extra.clone());
+        let plugin_agents = composed.as_ref().map(|c| c.agents.clone()).unwrap_or_default();
+        let delegation =
+            workspace_dir.as_deref().filter(|_| eff.subagents.value).and_then(|ws| self.delegation_env(&settings.inference, &llm, &plan, ws, &plugin_agents));
+        let mut base_prompt = self.prompt_with(eff, &extra);
         if let Some(env) = &delegation {
             base_prompt = format!("{base_prompt}\n\n{}", delegate::prompt_section(&env.agents));
         }
         let compaction = self.compact_options(eff);
         let policy = self.policy_for(eff);
+        let trust_ask = composed.as_ref().and_then(|c| self.trust_question(c, &policy));
+        let (turn_tools, owners) = match composed {
+            Some(c) => (c.tools, c.owners),
+            None => (self.tools.clone(), BTreeMap::new()),
+        };
+        let tool_set = turn::ToolSet::new(turn_tools);
         let (history, ids, prior, workspace, first) = {
             let live = self.live(&chat)?;
             let system_prompt = system_prompt(&base_prompt, live);
@@ -1408,6 +1495,8 @@ impl Engine {
                 children: BTreeMap::new(),
                 policy,
                 llm: llm.clone(),
+                tools: Arc::clone(&tool_set),
+                owners,
             },
         );
         self.chat_changed(&chat);
@@ -1418,7 +1507,8 @@ impl Engine {
             entry: reply,
             cancel,
             inbox: self.inbox.clone(),
-            tools: self.tools.clone(),
+            tools: tool_set,
+            trust_ask,
             workspace,
             chat: chat.clone(),
             step_ids: Arc::clone(&self.step_ids),
@@ -1543,7 +1633,7 @@ impl Engine {
         };
         let plan = self.endpoints.plan_with(&settings.inference, settings.effective.tool_mode.value);
         let specs = turn::specs(&self.tools);
-        let base_prompt = self.prompt_with_instructions(&settings.effective);
+        let base_prompt = self.prompt_with(&settings.effective, self.ext_prompts.get(&chat).map_or("", String::as_str));
         let (messages, through) = match self.live(&chat) {
             Ok(live) => {
                 let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base_prompt, live));
@@ -1647,7 +1737,7 @@ impl Engine {
         let plan = self.endpoints.plan_with(&settings.inference, settings.effective.tool_mode.value);
         let compaction = self.compact_options(&settings.effective);
         let (context_used, estimated) = live.tally.context.unwrap_or_else(|| {
-            let base = self.prompt_with_instructions(&settings.effective);
+            let base = self.prompt_with(&settings.effective, self.ext_prompts.get(chat).map_or("", String::as_str));
             let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base, live));
             (u64::try_from(plan.raw_tokens(&messages, &turn::specs(&self.tools))).unwrap_or(u64::MAX), true)
         });

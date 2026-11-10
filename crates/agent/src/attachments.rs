@@ -555,6 +555,7 @@ mod tests {
             artifacts: vec![],
             delegation: None,
             ask: None,
+            plugin: None,
         };
         let entry = Entry {
             id: 0,

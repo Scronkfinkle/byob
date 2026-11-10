@@ -221,6 +221,8 @@ impl ByobApp {
                 ServerMsg::InferenceTested(test) => self.connect.tested(test),
                 // Handled by the queue above.
                 ServerMsg::Queue(_) => {}
+                // Not shown yet (the Plugins panel and plugin cards come later).
+                ServerMsg::Extensions(_) => {}
                 // Handled by the workspace views and the sidebar above.
                 ServerMsg::WorkspaceEnv(_)
                 | ServerMsg::Workspaces { .. }

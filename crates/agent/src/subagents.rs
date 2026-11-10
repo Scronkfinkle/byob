@@ -29,6 +29,7 @@ impl Engine {
         llm: &byob_llm::Client,
         plan: &adapt::Plan,
         workspace: &Path,
+        plugin_agents: &[byob_plugins::AgentDef],
     ) -> Option<delegate::Env> {
         if !self.subagents.enabled || self.tools.is_empty() {
             return None;
@@ -43,7 +44,8 @@ impl Engine {
                 Err(e) => log::warn!("model role {name}: {e}"),
             }
         }
-        Some(delegate::Env { agents: delegate::agents_for(workspace, &self.agents), main, roles, slots: Arc::clone(&self.slots), opts: self.subagents })
+        let configured = byob_plugins::merge_agents([self.agents.clone(), plugin_agents.to_vec()]);
+        Some(delegate::Env { agents: delegate::agents_for(workspace, &configured), main, roles, slots: Arc::clone(&self.slots), opts: self.subagents })
     }
 
     /// A `delegate` step was added or changed: record its run when it first appears, and

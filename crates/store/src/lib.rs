@@ -68,4 +68,4 @@ pub use settings::{
 };
 pub use steps::MAX_STEP_OUTPUT;
 pub use store::{BUSY_TIMEOUT, MAX_PAGE, Store};
-pub use workspaces::{MAX_NAME_CHARS, MAX_PATH_CHARS, WorkspaceRow, Workspaces, clean_name, default_name, folder_slug, workspace_id};
+pub use workspaces::{MAX_NAME_CHARS, MAX_PATH_CHARS, PluginTrust, WorkspaceRow, Workspaces, clean_name, default_name, folder_slug, workspace_id};

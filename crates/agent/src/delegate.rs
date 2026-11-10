@@ -340,6 +340,7 @@ pub fn launch(env: &Env, job: Job, l: Launch) -> std::io::Result<Receiver<String
         media: Vec::new(),
         artifacts: Vec::new(),
         ask: None,
+        plugin: None,
         delegation: Some(Box::new(Delegation {
             agent: job.agent.clone(),
             task: job.task.clone(),
@@ -434,7 +435,8 @@ fn run(job: Job, l: &Launch, step: &mut Step, slots: &Arc<Slots>, opts: Subagent
         entry: l.entry,
         cancel: Arc::clone(&cancel),
         inbox: l.inbox.clone(),
-        tools: job.tools,
+        tools: turn::ToolSet::new(job.tools),
+        trust_ask: None,
         workspace: Arc::clone(&l.workspace),
         chat: l.chat.clone(),
         step_ids: Arc::clone(&l.step_ids),

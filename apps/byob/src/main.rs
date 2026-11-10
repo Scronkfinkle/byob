@@ -431,12 +431,13 @@ fn run() -> Result<(), String> {
     let saved_theme = theme_kind(saved.settings.theme);
     let themes_dir = config.paths.as_ref().map(Paths::themes_dir);
     let plugins = args.plugins.clone();
-    let extra = extensions::load(&mut config.tools, plugins, &config.workspace);
+    let extra = extensions::load(&mut config.tools, plugins);
     if !extra.prompt.is_empty() {
         config.system_prompt = format!("{}\n\n{}", config.system_prompt, extra.prompt);
     }
     config.agents = extra.agents;
     config.envs = extra.envs;
+    config.plugins = Some(extra.plugins);
     config.models = model_roles(&config.inference, &saved.settings, &saved.secrets);
     let sub = saved.settings.subagents;
     config.subagents = byob_agent::SubagentOptions {

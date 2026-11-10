@@ -23,6 +23,8 @@
 //!
 //! This module is pure (no I/O) so the engine and the UI resolve the same way.
 
+use std::collections::BTreeMap;
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -202,6 +204,21 @@ pub struct Layer {
     /// has one, else the global default image.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Plugins turned on (`true`) or off (`false`) at this level, by plugin id; plugins not
+    /// named inherit (on by default). Every level has it; it changes through its own message
+    /// (`SetPluginEnabled`), not the settings form.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<BTreeMap<String, bool>>,
+}
+
+/// Most plugins one level may turn on or off.
+pub const MAX_PLUGIN_SWITCHES: usize = 500;
+
+/// A plugin id as manifests have it: `[a-z0-9][a-z0-9-]{0,47}`.
+pub fn plugin_id_ok(id: &str) -> bool {
+    let b = id.as_bytes();
+    let alnum = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+    !b.is_empty() && b.len() <= 48 && alnum(b[0]) && b.iter().all(|&c| alnum(c) || c == b'-')
 }
 
 /// The groups of settings, for [`Field::levels`] and the UI's reset buttons.
@@ -318,6 +335,15 @@ impl Layer {
             return Err(format!("{i:?} isn't a container image reference (like python:3-slim)"));
         }
         self.compact_percent = self.compact_percent.map(|p| p.clamp(10, 95));
+        if let Some(p) = &self.plugins {
+            if p.len() > MAX_PLUGIN_SWITCHES {
+                return Err(format!("at most {MAX_PLUGIN_SWITCHES} plugins can be switched per level"));
+            }
+            if let Some(bad) = p.keys().find(|id| !plugin_id_ok(id)) {
+                return Err(format!("{bad:?} isn't a plugin id"));
+            }
+        }
+        self.plugins = self.plugins.filter(|p| !p.is_empty());
         for field in Field::ALL {
             if self.has(field) && !field.at(level) {
                 return Err(format!("{} can't be set per {}", field.label().to_lowercase(), level.label()));
@@ -369,6 +395,10 @@ pub struct Effective {
     /// The workspace's own image, if it set one.
     #[serde(default)]
     pub image: Option<String>,
+    /// Plugins some level turned on or off, by id, with the level that decided. Plugins not
+    /// listed are on.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: BTreeMap<String, Sourced<bool>>,
 }
 
 impl Effective {
@@ -380,6 +410,11 @@ impl Effective {
             EnvKind::Host | EnvKind::Nix => Some(false),
             EnvKind::Container => Some(true),
         }
+    }
+
+    /// Is plugin `id` on (and which level says so; [`Level::Default`]: nobody switched it)?
+    pub fn plugin_on(&self, id: &str) -> Sourced<bool> {
+        self.plugins.get(id).cloned().unwrap_or(Sourced { value: true, from: Level::Default })
     }
 
     /// The instructions as one block for the system prompt (empty if there are none).
@@ -481,7 +516,19 @@ pub fn resolve(levels: Levels<'_>, keys: Keys, forced: Forced) -> Effective {
         env,
         load_project: (ws_env == EnvKind::Nix).then_some(true),
         image: levels.workspace.and_then(|l| l.image.clone()).filter(|i| valid_image(i)),
+        plugins: plugin_switches(&levels),
     }
+}
+
+/// Every level's plugin switches, the most specific level winning per plugin.
+fn plugin_switches(levels: &Levels<'_>) -> BTreeMap<String, Sourced<bool>> {
+    let mut out = BTreeMap::new();
+    for (level, layer) in [(Level::Global, levels.global), (Level::Workspace, levels.workspace), (Level::Chat, levels.chat)] {
+        for (id, on) in layer.and_then(|l| l.plugins.as_ref()).into_iter().flatten() {
+            out.insert(id.clone(), Sourced { value: *on, from: level });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -535,6 +582,20 @@ mod tests {
         // Out-of-range stored thresholds are clamped.
         let wild = layer(|l| l.compact_percent = Some(200));
         assert_eq!(resolve(Levels { chat: Some(&wild), ..Default::default() }, Keys::default(), Forced::default()).compact_percent.value, 95);
+    }
+
+    #[test]
+    fn plugin_switches_resolve_per_plugin() {
+        let g = layer(|l| l.plugins = Some([("web".to_owned(), false), ("pdf".to_owned(), false)].into()));
+        let w = layer(|l| l.plugins = Some([("web".to_owned(), true)].into()));
+        let c = layer(|l| l.plugins = Some([("pdf".to_owned(), true), ("git".to_owned(), false)].into()));
+        let e = resolve(Levels { global: Some(&g), workspace: Some(&w), chat: Some(&c) }, Keys::default(), Forced::default());
+        assert_eq!(e.plugin_on("web"), Sourced { value: true, from: Level::Workspace });
+        assert_eq!(e.plugin_on("pdf"), Sourced { value: true, from: Level::Chat });
+        assert_eq!(e.plugin_on("git"), Sourced { value: false, from: Level::Chat });
+        assert_eq!(e.plugin_on("other"), Sourced { value: true, from: Level::Default });
+        assert!(layer(|l| l.plugins = Some([("Bad Id".to_owned(), true)].into())).validated(Level::Chat).is_err());
+        assert_eq!(layer(|l| l.plugins = Some(BTreeMap::new())).validated(Level::Chat).unwrap().plugins, None);
     }
 
     #[test]

@@ -38,8 +38,32 @@ pub struct WorkspaceRow {
     /// Its own settings (see [`byob_types::config`]).
     #[serde(default)]
     pub config: Layer,
+    /// What byob knows about the plugins in the folder's `.byob/plugins`, by id. A plugin
+    /// with no record arrived with the folder (a clone or pull): its code waits for the
+    /// user's OK.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugin_trust: BTreeMap<String, PluginTrust>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// Why a workspace plugin may (or may not) run its code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginTrust {
+    /// byob wrote it (the model made it, or the user kept a chat's plugin here).
+    Made,
+    /// It came with the folder and the user turned it on.
+    Trusted,
+    /// It came with the folder and the user said no; not asked again.
+    Declined,
+}
+
+impl PluginTrust {
+    /// Its tools and servers may run.
+    pub fn runs(self) -> bool {
+        matches!(self, Self::Made | Self::Trusted)
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -173,6 +197,7 @@ impl Workspaces {
             folder: folder.to_path_buf(),
             created_at: now(),
             config: Layer::default(),
+            plugin_trust: BTreeMap::new(),
             extra: Map::new(),
         };
         self.data.workspaces.push(row.clone());
@@ -199,7 +224,15 @@ impl Workspaces {
         if let Some(w) = self.by_folder(folder) {
             return Err(StoreError::Exists(format!("{} is already the workspace {:?};", folder.display(), w.name)));
         }
-        let row = WorkspaceRow { id: self.free_id(folder), name, folder: folder.to_path_buf(), created_at: now(), config, extra: Map::new() };
+        let row = WorkspaceRow {
+            id: self.free_id(folder),
+            name,
+            folder: folder.to_path_buf(),
+            created_at: now(),
+            config,
+            plugin_trust: BTreeMap::new(),
+            extra: Map::new(),
+        };
         self.data.workspaces.push(row.clone());
         self.save()?;
         Ok(row)
@@ -219,6 +252,16 @@ impl Workspaces {
     pub fn set_config(&mut self, id: &str, config: Layer) -> Result<()> {
         self.find_mut(id)?.config = config;
         self.save()
+    }
+
+    /// Record (or forget, `None`) what byob knows about plugin `plugin` of workspace `id`.
+    pub fn set_plugin_trust(&mut self, id: &str, plugin: &str, trust: Option<PluginTrust>) -> Result<()> {
+        let row = self.find_mut(id)?;
+        let changed = match trust {
+            Some(t) => row.plugin_trust.insert(plugin.to_owned(), t) != Some(t),
+            None => row.plugin_trust.remove(plugin).is_some(),
+        };
+        if changed { self.save() } else { Ok(()) }
     }
 
     /// Forget a workspace (its folder is untouched). Its chats' settings are the caller's.

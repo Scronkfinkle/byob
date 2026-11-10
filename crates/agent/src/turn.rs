@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -134,7 +135,12 @@ pub struct Setup {
     pub entry: u64,
     pub cancel: Arc<AtomicBool>,
     pub inbox: Sender<Input>,
-    pub tools: Registry,
+    /// The tools offered; the engine may swap them while the turn runs (a plugin changed),
+    /// and each round takes the set current when it starts.
+    pub tools: Arc<ToolSet>,
+    /// Before the first request, ask the user whether the workspace's plugins (which came
+    /// with its folder) may run their code.
+    pub trust_ask: Option<TrustAsk>,
     pub workspace: Arc<PathBuf>,
     /// The chat the turn runs in (artifacts belong to it).
     pub chat: String,
@@ -159,6 +165,35 @@ pub struct Setup {
     pub delegate: Option<Arc<delegate::Env>>,
     /// Where `run_command` and friends run, as the chat's settings decide.
     pub env: Arc<byob_tools::EnvPlan>,
+}
+
+/// A turn's tools, swappable between rounds (never during a call: a round works on the
+/// [`ToolSet::snapshot`] it took when it started).
+#[derive(Default)]
+pub struct ToolSet(Mutex<Registry>);
+
+impl ToolSet {
+    pub fn new(tools: Registry) -> Arc<Self> {
+        Arc::new(Self(Mutex::new(tools)))
+    }
+
+    /// The tools as they are now (cheap: the registry holds `Arc`s).
+    pub fn snapshot(&self) -> Registry {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Offer `tools` from the next round on.
+    pub fn swap(&self, tools: Registry) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = tools;
+    }
+}
+
+/// The question about a workspace's plugins that came with its folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustAsk {
+    pub plugins: Vec<String>,
+    /// What saying yes turns on (for the card).
+    pub text: String,
 }
 
 /// Send a turn's event to the engine, as a child's event if `child` is set.
@@ -231,6 +266,8 @@ enum End {
 
 struct Turn {
     s: Setup,
+    /// This round's tools (taken from `s.tools` when the round starts).
+    tools: Registry,
     messages: Vec<ChatMessage>,
     usage: Usage,
     /// At least one model request completed (so `usage` means something).
@@ -277,8 +314,10 @@ impl Turn {
         let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let tag = s.child.map(|c| format!("-a{c}")).unwrap_or_default();
         let journal = Journal::new(s.workspace.as_path(), &format!("{}-{started}{tag}", s.entry));
+        let tools = s.tools.snapshot();
         Self {
             s,
+            tools,
             messages,
             usage: Usage::default(),
             rounds_done: false,
@@ -308,12 +347,12 @@ impl Turn {
     }
 
     fn tools_on(&self) -> bool {
-        (!self.s.tools.is_empty() || self.s.delegate.is_some()) && self.calls < self.s.max_calls && self.repeats < MAX_REPEATS
+        (!self.tools.is_empty() || self.s.delegate.is_some()) && self.calls < self.s.max_calls && self.repeats < MAX_REPEATS
     }
 
     /// The tool definitions of a request: the registry's, plus `delegate` if allowed.
     fn specs(&self) -> Vec<byob_llm::ToolSpec> {
-        let mut out = specs(&self.s.tools);
+        let mut out = specs(&self.tools);
         if let Some(env) = &self.s.delegate {
             out.push(env.spec());
         }
@@ -321,7 +360,12 @@ impl Turn {
     }
 
     fn run(&mut self) -> Result<(), End> {
+        if let Some(ask) = self.s.trust_ask.take() {
+            self.ask_trust(&ask);
+        }
         for round in 0..MAX_ROUNDS {
+            // Plugins may have changed since the last round (the model made a tool).
+            self.tools = self.s.tools.snapshot();
             let tools_on = self.tools_on();
             let specs = if tools_on { self.specs() } else { Vec::new() };
             self.maybe_compact(&specs, round)?;
@@ -358,6 +402,36 @@ impl Turn {
             }
         }
         Err(End::Error(format!("stopped after {MAX_ROUNDS} model requests without an answer")))
+    }
+
+    /// Ask once whether the workspace's plugins that came with its folder may run their
+    /// code; the engine records the answer and, on yes, adds their tools before the first
+    /// request.
+    fn ask_trust(&mut self, ask: &TrustAsk) {
+        let asker = TurnAsker {
+            inbox: self.s.inbox.clone(),
+            child: self.s.child,
+            entry: self.s.entry,
+            step_ids: Arc::clone(&self.s.step_ids),
+            cancel: Arc::clone(&self.s.cancel),
+            tool: "plugins".into(),
+            at: self.content_len,
+        };
+        let q = Question {
+            title: format!("Turn on this workspace's plugins: {}", ask.plugins.join(", ")),
+            text: ask.text.clone(),
+            warning: Some("They came with the workspace folder and run their own code.".into()),
+            access: Access::Execute,
+            always_ask: false,
+        };
+        let trust = match asker.ask(&q) {
+            Answer::Yes | Answer::AutoYes => true,
+            Answer::No => false,
+            // Nobody answered (stopped, or the policy refuses code): ask again next time.
+            Answer::AutoNo => return,
+        };
+        let op = crate::plugins::PluginOp::Trust { plugins: ask.plugins.clone(), trust };
+        let _ = crate::plugins::request(&self.s.inbox, &self.s.chat, op, &self.s.cancel);
     }
 
     /// One model request. If the server rejects native tools and the plan allows it, switch
@@ -577,7 +651,7 @@ impl Turn {
                 prefix(earlier, REPEAT_QUOTE)
             ));
         }
-        let job = match env.prepare(&args, &self.s.tools) {
+        let job = match env.prepare(&args, &self.tools) {
             Ok(job) => job,
             Err(e) => {
                 self.failed_step(delegate::TOOL, "delegate: not started".into(), ToolAccess::Read, &e);
@@ -613,7 +687,7 @@ impl Turn {
             return refused;
         }
         let name = call.name.trim();
-        let Some(tool) = self.s.tools.get(name).cloned() else {
+        let Some(tool) = self.tools.get(name).cloned() else {
             self.failed_step(name, format!("Unknown tool {name:?}"), ToolAccess::Read, "no such tool");
             let known: Vec<String> = self.specs().into_iter().map(|s| s.name).collect();
             return format!("Error: there is no tool called {name:?}. Available tools: {}.", known.join(", "));
@@ -661,6 +735,7 @@ impl Turn {
             ask: catch_unwind(AssertUnwindSafe(|| tool.always_ask(args)))
                 .unwrap_or_else(|_| Some("this tool must be confirmed".into()))
                 .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true })),
+            plugin: None,
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step: step.clone() });
         if let Some(reason) = self.gate(&step).denied() {
@@ -734,6 +809,7 @@ impl Turn {
             artifacts: Vec::new(),
             delegation: None,
             ask: None,
+            plugin: None,
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step });
     }
@@ -775,6 +851,7 @@ impl Asker for TurnAsker {
                 warning: q.warning.as_deref().map(|w| prefix(w, MAX_ASK_TEXT).to_owned()),
                 always: q.always_ask,
             })),
+            plugin: None,
         };
         emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step: step.clone() });
         let (reply, answer) = channel();

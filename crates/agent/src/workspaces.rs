@@ -291,10 +291,15 @@ impl Engine {
         Ok(client)
     }
 
-    /// The system prompt with the instructions of every level appended.
-    pub(crate) fn prompt_with_instructions(&self, e: &Effective) -> String {
-        let extra = e.instructions_text();
-        if extra.is_empty() { self.system_prompt.clone() } else { format!("{}\n\nThe user's instructions for this chat:\n{extra}", self.system_prompt) }
+    /// The system prompt, then `extra` (the chat's plugins and workspace instructions), then
+    /// the instructions of every level.
+    pub(crate) fn prompt_with(&self, e: &Effective, extra: &str) -> String {
+        let mut out = self.system_prompt.clone();
+        if !extra.trim().is_empty() {
+            out = format!("{out}\n\n{}", extra.trim());
+        }
+        let own = e.instructions_text();
+        if own.is_empty() { out } else { format!("{out}\n\nThe user's instructions for this chat:\n{own}") }
     }
 
     /// The chat's compaction settings. The engine's own `compaction.auto: false` turns it off
@@ -389,7 +394,7 @@ impl Engine {
     }
 
     /// Every chat of `folder`, by id.
-    fn chats_in(&self, folder: &Path) -> Result<Vec<String>, String> {
+    pub(crate) fn chats_in(&self, folder: &Path) -> Result<Vec<String>, String> {
         let mut out = Vec::new();
         let mut after = None;
         loop {
@@ -555,14 +560,17 @@ impl Engine {
                 // The global endpoint changes through the connection form (SetInference).
                 layer.base_url = None;
                 layer.model = None;
+                // Plugin switches change through SetPluginEnabled only.
+                layer.plugins.clone_from(&self.defaults.plugins);
                 if let Some(paths) = &self.paths {
                     Settings::update(&paths.settings(), |s| s.set_global_layer(&layer)).map_err(|e| format!("couldn't save the settings: {e}"))?;
                 }
                 self.defaults = layer;
             }
             ConfigScope::Workspace { id } => {
-                let layer = layer.validated(Level::Workspace)?;
+                let mut layer = layer.validated(Level::Workspace)?;
                 let old = self.workspaces.get(id).ok_or("that workspace no longer exists")?.clone();
+                layer.plugins.clone_from(&old.config.plugins);
                 let scope_key = format!("workspace:{id}");
                 let key =
                     next_key(old.config.base_url.as_deref(), layer.base_url.as_deref(), api_key.as_deref(), self.scoped_key(&scope_key).map(String::as_str));
@@ -575,11 +583,12 @@ impl Engine {
                 self.broadcast_workspaces();
             }
             ConfigScope::Chat => {
-                let layer = layer.validated(Level::Chat)?;
+                let mut layer = layer.validated(Level::Chat)?;
                 match self.client_chat(client) {
                     Some(chat) => {
                         let scope_key = format!("chat:{chat}");
                         let old = self.workspaces.chat_config(&chat).cloned().unwrap_or_default();
+                        layer.plugins.clone_from(&old.plugins);
                         let key =
                             next_key(old.base_url.as_deref(), layer.base_url.as_deref(), api_key.as_deref(), self.scoped_key(&scope_key).map(String::as_str));
                         self.workspaces.set_chat_config(&chat, layer).map_err(|e| format!("couldn't save the chat's settings: {e}"))?;
@@ -587,6 +596,7 @@ impl Engine {
                     }
                     None => {
                         let Some(c) = self.clients.get_mut(&client) else { return Ok(()) };
+                        layer.plugins.clone_from(&c.new_layer.plugins);
                         c.new_key = next_key(c.new_layer.base_url.as_deref(), layer.base_url.as_deref(), api_key.as_deref(), c.new_key.as_deref());
                         c.new_layer = layer;
                     }

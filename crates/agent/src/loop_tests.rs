@@ -173,6 +173,7 @@ fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Opt
         onboarded: false,
         detect_local: false,
         envs: None,
+        plugins: None,
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests, runs }
 }
@@ -509,6 +510,7 @@ fn approval_card_then_undo_the_turn() {
         onboarded: false,
         detect_local: false,
         envs: None,
+        plugins: None,
     };
     let h = Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests: Arc::default(), runs: Arc::default() };
     let (mut c, _) = client(&h);
@@ -620,6 +622,7 @@ fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: byob_
         onboarded: false,
         detect_local: false,
         envs: None,
+        plugins: None,
     };
     (EngineHandle::spawn_with(config).unwrap(), requests)
 }

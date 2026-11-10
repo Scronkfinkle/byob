@@ -15,6 +15,7 @@ byob-store.workspace = true
 byob-tools.workspace = true
 byob-protocol.workspace = true
 byob-plugins.workspace = true
+byob-sandbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

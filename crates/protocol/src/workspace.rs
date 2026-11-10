@@ -138,6 +138,9 @@ impl ClientMsg {
             Self::GetConfig { scope: ConfigScope::Workspace { id: i } } | Self::SetConfig { scope: ConfigScope::Workspace { id: i }, .. } => id(i),
             Self::ListFolders { path: Some(p) } => path(p),
             Self::WorkspaceEnv { workspace: Some(w), .. } => id(w),
+            Self::SetPluginEnabled { .. } | Self::SetPluginSetting { .. } | Self::KeepPlugin { .. } | Self::RemovePlugin { .. } | Self::TrustPlugins { .. } => {
+                crate::plugins::check_sizes(self)
+            }
             _ => crate::queue::check_sizes(self),
         }
     }

@@ -204,6 +204,14 @@ pub struct Settings {
     /// Where "New workspace" creates fresh folders (default `~/byob-workspaces`; `~/` allowed).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub workspaces_root: Option<PathBuf>,
+    /// Plugins turned on or off everywhere, by id (the global level of the plugin switches;
+    /// workspaces and chats may override them).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: BTreeMap<String, bool>,
+    /// Plugin settings that aren't secret, by plugin id, then setting key. Secret ones live
+    /// in secrets.json ([`Secrets::plugin_settings`]).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugin_settings: BTreeMap<String, BTreeMap<String, String>>,
     /// Fields this build doesn't know; preserved across load/save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -271,6 +279,7 @@ impl Settings {
             instructions: text(&self.instructions),
             env: None,
             image: None,
+            plugins: Some(self.plugins.clone()).filter(|p| !p.is_empty()),
         }
     }
 
@@ -284,6 +293,7 @@ impl Settings {
         self.compaction.threshold_percent = l.compact_percent.unwrap_or(defaults.threshold_percent);
         self.subagents.enabled = l.subagents.unwrap_or(SubagentSettings::default().enabled);
         self.instructions.clone_from(&l.instructions);
+        self.plugins = l.plugins.clone().unwrap_or_default();
     }
 
     /// The folder new workspaces are created in.
@@ -308,6 +318,10 @@ pub struct Secrets {
     /// (`workspace:<id>`, `chat:<id>`).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
     pub scoped_keys: BTreeMap<String, String>,
+    /// Secret plugin settings (API keys, tokens), by `plugin:<id>`, then setting key. They
+    /// reach only the plugin's own processes, as environment variables.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugin_settings: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -318,6 +332,7 @@ impl std::fmt::Debug for Secrets {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("model_keys", &self.model_keys.keys().collect::<Vec<_>>())
             .field("scoped_keys", &self.scoped_keys.keys().collect::<Vec<_>>())
+            .field("plugin_settings", &self.plugin_settings.keys().collect::<Vec<_>>())
             .field("extra", &self.extra.keys().collect::<Vec<_>>())
             .finish()
     }

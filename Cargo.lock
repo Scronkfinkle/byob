@@ -624,6 +624,7 @@ dependencies = [
  "byob-llm",
  "byob-plugins",
  "byob-protocol",
+ "byob-sandbox",
  "byob-store",
  "byob-tools",
  "byob-types",

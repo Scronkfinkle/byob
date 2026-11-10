@@ -144,6 +144,7 @@ fn engine(url: String, compaction: CompactOptions, tools: bool, paths: Option<Pa
         onboarded: false,
         detect_local: false,
         envs: None,
+        plugins: None,
     };
     EngineHandle::spawn_with(config).unwrap()
 }

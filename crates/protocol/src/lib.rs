@@ -10,6 +10,7 @@ pub mod connect;
 pub mod delegation;
 pub mod env;
 pub mod media;
+pub mod plugins;
 pub mod queue;
 pub mod usage;
 pub mod workspace;
@@ -21,12 +22,15 @@ pub use connect::{Detected, InferenceTest, Link, PRESETS, Preset, Problem};
 pub use delegation::{Delegation, DelegationState, DelegationUpdate};
 pub use env::{ContainerEnv, EnvAction, EnvSupport, WorkspaceEnv};
 pub use media::{MediaContent, MediaKind, MediaRef};
+pub use plugins::{
+    Extensions, PluginAction, PluginCard, PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, PluginTest, ServerInfo, ServerState,
+};
 pub use queue::{ChatQueue, QueuePause, QueuedMessage};
 pub use usage::{ChatUsage, Compaction};
 pub use workspace::{ChatEndpoint, ConfigScope, ConfigView, FolderList, NewFolder, WorkspaceSummary};
 
 /// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -212,6 +216,50 @@ pub enum ClientMsg {
     },
     /// Is Docker/Podman reachable? Answered with [`ServerMsg::ContainersChecked`].
     CheckContainers,
+    /// Ask for the plugins of the chat in view; answered with [`ServerMsg::Extensions`].
+    GetExtensions,
+    /// Turn plugin `plugin` on (`Some(true)`) or off (`Some(false)`) at one level of the
+    /// layered settings, or forget that level's switch (`None`: inherit). Applies from the
+    /// next turn. Answered with [`ServerMsg::Extensions`].
+    SetPluginEnabled {
+        scope: ConfigScope,
+        plugin: String,
+        enabled: Option<bool>,
+    },
+    /// Set (or clear, `None`) a setting the plugin declares. Secret settings go to
+    /// secrets.json, the others to settings.json; values are never sent back, only whether
+    /// each is set ([`PluginSetting::set`]).
+    SetPluginSetting {
+        plugin: String,
+        key: String,
+        value: Option<String>,
+    },
+    /// Keep plugin `plugin` of the chat in view (its scratch copy, or whichever copy the chat
+    /// uses) in the chat's workspace or everywhere, as `new_id` if given. The user asked, so
+    /// there is no approval card.
+    KeepPlugin {
+        plugin: String,
+        scope: PluginScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        new_id: Option<String>,
+    },
+    /// Delete the copy of plugin `plugin` in `scope` (the chat in view's scratch folder, its
+    /// workspace's `.byob/plugins`, or the global plugins folder).
+    RemovePlugin {
+        plugin: String,
+        scope: PluginScope,
+    },
+    /// Read the plugin folders of the chat in view again now.
+    ReloadPlugins,
+    /// Let the plugins that came with workspace `workspace`'s folder run their tools and
+    /// servers (`trust: true`), or keep them to skills and prompt lines without asking again
+    /// (`false`). `plugins` empty: all of them.
+    TrustPlugins {
+        workspace: String,
+        #[serde(default)]
+        plugins: Vec<String>,
+        trust: bool,
+    },
 }
 
 /// Engine -> client(s).
@@ -288,6 +336,9 @@ pub enum ServerMsg {
     /// The queue of the chat in view; sent after [`ServerMsg::Transcript`] and whenever it
     /// changes.
     Queue(ChatQueue),
+    /// The plugins of the chat in view; sent after [`ServerMsg::ChatOpened`], on
+    /// [`ClientMsg::GetExtensions`], and whenever they change.
+    Extensions(Box<Extensions>),
 }
 
 /// A chat as shown in the sidebar.
@@ -478,6 +529,10 @@ pub struct Step {
     /// and Deny.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask: Option<Box<Ask>>,
+    /// The step made, changed, kept or removed a plugin: show a plugin card. Set on the
+    /// finished step (live only: a transcript loaded from storage has the plain step).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<Box<PluginCard>>,
 }
 
 /// The special part of an approval card (see [`Step::ask`]).
@@ -740,6 +795,7 @@ mod tests {
             artifacts: vec![],
             delegation: None,
             ask: None,
+            plugin: None,
         }
     }
 
