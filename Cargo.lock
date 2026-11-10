@@ -775,6 +775,7 @@ version = "0.1.0"
 dependencies = [
  "byob-protocol",
  "byob-types",
+ "directories",
  "egui",
  "ewebsock",
  "image",

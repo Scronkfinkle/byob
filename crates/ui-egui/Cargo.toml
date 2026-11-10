@@ -37,3 +37,4 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd.workspace = true
 pollster.workspace = true
+directories.workspace = true

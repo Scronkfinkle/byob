@@ -94,11 +94,12 @@ fn save_dialog(name: &str) -> Option<std::path::PathBuf> {
     pollster::block_on(dialog.save_file()).map(|f| f.path().to_path_buf())
 }
 
+/// Where to start the export dialog: the user's Downloads folder (on Linux from
+/// `~/.config/user-dirs.dirs`, so a renamed or moved one counts), else home.
 #[cfg(not(target_arch = "wasm32"))]
 fn downloads_dir() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from)?;
-    let downloads = std::env::var_os("XDG_DOWNLOAD_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| home.join("Downloads"));
-    Some(if downloads.is_dir() { downloads } else { home })
+    let dirs = directories::UserDirs::new()?;
+    Some(dirs.download_dir().filter(|d| d.is_dir()).unwrap_or(dirs.home_dir()).to_owned())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
