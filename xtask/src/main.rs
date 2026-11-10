@@ -9,6 +9,7 @@ use std::process::{Command, ExitCode};
 /// Every workspace crate and its layer. Dependencies may only point downward.
 const LAYERS: &[(&str, u8)] = &[
     ("byob-types", 0),
+    ("byob-web-assets", 0),
     ("byob-protocol", 1),
     ("byob-artifact-wire", 1),
     ("byob-llm", 1),
@@ -190,7 +191,15 @@ fn web() -> Result<(), String> {
     if tool("gzip", &["-9", "--keep", "--force", "--no-name", &wasm_bin, &wasm_js]).is_err() {
         eprintln!("xtask: gzip failed or missing; the web UI will be served uncompressed");
     }
-    println!("web: built {dist}/ — serve it with `cargo run -p byob -- --serve`");
+    // Also stage it for embedding: byob-web-assets compiles assets/ into byob (feature `web`).
+    let embed = "crates/web-assets/assets";
+    let _ = std::fs::remove_dir_all(embed);
+    std::fs::create_dir_all(embed).map_err(|e| format!("create {embed}: {e}"))?;
+    for entry in std::fs::read_dir(dist).map_err(|e| format!("read {dist}: {e}"))?.flatten() {
+        let to = std::path::Path::new(embed).join(entry.file_name());
+        std::fs::copy(entry.path(), &to).map_err(|e| format!("copy to {}: {e}", to.display()))?;
+    }
+    println!("web: built {dist}/ and staged it in {embed}/ — `cargo run -p byob -- --serve` embeds it");
     Ok(())
 }
 

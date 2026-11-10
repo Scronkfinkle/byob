@@ -34,10 +34,14 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           [[ "$TAG" == "v$version" ]] || { echo "::error::release $TAG != v$version"; exit 1; }
+      # Builds the browser UI into crates/web-assets/assets/ so the published
+      # byob-web-assets crate carries it (the folder is gitignored, hence --allow-dirty).
+      - name: Build the browser UI
+        run: nix develop --command cargo xtask web
       - name: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          flags=(--workspace --exclude byob-web --exclude xtask --locked)
+          flags=(--workspace --exclude byob-web --exclude xtask --locked --allow-dirty)
           if [[ "${{ github.event_name }}" == workflow_dispatch && "${{ inputs.dry_run }}" == true ]]; then flags+=(--dry-run); fi
           nix develop --command cargo publish "${flags[@]}"

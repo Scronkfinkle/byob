@@ -8,3 +8,4 @@ plan/
 .claude/worktrees/
 /host/artifact-host/target
 CLAUDE.local.md
+/crates/web-assets/assets/

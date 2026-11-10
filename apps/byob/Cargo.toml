@@ -11,6 +11,12 @@ readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# The browser UI (`byob --serve`), compiled in. `--no-default-features` builds the slim
+# desktop-only binary.
+default = ["web"]
+web = ["byob-server/embedded-web"]
+
 [dependencies]
 byob-types.workspace = true
 byob-agent.workspace = true

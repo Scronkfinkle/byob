@@ -1,6 +1,6 @@
 # Push a tag like v0.2.0 (matching Cargo.toml's version) to build binaries for every platform
-# and publish a GitHub release with them. Each archive holds the `byob` binary, the browser
-# UI in `web/` (found automatically next to the binary), the licences and the README.
+# and publish a GitHub release with them. Two archives per platform: `byob-…` with the browser
+# UI compiled in (`byob --serve` just works) and `byob-slim-…` without it.
 name: Release
 
 on:
@@ -74,28 +74,37 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
-      - name: Build
-        run: cargo build --release --locked -p byob --target ${{ matrix.target }}
+      # byob-web-assets compiles whatever is in crates/web-assets/assets/ into the full build.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: web
-          path: web
+          path: crates/web-assets/assets
+      - name: Build (full, with the browser UI)
+        run: cargo build --release --locked -p byob --target ${{ matrix.target }}
+      - name: Build (slim)
+        run: cargo build --release --locked -p byob --no-default-features --target ${{ matrix.target }} --target-dir target/slim
       - name: Package
         shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          name="byob-${{ needs.version.outputs.version }}-${{ matrix.target }}"
-          mkdir -p "$name"
-          exe=byob; [[ "${{ runner.os }}" == Windows ]] && exe=byob.exe
-          cp "target/${{ matrix.target }}/release/$exe" "$name/"
-          cp -r web "$name/web"
-          cp LICENSE-MIT LICENSE-APACHE README.md "$name/"
-          if [[ "${{ runner.os }}" == Windows ]]; then
-            7z a "$name.zip" "$name" > /dev/null; archive="$name.zip"
-          else
-            tar czf "$name.tar.gz" "$name"; archive="$name.tar.gz"
-          fi
-          if command -v sha256sum >/dev/null; then sha256sum "$archive" > "$archive.sha256"; else shasum -a 256 "$archive" > "$archive.sha256"; fi
+          exe=byob; [[ "$RUNNER_OS" == Windows ]] && exe=byob.exe
+          pack() { # pack <archive name> <built binary>
+            local name=$1 bin=$2 archive
+            mkdir -p "$name"
+            cp "$bin" "$name/"
+            cp LICENSE-MIT LICENSE-APACHE README.md "$name/"
+            if [[ "$RUNNER_OS" == Windows ]]; then
+              7z a "$name.zip" "$name" > /dev/null; archive="$name.zip"
+            else
+              tar czf "$name.tar.gz" "$name"; archive="$name.tar.gz"
+            fi
+            if command -v sha256sum >/dev/null; then sha256sum "$archive" > "$archive.sha256"; else shasum -a 256 "$archive" > "$archive.sha256"; fi
+          }
+          pack "byob-$VERSION-$TARGET" "target/$TARGET/release/$exe"
+          pack "byob-slim-$VERSION-$TARGET" "target/slim/$TARGET/release/$exe"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.target }}

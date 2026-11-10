@@ -8,6 +8,17 @@ A native Rust desktop AI coworker. A rewrite of hob that points at **any OpenAI-
 inference URL** (llama-server, vLLM, Ollama, LM Studio, hosted APIs) instead of bundling
 llama.cpp — and whose UI you can also open in any browser, e.g. from your phone over Tailscale.
 
+## Install
+
+```sh
+cargo install byob                          # with the browser UI built in
+cargo install byob --no-default-features    # slim: desktop only, a few MB smaller
+nix build github:Scronkfinkle/byob          # or .#byob-slim
+```
+
+Release archives for Linux, macOS and Windows come in the same two flavours
+(`byob-…` and `byob-slim-…`) on the GitHub releases page.
+
 ## Use
 
 ```sh
@@ -26,7 +37,7 @@ byob --headless --allow-user you@example.com # only admit that Tailscale login
 ```sh
 nix develop          # or: direnv allow
 cargo run -p byob     # launch the app
-cargo xtask web      # build the browser UI into apps/byob-web/dist
+cargo xtask web      # build the browser UI; the next `cargo build` embeds it
 cargo xtask ci       # full gate: fmt, clippy, tests, layers, no-tokio, wasm
 nix build            # release package (byob + bundled web UI + the artifact host)
 

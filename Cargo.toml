@@ -18,6 +18,7 @@ categories = ["gui", "development-tools"]
 [workspace.dependencies]
 # Internal crates (see docs/architecture.md for layering).
 byob-types = { path = "crates/types", version = "0.1.0" }
+byob-web-assets = { path = "crates/web-assets", version = "0.1.0" }
 byob-protocol = { path = "crates/protocol", version = "0.1.0" }
 byob-server = { path = "crates/server", version = "0.1.0" }
 byob-llm = { path = "crates/llm", version = "0.1.0" }
@@ -49,6 +50,8 @@ ureq = { version = "3", features = ["json"] }
 # serves a handful of clients, so thread-per-connection is plenty.
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 httparse = "1"
+# Decompressing the embedded (gzipped) web UI for the rare client without gzip support.
+flate2 = "1"
 ewebsock = "0.8"
 # wasm-safe `Instant` (std::time::Instant panics on wasm32-unknown-unknown).
 web-time = "1"

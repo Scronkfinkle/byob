@@ -734,6 +734,8 @@ dependencies = [
  "byob-store",
  "byob-tools",
  "byob-types",
+ "byob-web-assets",
+ "flate2",
  "httparse",
  "log",
  "serde_json",
@@ -752,6 +754,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -814,6 +817,10 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
 ]
+
+[[package]]
+name = "byob-web-assets"
+version = "0.1.0"
 
 [[package]]
 name = "bytemuck"

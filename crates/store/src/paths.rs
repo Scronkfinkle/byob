@@ -10,6 +10,23 @@ use std::path::{Path, PathBuf};
 use crate::error::{Result, StoreError};
 
 /// Environment variable that overrides every byob directory with one root folder.
+/// The database was `yah.db` before the rename: rename it (with its WAL and shared-memory
+/// files) to `byob.db` unless a `byob.db` already exists.
+pub fn migrate_db_name(data_dir: &Path) {
+    if !data_dir.join("yah.db").is_file() || data_dir.join("byob.db").exists() {
+        return;
+    }
+    for suffix in ["", "-wal", "-shm"] {
+        let (from, to) = (data_dir.join(format!("yah.db{suffix}")), data_dir.join(format!("byob.db{suffix}")));
+        if from.exists()
+            && let Err(e) = std::fs::rename(&from, &to)
+        {
+            log::warn!("couldn't rename {} to {}: {e}", from.display(), to.display());
+        }
+    }
+    log::info!("renamed yah.db to byob.db in {}", data_dir.display());
+}
+
 /// A workspace's own folder (artifacts, trash, undo backups). Before the rename it was
 /// `.yah`: rename it the first time byob opens that workspace.
 pub fn migrate_workspace(workspace: &Path) {
@@ -98,6 +115,7 @@ impl Paths {
                 Err(e) => log::warn!("couldn't move {} to {}: {e}", from.display(), to.display()),
             }
         }
+        migrate_db_name(new.data_dir());
     }
 
     pub fn ensure(&self) -> Result<()> {
@@ -111,6 +129,21 @@ impl Paths {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_database_name_is_migrated_with_its_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        for f in ["yah.db", "yah.db-wal", "yah.db-shm"] {
+            std::fs::write(dir.path().join(f), f).unwrap();
+        }
+        migrate_db_name(dir.path());
+        assert_eq!(std::fs::read_to_string(dir.path().join("byob.db-wal")).unwrap(), "yah.db-wal");
+        assert!(!dir.path().join("yah.db").exists());
+        // An existing byob.db is never overwritten.
+        std::fs::write(dir.path().join("yah.db"), "old").unwrap();
+        migrate_db_name(dir.path());
+        assert_eq!(std::fs::read_to_string(dir.path().join("byob.db")).unwrap(), "yah.db");
+    }
 
     #[test]
     fn at_puts_everything_under_root() {

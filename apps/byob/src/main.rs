@@ -4,7 +4,7 @@
 //! byob                         desktop window
 //! byob --serve [ADDR]          desktop window + browser access (default 127.0.0.1:7470)
 //! byob --headless [ADDR]       browser access only, no window
-//!     --web-dir DIR           built web bundle to serve (default: $BYOB_WEB_DIR, else web/ next to the binary, else apps/byob-web/dist)
+//!     --web-dir DIR           serve the browser UI from DIR (or $BYOB_WEB_DIR) instead of the built-in copy
 //!     --allow-user LOGIN      only admit this Tailscale login via `tailscale serve` (repeatable)
 //!     --inference-url URL     OpenAI-compatible base URL (default: settings.json)
 //!     --model NAME            (default: settings.json)
@@ -57,7 +57,8 @@ use byob_types::InferenceConfig;
 struct Args {
     serve: Option<SocketAddr>,
     headless: bool,
-    web_dir: PathBuf,
+    /// Explicit `--web-dir` / `$BYOB_WEB_DIR`; otherwise the embedded UI.
+    web_dir: Option<PathBuf>,
     allowed_users: Vec<String>,
     inference_url: Option<String>,
     model: Option<String>,
@@ -88,14 +89,15 @@ fn storage_kind(flag: &str, v: Option<String>) -> Result<StorageKind, String> {
     }
 }
 
-/// `$BYOB_WEB_DIR`; else `web/` next to the executable (release archives); else the dev
-/// build output `apps/byob-web/dist`.
-fn default_web_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("BYOB_WEB_DIR") {
-        return PathBuf::from(dir);
+/// Where the browser UI comes from: an explicit `--web-dir`/`$BYOB_WEB_DIR`; else the copy
+/// compiled into this binary (feature `web`); else, in a dev checkout without it, the
+/// `cargo xtask web` output.
+fn web_dir(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    if explicit.is_some() || byob_server::embedded_web_available() {
+        return explicit;
     }
-    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.join("web")));
-    beside.filter(|d| d.join("index.html").is_file()).unwrap_or_else(|| PathBuf::from("apps/byob-web/dist"))
+    let dev = PathBuf::from("apps/byob-web/dist");
+    dev.join("index.html").is_file().then_some(dev)
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -104,7 +106,7 @@ fn parse_args() -> Result<Args, String> {
         serve: None,
         headless: false,
         allowed_users: Vec::new(),
-        web_dir: default_web_dir(),
+        web_dir: std::env::var_os("BYOB_WEB_DIR").map(PathBuf::from),
         inference_url: None,
         model: None,
         api_key: std::env::var("BYOB_API_KEY").ok().filter(|k| !k.is_empty()),
@@ -137,7 +139,7 @@ fn parse_args() -> Result<Args, String> {
                 };
                 args.serve = Some(addr);
             }
-            "--web-dir" => args.web_dir = it.next().ok_or("--web-dir needs a path")?.into(),
+            "--web-dir" => args.web_dir = Some(it.next().ok_or("--web-dir needs a path")?.into()),
             "--allow-user" => args.allowed_users.push(it.next().ok_or("--allow-user needs a Tailscale login")?),
             "--inference-url" => args.inference_url = Some(it.next().ok_or("--inference-url needs a URL")?),
             "--model" => args.model = Some(it.next().ok_or("--model needs a name")?),
@@ -426,7 +428,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
     use byob_ui_egui::theme;
     let mut serving = None;
     if let Some(addr) = args.serve {
-        let config = byob_server::ServerConfig { addr, web_dir: Some(args.web_dir), allowed_users: args.allowed_users, ..Default::default() };
+        let config = byob_server::ServerConfig { addr, web_dir: web_dir(args.web_dir), allowed_users: args.allowed_users, ..Default::default() };
         let bound = byob_server::spawn(engine.clone(), config).map_err(|e| format!("binding {addr}: {e}"))?;
         eprintln!("byob: browser UI at http://{bound}  (expose on your tailnet with: tailscale serve {})", bound.port());
         serving = Some(bound);
