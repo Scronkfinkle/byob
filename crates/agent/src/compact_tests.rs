@@ -139,6 +139,7 @@ fn engine(url: String, compaction: CompactOptions, tools: bool, paths: Option<Pa
         subagents: Default::default(),
         onboarded: false,
         detect_local: false,
+        envs: None,
     };
     EngineHandle::spawn_with(config).unwrap()
 }

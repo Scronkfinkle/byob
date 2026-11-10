@@ -337,6 +337,7 @@ pub fn launch(env: &Env, job: Job, l: Launch) -> std::io::Result<Receiver<String
         preview: None,
         media: Vec::new(),
         artifacts: Vec::new(),
+        ask: None,
         delegation: Some(Box::new(Delegation {
             agent: job.agent.clone(),
             task: job.task.clone(),

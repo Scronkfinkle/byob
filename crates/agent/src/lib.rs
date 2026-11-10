@@ -107,6 +107,8 @@ pub struct EngineConfig {
     /// Until onboarded, look for inference servers on this machine's usual ports at startup.
     /// Off in this crate's unit tests.
     pub detect_local: bool,
+    /// Workspace environment settings clients can see and change (`byob-exec`).
+    pub envs: Option<Arc<dyn byob_tools::EnvControl>>,
 }
 
 impl EngineConfig {
@@ -130,6 +132,7 @@ impl EngineConfig {
             subagents: SubagentOptions::default(),
             onboarded: false,
             detect_local: !cfg!(test),
+            envs: None,
         }
     }
 }
@@ -173,6 +176,11 @@ enum Input {
     Compacted(Box<ManualDone>),
     /// A connection check, test or local server search finished.
     Link(connect::Event),
+    /// A workspace environment request finished: the answer for `client`.
+    Env {
+        client: ClientId,
+        env: byob_protocol::WorkspaceEnv,
+    },
 }
 
 /// The outcome of a manual compaction.
@@ -371,6 +379,7 @@ struct Engine {
     subagents: SubagentOptions,
     /// Inference slots subagents may use, shared by every chat.
     slots: Arc<delegate::Slots>,
+    envs: Option<Arc<dyn byob_tools::EnvControl>>,
     /// Whether the current endpoint answers (see [`connect`]).
     link: Link,
     /// Check endpoints when they are set (off in unit tests with scripted servers).
@@ -453,6 +462,7 @@ impl Engine {
             models: config.models,
             subagents: config.subagents,
             slots,
+            envs: config.envs,
         };
         engine.check_link();
         if detect {
@@ -730,6 +740,7 @@ impl Engine {
             }
             Input::Compacted(done) => self.manual_compacted(*done),
             Input::Link(event) => self.handle_connect(event),
+            Input::Env { client, env } => self.send_to(client, ServerMsg::WorkspaceEnv(env)),
         }
     }
 
@@ -791,6 +802,46 @@ impl Engine {
             ClientMsg::GetMedia { path } => self.serve_media(id, path),
             ClientMsg::GetArtifact { id: artifact, version } => self.serve_artifact(id, artifact, version),
             ClientMsg::Compact { focus } => self.compact_chat(id, focus),
+            ClientMsg::WorkspaceEnv { action } => self.workspace_env(id, action),
+        }
+    }
+
+    /// `ClientMsg::WorkspaceEnv`: apply `action` to the workspace of the chat `client` looks
+    /// at and send back its environment, from a worker thread (stopping a container takes
+    /// seconds).
+    fn workspace_env(&mut self, client: ClientId, action: Option<byob_protocol::EnvAction>) {
+        let ws = self.client_workspace(client);
+        let Some(envs) = self.envs.clone() else {
+            let env = byob_protocol::WorkspaceEnv {
+                workspace: ws.display().to_string(),
+                message: Some("Workspace environments aren't available in this build.".into()),
+                failed: true,
+                ..Default::default()
+            };
+            self.send_to(client, ServerMsg::WorkspaceEnv(env));
+            return;
+        };
+        let inbox = self.inbox.clone();
+        let spawned = thread::Builder::new().name("byob-env".into()).spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                let done = action.map(|a| envs.apply(&ws, &a));
+                let mut env = envs.describe(&ws);
+                match done {
+                    Some(Ok(text)) => env.message = Some(text).filter(|t| !t.is_empty()),
+                    Some(Err(e)) => {
+                        env.message = Some(e);
+                        env.failed = true;
+                    }
+                    None => {}
+                }
+                env
+            }));
+            let env =
+                result.unwrap_or_else(|_| byob_protocol::WorkspaceEnv { message: Some("that failed unexpectedly".into()), failed: true, ..Default::default() });
+            let _ = inbox.send(Input::Env { client, env });
+        });
+        if let Err(e) = spawned {
+            log::error!("workspace environment thread: {e}");
         }
     }
 
@@ -926,6 +977,8 @@ impl Engine {
         let Some(Pending { entry, mut step, reply, child }) = self.pending.remove(&step_id) else { return };
         let chat = self.turns.get(&entry).map(|t| t.chat.clone());
         let scope = match answer {
+            // Questions and must-confirm calls are never granted for good.
+            _ if step.ask.is_some() => None,
             ApprovalAnswer::Always => chat.map(GrantScope::Chat),
             ApprovalAnswer::AlwaysEverywhere => Some(GrantScope::Global),
             ApprovalAnswer::Allow | ApprovalAnswer::Deny => None,
@@ -935,13 +988,11 @@ impl Engine {
         {
             log::error!("saving the grant for {}: {e}", step.tool);
         }
-        let verdict = match answer {
-            ApprovalAnswer::Allow | ApprovalAnswer::Always | ApprovalAnswer::AlwaysEverywhere => turn::Verdict::Allow,
-            ApprovalAnswer::Deny => turn::Verdict::Deny("the user said no".into()),
-        };
-        step.status = if verdict == turn::Verdict::Allow { StepStatus::Running } else { StepStatus::Denied };
-        if let turn::Verdict::Deny(reason) = &verdict {
-            step.detail.clone_from(reason);
+        let verdict = turn::Verdict::Answered(answer != ApprovalAnswer::Deny);
+        let denied = verdict.denied();
+        step.status = if denied.is_none() { StepStatus::Running } else { StepStatus::Denied };
+        if let Some(reason) = denied {
+            step.detail = reason;
         }
         // The turn thread may be gone (stopped); the step update still settles the card.
         let _ = reply.send(verdict);
@@ -978,7 +1029,8 @@ impl Engine {
             log::error!("reading grants: {e}");
             false
         });
-        match permissions::decide(&self.policy, granted, step.access) {
+        let always = step.ask.as_ref().map(|a| a.always);
+        match permissions::decide_ask(&self.policy, granted, step.access, always) {
             permissions::Gate::Allow => {
                 let _ = reply.send(turn::Verdict::Allow);
             }

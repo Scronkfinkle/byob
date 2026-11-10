@@ -394,6 +394,7 @@ fn run() -> Result<(), String> {
         config.system_prompt = format!("{}\n\n{}", config.system_prompt, extra.prompt);
     }
     config.agents = extra.agents;
+    config.envs = extra.envs;
     config.models = model_roles(&config.inference, &saved.settings, &saved.secrets);
     let sub = saved.settings.subagents;
     config.subagents = byob_agent::SubagentOptions {

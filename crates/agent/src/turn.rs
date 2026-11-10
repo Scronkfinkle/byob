@@ -12,8 +12,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use byob_llm::{ChatMessage, LlmError, StreamEvent, ToolCall, ToolCallFilter, Usage, toolprompt};
-use byob_protocol::{FileChange, Step, StepStatus, ToolAccess, TurnStats};
-use byob_tools::{Access, Journal, Registry, Tool, ToolContext, ToolOutput, UndoOp};
+use byob_protocol::{Ask, FileChange, Step, StepStatus, ToolAccess, TurnStats};
+use byob_tools::{Access, Answer, Asker, Journal, Question, Registry, Tool, ToolContext, ToolOutput, UndoOp};
 use serde_json::Value;
 
 use crate::{Input, adapt, compact, delegate};
@@ -29,10 +29,26 @@ const APPROVAL_POLL: Duration = Duration::from_millis(50);
 /// The engine's answer to a [`TurnEvent::Gate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
+    /// Allowed without asking (policy or grant).
     Allow,
     /// Not run; the reason is shown on the step.
     Deny(String),
+    /// A person answered the approval card: allowed or not.
+    Answered(bool),
 }
+
+impl Verdict {
+    /// Why it may not run, if it may not.
+    pub fn denied(&self) -> Option<String> {
+        match self {
+            Self::Allow | Self::Answered(true) => None,
+            Self::Deny(reason) => Some(reason.clone()),
+            Self::Answered(false) => Some(USER_SAID_NO.into()),
+        }
+    }
+}
+
+pub(crate) const USER_SAID_NO: &str = "the user said no";
 
 pub enum TurnEvent {
     Delta {
@@ -638,9 +654,13 @@ impl Turn {
             media: Vec::new(),
             artifacts: Vec::new(),
             delegation: None,
+            // A call a person must confirm every time (installing system-wide).
+            ask: catch_unwind(AssertUnwindSafe(|| tool.always_ask(args)))
+                .unwrap_or_else(|_| Some("this tool must be confirmed".into()))
+                .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true })),
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step: step.clone() });
-        if let Verdict::Deny(reason) = self.gate(&step) {
+        if let Some(reason) = self.gate(&step).denied() {
             step.status = StepStatus::Denied;
             step.detail = one_line(&reason, DETAIL_CHARS);
             self.emit(TurnEvent::Step { id: self.s.entry, step });
@@ -649,7 +669,16 @@ impl Turn {
             }
             return format!("Not run: {reason}. Don't retry this call; tell the user what you would have done.");
         }
-        let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel).with_journal(&self.journal).with_chat(&self.s.chat);
+        let asker = TurnAsker {
+            inbox: self.s.inbox.clone(),
+            child: self.s.child,
+            entry: self.s.entry,
+            step_ids: Arc::clone(&self.s.step_ids),
+            cancel: Arc::clone(&self.s.cancel),
+            tool: name.to_owned(),
+            at: self.content_len,
+        };
+        let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel).with_journal(&self.journal).with_chat(&self.s.chat).with_asker(&asker);
         let output = catch_unwind(AssertUnwindSafe(|| tool.run(args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
         let (ops, complete) = crate::steps::undo_ops(self.journal.take(), &output.changes);
         if !ops.is_empty() || !complete {
@@ -697,8 +726,65 @@ impl Turn {
             media: Vec::new(),
             artifacts: Vec::new(),
             delegation: None,
+            ask: None,
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step });
+    }
+}
+
+/// Most characters of a question's text or warning on an approval card.
+const MAX_ASK_TEXT: usize = 1500;
+
+/// Lets a running tool ask the user (a [`Question`]): an extra step with an approval card,
+/// decided by the engine like any call, except that grants never answer it.
+struct TurnAsker {
+    inbox: Sender<Input>,
+    child: Option<u64>,
+    entry: u64,
+    step_ids: Arc<AtomicU64>,
+    cancel: Arc<AtomicBool>,
+    /// The asking tool's name.
+    tool: String,
+    at: usize,
+}
+
+impl Asker for TurnAsker {
+    fn ask(&self, q: &Question) -> Answer {
+        let mut step = Step {
+            id: self.step_ids.fetch_add(1, Ordering::Relaxed),
+            tool: self.tool.clone(),
+            title: one_line(&q.title, DETAIL_CHARS),
+            access: to_protocol(q.access),
+            status: StepStatus::Running,
+            detail: one_line(&q.text, DETAIL_CHARS),
+            changes: Vec::new(),
+            at: self.at,
+            preview: None,
+            media: Vec::new(),
+            artifacts: Vec::new(),
+            delegation: None,
+            ask: Some(Box::new(Ask {
+                text: prefix(&q.text, MAX_ASK_TEXT).to_owned(),
+                warning: q.warning.as_deref().map(|w| prefix(w, MAX_ASK_TEXT).to_owned()),
+                always: q.always_ask,
+            })),
+        };
+        emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step: step.clone() });
+        let (reply, answer) = channel();
+        emit_to(&self.inbox, self.child, TurnEvent::Gate { id: self.entry, step: step.clone(), reply });
+        let verdict = wait_verdict(&answer, &self.cancel);
+        let answer = match &verdict {
+            Verdict::Allow => Answer::AutoYes,
+            Verdict::Deny(_) => Answer::AutoNo,
+            Verdict::Answered(true) => Answer::Yes,
+            Verdict::Answered(false) => Answer::No,
+        };
+        step.status = if answer.allowed() { StepStatus::Done } else { StepStatus::Denied };
+        if let Some(reason) = verdict.denied() {
+            step.detail = one_line(&reason, DETAIL_CHARS);
+        }
+        emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step });
+        answer
     }
 }
 

@@ -18,6 +18,8 @@ pub struct Loaded {
     pub prompt: String,
     /// Subagents from `<config>/agents` and plugins, the user's first.
     pub agents: Vec<AgentDef>,
+    /// Workspace environment settings for the engine (with run_command / run_python).
+    pub envs: Option<Arc<dyn byob_tools::EnvControl>>,
 }
 
 /// Register everything into `tools`.
@@ -29,10 +31,12 @@ pub fn load(tools: &mut Registry, linked: Vec<PathBuf>, workspace: &Path) -> Loa
     // with uv). The sandbox helper is this binary (`byob __sandbox-exec`, see main).
     let mode = Mode::from_env();
     let mut exec_prompt = None;
+    let mut envs: Option<Arc<dyn byob_tools::EnvControl>> = None;
     match &mode {
         Ok(mode) => {
             let exec = Exec::new(mode.clone(), paths.as_ref().ok().map(|p| p.data_dir.clone()));
             exec_prompt = exec.prompt();
+            envs = Some(exec.envs.clone());
             byob_exec::register(tools, exec);
         }
         Err(e) => log::warn!("no run_command/run_python: {e}"),
@@ -111,5 +115,5 @@ pub fn load(tools: &mut Registry, linked: Vec<PathBuf>, workspace: &Path) -> Loa
     if !agents.is_empty() {
         log::info!("{} subagent(s): {}", agents.len(), agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "));
     }
-    Loaded { prompt: prompt.trim().to_owned(), agents }
+    Loaded { prompt: prompt.trim().to_owned(), agents, envs }
 }

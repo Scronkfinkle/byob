@@ -83,8 +83,8 @@ impl Delegation {
                 self.reasoning.push_str(reasoning);
             }
             DelegationUpdate::Step(step) => match self.steps.iter_mut().find(|s| s.id == step.id) {
-                Some(existing) => *existing = step.clone(),
-                None => self.steps.push(step.clone()),
+                Some(existing) => *existing = (**step).clone(),
+                None => self.steps.push((**step).clone()),
             },
             DelegationUpdate::Status { state, prompt_tokens, completion_tokens, error } => {
                 self.state = *state;
@@ -103,7 +103,7 @@ pub enum DelegationUpdate {
     /// Streamed text appended to the child's reply.
     Delta { content: String, reasoning: String },
     /// A child step was added or changed (replace by id).
-    Step(Step),
+    Step(Box<Step>),
     /// State and token totals.
     Status {
         state: DelegationState,

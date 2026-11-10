@@ -11,11 +11,11 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::ExitCode;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use byob_exec::{Exec, Mode, register};
 use byob_sandbox::{Sandbox, TempDir, dispatch_helper};
-use byob_tools::{Registry, ToolContext, ToolOutput};
+use byob_tools::{Answer, Asker, Question, Registry, ToolContext, ToolOutput};
 use serde_json::json;
 
 fn main() -> ExitCode {
@@ -27,6 +27,7 @@ fn main() -> ExitCode {
         ("nix_shell_substitutes_without_network", nix_shell_substitutes_without_network, Needs::NixBuilds),
         ("install_packages_program_and_python_library", install_packages_program_and_python_library, Needs::NixBuilds),
         ("flake_dev_shell_is_loaded_and_cached", flake_dev_shell_is_loaded_and_cached, Needs::NixBuilds),
+        ("declined_flake_is_not_loaded", declined_flake_is_not_loaded, Needs::Nix),
         ("mise_project_env", mise_project_env, Needs::Mise),
         ("pixi_project_env", pixi_project_env, Needs::Pixi),
     ];
@@ -90,6 +91,21 @@ struct World {
     data: TempDir,
     ws: TempDir,
     reg: Registry,
+    /// How questions are answered, and how many were asked.
+    asker: Asks,
+}
+
+struct Asks {
+    answer: Answer,
+    asked: AtomicUsize,
+}
+
+impl Asker for Asks {
+    fn ask(&self, q: &Question) -> Answer {
+        println!("  asked: {}", q.title);
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        self.answer
+    }
 }
 
 impl World {
@@ -98,12 +114,21 @@ impl World {
         let ws = TempDir::new("byob-nix-ws-").unwrap();
         let mut reg = Registry::default();
         register(&mut reg, Exec::new(Mode::Sandboxed(Sandbox::new(std::env::current_exe().unwrap())), Some(data.path().to_path_buf())));
-        Self { data, ws, reg }
+        Self { data, ws, reg, asker: Asks { answer: Answer::Yes, asked: AtomicUsize::new(0) } }
+    }
+
+    fn answering(mut self, answer: Answer) -> Self {
+        self.asker.answer = answer;
+        self
+    }
+
+    fn asked(&self) -> usize {
+        self.asker.asked.load(Ordering::SeqCst)
     }
 
     fn call(&self, tool: &str, args: serde_json::Value) -> ToolOutput {
         let cancel = AtomicBool::new(false);
-        let ctx = ToolContext::new(self.ws.path(), &cancel);
+        let ctx = ToolContext::new(self.ws.path(), &cancel).with_asker(&self.asker);
         let out = self.reg.get(tool).unwrap_or_else(|| panic!("no tool {tool}")).run(&args, &ctx);
         println!("  {tool} {args}\n    {}", out.text.replace('\n', "\n    "));
         out
@@ -182,6 +207,7 @@ fn flake_dev_shell_is_loaded_and_cached() {
     assert!(out.text.contains("hi\nfrom-the-flake hook-ran"), "{}", out.text);
     assert!(!out.text.contains("welcome banner"), "the hook's output isn't the command's");
     assert!(w.ws.path().join("flake.lock").is_file(), "nix locked the flake");
+    assert_eq!(w.asked(), 1, "asked before loading it");
     let again = w.call("run_command", cmd.clone());
     assert!(!again.failed && !again.text.contains("Loaded the workspace's"), "cached: {}", again.text);
     // A broken flake: reported once, then commands run without it.
@@ -190,6 +216,20 @@ fn flake_dev_shell_is_loaded_and_cached() {
     assert!(!out.failed && out.text.contains("still-runs") && out.text.contains("failed to load"), "{}", out.text);
     let out = w.call("run_command", json!({"command": "echo still-runs"}));
     assert!(!out.text.contains("failed to load"), "{}", out.text);
+    assert_eq!(w.asked(), 1, "asked once per workspace");
+}
+
+/// The user says no: nothing is evaluated or locked, the model is told once.
+fn declined_flake_is_not_loaded() {
+    let w = World::new().answering(Answer::No);
+    std::fs::write(w.ws.path().join("flake.nix"), "{ outputs = _: { }; }").unwrap();
+    let out = w.call("run_command", json!({"command": "echo runs-anyway"}));
+    assert!(!out.failed && out.text.contains("runs-anyway") && out.text.contains("chose not to load"), "{}", out.text);
+    assert!(!w.ws.path().join("flake.lock").exists());
+    let out = w.call("run_command", json!({"command": "echo again"}));
+    assert!(!out.text.contains("chose not to load") && w.asked() == 1, "{}", out.text);
+    let saved = std::fs::read_to_string(w.data.path().join("envs/workspaces.json")).unwrap();
+    assert!(saved.contains("\"project\": false"), "{saved}");
 }
 
 /// A mise project that only sets variables (nothing to download).

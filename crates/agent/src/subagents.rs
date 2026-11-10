@@ -152,7 +152,7 @@ impl Engine {
         if step.status.finished() && !step.artifacts.is_empty() {
             self.artifacts_changed(&chat, &step.artifacts);
         }
-        self.delegation_update(entry, parent, DelegationUpdate::Step(step));
+        self.delegation_update(entry, parent, DelegationUpdate::Step(Box::new(step)));
     }
 
     fn persist_child_step(&mut self, entry: u64, parent: u64, step: &Step) {

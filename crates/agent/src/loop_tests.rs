@@ -11,7 +11,7 @@ use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
 use byob_types::InferenceConfig;
 use serde_json::{Value, json};
 
-use crate::{EngineConfig, EngineHandle, LocalConnection, Policy};
+use crate::{EngineConfig, EngineHandle, LocalConnection, Policy, Rule};
 
 #[derive(Clone)]
 pub(crate) enum Reply {
@@ -168,6 +168,7 @@ fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Opt
         subagents: Default::default(),
         onboarded: false,
         detect_local: false,
+        envs: None,
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests, runs }
 }
@@ -499,6 +500,7 @@ fn approval_card_then_undo_the_turn() {
         subagents: Default::default(),
         onboarded: false,
         detect_local: false,
+        envs: None,
     };
     let h = Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests: Arc::default(), runs: Arc::default() };
     let (mut c, _) = client(&h);
@@ -605,6 +607,7 @@ fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: byob_
         subagents: Default::default(),
         onboarded: false,
         detect_local: false,
+        envs: None,
     };
     (EngineHandle::spawn_with(config).unwrap(), requests)
 }
@@ -705,3 +708,149 @@ crate::test_store::folder_too!(
     always_allow_is_per_chat_or_global_and_survives_restarts,
     artifacts_are_created_versioned_served_and_restored,
 );
+
+/// A tool that asks the user a question while it runs and reports the answer; with
+/// `confirm`, a call a person must approve every time.
+struct Questioner {
+    name: &'static str,
+    confirm: bool,
+}
+
+impl Tool for Questioner {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: self.name.into(), description: "test".into(), parameters: json!({"type":"object"}) }
+    }
+    fn title(&self, _args: &Value) -> String {
+        self.name.into()
+    }
+    fn access(&self, _args: &Value) -> Access {
+        Access::Execute
+    }
+    fn always_ask(&self, _args: &Value) -> Option<String> {
+        self.confirm.then(|| "installs system-wide".to_owned())
+    }
+    fn run(&self, _args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
+        if self.confirm {
+            return ToolOutput::ok("installed");
+        }
+        let q = byob_tools::Question {
+            title: "Load the dev shell".into(),
+            text: "it may take minutes".into(),
+            warning: None,
+            access: Access::Execute,
+            always_ask: false,
+        };
+        ToolOutput::ok(format!("answer: {:?}", ctx.ask(&q)))
+    }
+}
+
+fn question_engine(script: Vec<Reply>, policy: Policy) -> (EngineHandle, Requests) {
+    let (url, requests) = fake_llm(script, "final answer");
+    let mut tools = Registry::default();
+    tools.register(Arc::new(Questioner { name: "load", confirm: false }));
+    tools.register(Arc::new(Questioner { name: "brew", confirm: true }));
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = PathBuf::from("/ws");
+    config.tools = tools;
+    config.policy = policy;
+    config.auto_title = false;
+    config.detect_local = false;
+    (EngineHandle::spawn_with(config).unwrap(), requests)
+}
+
+fn hello(engine: &EngineHandle) -> LocalConnection {
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    while !matches!(recv(&mut c), ServerMsg::Transcript { .. }) {}
+    c
+}
+
+/// Records actions; fails `RemoveContainer`.
+#[derive(Default)]
+struct FakeEnvs(Mutex<Vec<byob_protocol::EnvAction>>);
+
+impl byob_tools::EnvControl for FakeEnvs {
+    fn describe(&self, ws: &std::path::Path) -> byob_protocol::WorkspaceEnv {
+        let n = self.0.lock().unwrap().len();
+        byob_protocol::WorkspaceEnv { workspace: ws.display().to_string(), project_files: vec![format!("seen {n}")], ..Default::default() }
+    }
+    fn apply(&self, _ws: &std::path::Path, action: &byob_protocol::EnvAction) -> Result<String, String> {
+        self.0.lock().unwrap().push(action.clone());
+        if *action == byob_protocol::EnvAction::RemoveContainer { Err("daemon down".into()) } else { Ok("done".into()) }
+    }
+}
+
+#[test]
+fn clients_see_and_change_the_workspace_environment() {
+    let (url, _) = fake_llm(vec![], "x");
+    let fake = Arc::new(FakeEnvs::default());
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = PathBuf::from("/ws");
+    config.detect_local = false;
+    config.envs = Some(Arc::clone(&fake) as Arc<dyn byob_tools::EnvControl>);
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let mut c = hello(&engine);
+    let mut ask = |action: Option<byob_protocol::EnvAction>| {
+        c.send(ClientMsg::WorkspaceEnv { action });
+        loop {
+            if let ServerMsg::WorkspaceEnv(env) = recv(&mut c) {
+                return env;
+            }
+        }
+    };
+    let env = ask(None);
+    assert_eq!((env.workspace.as_str(), env.project_files[0].as_str(), env.message), ("/ws", "seen 0", None));
+    let env = ask(Some(byob_protocol::EnvAction::ProjectEnv { load: Some(false) }));
+    assert_eq!((env.project_files[0].as_str(), env.message.as_deref(), env.failed), ("seen 1", Some("done"), false));
+    let env = ask(Some(byob_protocol::EnvAction::RemoveContainer));
+    assert_eq!((env.message.as_deref(), env.failed), (Some("daemon down"), true));
+}
+
+#[test]
+fn a_tool_can_ask_and_grants_never_answer_for_the_user() {
+    let script = vec![call("load", r#"{"n":1}"#), call("load", r#"{"n":2}"#), Reply::Text("done")];
+    let (engine, requests) = question_engine(script, Policy::default());
+    let mut c = hello(&engine);
+    let mut cards: Vec<Step> = Vec::new();
+    run_turn(&mut c, "go", |step, c| {
+        cards.push(step.clone());
+        let answer = match cards.len() {
+            1 => ApprovalAnswer::Always, // the first call, granted for this chat
+            2 => ApprovalAnswer::Allow,  // its question
+            _ => ApprovalAnswer::Deny,   // the second call's question: asked again despite the grant
+        };
+        c.send(ClientMsg::Approve { step: step.id, answer });
+    });
+    assert_eq!(cards.len(), 3, "{cards:?}");
+    assert!(cards[0].ask.is_none() && cards[1].ask.is_some() && cards[2].ask.is_some());
+    let q = cards[1].ask.as_ref().unwrap();
+    assert!(!q.always && q.text == "it may take minutes" && cards[1].title == "Load the dev shell");
+    let results = tool_results(requests.lock().unwrap().last().unwrap());
+    assert_eq!(results, vec!["answer: Yes".to_owned(), "answer: No".to_owned()]);
+}
+
+#[test]
+fn auto_approve_answers_questions_but_not_must_confirm_calls() {
+    let all = Policy { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow };
+    let script = vec![call("load", "{}"), call("brew", r#"{"n":1}"#), call("brew", r#"{"n":2}"#), Reply::Text("done")];
+    let (engine, requests) = question_engine(script, all);
+    let mut c = hello(&engine);
+    let mut cards: Vec<Step> = Vec::new();
+    let view = run_turn(&mut c, "go", |step, c| {
+        cards.push(step.clone());
+        let answer = if cards.len() == 1 { ApprovalAnswer::AlwaysEverywhere } else { ApprovalAnswer::Deny };
+        c.send(ClientMsg::Approve { step: step.id, answer });
+    });
+    // Only the two brew calls asked, each with the warning, and "always" didn't stick.
+    assert_eq!(cards.len(), 2, "{cards:?}");
+    for card in &cards {
+        assert_eq!(card.tool, "brew");
+        let ask = card.ask.as_ref().unwrap();
+        assert!(ask.always && ask.warning.as_deref() == Some("installs system-wide"));
+    }
+    let results = tool_results(requests.lock().unwrap().last().unwrap());
+    assert_eq!(results[0], "answer: AutoYes");
+    assert_eq!(results[1], "installed");
+    assert!(results[2].starts_with("Not run: the user said no"), "{}", results[2]);
+    assert!(view.reply().steps.iter().any(|s| s.status == StepStatus::Denied));
+}

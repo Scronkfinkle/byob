@@ -466,8 +466,26 @@ fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step, agent: Option<&str>
             ui.label(RichText::new(&step.tool).small().monospace().color(t.text_faint));
         });
         ui.add_space(4.0);
+        if let Some(ask) = &step.ask {
+            if let Some(w) = &ask.warning {
+                egui::Frame::new()
+                    .fill(mix(t.assistant_bubble, t.danger, 0.12))
+                    .stroke(Stroke::new(1.0, t.danger))
+                    .corner_radius(t.round(4.0))
+                    .inner_margin(t.pad(6.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new(format!("⚠ {w}")).color(t.danger));
+                    });
+                ui.add_space(4.0);
+            }
+            if !ask.text.is_empty() {
+                ui.add(egui::Label::new(RichText::new(&ask.text).color(t.text)).wrap());
+            }
+        }
         match &step.preview {
             Some(p) => preview(ui, t, p),
+            None if step.ask.is_some() => {}
             None if !step.detail.is_empty() => {
                 code_frame(ui, t, |ui| {
                     ui.add(egui::Label::new(RichText::new(&step.detail).small().monospace().color(t.code_text)).selectable(true).wrap());
@@ -481,11 +499,14 @@ fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step, agent: Option<&str>
             if ui.add(allow).clicked() {
                 answer = Some(ApprovalAnswer::Allow);
             }
-            if ui.button(format!("Always allow {}", step.tool)).on_hover_text("Don't ask again for this tool in this chat").clicked() {
-                answer = Some(ApprovalAnswer::Always);
-            }
-            if ui.button("…in every chat").on_hover_text(format!("Don't ask again for {} in any chat", step.tool)).clicked() {
-                answer = Some(ApprovalAnswer::AlwaysEverywhere);
+            // Questions are remembered by the tool; must-confirm calls are never granted.
+            if step.ask.is_none() {
+                if ui.button(format!("Always allow {}", step.tool)).on_hover_text("Don't ask again for this tool in this chat").clicked() {
+                    answer = Some(ApprovalAnswer::Always);
+                }
+                if ui.button("…in every chat").on_hover_text(format!("Don't ask again for {} in any chat", step.tool)).clicked() {
+                    answer = Some(ApprovalAnswer::AlwaysEverywhere);
+                }
             }
             if ui.button(RichText::new("Deny").color(t.danger)).clicked() {
                 answer = Some(ApprovalAnswer::Deny);
@@ -638,6 +659,7 @@ mod tests {
             media: vec![],
             artifacts: vec![],
             delegation: None,
+            ask: None,
         }
     }
 

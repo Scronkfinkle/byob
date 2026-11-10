@@ -20,15 +20,19 @@
 //! is in `docs/environments.md`). Failed output gets a [`hints`] line that names the one
 //! tool to call, because small models follow an explicit next step far better than prose.
 
+pub mod choices;
 pub mod hints;
 pub mod nix;
 pub mod project;
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
+use byob_protocol::{ContainerEnv, EnvAction, WorkspaceEnv};
 use byob_sandbox::Outcome;
+use byob_tools::{Access, Answer, EnvControl, Question};
 use serde::{Deserialize, Serialize};
 
 use crate::Job;
@@ -127,6 +131,10 @@ pub fn keep_var(name: &str) -> bool {
 pub(crate) trait Runner {
     /// Run `job` in `cwd` with `tmp` as its private temp folder.
     fn run(&self, job: Job, cwd: &Path, tmp: &Path) -> Result<Outcome, String>;
+    /// Ask the user (see [`byob_tools::ToolContext::ask`]).
+    fn ask(&self, _q: &Question) -> Answer {
+        Answer::AutoNo
+    }
 }
 
 /// What [`Envs::prepare`] found for one run.
@@ -145,9 +153,30 @@ pub struct Installed {
     pub failed: bool,
 }
 
-/// Turn workspace environments on or off: `BYOB_WORKSPACE_ENV=off` skips loading the
-/// workspace's own dev shell (installed packages and the Nix CLI still work).
+/// Override the per-workspace question: `BYOB_WORKSPACE_ENV=off` never loads a workspace's
+/// own environment (installed packages and the Nix CLI still work), `on` loads it without
+/// asking. Unset (or `ask`): ask once per workspace and remember the answer.
 pub const WORKSPACE_ENV: &str = "BYOB_WORKSPACE_ENV";
+
+/// Whether project environments load (see [`WORKSPACE_ENV`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProjectMode {
+    /// Ask once per workspace.
+    #[default]
+    Ask,
+    Always,
+    Never,
+}
+
+impl ProjectMode {
+    pub fn from_env() -> Self {
+        match std::env::var(WORKSPACE_ENV).map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            Ok("off" | "0" | "false" | "no") => Self::Never,
+            Ok("on" | "1" | "true" | "yes") => Self::Always,
+            _ => Self::Ask,
+        }
+    }
+}
 
 /// An environment a workspace declares in a project file (`flake.nix`, `pixi.toml`,
 /// `mise.toml`, …): loaded once (slow, may download), then cached until its files change.
@@ -229,7 +258,38 @@ pub(crate) fn load_project(p: &dyn Project, ws: &Path, dir: &Path, run: &dyn Run
 
 pub(crate) const STOPPED: &str = "Stopped by the user.";
 
-/// The package managers found on this machine, and the per-workspace state they keep.
+/// The package managers and tools found on this machine. [`Found::detect`] looks on
+/// `PATH`; tests build one by hand to hide what they don't want used (e.g. Nix, to test
+/// the pixi installer on a machine that has both).
+#[derive(Debug, Clone, Default)]
+pub struct Found {
+    pub nix: Option<nix::Nix>,
+    /// The `pixi` program.
+    pub pixi: Option<PathBuf>,
+    /// The `mise` program.
+    pub mise: Option<PathBuf>,
+}
+
+impl Found {
+    /// Look for everything. `data_dir` holds caches and installed packages.
+    pub fn detect(data_dir: Option<&Path>) -> Self {
+        let nix = nix::Nix::detect(data_dir);
+        if let Some(n) = &nix {
+            log::info!("environments: Nix {} ({})", n.binary().display(), if n.daemon() { "daemon" } else { "single-user" });
+        }
+        let pixi = byob_sandbox::which("pixi".as_ref());
+        let mise = byob_sandbox::which("mise".as_ref());
+        for (name, p) in [("pixi", &pixi), ("mise", &mise)] {
+            if let Some(p) = p {
+                log::info!("environments: {name} ({})", p.display());
+            }
+        }
+        Self { nix, pixi, mise }
+    }
+}
+
+/// The package managers found on this machine, the per-workspace state they keep, and
+/// what the user decided per workspace.
 #[derive(Debug, Default)]
 pub struct Envs {
     nix: Option<nix::Nix>,
@@ -237,29 +297,41 @@ pub struct Envs {
     projects: Vec<Box<dyn Project>>,
     /// `<data>/envs`, holding one folder per workspace.
     state: Option<PathBuf>,
-    load_project_shells: bool,
+    mode: ProjectMode,
+    choices: choices::Choices,
+    /// Workspaces whose declined environment the model was told about.
+    told: Mutex<BTreeSet<PathBuf>>,
+    /// One question at a time, so two runs don't ask the same thing.
+    asking: Mutex<()>,
     /// One activation or install at a time (they share caches and GC roots).
     busy: Mutex<()>,
 }
 
 impl Envs {
-    /// Detect what this machine has. `data_dir` holds caches and installed packages;
-    /// without it only the package managers' CLIs are made to work inside the sandbox.
+    /// Detect what this machine has. `data_dir` holds caches, installed packages and the
+    /// per-workspace answers; without it only the package managers' CLIs are made to work
+    /// inside the sandbox.
     pub fn detect(data_dir: Option<&Path>) -> Self {
-        let nix = nix::Nix::detect(data_dir);
-        if let Some(n) = &nix {
-            log::info!("environments: Nix {} ({})", n.binary().display(), if n.daemon() { "daemon" } else { "single-user" });
-        }
-        let off = std::env::var(WORKSPACE_ENV).is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false" | "no"));
+        Self::new(data_dir, Found::detect(data_dir), ProjectMode::from_env())
+    }
+
+    /// Use exactly what `found` lists.
+    pub fn new(data_dir: Option<&Path>, found: Found, mode: ProjectMode) -> Self {
         let mut projects: Vec<Box<dyn Project>> = Vec::new();
-        if let Some(n) = &nix {
+        if let Some(n) = &found.nix {
             projects.push(Box::new(nix::NixShell(n.clone())));
         }
-        for p in project::detect(data_dir) {
-            log::info!("environments: {} ({})", p.label(), p.program().display());
-            projects.push(Box::new(p));
+        // Loading these goes through `sh`, which Windows lacks (like run_command itself).
+        if !cfg!(windows) {
+            for (kind, program) in [(project::Kind::Pixi, &found.pixi), (project::Kind::Mise, &found.mise)] {
+                if let Some(program) = program {
+                    projects.push(Box::new(project::JsonEnvTool::new(kind, program.clone(), data_dir)));
+                }
+            }
         }
-        Self { nix, projects, state: data_dir.map(|d| d.join("envs")), load_project_shells: !off, busy: Mutex::new(()) }
+        let state = data_dir.map(|d| d.join("envs"));
+        let choices = choices::Choices::new(state.as_ref().map(|s| s.join("workspaces.json")));
+        Self { nix: found.nix, projects, state, mode, choices, ..Self::default() }
     }
 
     /// No package managers (tests, or a machine without any).
@@ -300,8 +372,9 @@ impl Envs {
 
     /// Layers for one run in workspace `ws` (canonical path).
     pub(crate) fn prepare(&self, ws: &Path, run: &dyn Runner) -> Prepared {
-        let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
         let mut out = Prepared::default();
+        let load = self.project_consent(ws, run, &mut out.notes);
+        let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
         let dir = self.ws_dir(ws);
         if let (Some(nix), Some(dir)) = (&self.nix, &dir)
             && let Some(l) = nix.installed(dir)
@@ -311,7 +384,7 @@ impl Envs {
         if let Some(l) = venv_layer(ws) {
             out.layer.stack(&l);
         }
-        let Some(dir) = dir.filter(|_| self.load_project_shells) else { return out };
+        let Some(dir) = dir.filter(|_| load) else { return out };
         for p in &self.projects {
             let Some(env) = load_project(p.as_ref(), ws, &dir, run) else { continue };
             match env.result {
@@ -328,11 +401,115 @@ impl Envs {
         out
     }
 
+    /// The project files of `ws` byob can load an environment from, with their labels.
+    fn project_files(&self, ws: &Path) -> Vec<(&'static str, &'static str)> {
+        self.projects.iter().filter_map(|p| p.file(ws).map(|f| (f, p.label()))).collect()
+    }
+
+    /// May `ws`'s project environment be loaded? Asks the user the first time (once per
+    /// workspace; a person's answer is saved, the policy's lasts for this process). When
+    /// it may not, the model is told once.
+    fn project_consent(&self, ws: &Path, run: &dyn Runner, notes: &mut Vec<String>) -> bool {
+        let files = self.project_files(ws);
+        if files.is_empty() || self.state.is_none() {
+            return false;
+        }
+        let allowed = match self.mode {
+            ProjectMode::Never => return false,
+            ProjectMode::Always => true,
+            ProjectMode::Ask => {
+                let _one = self.asking.lock().unwrap_or_else(PoisonError::into_inner);
+                match self.choices.get(ws).project {
+                    Some(v) => v,
+                    None => {
+                        let answer = run.ask(&project_question(&files));
+                        let save = answer.by_user();
+                        if let Err(e) = self.choices.set(ws, choices::Field::Project, Some(answer.allowed()), save) {
+                            log::warn!("environments: {e}");
+                        }
+                        answer.allowed()
+                    }
+                }
+            }
+        };
+        if !allowed && self.told.lock().unwrap_or_else(PoisonError::into_inner).insert(ws.to_path_buf()) {
+            let what: Vec<String> = files.iter().map(|(f, label)| format!("{f} ({label})")).collect();
+            notes.push(format!(
+                "This workspace declares an environment in {}, but the user chose not to load it, so commands run without it. \
+                 Don't load it yourself (e.g. with nix develop).",
+                what.join(", ")
+            ));
+        }
+        allowed
+    }
+
     /// Install `packages` for workspace `ws`.
     pub(crate) fn install(&self, ws: &Path, packages: &[String], run: &dyn Runner) -> Result<Installed, String> {
         let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
         let (Some(nix), Some(dir)) = (&self.nix, self.ws_dir(ws)) else { return Err("no package manager is available here".into()) };
         nix.install(&dir, packages, run)
+    }
+}
+
+/// The canonical path of a workspace (how its answers are keyed), or `ws` as given.
+fn canonical(ws: &Path) -> PathBuf {
+    ws.canonicalize().unwrap_or_else(|_| ws.to_path_buf())
+}
+
+impl EnvControl for Envs {
+    fn describe(&self, ws: &Path) -> WorkspaceEnv {
+        let ws = canonical(ws);
+        let c = self.choices.get(&ws);
+        WorkspaceEnv {
+            workspace: ws.display().to_string(),
+            project_files: self.project_files(&ws).into_iter().map(|(f, _)| f.to_owned()).collect(),
+            project_env: c.project,
+            project_env_forced: match self.mode {
+                ProjectMode::Always => Some(true),
+                ProjectMode::Never => Some(false),
+                ProjectMode::Ask => None,
+            },
+            installer: self.installer().map(str::to_owned),
+            container: ContainerEnv::default(),
+            message: None,
+            failed: false,
+        }
+    }
+
+    fn apply(&self, ws: &Path, action: &EnvAction) -> Result<String, String> {
+        let ws = canonical(ws);
+        match action {
+            EnvAction::ProjectEnv { load } => {
+                self.choices.set(&ws, choices::Field::Project, *load, true)?;
+                self.told.lock().unwrap_or_else(PoisonError::into_inner).remove(&ws);
+                Ok(match load {
+                    Some(true) => "The workspace's environment loads from the next command on.",
+                    Some(false) => "Commands run without the workspace's environment.",
+                    None => "byob asks again before the next command.",
+                }
+                .into())
+            }
+            EnvAction::Container { .. } | EnvAction::StopContainer | EnvAction::RemoveContainer => Err("Containers aren't available in this build.".into()),
+        }
+    }
+}
+
+/// "Load this workspace's environment?", asked once per workspace.
+fn project_question(files: &[(&str, &str)]) -> Question {
+    let labels: Vec<&str> = files.iter().map(|(_, l)| *l).collect();
+    let names: Vec<&str> = files.iter().map(|(f, _)| *f).collect();
+    Question {
+        title: format!("Load this workspace's {} ({})", labels.join(" and "), names.join(", ")),
+        text: format!(
+            "byob would load the environment {} declares before every run_command and run_python, so its programs are available. \
+             The first load can take minutes, downloads with internet access, runs the project's setup code, and may write lock files \
+             (flake.lock, pixi.lock) or a .pixi folder into the workspace. Your answer is remembered for this workspace; \
+             change it in Settings → Workspace environment.",
+            names.join(" / ")
+        ),
+        warning: None,
+        access: Access::Execute,
+        always_ask: false,
     }
 }
 
@@ -454,6 +631,125 @@ mod tests {
         fn run(&self, _job: Job, _cwd: &Path, _tmp: &Path) -> Result<Outcome, String> {
             Err("not in this test".into())
         }
+    }
+
+    /// Answers every question with `answer`, counting them.
+    struct Asks {
+        answer: Answer,
+        asked: std::sync::atomic::AtomicUsize,
+    }
+    impl Asks {
+        fn new(answer: Answer) -> Self {
+            Self { answer, asked: std::sync::atomic::AtomicUsize::new(0) }
+        }
+        fn count(&self) -> usize {
+            self.asked.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+    impl Runner for Asks {
+        fn run(&self, _job: Job, _cwd: &Path, _tmp: &Path) -> Result<Outcome, String> {
+            Err("not in this test".into())
+        }
+        fn ask(&self, q: &Question) -> Answer {
+            assert!(q.title.contains("fake.toml") && !q.always_ask, "{q:?}");
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.answer
+        }
+    }
+
+    impl Project for std::sync::Arc<Fake> {
+        fn id(&self) -> &'static str {
+            self.as_ref().id()
+        }
+        fn label(&self) -> &'static str {
+            self.as_ref().label()
+        }
+        fn file(&self, ws: &Path) -> Option<&'static str> {
+            self.as_ref().file(ws)
+        }
+        fn inputs(&self) -> &'static [&'static str] {
+            self.as_ref().inputs()
+        }
+        fn load(&self, ws: &Path, dir: &Path, run: &dyn Runner) -> Result<Layer, String> {
+            self.as_ref().load(ws, dir, run)
+        }
+    }
+
+    fn envs_with_fake(data: &Path, mode: ProjectMode) -> (Envs, std::sync::Arc<Fake>) {
+        let fake = std::sync::Arc::new(Fake::default());
+        let state = data.join("envs");
+        let e = Envs {
+            projects: vec![Box::new(std::sync::Arc::clone(&fake))],
+            choices: choices::Choices::new(Some(state.join("workspaces.json"))),
+            state: Some(state),
+            mode,
+            ..Envs::default()
+        };
+        (e, fake)
+    }
+
+    #[test]
+    fn project_envs_load_only_after_the_user_agrees_once_per_workspace() {
+        let data = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let ws = ws.path().canonicalize().unwrap();
+        let (e, fake) = envs_with_fake(data.path(), ProjectMode::Ask);
+        let loads = || fake.0.load(std::sync::atomic::Ordering::SeqCst);
+        // No project file: nothing to ask.
+        let yes = Asks::new(Answer::Yes);
+        assert!(e.prepare(&ws, &yes).notes.is_empty() && yes.count() == 0);
+
+        std::fs::write(ws.join("fake.toml"), "v1").unwrap();
+        // The user says no: not loaded, the model is told once, and the answer is saved.
+        let no = Asks::new(Answer::No);
+        let p = e.prepare(&ws, &no);
+        assert_eq!((no.count(), loads()), (1, 0));
+        assert!(p.notes.len() == 1 && p.notes[0].contains("chose not to load") && p.notes[0].contains("fake.toml"), "{:?}", p.notes);
+        let p = e.prepare(&ws, &no);
+        assert!(p.notes.is_empty() && no.count() == 1 && loads() == 0, "asked and told once");
+        let (fresh, _) = envs_with_fake(data.path(), ProjectMode::Ask);
+        let p = fresh.prepare(&ws, &no);
+        assert_eq!(no.count(), 1, "remembered across restarts");
+        assert_eq!(p.notes.len(), 1, "a new process tells the model again, once");
+
+        // Forget it in the settings: asked again; yes loads it, and is remembered.
+        let forgot = e.apply(&ws, &EnvAction::ProjectEnv { load: None }).unwrap();
+        assert!(forgot.contains("asks again"), "{forgot}");
+        assert_eq!(e.describe(&ws).project_env, None);
+        let p = e.prepare(&ws, &yes);
+        assert_eq!((yes.count(), loads()), (1, 1));
+        assert!(p.layer.var("A") == Some("1") && p.notes[0].starts_with("Loaded"), "{:?}", p.notes);
+        e.prepare(&ws, &yes);
+        assert_eq!(yes.count(), 1);
+        let d = e.describe(&ws);
+        assert_eq!((d.project_files, d.project_env, d.project_env_forced), (vec!["fake.toml".to_owned()], Some(true), None));
+    }
+
+    #[test]
+    fn automatic_answers_last_for_the_session_and_the_override_wins() {
+        let data = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let ws = ws.path().canonicalize().unwrap();
+        std::fs::write(ws.join("fake.toml"), "v1").unwrap();
+        // --auto-approve: loaded without a person, not saved.
+        let (e, fake) = envs_with_fake(data.path(), ProjectMode::Ask);
+        let auto = Asks::new(Answer::AutoYes);
+        assert_eq!(e.prepare(&ws, &auto).layer.var("A"), Some("1"));
+        e.prepare(&ws, &auto);
+        assert_eq!(auto.count(), 1, "asked once per session");
+        let (again, _) = envs_with_fake(data.path(), ProjectMode::Ask);
+        assert_eq!(again.describe(&ws).project_env, None, "not saved");
+        // Nobody to ask (no asker): not loaded, nothing saved.
+        let nobody = NoRun;
+        assert!(again.prepare(&ws, &nobody).layer.var("A").is_none());
+        // BYOB_WORKSPACE_ENV=off / on.
+        let (never, _) = envs_with_fake(data.path(), ProjectMode::Never);
+        let yes = Asks::new(Answer::Yes);
+        assert!(never.prepare(&ws, &yes).layer.is_empty() && yes.count() == 0);
+        let (always, _) = envs_with_fake(data.path(), ProjectMode::Always);
+        assert!(always.prepare(&ws, &yes).layer.var("A") == Some("1") && yes.count() == 0);
+        assert_eq!(always.describe(&ws).project_env_forced, Some(true));
+        assert!(fake.0.load(std::sync::atomic::Ordering::SeqCst) >= 1);
     }
 
     #[test]

@@ -167,6 +167,10 @@ impl Runner for CallRunner<'_> {
     fn run(&self, job: Job, cwd: &Path, tmp: &Path) -> Result<Outcome, String> {
         self.exec.run(job, cwd, tmp, self.ctx)
     }
+
+    fn ask(&self, q: &byob_tools::Question) -> byob_tools::Answer {
+        self.ctx.ask(q)
+    }
 }
 
 impl Exec {

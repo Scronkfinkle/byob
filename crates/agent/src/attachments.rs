@@ -554,6 +554,7 @@ mod tests {
             media,
             artifacts: vec![],
             delegation: None,
+            ask: None,
         };
         let entry = Entry {
             id: 0,

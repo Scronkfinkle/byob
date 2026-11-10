@@ -8,6 +8,7 @@
 pub mod artifact;
 pub mod connect;
 pub mod delegation;
+pub mod env;
 pub mod media;
 pub mod usage;
 
@@ -16,11 +17,12 @@ use serde::{Deserialize, Serialize};
 pub use artifact::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion};
 pub use connect::{Detected, InferenceTest, Link, PRESETS, Preset, Problem};
 pub use delegation::{Delegation, DelegationState, DelegationUpdate};
+pub use env::{ContainerEnv, EnvAction, WorkspaceEnv};
 pub use media::{MediaContent, MediaKind, MediaRef};
 pub use usage::{ChatUsage, Compaction};
 
 /// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -129,6 +131,12 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         focus: Option<String>,
     },
+    /// Ask for the environment settings of the chat in view's workspace, after applying
+    /// `action` if given; answered with [`ServerMsg::WorkspaceEnv`].
+    WorkspaceEnv {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<EnvAction>,
+    },
 }
 
 /// Engine -> client(s).
@@ -183,6 +191,8 @@ pub enum ServerMsg {
     Delegation { entry: u64, step: u64, update: DelegationUpdate },
     /// Answer to [`ClientMsg::TestInference`].
     InferenceTested(InferenceTest),
+    /// Answer to [`ClientMsg::WorkspaceEnv`]: the environment of the chat in view's workspace.
+    WorkspaceEnv(WorkspaceEnv),
 }
 
 /// A chat as shown in the sidebar.
@@ -365,6 +375,25 @@ pub struct Step {
     /// The subagent run of a `delegate` step: its live transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation: Option<Box<Delegation>>,
+    /// Set when the approval card isn't an ordinary tool call: a question a tool asks while
+    /// it runs, or a call a person must confirm every time. Such cards offer only Allow
+    /// and Deny.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<Box<Ask>>,
+}
+
+/// The special part of an approval card (see [`Step::ask`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ask {
+    /// What saying yes means.
+    #[serde(default)]
+    pub text: String,
+    /// Shown prominently, e.g. that it installs system-wide.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    /// Only a person can allow it: no policy, grant or `--auto-approve` does.
+    #[serde(default)]
+    pub always: bool,
 }
 
 /// Most lines in a [`Preview`]'s line lists.
@@ -608,6 +637,7 @@ mod tests {
             media: vec![],
             artifacts: vec![],
             delegation: None,
+            ask: None,
         }
     }
 
@@ -631,7 +661,7 @@ mod tests {
         let updates = [
             DelegationUpdate::Status { state: DelegationState::Running, prompt_tokens: 0, completion_tokens: 0, error: None },
             DelegationUpdate::Delta { content: "Reading".into(), reasoning: "hm".into() },
-            DelegationUpdate::Step(step(2, StepStatus::Waiting)),
+            DelegationUpdate::Step(Box::new(step(2, StepStatus::Waiting))),
             DelegationUpdate::Delta { content: " a.txt".into(), reasoning: String::new() },
         ];
         for u in &updates {
@@ -646,7 +676,7 @@ mod tests {
         assert_eq!(d.status_line(), "explorer · 1 tool · waiting for approval");
         // A child's approval card counts as pending in the entry.
         assert_eq!(e.pending_approvals().map(|s| s.id).collect::<Vec<_>>(), vec![2]);
-        e.apply_delegation(1, &DelegationUpdate::Step(step(2, StepStatus::Done)));
+        e.apply_delegation(1, &DelegationUpdate::Step(Box::new(step(2, StepStatus::Done))));
         e.apply_delegation(1, &DelegationUpdate::Status { state: DelegationState::Done, prompt_tokens: 50, completion_tokens: 5, error: None });
         assert_eq!(e.steps[0].delegation.as_deref().unwrap().status_line(), "explorer · 1 tool · done");
         assert_eq!(e.pending_approvals().count(), 0);

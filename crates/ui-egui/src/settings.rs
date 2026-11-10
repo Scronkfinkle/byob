@@ -57,6 +57,12 @@ impl ByobApp {
             }
         }
         ui.add_space(10.0);
+        ui.label(RichText::new("Workspace environment").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong))
+            .on_hover_text("Where run_command and run_python get their programs, for the workspace of this chat");
+        if let Some(msg) = self.envs.show(ui, &t) {
+            self.conn.send(msg);
+        }
+        ui.add_space(10.0);
         ui.label(RichText::new("Appearance").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong)).on_hover_text("Saved on this device only");
         self.appearance_settings(ui);
         ui.add_space(6.0);

@@ -130,6 +130,7 @@ fn step(s: byob_store::Step, step_ids: &AtomicU64) -> Step {
         media: Vec::new(),
         artifacts: Vec::new(),
         delegation: None,
+        ask: None,
     }
 }
 
@@ -355,6 +356,7 @@ mod tests {
             media: vec![],
             artifacts: vec![],
             delegation: None,
+            ask: None,
         };
         let new = new_step(&s);
         let stored = byob_store::Step {

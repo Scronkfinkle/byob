@@ -6,6 +6,7 @@ pub mod appview;
 pub mod artifact;
 pub mod chart;
 pub mod connect;
+mod envpanel;
 pub mod export;
 mod highlight;
 pub mod markdown;
@@ -77,6 +78,8 @@ pub struct ByobApp {
     artifacts: artifact::Artifacts,
     /// Context meter and compaction dividers.
     usage: usage::Usage,
+    /// Settings → Workspace environment.
+    envs: envpanel::EnvPanel,
 }
 
 impl ByobApp {
@@ -107,6 +110,7 @@ impl ByobApp {
             uploads: upload::Uploads::default(),
             artifacts: artifact::Artifacts::default(),
             usage: usage::Usage::default(),
+            envs: envpanel::EnvPanel::default(),
         }
     }
 
@@ -198,6 +202,7 @@ impl ByobApp {
                 // Handled by the usage meter above.
                 ServerMsg::Usage(_) | ServerMsg::Compactions { .. } | ServerMsg::Compacted(_) => {}
                 ServerMsg::InferenceTested(test) => self.connect.tested(test),
+                ServerMsg::WorkspaceEnv(env) => self.envs.received(env),
             }
         }
     }
@@ -336,6 +341,8 @@ impl ByobApp {
                     .auto_shrink([false, true])
                     .show(ui, |ui| self.settings(ui));
             });
+        } else {
+            self.envs.closed();
         }
         let t = self.tokens;
         if narrow && list_open {

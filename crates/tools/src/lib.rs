@@ -58,11 +58,28 @@ pub struct ToolContext<'a> {
     cancel: &'a AtomicBool,
     journal: Option<&'a Journal>,
     chat: Option<&'a str>,
+    asker: Option<&'a dyn Asker>,
 }
 
 impl<'a> ToolContext<'a> {
     pub fn new(workspace: &'a Path, cancel: &'a AtomicBool) -> Self {
-        Self { workspace, cancel, journal: None, chat: None }
+        Self { workspace, cancel, journal: None, chat: None, asker: None }
+    }
+
+    /// Let the tool ask the user questions while it runs (see [`ToolContext::ask`]).
+    #[must_use]
+    pub fn with_asker(mut self, asker: &'a dyn Asker) -> Self {
+        self.asker = Some(asker);
+        self
+    }
+
+    /// Ask the user `q` (an approval card), blocking until answered. Without anyone to ask
+    /// (no asker: tests, direct calls) the answer is [`Answer::AutoNo`].
+    pub fn ask(&self, q: &Question) -> Answer {
+        if self.cancelled() {
+            return Answer::AutoNo;
+        }
+        self.asker.map_or(Answer::AutoNo, |a| a.ask(q))
     }
 
     /// The chat this call runs in (artifacts belong to a chat).
@@ -116,6 +133,63 @@ pub enum FileChange {
     Moved { from: PathBuf, to: PathBuf },
 }
 
+/// A question a tool asks the user while it runs, e.g. "Load this workspace's Nix dev
+/// shell?". Shown as an approval card with only Allow and Deny: the tool remembers the
+/// answer itself, so "always allow" grants don't apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    /// Phrased like a pending title: "Load the workspace's Nix dev shell (flake.nix)".
+    pub title: String,
+    /// What saying yes means, for the card (a few short lines).
+    pub text: String,
+    /// Shown prominently, e.g. "installs system-wide".
+    pub warning: Option<String>,
+    /// Decides who answers: the permission policy for this level may answer for the user
+    /// (e.g. `--auto-approve`), unless [`Question::always_ask`].
+    pub access: Access,
+    /// Only a person may say yes: not the policy, not `--auto-approve`.
+    pub always_ask: bool,
+}
+
+/// The answer to a [`Question`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    /// A person said yes.
+    Yes,
+    /// A person said no.
+    No,
+    /// The policy allowed it without asking (`--auto-approve`).
+    AutoYes,
+    /// Nobody was asked: the policy refused, the turn stopped, or there's no one to ask.
+    AutoNo,
+}
+
+impl Answer {
+    pub fn allowed(self) -> bool {
+        matches!(self, Self::Yes | Self::AutoYes)
+    }
+
+    /// A person answered (worth remembering).
+    pub fn by_user(self) -> bool {
+        matches!(self, Self::Yes | Self::No)
+    }
+}
+
+/// Puts a [`Question`] to the user; the agent provides one per call.
+pub trait Asker: Send + Sync {
+    fn ask(&self, q: &Question) -> Answer;
+}
+
+/// Workspace environment settings the engine shows to clients and lets them change
+/// (provided by the code-running tools, `byob-exec`). Calls may block for a while
+/// (stopping a container): the engine makes them off its own thread.
+pub trait EnvControl: Send + Sync {
+    /// The settings and state of workspace `ws`.
+    fn describe(&self, ws: &Path) -> byob_protocol::WorkspaceEnv;
+    /// Change them; returns what happened, for the user.
+    fn apply(&self, ws: &Path, action: &byob_protocol::EnvAction) -> Result<String, String>;
+}
+
 /// Result of a call. `text` goes back to the model; keep it bounded.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ToolOutput {
@@ -155,6 +229,13 @@ pub trait Tool: Send + Sync {
 
     /// What this call would do; drives the permission gate. Must not have side effects.
     fn access(&self, args: &Value) -> Access;
+
+    /// `Some(warning)` if this call must be approved by a person every time: no policy,
+    /// "always allow" grant or `--auto-approve` lets it run (e.g. installing system-wide).
+    /// The warning is shown on the approval card.
+    fn always_ask(&self, _args: &Value) -> Option<String> {
+        None
+    }
 
     /// Do it. `args` is untrusted model output: validate everything, never panic.
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput;

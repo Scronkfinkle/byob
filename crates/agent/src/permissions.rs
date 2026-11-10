@@ -58,9 +58,40 @@ pub fn decide(policy: &Policy, granted: bool, access: ToolAccess) -> Gate {
     }
 }
 
+/// Decide a card that may be special (`ask`: `None` for an ordinary call, else whether
+/// only a person may allow it, see `Step::ask`). A question a tool asks while running is
+/// never answered by a grant (the tool remembers the answer itself); a must-confirm call
+/// is always asked, whatever the policy (`--auto-approve` included) — unless its level
+/// is turned off.
+pub fn decide_ask(policy: &Policy, granted: bool, access: ToolAccess, ask: Option<bool>) -> Gate {
+    match ask {
+        None => decide(policy, granted, access),
+        Some(false) => decide(policy, false, access),
+        Some(true) => match policy.rule(access) {
+            Rule::Deny => Gate::Deny(format!("{} tools are turned off", access.label())),
+            Rule::Allow | Rule::Ask => Gate::Ask,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn questions_skip_grants_and_must_confirm_calls_always_ask() {
+        let all = Policy { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow };
+        // --auto-approve answers ordinary questions, never must-confirm ones.
+        assert_eq!(decide_ask(&all, false, ToolAccess::Execute, Some(false)), Gate::Allow);
+        assert_eq!(decide_ask(&all, true, ToolAccess::Execute, Some(true)), Gate::Ask);
+        // A grant doesn't answer a question.
+        let p = Policy::default();
+        assert_eq!(decide_ask(&p, true, ToolAccess::Execute, Some(false)), Gate::Ask);
+        assert_eq!(decide_ask(&p, true, ToolAccess::Execute, None), Gate::Allow);
+        assert_eq!(decide_ask(&p, true, ToolAccess::Execute, Some(true)), Gate::Ask);
+        let off = Policy { execute: Rule::Deny, ..Policy::default() };
+        assert!(matches!(decide_ask(&off, true, ToolAccess::Execute, Some(true)), Gate::Deny(_)));
+    }
 
     #[test]
     fn default_policy_allows_reads_and_asks_for_the_rest() {

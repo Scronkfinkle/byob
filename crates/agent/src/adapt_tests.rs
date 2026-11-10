@@ -190,6 +190,7 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
         subagents: Default::default(),
         onboarded: false,
         detect_local: false,
+        envs: None,
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), seen, runs }
 }
