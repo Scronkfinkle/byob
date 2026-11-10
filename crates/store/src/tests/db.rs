@@ -232,3 +232,24 @@ fn two_connections_see_each_other_and_both_write() {
         assert_eq!(s.messages("y").unwrap().len(), 100);
     }
 }
+
+/// Deleting is permanent: the chat's text doesn't linger in the database's free pages or
+/// its write-ahead log (SQLite keeps both by default).
+#[test]
+fn a_deleted_chat_leaves_no_text_on_disk() {
+    let dir = TempDir::new();
+    let path = dir.path().join("byob.db");
+    let s = Store::open(&path).unwrap();
+    chat(&s, "keep");
+    s.append_message("keep", &NewMessage::user("ordinary words")).unwrap();
+    chat(&s, "gone");
+    let secret = "zebra-quartz-".repeat(400);
+    s.append_message("gone", &NewMessage::user(&secret)).unwrap();
+    s.delete_chat("gone").unwrap();
+    let on_disk = |name: &str| std::fs::read(dir.path().join(name)).unwrap_or_default();
+    for file in ["byob.db", "byob.db-wal"] {
+        let bytes = on_disk(file);
+        assert!(!bytes.windows(13).any(|w| w == b"zebra-quartz-"), "{file} still holds the deleted chat's text");
+    }
+    assert!(s.chat("keep").unwrap().is_some());
+}

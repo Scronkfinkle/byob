@@ -73,6 +73,9 @@ impl Store {
             return Err(StoreError::TooNew { found: version, supported: schema::LATEST });
         }
         conn.pragma_update(None, "foreign_keys", true).map_err(classify)?;
+        // Deleted content is overwritten with zeros, not left in free pages: deleting a chat
+        // is meant to be permanent.
+        conn.pragma_update(None, "secure_delete", true).map_err(classify)?;
         if wal {
             let mode: String = conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0)).map_err(classify)?;
             if !mode.eq_ignore_ascii_case("wal") {
@@ -185,6 +188,12 @@ impl Store {
         let n = tx.execute("DELETE FROM chats WHERE id = ?1", [id])?;
         found(n, || format!("chat {id}"))?;
         tx.commit()?;
+        // The write-ahead log still holds copies of the deleted pages: fold it into the
+        // (zeroed) database and empty it. Best effort; it's emptied at the next checkpoint
+        // anyway (e.g. another reader holding an old snapshot makes this partial).
+        if let Err(e) = self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
+            log::warn!("byob-store: couldn't checkpoint after deleting chat {id}: {e}");
+        }
         Ok(tasks)
     }
 

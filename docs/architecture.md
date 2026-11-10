@@ -626,7 +626,7 @@ metadata and the UI's per-device pane prefs name only chat and artifact ids.
       events.jsonl   canonical, append-only, one {"v":1,"ts":ms,"e":kind,…} per line
       chat.md        generated view: YAML frontmatter + transcript; never read back
   <root>/grants.json global grants          <root>/undo.jsonl  undo entries of tasks no message names
-  <root>/.index.json listing cache (derived) <root>/.trash/      deleted chat folders
+  <root>/.index.json listing cache (derived); deleting a chat removes its folder for good
   ```
 
   Event kinds: `chat_created`, `renamed`, `workspace_set`, `pinned`, `touched`,

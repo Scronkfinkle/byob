@@ -8,7 +8,6 @@
 //! <root>/grants.json global always-allow grants
 //! <root>/undo.jsonl  undo entries of tasks no chat message names (rare)
 //! <root>/.index.json listing cache (derived; safe to delete)
-//! <root>/.trash/     deleted chat folders
 //! ```
 //!
 //! State is rebuilt by replaying events. The listing comes from an in-memory index of
@@ -756,20 +755,11 @@ impl ChatStore for FolderStore {
         let tasks = inner.state_or_404(id)?.message_tasks();
         inner.write(id, vec![Event::Deleted {}], true, false)?;
         let Some(folder) = inner.entries.get(id).map(|e| e.folder.clone()) else { return Ok(tasks) };
-        let trash = inner.root.join(".trash");
+        // Deleting is permanent: no trash. The `deleted` event above keeps it hidden if the
+        // folder can't be removed (or a sync brings it back).
         let from = inner.chats_dir.join(&folder);
-        let moved = std::fs::create_dir_all(&trash).and_then(|()| {
-            let mut to = trash.join(&folder);
-            let mut n = 2;
-            while to.exists() {
-                to = trash.join(format!("{folder}-{n}"));
-                n += 1;
-            }
-            std::fs::rename(&from, &to)
-        });
-        if let Err(e) = moved {
-            // The `deleted` event already hides it; the folder just stays where it is.
-            log::warn!("byob-store: couldn't move {} to {}: {e}", from.display(), trash.display());
+        if let Err(e) = std::fs::remove_dir_all(&from) {
+            log::warn!("byob-store: couldn't delete {}: {e}", from.display());
         }
         inner.forget_folder(&folder);
         // Retire the slot: ids of the deleted chat's messages must not resolve again, even if

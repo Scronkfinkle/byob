@@ -801,6 +801,7 @@ impl Engine {
     /// Delete a chat with what byob keeps for it (undo backups, its settings and key) and
     /// tell every client. The caller refreshes the workspace list.
     fn remove_chat(&mut self, chat: &str) -> Result<(), String> {
+        let workspace = self.chat_workspace(chat);
         match self.store.delete_chat(chat) {
             Ok(tasks) => {
                 if let Some(paths) = &self.paths {
@@ -810,6 +811,9 @@ impl Engine {
                 }
             }
             Err(e) => return Err(format!("couldn't delete the chat: {e}")),
+        }
+        if let Some(ws) = workspace {
+            byob_tools::artifact::remove_chat(&ws, chat);
         }
         self.live.remove(chat);
         self.queues.remove(chat);

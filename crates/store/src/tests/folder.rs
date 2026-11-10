@@ -175,28 +175,25 @@ fn rename_keeps_the_folder_and_updates_chat_md() {
 }
 
 #[test]
-fn delete_moves_the_folder_to_trash() {
+fn delete_removes_the_folder_for_good() {
     let dir = TempDir::new();
     let s = open(dir.path());
     s.create_chat("c", "Doomed", Path::new("/w")).unwrap();
     s.append_message("c", &NewMessage::assistant_streaming(Some("t".into()))).unwrap();
     s.add_undo_op("t", &UndoOp::Created { path: "/x".into() }).unwrap();
-    let name = s.chat_dir("c").unwrap().file_name().unwrap().to_string_lossy().into_owned();
+    let chat_dir = s.chat_dir("c").unwrap();
+    let name = chat_dir.file_name().unwrap().to_string_lossy().into_owned();
+    let events = std::fs::read_to_string(chat_dir.join("events.jsonl")).unwrap();
     assert_eq!(s.delete_chat("c").unwrap(), ["t"]);
     assert!(folders(dir.path(), "chats").is_empty());
-    assert_eq!(folders(dir.path(), ".trash"), std::slice::from_ref(&name));
-    let trashed = std::fs::read_to_string(dir.path().join(".trash").join(&name).join("events.jsonl")).unwrap();
-    assert!(trashed.trim_end().ends_with(r#""e":"deleted"}"#), "{trashed}");
+    assert!(!dir.path().join(".trash").exists(), "deleting is permanent: no trash");
     assert!(s.undo_ops("t").unwrap().is_empty());
     assert!(s.chat("c").unwrap().is_none());
 
-    // A chat with the same folder name deleted later doesn't overwrite the first.
-    s.create_chat("c", "Doomed", Path::new("/w")).unwrap();
-    s.delete_chat("c").unwrap();
-    assert_eq!(folders(dir.path(), ".trash").len(), 2);
-
-    // A synced-in folder whose log says deleted stays hidden.
-    std::fs::rename(dir.path().join(".trash").join(&name), dir.path().join("chats").join(&name)).unwrap();
+    // A synced-in copy whose log says deleted stays hidden.
+    let back = dir.path().join("chats").join(&name);
+    std::fs::create_dir_all(&back).unwrap();
+    std::fs::write(back.join("events.jsonl"), format!("{events}{{\"v\":1,\"ts\":1,\"e\":\"deleted\"}}\n")).unwrap();
     drop(s);
     assert!(open(dir.path()).list_chats(10, None).unwrap().chats.is_empty());
 }

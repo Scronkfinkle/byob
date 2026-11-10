@@ -879,3 +879,23 @@ fn auto_approve_answers_questions_but_not_must_confirm_calls() {
     assert!(results[2].starts_with("Not run: the user said no"), "{}", results[2]);
     assert!(view.reply().steps.iter().any(|s| s.status == StepStatus::Denied));
 }
+
+/// Deleting a chat deletes its artifacts for good (they used to stay in `.byob/artifacts`).
+#[test]
+fn deleting_a_chat_deletes_its_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = tempfile::tempdir().unwrap();
+    let paths = byob_store::Paths::at(dir.path());
+    let md = r##"{"title":"Notes","filename":"notes.md","content":"# hi"}"##;
+    let (engine, _) = artifact_engine(vec![call("create_artifact", md), Reply::Text("Made it")], ws.path(), paths);
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    while !matches!(recv(&mut c), ServerMsg::Artifacts { .. }) {}
+    let (_, updated) = artifact_turn(&mut c, "write notes");
+    let folder = ws.path().join(byob_tools::artifact::ARTIFACT_DIR).join(&updated[0].id);
+    let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(folder.join("artifact.json")).unwrap()).unwrap();
+    let chat = meta["chat"].as_str().unwrap().to_owned();
+    c.send(ClientMsg::DeleteChat { id: chat.clone() });
+    while !matches!(recv(&mut c), ServerMsg::ChatDeleted { .. }) {}
+    assert!(!folder.exists(), "the artifact outlived its chat");
+}

@@ -176,6 +176,27 @@ pub fn list(workspace: &Path, chat: &str) -> Vec<Artifact> {
     out
 }
 
+/// Delete every artifact of `chat` in `workspace` for good (when the chat is deleted).
+/// Returns how many were removed; ones whose index can't be read are left alone.
+pub fn remove_chat(workspace: &Path, chat: &str) -> usize {
+    let Ok(r) = sandbox::resolve(workspace, ARTIFACT_DIR) else { return 0 };
+    let Ok(entries) = std::fs::read_dir(&r.abs) else { return 0 };
+    let mut removed = 0;
+    for id in entries.filter_map(Result::ok).filter_map(|e| e.file_name().to_str().map(str::to_owned)) {
+        let Ok((_, dir)) = artifact_dir(workspace, &id) else { continue };
+        let Ok(bytes) = read_capped(&dir.join(META_FILE), MAX_META_BYTES) else { continue };
+        let Ok(meta) = serde_json::from_slice::<Meta>(&bytes) else { continue };
+        if meta.chat != chat {
+            continue;
+        }
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => removed += 1,
+            Err(e) => log::warn!("couldn't delete artifact {id} of chat {chat}: {e}"),
+        }
+    }
+    removed
+}
+
 /// Bytes of version `version` of artifact `id`, which must belong to `chat`.
 pub fn read_version(workspace: &Path, chat: &str, id: &str, version: u32, max: u64) -> Result<(Artifact, Vec<u8>), String> {
     let meta = load_in_chat(workspace, chat, id)?;
@@ -734,6 +755,22 @@ mod tests {
         let out = run_in(&UpdateArtifact, ws, "c1", json!({"id": id, "content": "<p>again</p>"}));
         assert!(!out.failed, "{}", out.text);
         assert_eq!(load(ws, &id).unwrap().artifact.versions.iter().map(|v| v.n).collect::<Vec<_>>(), vec![1, 2, 4]);
+    }
+
+    /// Deleting a chat deletes its artifacts for good (they were left orphaned before).
+    #[test]
+    fn removing_a_chat_removes_only_its_artifacts() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = d.path();
+        for (chat, title) in [("c1", "One"), ("c1", "Two"), ("c2", "Other")] {
+            assert!(!run_in(&CreateArtifact, ws, chat, json!({"title": title, "filename": "a.md", "content": "# hi"})).failed);
+        }
+        assert_eq!(remove_chat(ws, "c1"), 2);
+        assert!(list(ws, "c1").is_empty());
+        assert_eq!(list(ws, "c2").len(), 1);
+        assert_eq!(std::fs::read_dir(ws.join(ARTIFACT_DIR)).unwrap().count(), 1, "nothing left behind on disk");
+        assert_eq!(remove_chat(ws, "c1"), 0);
+        assert_eq!(remove_chat(&ws.join("missing"), "c2"), 0);
     }
 
     fn id_of_path(out: &ToolOutput) -> String {
