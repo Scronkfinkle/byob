@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn json_round_trip_and_checks() {
-        let p = Policy::for_workspace(Path::new("/w"), Path::new("/t")).network(true).limits(Limits::for_timeout(10)).remove_env("YAH_API_KEY");
+        let p = Policy::for_workspace(Path::new("/w"), Path::new("/t")).network(true).limits(Limits::for_timeout(10)).remove_env("BYOB_API_KEY");
         assert_eq!(Policy::from_json(&p.to_json()).unwrap(), p);
         assert!(Policy::from_json("{}").unwrap().read.is_empty());
         assert!(Policy::from_json(r#"{"read":["relative"]}"#).is_err());

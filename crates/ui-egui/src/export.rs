@@ -52,7 +52,7 @@ pub fn safe_filename(name: &str) -> String {
 fn save_file(ctx: &egui::Context, tx: Sender<Outcome>, filename: &str, _mime: &str, bytes: Vec<u8>) {
     let ctx = ctx.clone();
     let name = safe_filename(filename);
-    let _ = std::thread::Builder::new().name("yah-export".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("byob-export".into()).spawn(move || {
         if !dialogs_available() {
             let _ = tx.send(Err("No file dialog is available here (GTK can't find its settings schemas)".into()));
             ctx.request_repaint();
@@ -108,7 +108,7 @@ fn downloads_dir() -> Option<std::path::PathBuf> {
 fn open_url(ctx: &egui::Context, tx: Sender<Outcome>, url: &str) {
     use std::process::Command;
     let (ctx, url) = (ctx.clone(), url.to_owned());
-    let _ = std::thread::Builder::new().name("yah-open".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("byob-open".into()).spawn(move || {
         let result = if cfg!(target_os = "macos") {
             Command::new("open").arg(&url).status()
         } else if cfg!(target_os = "windows") {

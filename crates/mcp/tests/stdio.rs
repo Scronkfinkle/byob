@@ -1,17 +1,17 @@
-//! yah-mcp against a scripted stdio server (`tests/support/fake_server.rs`).
+//! byob-mcp against a scripted stdio server (`tests/support/fake_server.rs`).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use byob_mcp::{Content, McpClient, McpError, StdioConfig};
 use serde_json::json;
-use yah_mcp::{Content, McpClient, McpError, StdioConfig};
 
 const SECS: Duration = Duration::from_secs(10);
 
 fn config(mode: &str) -> StdioConfig {
-    let mut cfg = StdioConfig::new(env!("CARGO_BIN_EXE_yah-mcp-fake-server")).env("FAKE_MCP_MODE", mode);
+    let mut cfg = StdioConfig::new(env!("CARGO_BIN_EXE_byob-mcp-fake-server")).env("FAKE_MCP_MODE", mode);
     cfg.init_timeout = SECS;
     cfg.request_timeout = SECS;
     cfg
@@ -37,7 +37,7 @@ fn handshake_reports_server_info() {
     let c = connect("normal");
     let info = c.server_info();
     assert_eq!((info.name.as_str(), info.version.as_str()), ("fake", "1.2.3"));
-    assert_eq!(info.protocol_version, yah_mcp::PROTOCOL_VERSION);
+    assert_eq!(info.protocol_version, byob_mcp::PROTOCOL_VERSION);
     assert_eq!(info.instructions.as_deref(), Some("be nice"));
     assert!(info.capabilities.get("tools").is_some());
     assert!(wait_for(|| c.stderr_tail().contains("notification notifications/initialized")));
@@ -84,7 +84,7 @@ fn mixed_content_and_big_results() {
     assert_eq!(out.text, "chart:\n[image image/png, 1 KiB]\nnotes");
     assert!(matches!(&out.content[1], Content::Image { mime_type, .. } if mime_type == "image/png"));
     let big = c.call_tool("big", json!({}), SECS).unwrap();
-    assert!(big.text.len() <= yah_mcp::MAX_RESULT_TEXT + 32);
+    assert!(big.text.len() <= byob_mcp::MAX_RESULT_TEXT + 32);
     assert!(big.text.ends_with("[output truncated]"));
 }
 

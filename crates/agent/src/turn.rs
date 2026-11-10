@@ -11,16 +11,16 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use byob_llm::{ChatMessage, LlmError, StreamEvent, ToolCall, ToolCallFilter, Usage, toolprompt};
+use byob_protocol::{FileChange, Step, StepStatus, ToolAccess, TurnStats};
+use byob_tools::{Access, Journal, Registry, Tool, ToolContext, ToolOutput, UndoOp};
 use serde_json::Value;
-use yah_llm::{ChatMessage, LlmError, StreamEvent, ToolCall, ToolCallFilter, Usage, toolprompt};
-use yah_protocol::{FileChange, Step, StepStatus, ToolAccess, TurnStats};
-use yah_tools::{Access, Journal, Registry, Tool, ToolContext, ToolOutput, UndoOp};
 
 use crate::{Input, adapt, compact};
 
 use crate::limits::{DETAIL_CHARS, MAX_CALLS, MAX_OUTPUT, MAX_REPEATS, MAX_ROUNDS, REPEAT_QUOTE, TURN_OUTPUT_BUDGET, cap, one_line, prefix};
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = "You are yah, a helpful assistant running inside a desktop harness. Be concise and accurate. \
+pub const DEFAULT_SYSTEM_PROMPT: &str = "You are byob, a helpful assistant running inside a desktop harness. Be concise and accurate. \
 Use the provided tools when they help; when a tool fails or the user declines it, explain instead of retrying the same call.";
 
 /// How often a turn blocked on an approval re-checks its cancel flag.
@@ -112,7 +112,7 @@ pub struct AutoCompact {
 
 /// Everything a turn thread needs.
 pub struct Setup {
-    pub llm: yah_llm::Client,
+    pub llm: byob_llm::Client,
     pub history: Vec<ChatMessage>,
     /// The assistant entry this turn writes into.
     pub entry: u64,
@@ -135,7 +135,7 @@ pub struct Setup {
 }
 
 pub fn spawn(setup: Setup) -> std::io::Result<()> {
-    thread::Builder::new().name("yah-turn".into()).spawn(move || {
+    thread::Builder::new().name("byob-turn".into()).spawn(move || {
         let started = Instant::now();
         let id = setup.entry;
         let inbox = setup.inbox.clone();
@@ -266,7 +266,7 @@ impl Turn {
 
     /// One model request. If the server rejects native tools and the plan allows it, switch
     /// this turn (and, via the engine, the endpoint) to prompt-based tool calling and retry once.
-    fn model_call(&mut self, specs: &[yah_llm::ToolSpec]) -> Result<yah_llm::ChatOutcome, End> {
+    fn model_call(&mut self, specs: &[byob_llm::ToolSpec]) -> Result<byob_llm::ChatOutcome, End> {
         match self.stream(specs) {
             Err(e) if !specs.is_empty() && !self.s.plan.prompt_tools && self.s.plan.fallback && adapt::rejects_tools(&e) => {
                 log::warn!("server rejected native tools ({e}); retrying with prompt-based tool calling");
@@ -282,7 +282,7 @@ impl Turn {
 
     /// One model request; streams visible text to clients. In prompt mode, tool-call markup
     /// is hidden from the stream (the full text is still returned for parsing).
-    fn stream(&mut self, specs: &[yah_llm::ToolSpec]) -> Result<yah_llm::ChatOutcome, LlmError> {
+    fn stream(&mut self, specs: &[byob_llm::ToolSpec]) -> Result<byob_llm::ChatOutcome, LlmError> {
         let id = self.s.entry;
         let inbox = &self.s.inbox;
         let prompt = self.s.plan.prompt_tools;
@@ -314,8 +314,8 @@ impl Turn {
         let (prompt_tokens, completion, context, estimated) = match out.usage {
             Some(u) => (u.prompt_tokens, u.completion_tokens, u.prompt_tokens.saturating_add(u.completion_tokens), false),
             None => {
-                let reply = yah_llm::estimate_tokens(&out.content).saturating_add(yah_llm::estimate_tokens(&out.reasoning));
-                let sent = yah_llm::estimate_history_tokens(&request).saturating_add(yah_llm::budget::estimate_tools_tokens(wire_specs));
+                let reply = byob_llm::estimate_tokens(&out.content).saturating_add(byob_llm::estimate_tokens(&out.reasoning));
+                let sent = byob_llm::estimate_history_tokens(&request).saturating_add(byob_llm::budget::estimate_tools_tokens(wire_specs));
                 (0, 0, to_u64(sent.saturating_add(reply)), true)
             }
         };
@@ -334,7 +334,7 @@ impl Turn {
     /// verbatim; later (inside the tool loop) everything is summarised and the request is
     /// repeated after the summary. A failed summary leaves the messages alone (fit_history
     /// still shortens them) and turns compaction off for the rest of the turn.
-    fn maybe_compact(&mut self, specs: &[yah_llm::ToolSpec], round: usize) -> Result<(), End> {
+    fn maybe_compact(&mut self, specs: &[byob_llm::ToolSpec], round: usize) -> Result<(), End> {
         let Some(auto) = self.s.compact else { return Ok(()) };
         if self.compact_failed || self.compactions >= compact::MAX_PER_TURN {
             return Ok(());
@@ -490,7 +490,7 @@ impl Turn {
         step.changes = output.changes.iter().map(|c| display_change(c, &self.s.workspace)).collect();
         step.media = crate::attachments::media_for_changes(&output.changes, &self.s.workspace);
         if !output.failed {
-            step.artifacts = yah_tools::artifact::for_call(&self.s.workspace, &self.s.chat, &output.changes, &step.media);
+            step.artifacts = byob_tools::artifact::for_call(&self.s.workspace, &self.s.chat, &output.changes, &step.media);
         }
         self.emit(TurnEvent::Step { id: self.s.entry, step });
         if output.failed && !text.starts_with("Error") {
@@ -574,8 +574,8 @@ fn to_u64(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
-pub(crate) fn specs(tools: &Registry) -> Vec<yah_llm::ToolSpec> {
-    tools.specs().into_iter().map(|s| yah_llm::ToolSpec { name: s.name, description: s.description, parameters: s.parameters }).collect()
+pub(crate) fn specs(tools: &Registry) -> Vec<byob_llm::ToolSpec> {
+    tools.specs().into_iter().map(|s| byob_llm::ToolSpec { name: s.name, description: s.description, parameters: s.parameters }).collect()
 }
 
 /// Drop empty slots (gaps from sparse stream indices) and give every call a unique id,
@@ -634,13 +634,13 @@ fn display_path(p: &Path, workspace: &Path) -> String {
     p.strip_prefix(workspace).unwrap_or(p).display().to_string()
 }
 
-fn display_change(c: &yah_tools::FileChange, workspace: &Path) -> FileChange {
+fn display_change(c: &byob_tools::FileChange, workspace: &Path) -> FileChange {
     let d = |p: &Path| display_path(p, workspace);
     match c {
-        yah_tools::FileChange::Created(p) => FileChange::Created { path: d(p) },
-        yah_tools::FileChange::Modified(p) => FileChange::Modified { path: d(p) },
-        yah_tools::FileChange::Deleted(p) => FileChange::Deleted { path: d(p) },
-        yah_tools::FileChange::Moved { from, to } => FileChange::Moved { from: d(from), to: d(to) },
+        byob_tools::FileChange::Created(p) => FileChange::Created { path: d(p) },
+        byob_tools::FileChange::Modified(p) => FileChange::Modified { path: d(p) },
+        byob_tools::FileChange::Deleted(p) => FileChange::Deleted { path: d(p) },
+        byob_tools::FileChange::Moved { from, to } => FileChange::Moved { from: d(from), to: d(to) },
     }
 }
 
@@ -668,7 +668,7 @@ mod tests {
     #[test]
     fn changes_are_shown_relative_to_the_workspace() {
         let ws = Path::new("/w");
-        let c = display_change(&yah_tools::FileChange::Moved { from: "/w/a.txt".into(), to: "/elsewhere/b".into() }, ws);
+        let c = display_change(&byob_tools::FileChange::Moved { from: "/w/a.txt".into(), to: "/elsewhere/b".into() }, ws);
         assert_eq!(c, FileChange::Moved { from: "a.txt".into(), to: "/elsewhere/b".into() });
     }
 

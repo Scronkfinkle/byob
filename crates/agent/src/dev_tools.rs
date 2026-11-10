@@ -1,10 +1,10 @@
 //! Trivial tools for trying the tool loop and approvals against a live model
-//! (`yah --dev-tools`). They have no real side effects.
+//! (`byob --dev-tools`). They have no real side effects.
 
 use std::sync::Arc;
 
+use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec, parse_args};
 use serde_json::{Value, json};
-use yah_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec, parse_args};
 
 /// Register `get_time` (read: runs without asking) and `set_reminder` (write: asks first).
 pub fn register(reg: &mut Registry) {

@@ -92,7 +92,7 @@ impl ChatTabs {
 
 impl PanePrefs {
     /// Storage key used by the apps.
-    pub const STORAGE_KEY: &'static str = "yah.pane";
+    pub const STORAGE_KEY: &'static str = "byob.pane";
 
     /// Clamp what came from (untrusted) storage.
     #[must_use]

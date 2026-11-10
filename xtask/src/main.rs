@@ -1,6 +1,6 @@
 //! Repo automation. `cargo xtask <cmd>`:
 //!   layers  — enforce the crate layering in docs/architecture.md
-//!   web     — build the browser UI into apps/yah-web/dist (wasm-bindgen + wasm-opt)
+//!   web     — build the browser UI into apps/byob-web/dist (wasm-bindgen + wasm-opt)
 //!   wasm    — check that the browser-side crates build for wasm32
 //!   ci      — fmt, clippy, tests, doc tests, layers, wasm (the full local gate)
 
@@ -8,38 +8,38 @@ use std::process::{Command, ExitCode};
 
 /// Every workspace crate and its layer. Dependencies may only point downward.
 const LAYERS: &[(&str, u8)] = &[
-    ("yah-types", 0),
-    ("yah-protocol", 1),
-    ("yah-artifact-wire", 1),
-    ("yah-llm", 1),
-    ("yah-store", 1),
-    ("yah-tools", 2),
-    ("yah-mcp", 2),
-    ("yah-sandbox", 2),
-    ("yah-exec", 3),
-    ("yah-plugins", 3),
-    ("yah-agent", 4),
-    ("yah-server", 5),
-    ("yah-ui-egui", 5),
-    ("yah", 6),
-    ("yah-web", 6),
+    ("byob-types", 0),
+    ("byob-protocol", 1),
+    ("byob-artifact-wire", 1),
+    ("byob-llm", 1),
+    ("byob-store", 1),
+    ("byob-tools", 2),
+    ("byob-mcp", 2),
+    ("byob-sandbox", 2),
+    ("byob-exec", 3),
+    ("byob-plugins", 3),
+    ("byob-agent", 4),
+    ("byob-server", 5),
+    ("byob-ui-egui", 5),
+    ("byob", 6),
+    ("byob-web", 6),
     ("xtask", 9),
 ];
 
 /// Only these crates may depend on GUI crates.
-const UI_CRATES: &[&str] = &["yah-ui-egui", "yah", "yah-web"];
+const UI_CRATES: &[&str] = &["byob-ui-egui", "byob", "byob-web"];
 const UI_DEPS: &[&str] = &["egui", "eframe", "egui-wgpu", "winit", "rfd", "ewebsock"];
 
 /// Crates that run in the browser. They may only depend on each other (not on the engine).
-const WASM_CRATES: &[&str] = &["yah-types", "yah-protocol", "yah-ui-egui", "yah-web"];
+const WASM_CRATES: &[&str] = &["byob-types", "byob-protocol", "byob-ui-egui", "byob-web"];
 
-/// yah's own crates aren't async: none may depend *directly* on an async runtime.
+/// byob's own crates aren't async: none may depend *directly* on an async runtime.
 /// (Libraries that use one internally are fine.)
 const BANNED: &[&str] = &["tokio", "async-std", "smol"];
 
 /// Servo and SpiderMonkey (MPL-2.0, and they bring tokio) live only in the separate
-/// `host/artifact-host` workspace, which yah runs as a child process; never link them here.
-const HELPER_ONLY: &[&str] = &["servo", "libservo", "mozjs", "mozjs_sys", "servo-script", "servo-constellation", "yah-artifact-host"];
+/// `host/artifact-host` workspace, which byob runs as a child process; never link them here.
+const HELPER_ONLY: &[&str] = &["servo", "libservo", "mozjs", "mozjs_sys", "servo-script", "servo-constellation", "byob-artifact-host"];
 
 fn main() -> ExitCode {
     let cmd = std::env::args().nth(1).unwrap_or_default();
@@ -90,7 +90,7 @@ fn layers() -> Result<(), String> {
                 errors.push(format!("{name} (L{layer}) -> {dep_name} (L{dep_layer}): dependencies must point to a lower layer"));
             }
             if BANNED.contains(&dep_name) {
-                errors.push(format!("{name} depends directly on async runtime {dep_name}; yah's own code isn't async (AGENTS.md)"));
+                errors.push(format!("{name} depends directly on async runtime {dep_name}; byob's own code isn't async (AGENTS.md)"));
             }
             if UI_DEPS.contains(&dep_name) && !UI_CRATES.contains(&name) {
                 errors.push(format!("{name} depends on UI crate {dep_name}; only {UI_CRATES:?} may"));
@@ -126,7 +126,7 @@ fn banned_deps() -> Result<Vec<String>, String> {
         for name in tree.lines().filter_map(|l| l.split_whitespace().next()) {
             let on = target.unwrap_or("host");
             if HELPER_ONLY.contains(&name) {
-                found.push(format!("`{name}` in yah's dependency graph for {on}: Servo/SpiderMonkey belong only in host/artifact-host (see AGENTS.md)"));
+                found.push(format!("`{name}` in byob's dependency graph for {on}: Servo/SpiderMonkey belong only in host/artifact-host (see AGENTS.md)"));
             }
         }
     }
@@ -174,23 +174,23 @@ fn web() -> Result<(), String> {
         return Err(format!("wasm-bindgen-cli is {}, Cargo.lock needs {want}", have.trim()));
     }
 
-    run(&["build", "--release", "--target", "wasm32-unknown-unknown", "-p", "yah-web"])?;
-    let dist = "apps/yah-web/dist";
+    run(&["build", "--release", "--target", "wasm32-unknown-unknown", "-p", "byob-web"])?;
+    let dist = "apps/byob-web/dist";
     let _ = std::fs::remove_dir_all(dist);
     std::fs::create_dir_all(dist).map_err(|e| format!("create {dist}: {e}"))?;
-    tool("wasm-bindgen", &["--target", "web", "--no-typescript", "--out-dir", dist, "target/wasm32-unknown-unknown/release/yah-web.wasm"])?;
-    let wasm = format!("{dist}/yah-web_bg.wasm");
+    tool("wasm-bindgen", &["--target", "web", "--no-typescript", "--out-dir", dist, "target/wasm32-unknown-unknown/release/byob-web.wasm"])?;
+    let wasm = format!("{dist}/byob-web_bg.wasm");
     if tool("wasm-opt", &["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "-o", &wasm, &wasm]).is_err() {
         eprintln!("xtask: wasm-opt failed or missing; shipping unoptimized wasm");
     }
-    std::fs::copy("apps/yah-web/index.html", format!("{dist}/index.html")).map_err(|e| format!("copy index.html: {e}"))?;
-    // Precompressed copies; yah-server sends `<file>.gz` to clients that accept gzip
+    std::fs::copy("apps/byob-web/index.html", format!("{dist}/index.html")).map_err(|e| format!("copy index.html: {e}"))?;
+    // Precompressed copies; byob-server sends `<file>.gz` to clients that accept gzip
     // (the wasm shrinks ~3x). Optional: without them it serves the plain files.
-    let (wasm_js, wasm_bin) = (format!("{dist}/yah-web.js"), format!("{dist}/yah-web_bg.wasm"));
+    let (wasm_js, wasm_bin) = (format!("{dist}/byob-web.js"), format!("{dist}/byob-web_bg.wasm"));
     if tool("gzip", &["-9", "--keep", "--force", "--no-name", &wasm_bin, &wasm_js]).is_err() {
         eprintln!("xtask: gzip failed or missing; the web UI will be served uncompressed");
     }
-    println!("web: built {dist}/ — serve it with `cargo run -p yah -- --serve`");
+    println!("web: built {dist}/ — serve it with `cargo run -p byob -- --serve`");
     Ok(())
 }
 

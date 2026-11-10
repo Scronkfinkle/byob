@@ -1,10 +1,10 @@
 //! Headless agent engine.
 //!
 //! The engine runs on its own thread and owns all state. Clients (the desktop window, each
-//! browser tab via `yah-server`) attach with [`EngineHandle::connect`] and speak only
-//! [`yah_protocol`] messages.
+//! browser tab via `byob-server`) attach with [`EngineHandle::connect`] and speak only
+//! [`byob_protocol`] messages.
 //!
-//! Chats live in `yah-store`. Each client looks at one chat at a time (desktop and phone may
+//! Chats live in `byob-store`. Each client looks at one chat at a time (desktop and phone may
 //! look at different ones); turns run in the engine regardless of who is watching, one per
 //! chat, and entry updates only go to the clients looking at that chat. Streamed text is
 //! written to the database in batches (every [`FLUSH_EVERY`]), not per token.
@@ -44,16 +44,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub use adapt::{AdaptOptions, ToolMode};
-pub use compact::CompactOptions;
-pub use permissions::{Policy, Rule};
-use yah_protocol::{
+use byob_protocol::{
     ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, EngineState, Entry, EntryRole, MediaRef, NoticeLevel,
     PROTOCOL_VERSION, ServerMsg, Step, StepStatus,
 };
-use yah_store::{ChatStore, GrantScope, NewMessage, Paths, Role, Secrets, Settings, StorageKind, Store, StoreError};
-use yah_tools::Registry;
-pub use yah_tools::artifact;
-use yah_types::InferenceConfig;
+use byob_store::{ChatStore, GrantScope, NewMessage, Paths, Role, Secrets, Settings, StorageKind, Store, StoreError};
+use byob_tools::Registry;
+pub use byob_tools::artifact;
+use byob_types::InferenceConfig;
+pub use compact::CompactOptions;
+pub use permissions::{Policy, Rule};
 
 /// How often streamed text is written to the database while a reply runs.
 pub const FLUSH_EVERY: Duration = Duration::from_millis(250);
@@ -168,14 +168,14 @@ impl EngineHandle {
     }
 
     /// Open the database and start the engine thread. Replies that were still streaming
-    /// when yah last stopped are closed with an error first.
+    /// when byob last stopped are closed with an error first.
     pub fn spawn_with(config: EngineConfig) -> std::io::Result<Self> {
         #[cfg(test)]
         let config = test_store::applied(config);
         let store = open_store(&config).map_err(std::io::Error::other)?;
         let (inbox, rx) = channel();
         let engine = Engine::new(config, store, inbox.clone());
-        thread::Builder::new().name("yah-engine".into()).spawn(move || run(engine, rx))?;
+        thread::Builder::new().name("byob-engine".into()).spawn(move || run(engine, rx))?;
         Ok(Self { inbox, next_id: Arc::default() })
     }
 
@@ -197,15 +197,15 @@ impl EngineHandle {
     }
 }
 
-/// The chat store `config` asks for, via [`yah_store::open_backend`].
+/// The chat store `config` asks for, via [`byob_store::open_backend`].
 fn open_store(config: &EngineConfig) -> Result<Box<dyn ChatStore>, StoreError> {
     let store: Box<dyn ChatStore> = match (&config.paths, config.storage, &config.chats_folder) {
         (Some(p), storage, folder) => {
             p.ensure()?;
             let settings = Settings { storage, chats_folder: folder.clone(), ..Settings::default() };
-            yah_store::open_backend(&settings, p)?
+            byob_store::open_backend(&settings, p)?
         }
-        (None, StorageKind::Folder, Some(folder)) => Box::new(yah_store::FolderStore::open(folder)?),
+        (None, StorageKind::Folder, Some(folder)) => Box::new(byob_store::FolderStore::open(folder)?),
         (None, _, _) => Box::new(Store::open_in_memory()?),
     };
     log::info!("chats: {:?} store at {}", store.kind(), store.path().display());
@@ -213,7 +213,7 @@ fn open_store(config: &EngineConfig) -> Result<Box<dyn ChatStore>, StoreError> {
     test_store::opened(store.kind());
     let cut = store.finish_interrupted(chats::INTERRUPTED)?;
     if cut > 0 {
-        log::warn!("{cut} reply(s) were interrupted when yah last stopped");
+        log::warn!("{cut} reply(s) were interrupted when byob last stopped");
     }
     Ok(store)
 }
@@ -261,10 +261,10 @@ struct Pending {
 struct Live {
     entries: Vec<Entry>,
     workspace: Arc<PathBuf>,
-    /// The chat's artifacts (see [`yah_tools::artifact`]).
+    /// The chat's artifacts (see [`byob_tools::artifact`]).
     artifacts: Vec<Artifact>,
     /// The chat's compactions, oldest first; the next request builds on the last one.
-    compactions: Vec<yah_store::Compaction>,
+    compactions: Vec<byob_store::Compaction>,
     /// Token use, for the header meter.
     tally: compact::Tally,
 }
@@ -284,7 +284,7 @@ struct Running {
 
 struct Engine {
     config: InferenceConfig,
-    llm: Result<yah_llm::Client, String>,
+    llm: Result<byob_llm::Client, String>,
     clients: BTreeMap<ClientId, Client>,
     /// Sender into our own inbox, handed to turn threads.
     inbox: Sender<Input>,
@@ -338,7 +338,7 @@ fn run(mut engine: Engine, rx: Receiver<Input>) {
 
 impl Engine {
     fn new(config: EngineConfig, store: Box<dyn ChatStore>, inbox: Sender<Input>) -> Self {
-        let llm = yah_llm::Client::new(config.inference.clone()).map_err(|e| e.to_string());
+        let llm = byob_llm::Client::new(config.inference.clone()).map_err(|e| e.to_string());
         let mut endpoints = adapt::Endpoints::new(config.adapt);
         if let Ok(client) = &llm {
             endpoints.probe(client, &inbox);
@@ -411,6 +411,7 @@ impl Engine {
             });
             let tally = compact::Tally::from_store(&messages, &compactions);
             let mut entries: Vec<Entry> = messages.into_iter().filter_map(|m| chats::entry(m, &self.step_ids)).collect();
+            byob_store::migrate_workspace(&row.workspace);
             let artifacts = artifact::list(&row.workspace, chat);
             chats::restore_step_files(&mut entries, &artifacts);
             self.live.insert(chat.to_owned(), Live { entries, workspace: Arc::new(row.workspace), artifacts, compactions, tally });
@@ -460,7 +461,7 @@ impl Engine {
     }
 
     fn send_chats(&mut self, id: ClientId, after: Option<ChatCursor>, limit: usize) {
-        let limit = limit.clamp(1, yah_store::MAX_PAGE);
+        let limit = limit.clamp(1, byob_store::MAX_PAGE);
         let pinned = if after.is_none() { self.store.pinned_chats() } else { Ok(Vec::new()) };
         let page = self.store.list_chats(limit, after.as_ref().map(chats::store_cursor).as_ref());
         match (pinned, page) {
@@ -692,16 +693,16 @@ impl Engine {
     fn serve_media(&mut self, id: ClientId, path: String) {
         let referenced = self.client_chat(id).and_then(|c| self.live.get(&c)).is_some_and(|l| attachments::referenced(&l.entries, &path));
         if !referenced {
-            let content = yah_protocol::MediaContent::Error { message: "not part of this conversation".into() };
+            let content = byob_protocol::MediaContent::Error { message: "not part of this conversation".into() };
             self.send_to(id, ServerMsg::Media { path, content });
             return;
         }
         let workspace = self.client_workspace(id);
         let Some(client) = self.clients.get(&id) else { return };
         let (tx, wake) = (client.tx.clone(), Arc::clone(&client.wake));
-        let spawned = thread::Builder::new().name("yah-media".into()).spawn(move || {
+        let spawned = thread::Builder::new().name("byob-media".into()).spawn(move || {
             let content = catch_unwind(AssertUnwindSafe(|| attachments::load(&workspace, &path)))
-                .unwrap_or_else(|_| yah_protocol::MediaContent::Error { message: "internal error while loading".into() });
+                .unwrap_or_else(|_| byob_protocol::MediaContent::Error { message: "internal error while loading".into() });
             if tx.send(ServerMsg::Media { path, content }).is_ok() {
                 wake();
             }
@@ -723,11 +724,11 @@ impl Engine {
         let workspace = self.client_workspace(id);
         let Some(client) = self.clients.get(&id) else { return };
         let (tx, wake) = (client.tx.clone(), Arc::clone(&client.wake));
-        let spawned = thread::Builder::new().name("yah-artifact".into()).spawn(move || {
+        let spawned = thread::Builder::new().name("byob-artifact".into()).spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| attachments::artifact_for_client(&workspace, &chat, &artifact, version)))
                 .unwrap_or_else(|_| Err("internal error while loading".into()));
             let (data, error) = match result {
-                Ok(bytes) => (Some(yah_protocol::media::encode(&bytes)), None),
+                Ok(bytes) => (Some(byob_protocol::media::encode(&bytes)), None),
                 Err(e) => (None, Some(e)),
             };
             if tx.send(ServerMsg::ArtifactFile { id: artifact, version, data, error }).is_ok() {
@@ -771,7 +772,7 @@ impl Engine {
     fn set_inference(&mut self, id: ClientId, base_url: String, model: String, api_key: Option<String>) {
         let new_key = api_key.is_some();
         let config = InferenceConfig { base_url, model, api_key: api_key.or_else(|| self.config.api_key.clone()) };
-        match yah_llm::Client::new(config.clone()) {
+        match byob_llm::Client::new(config.clone()) {
             Ok(client) => {
                 if let Err(e) = self.save_inference(&config, new_key) {
                     self.notice(id, format!("inference settings apply now but couldn't be saved: {e}"));
@@ -1074,7 +1075,7 @@ impl Engine {
             }
             turn::TurnEvent::Compacted { id, made } => {
                 let Some(chat) = self.turns.get(&id).map(|t| t.chat.clone()) else { return };
-                let new = yah_store::NewCompaction {
+                let new = byob_store::NewCompaction {
                     through: chats::message_id(made.through),
                     summary: made.summary,
                     tokens_before: made.tokens_before,
@@ -1096,7 +1097,7 @@ impl Engine {
     // ---- compaction and usage -----------------------------------------------------------
 
     /// Store a compaction, make it the base of later requests, tell the chat's viewers.
-    fn record_compaction(&mut self, chat: &str, new: &yah_store::NewCompaction) {
+    fn record_compaction(&mut self, chat: &str, new: &byob_store::NewCompaction) {
         let stored = match self.store.add_compaction(chat, new) {
             Ok(c) => c,
             Err(e) => {
@@ -1157,13 +1158,13 @@ impl Engine {
         let cancel = Arc::new(AtomicBool::new(false));
         let (flag, inbox) = (Arc::clone(&cancel), self.inbox.clone());
         let (c, f) = (chat.clone(), focus.clone());
-        let spawned = thread::Builder::new().name("yah-compact".into()).spawn(move || {
+        let spawned = thread::Builder::new().name("byob-compact".into()).spawn(move || {
             let started = Instant::now();
             let covered = messages.get(start..).unwrap_or_default();
             let result = catch_unwind(AssertUnwindSafe(|| compact::summarize(&llm, covered, f.as_deref(), &plan, &flag)))
                 .unwrap_or_else(|_| Err(compact::Failure::Error("internal error while summarising".into())))
                 .map(|summary| {
-                    let mut after: Vec<yah_llm::ChatMessage> = messages.get(..start).unwrap_or_default().to_vec();
+                    let mut after: Vec<byob_llm::ChatMessage> = messages.get(..start).unwrap_or_default().to_vec();
                     after.extend(compact::summary_messages(&summary.text));
                     let tokens = plan.raw_tokens(&after, &specs);
                     (summary, tokens)
@@ -1206,7 +1207,7 @@ impl Engine {
                     self.gc();
                     return;
                 }
-                let new = yah_store::NewCompaction {
+                let new = byob_store::NewCompaction {
                     through: chats::message_id(through),
                     summary: summary.text,
                     tokens_before: u64::try_from(tokens_before).unwrap_or(u64::MAX),
@@ -1233,7 +1234,7 @@ impl Engine {
     }
 
     /// The header meter of `chat`, if it is loaded.
-    fn usage(&self, chat: &str) -> Option<yah_protocol::ChatUsage> {
+    fn usage(&self, chat: &str) -> Option<byob_protocol::ChatUsage> {
         let live = self.live.get(chat)?;
         let plan = self.endpoints.plan(&self.config);
         let (context_used, estimated) = live.tally.context.unwrap_or_else(|| {
@@ -1242,7 +1243,7 @@ impl Engine {
         });
         let t = &live.tally;
         let n = |v: usize| u64::try_from(v).unwrap_or(u64::MAX);
-        Some(yah_protocol::ChatUsage {
+        Some(byob_protocol::ChatUsage {
             chat: chat.to_owned(),
             context_used,
             estimated,
@@ -1265,7 +1266,7 @@ impl Engine {
         }
     }
 
-    fn finish_turn(&mut self, id: u64, error: Option<String>, stats: Option<yah_protocol::TurnStats>) {
+    fn finish_turn(&mut self, id: u64, error: Option<String>, stats: Option<byob_protocol::TurnStats>) {
         self.deny_pending(|p, _| p.entry == id, "stopped");
         // Nothing may stay "running" or "waiting" in a finished entry.
         let open: Vec<Step> = self.reply_mut(id).map(|e| e.steps.iter().filter(|s| !s.status.finished()).cloned().collect()).unwrap_or_default();

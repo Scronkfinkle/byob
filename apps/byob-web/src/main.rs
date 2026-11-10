@@ -1,5 +1,5 @@
 //! Browser entry point. Build with `cargo xtask web`; the desktop app serves
-//! `apps/yah-web/dist/` with `yah --serve`.
+//! `apps/byob-web/dist/` with `byob --serve`.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 #[cfg(target_arch = "wasm32")]
@@ -13,7 +13,7 @@ fn main() {
             log::error!("no document");
             return;
         };
-        let Some(canvas) = document.get_element_by_id("yah").and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok()) else {
+        let Some(canvas) = document.get_element_by_id("byob").and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok()) else {
             return;
         };
         let result = eframe::WebRunner::new()
@@ -21,15 +21,16 @@ fn main() {
                 canvas,
                 eframe::WebOptions::default(),
                 Box::new(|cc| {
-                    let conn = yah_ui_egui::ws::WsConnection::connect(&ws_url(), cc.egui_ctx.clone());
+                    let conn = byob_ui_egui::ws::WsConnection::connect(&ws_url(), cc.egui_ctx.clone());
                     let link = conn.status_handle();
-                    let mut ui = yah_ui_egui::YahApp::new(Box::new(conn), "browser");
+                    let mut ui = byob_ui_egui::ByobApp::new(Box::new(conn), "browser");
                     // Appearance is per device: kept in this browser's localStorage.
-                    if let Some(prefs) = cc.storage.and_then(|s| eframe::get_value::<yah_ui_egui::theme::Prefs>(s, yah_ui_egui::theme::Prefs::STORAGE_KEY)) {
+                    if let Some(prefs) = cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::theme::Prefs>(s, byob_ui_egui::theme::Prefs::STORAGE_KEY)) {
                         ui.set_prefs(prefs);
                     }
                     // So is the artifact pane: width, collapsed, open tabs per chat.
-                    if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<yah_ui_egui::pane::PanePrefs>(s, yah_ui_egui::pane::PanePrefs::STORAGE_KEY))
+                    if let Some(pane) =
+                        cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::pane::PanePrefs>(s, byob_ui_egui::pane::PanePrefs::STORAGE_KEY))
                     {
                         ui.artifacts_mut().set_pane_prefs(pane);
                     }
@@ -38,12 +39,12 @@ fn main() {
             )
             .await;
         if let Err(e) = result {
-            log::error!("failed to start yah: {e:?}");
+            log::error!("failed to start byob: {e:?}");
         }
     });
 }
 
-/// `ws(s)://<same host>/ws` — the page is always served by the yah server it talks to.
+/// `ws(s)://<same host>/ws` — the page is always served by the byob server it talks to.
 #[cfg(target_arch = "wasm32")]
 fn ws_url() -> String {
     let location = web_sys::window().map(|w| w.location());
@@ -54,8 +55,8 @@ fn ws_url() -> String {
 
 #[cfg(target_arch = "wasm32")]
 struct App {
-    ui: yah_ui_egui::YahApp,
-    link: yah_ui_egui::ws::LinkStatusHandle,
+    ui: byob_ui_egui::ByobApp,
+    link: byob_ui_egui::ws::LinkStatusHandle,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -64,7 +65,7 @@ impl eframe::App for App {
         self.ui.ui(ui);
         // One quiet banner while the link is down, instead of a notice per retry.
         if let Some(label) = self.link.get().label() {
-            egui::Area::new(egui::Id::unique("yah-link-status"))
+            egui::Area::new(egui::Id::unique("byob-link-status"))
                 .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 36.0))
                 .fade_in(false)
                 .order(egui::Order::Foreground)
@@ -78,12 +79,12 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, yah_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
-        eframe::set_value(storage, yah_ui_egui::pane::PanePrefs::STORAGE_KEY, &self.ui.pane_prefs());
+        eframe::set_value(storage, byob_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
+        eframe::set_value(storage, byob_ui_egui::pane::PanePrefs::STORAGE_KEY, &self.ui.pane_prefs());
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    eprintln!("yah-web only runs in the browser: build it with `cargo xtask web`");
+    eprintln!("byob-web only runs in the browser: build it with `cargo xtask web`");
 }

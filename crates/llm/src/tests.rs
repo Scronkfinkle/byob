@@ -453,11 +453,11 @@ fn root_strips_v1() {
     assert_eq!(client("http://h:1/openai".into()).root().as_str(), "http://h:1/openai/");
 }
 
-/// Live probe: `YAH_LIVE_URL=http://silicon:9931/v1 cargo test -p yah-llm live_probe -- --ignored --nocapture`
+/// Live probe: `BYOB_LIVE_URL=http://silicon:9931/v1 cargo test -p byob-llm live_probe -- --ignored --nocapture`
 #[test]
-#[ignore = "needs a live inference server (YAH_LIVE_URL)"]
+#[ignore = "needs a live inference server (BYOB_LIVE_URL)"]
 fn live_probe() {
-    let url = std::env::var("YAH_LIVE_URL").expect("set YAH_LIVE_URL");
+    let url = std::env::var("BYOB_LIVE_URL").expect("set BYOB_LIVE_URL");
     let c = Client::new(InferenceConfig { base_url: url, model: "local".into(), api_key: None }).unwrap();
     let start = std::time::Instant::now();
     let caps = c.probe();
@@ -469,11 +469,11 @@ fn live_probe() {
     assert!(!caps.models.is_empty());
 }
 
-/// Live check against a real server: `YAH_LIVE_URL=http://silicon:9931/v1 cargo test -p yah-llm -- --ignored`
+/// Live check against a real server: `BYOB_LIVE_URL=http://silicon:9931/v1 cargo test -p byob-llm -- --ignored`
 #[test]
-#[ignore = "needs a live inference server (YAH_LIVE_URL)"]
+#[ignore = "needs a live inference server (BYOB_LIVE_URL)"]
 fn live_server_streams() {
-    let url = std::env::var("YAH_LIVE_URL").expect("set YAH_LIVE_URL");
+    let url = std::env::var("BYOB_LIVE_URL").expect("set BYOB_LIVE_URL");
     let c = Client::new(InferenceConfig { base_url: url, model: "local".into(), api_key: None }).unwrap();
     let mut n = 0;
     let out = c.stream_chat(&[ChatMessage::user("Reply with exactly: pong")], &[], &AtomicBool::new(false), |_| n += 1).unwrap();

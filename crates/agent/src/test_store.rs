@@ -8,7 +8,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
-use yah_store::{ChatStore, Paths, Settings, StorageKind};
+use byob_store::{ChatStore, Paths, Settings, StorageKind};
 
 use crate::EngineConfig;
 
@@ -51,7 +51,7 @@ pub(crate) fn applied(mut config: EngineConfig) -> EngineConfig {
 /// Open the store an engine at `paths` uses in this test (to inspect or seed it).
 pub(crate) fn open(paths: &Paths) -> Box<dyn ChatStore> {
     paths.ensure().unwrap();
-    yah_store::open_backend(&Settings { storage: backend(), ..Settings::default() }, paths).unwrap()
+    byob_store::open_backend(&Settings { storage: backend(), ..Settings::default() }, paths).unwrap()
 }
 
 /// Run `test` with every engine it starts on the folder backend.

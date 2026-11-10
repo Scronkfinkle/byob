@@ -162,7 +162,7 @@ mod tests {
         fs::write(d.path().join("docs/a.md"), "x".repeat(2048)).unwrap();
         fs::write(d.path().join("docs/deep/c.txt"), "").unwrap();
         fs::write(d.path().join(".hidden"), "").unwrap();
-        fs::create_dir_all(d.path().join(".yah/trash")).unwrap();
+        fs::create_dir_all(d.path().join(".byob/trash")).unwrap();
         d
     }
 

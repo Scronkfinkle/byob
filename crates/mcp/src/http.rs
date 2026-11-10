@@ -30,7 +30,7 @@ const HTTP_SLACK: Duration = Duration::from_secs(5);
 
 /// Supplies (and refreshes) a bearer token, e.g. from an OAuth sign-in.
 ///
-/// TODO(oauth): yah has no OAuth flow yet; implement this on top of it. On HTTP 401 the
+/// TODO(oauth): byob has no OAuth flow yet; implement this on top of it. On HTTP 401 the
 /// transport calls `refresh()` once and retries if it returns true; otherwise the call
 /// fails with [`McpError::AuthRequired`] carrying the `WWW-Authenticate` header.
 pub trait TokenProvider: Send + Sync {

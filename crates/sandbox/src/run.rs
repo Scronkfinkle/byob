@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn sandbox_error_needs_code_and_prefix() {
         let mut o = Outcome { exit_code: Some(125), ..Default::default() };
-        o.stderr.head = b"yah-sandbox: no landlock\n".to_vec();
+        o.stderr.head = b"byob-sandbox: no landlock\n".to_vec();
         assert_eq!(o.sandbox_error().as_deref(), Some("no landlock"));
         o.exit_code = Some(1);
         assert!(o.sandbox_error().is_none());

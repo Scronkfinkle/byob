@@ -523,6 +523,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "byob-artifact-host"
+version = "0.1.0"
+dependencies = [
+ "byob-artifact-wire",
+ "dpi",
+ "euclid",
+ "rustls",
+ "servo",
+ "url",
+]
+
+[[package]]
+name = "byob-artifact-wire"
+version = "0.1.0"
+
+[[package]]
 name = "byte-slice-cast"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8264,22 +8280,6 @@ name = "y4m"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a5a4b21e1a62b67a2970e6831bc091d7b87e119e7f9791aef9702e3bef04448"
-
-[[package]]
-name = "yah-artifact-host"
-version = "0.1.0"
-dependencies = [
- "dpi",
- "euclid",
- "rustls",
- "servo",
- "url",
- "yah-artifact-wire",
-]
-
-[[package]]
-name = "yah-artifact-wire"
-version = "0.1.0"
 
 [[package]]
 name = "yeslogic-fontconfig-sys"

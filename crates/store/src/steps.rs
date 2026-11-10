@@ -60,7 +60,7 @@ impl Raw {
         let args = serde_json::from_str(&self.args).unwrap_or(Value::String(self.args));
         let result = self.output.map(|output| {
             let changes = serde_json::from_str::<Vec<StepChange>>(&self.changes).unwrap_or_else(|e| {
-                log::warn!("yah-store: step {}/{}: ignoring bad changes: {e}", self.message_id, self.seq);
+                log::warn!("byob-store: step {}/{}: ignoring bad changes: {e}", self.message_id, self.seq);
                 Vec::new()
             });
             StepResult { output, failed: self.failed, changes }

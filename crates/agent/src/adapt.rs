@@ -1,6 +1,6 @@
 //! Adapting turns to the inference endpoint.
 //!
-//! The engine probes each endpoint ([`yah_llm::Client::probe`]) on a background thread,
+//! The engine probes each endpoint ([`byob_llm::Client::probe`]) on a background thread,
 //! caches what it found per URL + model, and turns that into a [`Plan`] for every turn:
 //! native or prompt-based tool calling, a token budget for the history, and whether image
 //! parts may be sent. A turn that finds out the server rejects native tools reports it back
@@ -11,9 +11,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::Sender;
 use std::thread;
 
-use yah_llm::{Capabilities, ChatMessage, LlmError, ServerKind, ToolSpec, ToolSupport, budget, toolprompt};
-use yah_protocol::{EndpointInfo, ToolsMode};
-use yah_types::InferenceConfig;
+use byob_llm::{Capabilities, ChatMessage, LlmError, ServerKind, ToolSpec, ToolSupport, budget, toolprompt};
+use byob_protocol::{EndpointInfo, ToolsMode};
+use byob_types::InferenceConfig;
 
 use crate::Input;
 
@@ -152,13 +152,13 @@ impl Endpoints {
 
     /// Probe `client`'s endpoint on a background thread unless it is cached or already being
     /// probed. The result arrives in the engine inbox as [`Event::Probed`].
-    pub fn probe(&mut self, client: &yah_llm::Client, inbox: &Sender<Input>) {
+    pub fn probe(&mut self, client: &byob_llm::Client, inbox: &Sender<Input>) {
         let key = key(client.config());
         if !self.opts.probe || self.probing.contains(&key) || self.cache.get(&key).is_some_and(conclusive) {
             return;
         }
         let (client, inbox, k) = (client.clone(), inbox.clone(), key.clone());
-        let spawned = thread::Builder::new().name("yah-probe".into()).spawn(move || {
+        let spawned = thread::Builder::new().name("byob-probe".into()).spawn(move || {
             let caps = catch_unwind(AssertUnwindSafe(|| client.probe()))
                 .unwrap_or_else(|_| Capabilities { notes: vec!["the probe crashed".into()], ..Default::default() });
             // The engine may be gone; nothing to do then.

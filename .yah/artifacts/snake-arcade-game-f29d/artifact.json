@@ -7,14 +7,14 @@
   "versions": [
     {
       "n": 1,
-      "path": ".yah/artifacts/snake-arcade-game-f29d/v1.html",
+      "path": ".byob/artifacts/snake-arcade-game-f29d/v1.html",
       "created_at": 1794264878746,
       "note": "",
       "size": 22363
     },
     {
       "n": 2,
-      "path": ".yah/artifacts/snake-arcade-game-f29d/v2.html",
+      "path": ".byob/artifacts/snake-arcade-game-f29d/v2.html",
       "created_at": 1794264881226,
       "note": "Track the best score at run start so the New Best badge only appears on a genuine record.",
       "size": 22404

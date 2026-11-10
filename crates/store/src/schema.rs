@@ -103,7 +103,7 @@ pub(crate) fn migrate_to(conn: &Connection, target: i64) -> Result<()> {
         if to <= found || to > target {
             continue;
         }
-        log::info!("yah-store: migrating schema v{} -> v{to}", to - 1);
+        log::info!("byob-store: migrating schema v{} -> v{to}", to - 1);
         tx.execute_batch(sql)?;
         tx.pragma_update(None, "user_version", to)?;
     }

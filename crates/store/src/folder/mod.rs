@@ -49,7 +49,7 @@ const INDEX_VERSION: u32 = 1;
 const MAX_LOADED: usize = 64;
 
 /// The folder backend. `Send` (and `Sync`, via an internal mutex). One `FolderStore` per
-/// root at a time: two yah processes writing the same folder would interleave lines.
+/// root at a time: two byob processes writing the same folder would interleave lines.
 pub struct FolderStore {
     root: PathBuf,
     inner: Mutex<Inner>,
@@ -209,14 +209,14 @@ impl Inner {
         match event::read(&path) {
             Ok(parsed) => {
                 for w in &parsed.warnings {
-                    log::warn!("yah-store: {w}");
+                    log::warn!("byob-store: {w}");
                 }
                 for l in &parsed.lines {
                     self.orphans.apply(&l.event);
                 }
                 self.orphans.note_bad(&parsed.bad);
             }
-            Err(e) => log::warn!("yah-store: {e}"),
+            Err(e) => log::warn!("byob-store: {e}"),
         }
     }
 
@@ -227,7 +227,7 @@ impl Inner {
             Ok(f) if f.v == INDEX_VERSION => f.chats.into_iter().map(|e| (e.folder.clone(), e)).collect(),
             Ok(_) => HashMap::new(),
             Err(e) => {
-                log::warn!("yah-store: ignoring {}: {e}", path.display());
+                log::warn!("byob-store: ignoring {}: {e}", path.display());
                 HashMap::new()
             }
         }
@@ -241,7 +241,7 @@ impl Inner {
         let path = self.root.join(INDEX);
         match serde_json::to_vec(&file).map_err(StoreError::from).and_then(|b| write_atomic(&path, &b, None)) {
             Ok(()) => self.index_dirty = false,
-            Err(e) => log::warn!("yah-store: couldn't save {}: {e}", path.display()),
+            Err(e) => log::warn!("byob-store: couldn't save {}: {e}", path.display()),
         }
     }
 
@@ -254,7 +254,7 @@ impl Inner {
             .filter_map(|ent| {
                 let name = ent.file_name().to_str().map(str::to_owned);
                 if name.is_none() {
-                    log::warn!("yah-store: skipping non-UTF-8 folder {:?}", ent.file_name());
+                    log::warn!("byob-store: skipping non-UTF-8 folder {:?}", ent.file_name());
                 }
                 name
             })
@@ -299,18 +299,18 @@ impl Inner {
         let parsed = match event::read(&path) {
             Ok(p) => p,
             Err(e) => {
-                log::warn!("yah-store: {e}");
+                log::warn!("byob-store: {e}");
                 return;
             }
         };
         let mut warnings = parsed.warnings.clone();
         let state = ChatState::replay(&parsed, &mut warnings);
         for w in &warnings {
-            log::warn!("yah-store: {w}");
+            log::warn!("byob-store: {w}");
         }
         match state {
             None => {
-                log::warn!("yah-store: {} has no chat_created event; ignoring the folder", path.display());
+                log::warn!("byob-store: {} has no chat_created event; ignoring the folder", path.display());
                 self.ignored.insert(folder.to_owned(), stamp);
             }
             Some(s) if s.deleted => {
@@ -333,7 +333,7 @@ impl Inner {
             && old != folder
         {
             if Stamp::read(&self.events_path(&old)).is_some() {
-                log::warn!("yah-store: folders {old} and {folder} both hold chat {id}; using {old}");
+                log::warn!("byob-store: folders {old} and {folder} both hold chat {id}; using {old}");
                 return false;
             }
             self.forget_folder(&old);
@@ -391,7 +391,7 @@ impl Inner {
             Ok(p) => p,
             Err(e) => {
                 // Folder vanished under us (synced delete): forget it.
-                log::warn!("yah-store: {e}");
+                log::warn!("byob-store: {e}");
                 self.forget_folder(&folder);
                 return Ok(false);
             }
@@ -399,10 +399,10 @@ impl Inner {
         let mut warnings = parsed.warnings.clone();
         let state = ChatState::replay(&parsed, &mut warnings);
         for w in &warnings {
-            log::warn!("yah-store: {w}");
+            log::warn!("byob-store: {w}");
         }
         let Some(state) = state.filter(|s| s.chat.id == id && !s.deleted) else {
-            log::warn!("yah-store: {} no longer holds chat {id}", path.display());
+            log::warn!("byob-store: {} no longer holds chat {id}", path.display());
             self.forget_folder(&folder);
             return Ok(false);
         };
@@ -466,13 +466,13 @@ impl Inner {
         }
         if external {
             // Someone else appended since we last read it: replay everything, ours included.
-            log::info!("yah-store: {} changed outside yah; reloading", path.display());
+            log::info!("byob-store: {} changed outside byob; reloading", path.display());
             self.loaded.remove(id);
             self.ensure_loaded(id)?;
         } else if let Some(c) = self.loaded.get_mut(id) {
             for l in &lines {
                 if let Err(w) = c.state.apply(l) {
-                    log::warn!("yah-store: chat {id}: {w}");
+                    log::warn!("byob-store: chat {id}: {w}");
                 }
             }
         }
@@ -496,7 +496,7 @@ impl Inner {
         let (Some(state), Some(e)) = (self.state(id), self.entries.get(id)) else { return };
         let path = self.chats_dir.join(&e.folder).join(CHAT_MD);
         if let Err(err) = write_atomic(&path, render::chat_md(state).as_bytes(), None) {
-            log::warn!("yah-store: couldn't write {}: {err}", path.display());
+            log::warn!("byob-store: couldn't write {}: {err}", path.display());
         }
     }
 
@@ -527,7 +527,7 @@ impl Inner {
         let mut warnings = Vec::new();
         let state = ChatState::replay(&parsed, &mut warnings).ok_or_else(|| StoreError::BadValue { column: "events", detail: "no chat_created".into() })?;
         for w in &warnings {
-            log::warn!("yah-store: {w}");
+            log::warn!("byob-store: {w}");
         }
         if !self.insert_entry(&folder, state.summary(), stamp, None) {
             return Err(StoreError::Exists(format!("chat {id}")));
@@ -734,7 +734,7 @@ impl ChatStore for FolderStore {
         });
         if let Err(e) = moved {
             // The `deleted` event already hides it; the folder just stays where it is.
-            log::warn!("yah-store: couldn't move {} to {}: {e}", from.display(), trash.display());
+            log::warn!("byob-store: couldn't move {} to {}: {e}", from.display(), trash.display());
         }
         inner.forget_folder(&folder);
         // Retire the slot: ids of the deleted chat's messages must not resolve again, even if

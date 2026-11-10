@@ -7,10 +7,10 @@ use rusqlite::ErrorCode;
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     /// The file is not a SQLite database, or its pages are damaged.
-    #[error("database {path} is corrupt or not a yah database: {detail}")]
+    #[error("database {path} is corrupt or not a byob database: {detail}")]
     Corrupt { path: PathBuf, detail: String },
-    /// A newer yah wrote this database; we refuse to touch it rather than lose data.
-    #[error("database schema version {found} is newer than this yah supports ({supported}); upgrade yah")]
+    /// A newer byob wrote this database; we refuse to touch it rather than lose data.
+    #[error("database schema version {found} is newer than this byob supports ({supported}); upgrade byob")]
     TooNew { found: i64, supported: i64 },
     /// A row we were asked to change does not exist.
     #[error("{0} not found")]
@@ -28,8 +28,8 @@ pub enum StoreError {
     Io { path: PathBuf, source: std::io::Error },
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
-    /// Neither `YAH_HOME` nor a platform home directory is available.
-    #[error("no home directory found; set YAH_HOME")]
+    /// Neither `BYOB_HOME` nor a platform home directory is available.
+    #[error("no home directory found; set BYOB_HOME")]
     NoHome,
 }
 

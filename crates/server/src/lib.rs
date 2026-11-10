@@ -1,9 +1,9 @@
 //! HTTP + WebSocket front door for remote clients (e.g. a browser over Tailscale).
 //!
-//! - `GET /ws` upgrades to a WebSocket carrying [`yah_protocol`] JSON frames.
+//! - `GET /ws` upgrades to a WebSocket carrying [`byob_protocol`] JSON frames.
 //! - `GET /artifact/<chat>/<id>/<version>` serves an artifact version under its own strict
 //!   CSP (see [`artifact`]).
-//! - Any other `GET` serves the static web bundle (`apps/yah-web`, built by `cargo xtask web`).
+//! - Any other `GET` serves the static web bundle (`apps/byob-web`, built by `cargo xtask web`).
 //!
 //! Deliberately simple and blocking: one thread per connection. Binds to loopback by
 //! default; expose it with `tailscale serve`, which terminates TLS and limits access to
@@ -23,10 +23,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use byob_agent::EngineHandle;
+use byob_protocol::{ClientMsg, Connection, MAX_FRAME_BYTES, NoticeLevel, ServerMsg};
 use tungstenite::protocol::{Role, WebSocketConfig};
 use tungstenite::{Message, WebSocket};
-use yah_agent::EngineHandle;
-use yah_protocol::{ClientMsg, Connection, MAX_FRAME_BYTES, NoticeLevel, ServerMsg};
 
 /// How often a connection thread checks for outgoing engine messages.
 const POLL: Duration = Duration::from_millis(20);
@@ -93,7 +93,7 @@ pub fn spawn(engine: EngineHandle, config: ServerConfig) -> io::Result<SocketAdd
     }
     let config = Arc::new(config);
     let live = Arc::new(AtomicUsize::new(0));
-    thread::Builder::new().name("yah-server".into()).spawn(move || {
+    thread::Builder::new().name("byob-server".into()).spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             let Some(slot) = Slot::take(&live, config.max_connections) else {
@@ -101,7 +101,7 @@ pub fn spawn(engine: EngineHandle, config: ServerConfig) -> io::Result<SocketAdd
                 continue;
             };
             let (engine, config) = (engine.clone(), Arc::clone(&config));
-            let spawned = thread::Builder::new().name("yah-conn".into()).spawn(move || {
+            let spawned = thread::Builder::new().name("byob-conn".into()).spawn(move || {
                 let _slot = slot;
                 let result = catch_unwind(AssertUnwindSafe(|| handle(stream, &engine, &config)));
                 match result {
@@ -115,7 +115,7 @@ pub fn spawn(engine: EngineHandle, config: ServerConfig) -> io::Result<SocketAdd
             }
         }
     })?;
-    log::info!("yah server listening on http://{addr}");
+    log::info!("byob server listening on http://{addr}");
     Ok(addr)
 }
 
@@ -236,11 +236,11 @@ fn websocket(stream: TcpStream, leftover: Vec<u8>, engine: &EngineHandle, config
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byob_protocol::PROTOCOL_VERSION;
     use std::io::{Read, Write};
-    use yah_protocol::PROTOCOL_VERSION;
 
     fn start_with(config: ServerConfig) -> SocketAddr {
-        let engine = EngineHandle::spawn(yah_types::InferenceConfig::default()).unwrap();
+        let engine = EngineHandle::spawn(byob_types::InferenceConfig::default()).unwrap();
         spawn(engine, ServerConfig { addr: SocketAddr::from(([127, 0, 0, 1], 0)), ..config }).unwrap()
     }
 
@@ -410,19 +410,19 @@ mod tests {
     /// An engine whose store has chats `c1` and `c2` working in `ws`, with an HTML
     /// artifact in `c1` (returned: its id).
     fn with_artifact(ws: &std::path::Path, home: &std::path::Path, config: ServerConfig) -> (SocketAddr, String) {
-        let paths = yah_store::Paths::at(home);
+        let paths = byob_store::Paths::at(home);
         paths.ensure().unwrap();
-        let store = yah_store::Store::open(paths.db()).unwrap();
+        let store = byob_store::Store::open(paths.db()).unwrap();
         store.create_chat("c1", "one", ws).unwrap();
         store.create_chat("c2", "two", ws).unwrap();
         drop(store);
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        let ctx = yah_tools::ToolContext::new(ws, &cancel).with_chat("c1");
+        let ctx = byob_tools::ToolContext::new(ws, &cancel).with_chat("c1");
         let args = serde_json::json!({"title": "Calc", "filename": "calc.html", "content": "<!doctype html><button>Go</button>"});
-        let out = yah_tools::Tool::run(&yah_tools::CreateArtifact, &args, &ctx);
+        let out = byob_tools::Tool::run(&byob_tools::CreateArtifact, &args, &ctx);
         assert!(!out.failed, "{}", out.text);
-        let id = yah_agent::artifact::list(ws, "c1")[0].id.clone();
-        let mut engine_config = yah_agent::EngineConfig::new(yah_types::InferenceConfig::default());
+        let id = byob_agent::artifact::list(ws, "c1")[0].id.clone();
+        let mut engine_config = byob_agent::EngineConfig::new(byob_types::InferenceConfig::default());
         engine_config.paths = Some(paths);
         engine_config.workspace = ws.to_path_buf();
         let engine = EngineHandle::spawn_with(engine_config).unwrap();
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn serves_precompressed_gzip_with_revalidation() {
-        let dir = std::env::temp_dir().join(format!("yah-web-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("byob-web-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("app.js"), b"console.log(1)").unwrap();

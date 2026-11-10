@@ -1,7 +1,7 @@
-//! Where yah keeps its files.
+//! Where byob keeps its files.
 //!
-//! By default the platform's config and data directories for the app `yah`
-//! (e.g. `~/.config/yah` and `~/.local/share/yah` on Linux). Setting `YAH_HOME` — or
+//! By default the platform's config and data directories for the app `byob`
+//! (e.g. `~/.config/byob` and `~/.local/share/byob` on Linux). Setting `BYOB_HOME` — or
 //! calling [`Paths::at`] — puts everything under one folder instead, which is what tests,
 //! portable installs and side-by-side profiles use.
 
@@ -9,8 +9,20 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Result, StoreError};
 
-/// Environment variable that overrides every yah directory with one root folder.
-pub const HOME_ENV: &str = "YAH_HOME";
+/// Environment variable that overrides every byob directory with one root folder.
+/// A workspace's own folder (artifacts, trash, undo backups). Before the rename it was
+/// `.yah`: rename it the first time byob opens that workspace.
+pub fn migrate_workspace(workspace: &Path) {
+    let (old, new) = (workspace.join(".yah"), workspace.join(".byob"));
+    if old.is_dir() && !new.exists() {
+        match std::fs::rename(&old, &new) {
+            Ok(()) => log::info!("renamed {} to .byob", old.display()),
+            Err(e) => log::warn!("couldn't rename {}: {e}", old.display()),
+        }
+    }
+}
+
+pub const HOME_ENV: &str = "BYOB_HOME";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -21,7 +33,7 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// `YAH_HOME` if set (and non-empty), otherwise the platform directories.
+    /// `BYOB_HOME` if set (and non-empty), otherwise the platform directories.
     pub fn resolve() -> Result<Self> {
         match std::env::var_os(HOME_ENV) {
             Some(home) if !home.is_empty() => Ok(Self::at(home)),
@@ -29,9 +41,9 @@ impl Paths {
         }
     }
 
-    /// The platform's per-user directories for `yah`, ignoring `YAH_HOME`.
+    /// The platform's per-user directories for `byob`, ignoring `BYOB_HOME`.
     pub fn platform() -> Result<Self> {
-        let dirs = directories::ProjectDirs::from("", "", "yah").ok_or(StoreError::NoHome)?;
+        let dirs = directories::ProjectDirs::from("", "", "byob").ok_or(StoreError::NoHome)?;
         Ok(Self { config_dir: dirs.config_dir().to_owned(), data_dir: dirs.data_dir().to_owned() })
     }
 
@@ -42,7 +54,7 @@ impl Paths {
     }
 
     pub fn db(&self) -> PathBuf {
-        self.data_dir.join("yah.db")
+        self.data_dir.join("byob.db")
     }
 
     pub fn settings(&self) -> PathBuf {
@@ -69,6 +81,25 @@ impl Paths {
     }
 
     /// Create the config and data directories (and the undo folder).
+    /// Before the rename to byob, the platform folders were named `yah`. If byob's don't
+    /// exist yet but yah's do, move them over (once). Explicit `BYOB_HOME` roots are left alone.
+    pub fn migrate_from_yah() {
+        let (Some(new), Some(old)) = (directories::ProjectDirs::from("", "", "byob"), directories::ProjectDirs::from("", "", "yah")) else { return };
+        let pairs = [(old.config_dir().to_owned(), new.config_dir().to_owned()), (old.data_dir().to_owned(), new.data_dir().to_owned())];
+        for (from, to) in pairs {
+            if from == to || to.exists() || !from.is_dir() {
+                continue;
+            }
+            if let Some(parent) = to.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::rename(&from, &to) {
+                Ok(()) => log::info!("moved {} to {} (yah is now byob)", from.display(), to.display()),
+                Err(e) => log::warn!("couldn't move {} to {}: {e}", from.display(), to.display()),
+            }
+        }
+    }
+
     pub fn ensure(&self) -> Result<()> {
         for dir in [&self.config_dir, &self.data_dir, &self.undo_dir()] {
             std::fs::create_dir_all(dir).map_err(|e| StoreError::io(dir.clone(), e))?;
@@ -83,21 +114,21 @@ mod tests {
 
     #[test]
     fn at_puts_everything_under_root() {
-        let p = Paths::at("/tmp/yah-x");
-        assert_eq!(p.db(), Path::new("/tmp/yah-x/yah.db"));
-        assert_eq!(p.settings(), Path::new("/tmp/yah-x/settings.json"));
-        assert_eq!(p.secrets(), Path::new("/tmp/yah-x/secrets.json"));
-        assert_eq!(p.undo_dir(), Path::new("/tmp/yah-x/undo"));
-        assert_eq!(p.chats_folder(), Path::new("/tmp/yah-x/chats-folder"));
-        assert_eq!(p.themes_dir(), Path::new("/tmp/yah-x/themes"));
+        let p = Paths::at("/tmp/byob-x");
+        assert_eq!(p.db(), Path::new("/tmp/byob-x/byob.db"));
+        assert_eq!(p.settings(), Path::new("/tmp/byob-x/settings.json"));
+        assert_eq!(p.secrets(), Path::new("/tmp/byob-x/secrets.json"));
+        assert_eq!(p.undo_dir(), Path::new("/tmp/byob-x/undo"));
+        assert_eq!(p.chats_folder(), Path::new("/tmp/byob-x/chats-folder"));
+        assert_eq!(p.themes_dir(), Path::new("/tmp/byob-x/themes"));
     }
 
     #[test]
     fn platform_dirs_are_named_yah() {
         // CI machines normally have a HOME; skip quietly when they don't.
         if let Ok(p) = Paths::platform() {
-            assert!(p.config_dir.to_string_lossy().contains("yah"));
-            assert!(p.data_dir.to_string_lossy().contains("yah"));
+            assert!(p.config_dir.to_string_lossy().contains("byob"));
+            assert!(p.data_dir.to_string_lossy().contains("byob"));
         }
     }
 }

@@ -86,14 +86,14 @@ fn clip(s: &str, max: usize) -> String {
     out
 }
 
-/// Resolve a path for a tool that changes things: never the root, never `.yah/`.
+/// Resolve a path for a tool that changes things: never the root, never `.byob/`.
 fn resolve_mut(ctx_ws: &Path, p: &str) -> Result<Resolved, String> {
     let r = sandbox::resolve(ctx_ws, p)?;
     if r.is_root() {
         return Err("that is the whole workspace folder; name a file or folder inside it".into());
     }
     if r.is_reserved() {
-        return Err(format!("{} is reserved for yah's own data", r.show()));
+        return Err(format!("{} is reserved for byob's own data", r.show()));
     }
     Ok(r)
 }

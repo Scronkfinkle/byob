@@ -1,4 +1,4 @@
-//! The yah UI. Identical on desktop and in the browser: it renders engine state received
+//! The byob UI. Identical on desktop and in the browser: it renders engine state received
 //! over a [`Connection`] and sends user intents back. It never touches the engine directly.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -18,7 +18,7 @@ pub mod upload;
 pub mod usage;
 pub mod ws;
 
-use yah_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, StepStatus};
+use byob_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, StepStatus};
 
 /// Tallest an expanded thinking block gets before it scrolls.
 const THINKING_MAX_HEIGHT: f32 = 240.0;
@@ -37,7 +37,7 @@ fn size_label(chars: usize) -> String {
 /// Notices kept on screen.
 const MAX_NOTICES: usize = 3;
 
-pub struct YahApp {
+pub struct ByobApp {
     conn: Box<dyn Connection>,
     tokens: theme::Tokens,
     prefs: theme::Prefs,
@@ -75,7 +75,7 @@ pub struct YahApp {
     usage: usage::Usage,
 }
 
-impl YahApp {
+impl ByobApp {
     pub fn new(mut conn: Box<dyn Connection>, client: &str) -> Self {
         conn.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: client.into() });
         Self {
@@ -377,7 +377,7 @@ impl YahApp {
                 if ui.button("Chats").on_hover_text("Show or hide the chat list").clicked() {
                     self.sidebar.toggle();
                 }
-                ui.label(egui::RichText::new("yah").strong().size(t.text_size(18.0)).color(t.accent));
+                ui.label(egui::RichText::new("byob").strong().size(t.text_size(18.0)).color(t.accent));
                 let title = self.sidebar.current().map_or("New chat", |c| c.title.as_str());
                 let max = if narrow { 18 } else { 48 };
                 let short: String =
@@ -429,7 +429,7 @@ impl YahApp {
                     .id(id)
                     .desired_rows(2)
                     .desired_width(width)
-                    .hint_text("Message yah…  (Enter to send, Shift+Enter for newline)"),
+                    .hint_text("Message byob…  (Enter to send, Shift+Enter for newline)"),
             );
             if busy {
                 if ui.button("Stop").clicked() {
@@ -494,7 +494,7 @@ fn entry_view(
 ) -> Option<ClientMsg> {
     let mut answer = None;
     let user = entry.role == EntryRole::User;
-    let (who, fill, style) = if user { ("You", t.user_bubble, t.knobs.user_bubble) } else { ("yah", t.assistant_bubble, t.knobs.assistant_bubble) };
+    let (who, fill, style) = if user { ("You", t.user_bubble, t.knobs.user_bubble) } else { ("byob", t.assistant_bubble, t.knobs.assistant_bubble) };
     let (fill, stroke, margin) = match style {
         theme::BubbleStyle::Filled => (fill, egui::Stroke::NONE, t.pad(10.0)),
         theme::BubbleStyle::Outlined => {

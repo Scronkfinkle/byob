@@ -1,6 +1,6 @@
 [package]
-name = "yah-plugins"
-description = "Plugins: hob-compatible manifests, Agent Skills (SKILL.md), MCP connectors, adapted into yah-tools (L3)"
+name = "byob-plugins"
+description = "Plugins: hob-compatible manifests, Agent Skills (SKILL.md), MCP connectors, adapted into byob-tools (L3)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,9 +8,9 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-yah-tools.workspace = true
-yah-mcp.workspace = true
-yah-sandbox.workspace = true
+byob-tools.workspace = true
+byob-mcp.workspace = true
+byob-sandbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

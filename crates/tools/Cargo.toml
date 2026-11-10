@@ -1,5 +1,5 @@
 [package]
-name = "yah-tools"
+name = "byob-tools"
 description = "Agent tools: filesystem, web fetch, charts, python (L2)"
 version.workspace = true
 edition.workspace = true
@@ -8,8 +8,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-yah-types.workspace = true
-yah-protocol.workspace = true
+byob-types.workspace = true
+byob-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

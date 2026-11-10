@@ -8,11 +8,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use byob_protocol::{ChatUsage, ClientMsg, Compaction, Connection, Entry, NoticeLevel, PROTOCOL_VERSION, ServerMsg};
+use byob_store::Paths;
+use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
+use byob_types::InferenceConfig;
 use serde_json::{Value, json};
-use yah_protocol::{ChatUsage, ClientMsg, Compaction, Connection, Entry, NoticeLevel, PROTOCOL_VERSION, ServerMsg};
-use yah_store::Paths;
-use yah_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
-use yah_types::InferenceConfig;
 
 use crate::compact::{SUMMARY_ACK, SUMMARY_HEADER, SYSTEM};
 use crate::{CompactOptions, EngineConfig, EngineHandle, LocalConnection, Policy};
@@ -131,7 +131,7 @@ fn engine(url: String, compaction: CompactOptions, tools: bool, paths: Option<Pa
         adapt: crate::AdaptOptions { probe: false, ..Default::default() },
         paths,
         auto_title: false,
-        storage: yah_store::StorageKind::default(),
+        storage: byob_store::StorageKind::default(),
         chats_folder: None,
         compaction,
     };

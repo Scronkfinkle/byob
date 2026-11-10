@@ -606,6 +606,214 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "byob"
+version = "0.1.0"
+dependencies = [
+ "byob-agent",
+ "byob-artifact-wire",
+ "byob-exec",
+ "byob-plugins",
+ "byob-sandbox",
+ "byob-server",
+ "byob-store",
+ "byob-tools",
+ "byob-types",
+ "byob-ui-egui",
+ "eframe",
+ "egui",
+ "env_logger",
+ "log",
+ "nix",
+ "png",
+ "tempfile",
+]
+
+[[package]]
+name = "byob-agent"
+version = "0.1.0"
+dependencies = [
+ "byob-llm",
+ "byob-protocol",
+ "byob-store",
+ "byob-tools",
+ "byob-types",
+ "chrono",
+ "image",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "byob-artifact-wire"
+version = "0.1.0"
+
+[[package]]
+name = "byob-exec"
+version = "0.1.0"
+dependencies = [
+ "byob-sandbox",
+ "byob-tools",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "byob-llm"
+version = "0.1.0"
+dependencies = [
+ "byob-types",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ureq",
+ "url",
+]
+
+[[package]]
+name = "byob-mcp"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ureq",
+ "url",
+]
+
+[[package]]
+name = "byob-plugins"
+version = "0.1.0"
+dependencies = [
+ "byob-mcp",
+ "byob-sandbox",
+ "byob-tools",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "byob-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "byob-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "byob-sandbox"
+version = "0.1.0"
+dependencies = [
+ "landlock",
+ "log",
+ "nix",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "byob-server"
+version = "0.1.0"
+dependencies = [
+ "byob-agent",
+ "byob-protocol",
+ "byob-store",
+ "byob-tools",
+ "byob-types",
+ "httparse",
+ "log",
+ "serde_json",
+ "tempfile",
+ "tungstenite 0.30.0",
+]
+
+[[package]]
+name = "byob-store"
+version = "0.1.0"
+dependencies = [
+ "byob-types",
+ "chrono",
+ "directories",
+ "log",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "byob-tools"
+version = "0.1.0"
+dependencies = [
+ "byob-protocol",
+ "byob-types",
+ "log",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "byob-types"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "byob-ui-egui"
+version = "0.1.0"
+dependencies = [
+ "byob-protocol",
+ "byob-types",
+ "egui",
+ "ewebsock",
+ "image",
+ "js-sys",
+ "log",
+ "pollster",
+ "pulldown-cmark",
+ "rfd",
+ "ron",
+ "serde",
+ "serde_json",
+ "tungstenite 0.30.0",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
+]
+
+[[package]]
+name = "byob-web"
+version = "0.1.0"
+dependencies = [
+ "byob-ui-egui",
+ "eframe",
+ "egui",
+ "log",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5257,214 +5465,6 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "serde_json",
-]
-
-[[package]]
-name = "yah"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui",
- "env_logger",
- "log",
- "nix",
- "png",
- "tempfile",
- "yah-agent",
- "yah-artifact-wire",
- "yah-exec",
- "yah-plugins",
- "yah-sandbox",
- "yah-server",
- "yah-store",
- "yah-tools",
- "yah-types",
- "yah-ui-egui",
-]
-
-[[package]]
-name = "yah-agent"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "image",
- "log",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "yah-llm",
- "yah-protocol",
- "yah-store",
- "yah-tools",
- "yah-types",
-]
-
-[[package]]
-name = "yah-artifact-wire"
-version = "0.1.0"
-
-[[package]]
-name = "yah-exec"
-version = "0.1.0"
-dependencies = [
- "log",
- "serde",
- "serde_json",
- "tempfile",
- "yah-sandbox",
- "yah-tools",
-]
-
-[[package]]
-name = "yah-llm"
-version = "0.1.0"
-dependencies = [
- "log",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "ureq",
- "url",
- "yah-types",
-]
-
-[[package]]
-name = "yah-mcp"
-version = "0.1.0"
-dependencies = [
- "log",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "ureq",
- "url",
-]
-
-[[package]]
-name = "yah-plugins"
-version = "0.1.0"
-dependencies = [
- "log",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "yah-mcp",
- "yah-sandbox",
- "yah-tools",
-]
-
-[[package]]
-name = "yah-protocol"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "serde",
- "serde_json",
- "yah-types",
-]
-
-[[package]]
-name = "yah-sandbox"
-version = "0.1.0"
-dependencies = [
- "landlock",
- "log",
- "nix",
- "proptest",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "yah-server"
-version = "0.1.0"
-dependencies = [
- "httparse",
- "log",
- "serde_json",
- "tempfile",
- "tungstenite 0.30.0",
- "yah-agent",
- "yah-protocol",
- "yah-store",
- "yah-tools",
- "yah-types",
-]
-
-[[package]]
-name = "yah-store"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "directories",
- "log",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "yah-types",
-]
-
-[[package]]
-name = "yah-tools"
-version = "0.1.0"
-dependencies = [
- "log",
- "proptest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "yah-protocol",
- "yah-types",
-]
-
-[[package]]
-name = "yah-types"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "yah-ui-egui"
-version = "0.1.0"
-dependencies = [
- "egui",
- "ewebsock",
- "image",
- "js-sys",
- "log",
- "pollster",
- "pulldown-cmark",
- "rfd",
- "ron",
- "serde",
- "serde_json",
- "tungstenite 0.30.0",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "web-time",
- "yah-protocol",
- "yah-types",
-]
-
-[[package]]
-name = "yah-web"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui",
- "log",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "yah-ui-egui",
 ]
 
 [[package]]

@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 
+use byob_protocol::media::{self, ChartSpec};
+use byob_protocol::{ClientMsg, Entry, MediaContent, MediaKind, MediaRef};
 use egui::{Sense, Stroke, vec2};
-use yah_protocol::media::{self, ChartSpec};
-use yah_protocol::{ClientMsg, Entry, MediaContent, MediaKind, MediaRef};
 
 use crate::theme::Tokens;
 
@@ -162,7 +162,7 @@ pub fn chip(ui: &mut egui::Ui, t: &Tokens, r: &MediaRef) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yah_protocol::EntryRole;
+    use byob_protocol::EntryRole;
 
     fn png() -> Vec<u8> {
         let img = image::RgbaImage::from_pixel(6, 4, image::Rgba([10, 20, 30, 255]));
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn requests_once_then_draws_what_arrives() {
-        let spec = yah_types::chart::validate(&serde_json::json!({"type": "bar", "x": "m", "series": ["v"], "data": [{"m": "a", "v": 1}]})).unwrap();
+        let spec = byob_types::chart::validate(&serde_json::json!({"type": "bar", "x": "m", "series": ["v"], "data": [{"m": "a", "v": 1}]})).unwrap();
         let entry = Entry {
             id: 1,
             role: EntryRole::User,

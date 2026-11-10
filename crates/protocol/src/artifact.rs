@@ -3,7 +3,7 @@
 //! and exportable.
 //!
 //! An artifact's kind follows its file name ([`ArtifactKind::for_filename`]). Every version
-//! is a separate file in the chat's workspace (normally `.yah/artifacts/<id>/v<n>.<ext>`;
+//! is a separate file in the chat's workspace (normally `.byob/artifacts/<id>/v<n>.<ext>`;
 //! charts and images that tools made elsewhere are adopted where they are). Steps that made
 //! or changed one carry an [`ArtifactRef`]; clients get the chat's artifacts in
 //! [`crate::ServerMsg::Artifacts`] and fetch a version's bytes with
@@ -127,36 +127,36 @@ pub fn valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && !id.starts_with('-')
 }
 
-/// The theme an HTML app is given, as CSS custom properties (`--yah-bg`, …). Apps are told
+/// The theme an HTML app is given, as CSS custom properties (`--byob-bg`, …). Apps are told
 /// to style themselves with these so they match the window. Additive: names are only ever
 /// appended (the artifact helper accepts lowercase letters and dashes only, so no digits).
 pub const THEME_VARS: [&str; 26] = [
-    "--yah-bg",
-    "--yah-surface",
-    "--yah-fg",
-    "--yah-muted",
-    "--yah-accent",
-    "--yah-on-accent",
-    "--yah-border",
-    "--yah-danger",
-    "--yah-success",
-    "--yah-warning",
-    "--yah-link",
-    "--yah-strong",
-    "--yah-faint",
-    "--yah-panel",
-    "--yah-field",
-    "--yah-code-bg",
-    "--yah-code-fg",
-    "--yah-radius",
-    "--yah-chart-a",
-    "--yah-chart-b",
-    "--yah-chart-c",
-    "--yah-chart-d",
-    "--yah-chart-e",
-    "--yah-chart-f",
-    "--yah-chart-g",
-    "--yah-chart-h",
+    "--byob-bg",
+    "--byob-surface",
+    "--byob-fg",
+    "--byob-muted",
+    "--byob-accent",
+    "--byob-on-accent",
+    "--byob-border",
+    "--byob-danger",
+    "--byob-success",
+    "--byob-warning",
+    "--byob-link",
+    "--byob-strong",
+    "--byob-faint",
+    "--byob-panel",
+    "--byob-field",
+    "--byob-code-bg",
+    "--byob-code-fg",
+    "--byob-radius",
+    "--byob-chart-a",
+    "--byob-chart-b",
+    "--byob-chart-c",
+    "--byob-chart-d",
+    "--byob-chart-e",
+    "--byob-chart-f",
+    "--byob-chart-g",
+    "--byob-chart-h",
 ];
 
 #[cfg(test)]

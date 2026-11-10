@@ -7,11 +7,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use byob_llm::ChatMessage;
+use byob_protocol::{ClientMsg, Connection, EngineState, Entry, PROTOCOL_VERSION, ServerMsg, StepStatus, ToolsMode};
+use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
+use byob_types::InferenceConfig;
 use serde_json::{Value, json};
-use yah_llm::ChatMessage;
-use yah_protocol::{ClientMsg, Connection, EngineState, Entry, PROTOCOL_VERSION, ServerMsg, StepStatus, ToolsMode};
-use yah_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
-use yah_types::InferenceConfig;
 
 use crate::{AdaptOptions, EngineConfig, EngineHandle, LocalConnection, Policy, ToolMode};
 
@@ -181,7 +181,7 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
         adapt,
         paths: None,
         auto_title: false,
-        storage: yah_store::StorageKind::default(),
+        storage: byob_store::StorageKind::default(),
         chats_folder: None,
         // These tests are about fit_history; compaction has its own (compact_tests).
         compaction: crate::CompactOptions { auto: false, ..Default::default() },
@@ -362,14 +362,14 @@ fn long_tool_loop_stays_within_probed_context() {
     assert_eq!(h.runs.load(Ordering::SeqCst), 6);
     let reqs = chats(&h.seen);
     assert_eq!(reqs.len(), 7);
-    let tools_cost = yah_llm::budget::estimate_tools_tokens(&[yah_llm::ToolSpec {
+    let tools_cost = byob_llm::budget::estimate_tools_tokens(&[byob_llm::ToolSpec {
         name: "echo".into(),
         description: "Echo text back.".into(),
         parameters: json!({"type":"object","properties":{"text":{"type":"string"}}}),
     }]);
     for (round, req) in reqs.iter().enumerate() {
         let msgs: Vec<ChatMessage> = serde_json::from_value(req["messages"].clone()).unwrap();
-        let used = yah_llm::estimate_history_tokens(&msgs) + if req.get("tools").is_some() { tools_cost } else { 0 };
+        let used = byob_llm::estimate_history_tokens(&msgs) + if req.get("tools").is_some() { tools_cost } else { 0 };
         assert!(used <= 4096 - 1024, "round {round}: {used} tokens");
         // Every round's call and result are still there; the newest result keeps head and tail.
         assert_eq!(msgs.iter().filter(|m| m.role == "tool").count(), round);

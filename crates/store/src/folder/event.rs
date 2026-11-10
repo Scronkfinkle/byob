@@ -222,7 +222,7 @@ pub(crate) fn parse(bytes: &[u8], path: &Path) -> Parsed {
                     None => Bad::Garbage,
                 };
                 let newer = match ver {
-                    Some(ver) if ver > u64::from(EVENT_VERSION) => format!(" (written by a newer yah, v{ver})"),
+                    Some(ver) if ver > u64::from(EVENT_VERSION) => format!(" (written by a newer byob, v{ver})"),
                     _ => String::new(),
                 };
                 out.warnings.push(format!("{}: skipping line {n}{newer}: {e}", path.display()));
@@ -278,7 +278,7 @@ pub(crate) fn append(path: &Path, text: &str, sync: bool) -> Result<(Stamp, Stam
         f.seek(SeekFrom::End(-1)).map_err(io)?;
         f.read_exact(&mut last).map_err(io)?;
         if last[0] != b'\n' {
-            log::warn!("yah-store: {} ended mid-line (crash?); starting a new line", path.display());
+            log::warn!("byob-store: {} ended mid-line (crash?); starting a new line", path.display());
             buf.push('\n');
         }
     }

@@ -1,5 +1,5 @@
 [package]
-name = "yah-protocol"
+name = "byob-protocol"
 description = "Client <-> engine messages shared by the desktop UI, web UI and server. Must compile to wasm32 (L1)"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-yah-types.workspace = true
+byob-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true

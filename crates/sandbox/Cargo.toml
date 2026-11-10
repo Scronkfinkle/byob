@@ -1,5 +1,5 @@
 [package]
-name = "yah-sandbox"
+name = "byob-sandbox"
 description = "Run untrusted commands confined: Landlock + namespaces on Linux, sandbox-exec on macOS; timeouts, output caps, process-tree kill (L2)"
 version.workspace = true
 edition.workspace = true

@@ -1,4 +1,4 @@
-//! `hob-plugin.json` (alias `yah-plugin.json`): the plugin manifest.
+//! `hob-plugin.json` (alias `byob-plugin.json`): the plugin manifest.
 //!
 //! Parsing mirrors hob's `parseManifest`: the same required fields, defaults and limits,
 //! and error messages written for the plugin's author (e.g.
@@ -11,10 +11,10 @@ use std::path::{Component, Path};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-/// The manifest file name hob uses. yah reads it unchanged.
+/// The manifest file name hob uses. byob reads it unchanged.
 pub const MANIFEST: &str = "hob-plugin.json";
-/// yah's own name for the same file; read when there is no `hob-plugin.json`.
-pub const MANIFEST_ALIAS: &str = "yah-plugin.json";
+/// byob's own name for the same file; read when there is no `hob-plugin.json`.
+pub const MANIFEST_ALIAS: &str = "byob-plugin.json";
 
 /// Prompt length caps (characters), as in hob: built-in plugins carry longer how-tos.
 const PROMPT_MAX: usize = 600;

@@ -1,4 +1,4 @@
-//! Finding plugins on disk: folders with a `hob-plugin.json` (or `yah-plugin.json`),
+//! Finding plugins on disk: folders with a `hob-plugin.json` (or `byob-plugin.json`),
 //! their `skills/*/SKILL.md`, and checks that declared scripts exist. Nothing here is
 //! fatal: a broken plugin becomes a [`LoadError`] and the rest still load.
 
@@ -61,7 +61,7 @@ pub fn current_platform() -> &'static str {
     }
 }
 
-/// The manifest file in `dir`, if any: `hob-plugin.json`, else `yah-plugin.json`.
+/// The manifest file in `dir`, if any: `hob-plugin.json`, else `byob-plugin.json`.
 pub fn manifest_path(dir: &Path) -> Option<PathBuf> {
     [MANIFEST, MANIFEST_ALIAS].iter().map(|f| dir.join(f)).find(|p| p.is_file())
 }

@@ -1,9 +1,9 @@
-//! yah-artifact-host: renders one HTML app artifact with Servo, offscreen, for yah.
+//! byob-artifact-host: renders one HTML app artifact with Servo, offscreen, for byob.
 //!
-//! yah spawns one of these per live app and talks to it over stdin/stdout with
-//! `yah-artifact-wire` frames: `Load`/`Resize`/`Input`/`Theme`/`Ping` in, `Frame`s (CPU
+//! byob spawns one of these per live app and talks to it over stdin/stdout with
+//! `byob-artifact-wire` frames: `Load`/`Resize`/`Input`/`Theme`/`Ping` in, `Frame`s (CPU
 //! readback of a software GL surface, only when the pixels changed), `ContentHeight`,
-//! `Error`, `Title`, `Cursor`, `Pong` out. yah kills the process when the page stops
+//! `Error`, `Title`, `Cursor`, `Pong` out. byob kills the process when the page stops
 //! answering pings (a runaway script) or the app goes out of view, so this side keeps no
 //! state worth saving and simply exits when stdin closes.
 //!
@@ -29,24 +29,24 @@ use servo::{
     MouseButtonAction, MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, NamedKey, NavigationRequest, RenderingContext, Servo, ServoBuilder,
     SoftwareRenderingContext, WebResourceLoad, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint, WheelDelta, WheelEvent, WheelMode,
 };
-use yah_artifact_wire::{self as wire, Event, Input, Request};
+use byob_artifact_wire::{self as wire, Event, Input, Request};
 
 /// How often the document height is measured.
 const MEASURE_EVERY: Duration = Duration::from_millis(300);
-/// At most this many frames per second go to yah.
+/// At most this many frames per second go to byob.
 const MIN_FRAME_GAP: Duration = Duration::from_millis(16);
 /// Longest the loop sleeps while hidden.
 const HIDDEN_WAIT: Duration = Duration::from_millis(500);
-/// What the page's error reports start with (see yah-server's artifact shim).
-const ERROR_MARK: &str = "\u{1}yah-error ";
+/// What the page's error reports start with (see byob-server's artifact shim).
+const ERROR_MARK: &str = "\u{1}byob-error ";
 
 fn log(msg: impl AsRef<str>) {
-    eprintln!("[yah-artifact-host {}] {}", std::process::id(), msg.as_ref());
+    eprintln!("[byob-artifact-host {}] {}", std::process::id(), msg.as_ref());
 }
 
 enum Msg {
     Req(Request),
-    /// yah closed our stdin (or sent garbage): exit.
+    /// byob closed our stdin (or sent garbage): exit.
     Gone,
     Wake,
 }
@@ -120,7 +120,7 @@ impl WebViewDelegate for Page {
     fn show_console_message(&self, _: WebView, level: servo::ConsoleLogLevel, message: String) {
         match parse_error(&message) {
             Some(e) => self.push(e),
-            None if std::env::var_os("YAH_ARTIFACT_HOST_CONSOLE").is_some() => log(format!("console {level:?}: {message}")),
+            None if std::env::var_os("BYOB_ARTIFACT_HOST_CONSOLE").is_some() => log(format!("console {level:?}: {message}")),
             None => {}
         }
     }
@@ -165,11 +165,11 @@ fn data_url(html: &str, theme: &wire::Theme) -> Option<url::Url> {
     url::Url::parse(&format!("data:text/html;charset=utf-8,{}#{}", body.replace('+', "%20"), hash.join("&"))).ok()
 }
 
-/// Theme variables that look like ours (yah sends its own colours; this keeps the JS below
+/// Theme variables that look like ours (byob sends its own colours; this keeps the JS below
 /// from ever seeing anything else).
 fn safe_vars(theme: &wire::Theme) -> impl Iterator<Item = (&str, &str)> {
     theme.vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).filter(|(k, v)| {
-        k.strip_prefix("--yah-").is_some_and(|n| (1..=30).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'))
+        k.strip_prefix("--byob-").is_some_and(|n| (1..=30).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'))
             && v.len() <= 60
             && v.bytes().all(|b| b.is_ascii_alphanumeric() || b"#(),. %-".contains(&b))
     })
@@ -325,7 +325,7 @@ impl Host {
         let Some(v) = &self.view else { return };
         if visible {
             v.webview.show();
-            // Paint now: yah dropped nothing, but the page may have changed meanwhile.
+            // Paint now: byob dropped nothing, but the page may have changed meanwhile.
             self.page.frame_ready.set(true);
             self.next_measure = Instant::now();
         } else {
@@ -394,7 +394,7 @@ impl Host {
                 let (w, h) = (img.width(), img.height());
                 let rgba = img.into_raw();
                 let same = self.last_frame.as_ref().is_some_and(|(lw, lh, l)| *lw == w && *lh == h && *l == rgba);
-                if std::env::var_os("YAH_ARTIFACT_HOST_STATS").is_some() {
+                if std::env::var_os("BYOB_ARTIFACT_HOST_STATS").is_some() {
                     log(format!(
                         "frame {w}x{h}: paint {painted:?}, readback+compare {:?}, changed {}",
                         self.last_paint.elapsed().saturating_sub(painted),
@@ -532,7 +532,7 @@ fn main() {
         let events = std::mem::take(&mut *host.page.out.borrow_mut());
         for e in events {
             if wire::send(&mut out, &e).is_err() {
-                // yah is gone.
+                // byob is gone.
                 std::process::exit(0);
             }
         }
@@ -548,8 +548,8 @@ mod tests {
 
     #[test]
     fn errors_from_the_console() {
-        assert_eq!(parse_error("\u{1}yah-error 12 x is not defined"), Some(Event::Error { message: "x is not defined".into(), line: 12 }));
-        assert_eq!(parse_error("\u{1}yah-error oops"), Some(Event::Error { message: "oops".into(), line: 0 }));
+        assert_eq!(parse_error("\u{1}byob-error 12 x is not defined"), Some(Event::Error { message: "x is not defined".into(), line: 12 }));
+        assert_eq!(parse_error("\u{1}byob-error oops"), Some(Event::Error { message: "oops".into(), line: 0 }));
         assert_eq!(parse_error("plain log"), None);
     }
 
@@ -557,19 +557,19 @@ mod tests {
     fn theme_vars_are_filtered() {
         let theme = wire::Theme {
             vars: vec![
-                ("--yah-bg".into(), "#16171a".into()),
-                ("--yah-x".into(), "red');alert(1);('".into()),
+                ("--byob-bg".into(), "#16171a".into()),
+                ("--byob-x".into(), "red');alert(1);('".into()),
                 ("color".into(), "red".into()),
-                ("--yah-fg".into(), "rgb(1, 2, 3)".into()),
+                ("--byob-fg".into(), "rgb(1, 2, 3)".into()),
             ],
             dark: false,
         };
         let js = theme_js(&theme);
-        assert!(js.contains("'--yah-bg','#16171a'") && js.contains("'--yah-fg','rgb(1, 2, 3)'") && js.contains("'light'"), "{js}");
+        assert!(js.contains("'--byob-bg','#16171a'") && js.contains("'--byob-fg','rgb(1, 2, 3)'") && js.contains("'light'"), "{js}");
         assert!(!js.contains("alert") && !js.contains("'color'"), "{js}");
         let url = data_url("<p>a b+c#d</p>", &theme).unwrap();
         let s = url.as_str();
-        assert!(s.starts_with("data:text/html;charset=utf-8,%3Cp%3Ea%20b%2Bc%23d%3C%2Fp%3E#--yah-bg=%2316171a&--yah-fg=rgb(1,%202,%203)"), "{s}");
+        assert!(s.starts_with("data:text/html;charset=utf-8,%3Cp%3Ea%20b%2Bc%23d%3C%2Fp%3E#--byob-bg=%2316171a&--byob-fg=rgb(1,%202,%203)"), "{s}");
     }
 
     #[test]

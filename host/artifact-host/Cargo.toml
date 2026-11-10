@@ -1,15 +1,15 @@
-# yah-artifact-host: renders one HTML app artifact with Servo, offscreen, for the yah
+# byob-artifact-host: renders one HTML app artifact with Servo, offscreen, for the byob
 # desktop app, which talks to it over stdin/stdout (crates/artifact-wire).
 #
 # A separate workspace ON PURPOSE (see AGENTS.md "Exemption: the artifact host"): Servo is
-# MPL-2.0 and pulls in tokio, which yah's own workspace bans. Keeping it here means none of
-# that enters yah's dependency graph, lock file or feature unification; yah only ever spawns
+# MPL-2.0 and pulls in tokio, which byob's own workspace bans. Keeping it here means none of
+# that enters byob's dependency graph, lock file or feature unification; byob only ever spawns
 # this binary as a child process.
 [workspace]
 resolver = "3"
 
 [package]
-name = "yah-artifact-host"
+name = "byob-artifact-host"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
@@ -17,7 +17,7 @@ rust-version = "1.95"
 publish = false
 
 [dependencies]
-yah-artifact-wire = { path = "../../crates/artifact-wire" }
+byob-artifact-wire = { path = "../../crates/artifact-wire" }
 # No multiprocess/devtools/clipboard/gamepad; `bundled` = baked-in resources + freetype.
 servo = { version = "0.8.0", default-features = false, features = ["bundled", "js_jit"] }
 euclid = "0.22"

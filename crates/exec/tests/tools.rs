@@ -1,5 +1,5 @@
 //! The tools end to end, through the real sandbox. This binary is its own sandbox helper
-//! (see yah-sandbox's tests/enforce.rs), hence the custom harness.
+//! (see byob-sandbox's tests/enforce.rs), hence the custom harness.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::ExitCode;
@@ -7,10 +7,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use byob_exec::{Exec, Mode, Python, register};
+use byob_sandbox::{Sandbox, TempDir, dispatch_helper};
+use byob_tools::{FileChange, Registry, ToolContext, ToolOutput};
 use serde_json::json;
-use yah_exec::{Exec, Mode, Python, register};
-use yah_sandbox::{Sandbox, TempDir, dispatch_helper};
-use yah_tools::{FileChange, Registry, ToolContext, ToolOutput};
 
 fn main() -> ExitCode {
     if let Some(code) = dispatch_helper() {
@@ -65,7 +65,7 @@ fn call(ws: &TempDir, tool: &str, args: serde_json::Value) -> ToolOutput {
 }
 
 fn command_output_and_created_files() {
-    let ws = TempDir::new("yah-exec-ws-").unwrap();
+    let ws = TempDir::new("byob-exec-ws-").unwrap();
     std::fs::write(ws.path().join("data.csv"), "a,b\n1,2\n3,4\n").unwrap();
     let out = call(&ws, "run_command", json!({"command": "wc -l < data.csv; mkdir -p out && echo hi > out/x.txt && echo more >> data.csv"}));
     assert!(!out.failed, "{out:?}");
@@ -76,16 +76,16 @@ fn command_output_and_created_files() {
 }
 
 fn command_failure_and_denied_write() {
-    let ws = TempDir::new("yah-exec-ws-").unwrap();
+    let ws = TempDir::new("byob-exec-ws-").unwrap();
     let out = call(&ws, "run_command", json!({"command": "echo oops >&2; exit 3"}));
     assert!(out.failed && out.text.contains("Exit code: 3") && out.text.contains("stderr:\noops"), "{}", out.text);
-    let target = std::env::temp_dir().join(format!("yah-exec-escape-{}", std::process::id()));
+    let target = std::env::temp_dir().join(format!("byob-exec-escape-{}", std::process::id()));
     let out = call(&ws, "run_command", json!({"command": format!("echo x > {}", target.display())}));
     assert!(out.failed && !target.exists(), "{}", out.text);
 }
 
 fn command_timeout_and_cancel() {
-    let ws = TempDir::new("yah-exec-ws-").unwrap();
+    let ws = TempDir::new("byob-exec-ws-").unwrap();
     let start = Instant::now();
     let out = call(&ws, "run_command", json!({"command": "sleep 30", "timeout_s": 1}));
     assert!(out.failed && out.text.starts_with("Timed out after 1 s"), "{}", out.text);
@@ -109,7 +109,7 @@ fn python_code_and_script() {
         println!("  (skipped: no python)");
         return;
     }
-    let ws = TempDir::new("yah-exec-ws-").unwrap();
+    let ws = TempDir::new("byob-exec-ws-").unwrap();
     std::fs::write(ws.path().join("data.csv"), "x,y\n1,2\n3,4\n").unwrap();
     let code = "import csv, os, sys\nrows = list(csv.DictReader(open('data.csv')))\nprint(sum(int(r['y']) for r in rows))\nopen('total.txt','w').write('6')\nprint(os.environ.get('MPLBACKEND'))";
     let out = call(&ws, "run_python", json!({"code": code}));
@@ -135,7 +135,7 @@ fn python_chart_with_matplotlib() {
         println!("  (skipped: no matplotlib for {})", py.path.display());
         return;
     }
-    let ws = TempDir::new("yah-exec-ws-").unwrap();
+    let ws = TempDir::new("byob-exec-ws-").unwrap();
     let code = "import matplotlib.pyplot as plt\nplt.plot([1,2,3],[3,1,2])\nplt.savefig('chart.png')\nprint('saved')";
     let out = call(&ws, "run_python", json!({"code": code}));
     assert!(!out.failed && out.changes.contains(&FileChange::Created(ws.path().join("chart.png"))), "{}", out.text);
@@ -143,16 +143,16 @@ fn python_chart_with_matplotlib() {
     assert!(png.starts_with(b"\x89PNG"));
 }
 
-/// Downloads from PyPI, so opt-in: `YAH_TEST_UV_INSTALL=1` with `uv` on PATH.
+/// Downloads from PyPI, so opt-in: `BYOB_TEST_UV_INSTALL=1` with `uv` on PATH.
 fn install_packages_with_uv() {
-    if std::env::var_os("YAH_TEST_UV_INSTALL").is_none() || yah_sandbox::which("uv".as_ref()).is_none() {
-        println!("  (skipped: set YAH_TEST_UV_INSTALL=1 and put uv on PATH)");
+    if std::env::var_os("BYOB_TEST_UV_INSTALL").is_none() || byob_sandbox::which("uv".as_ref()).is_none() {
+        println!("  (skipped: set BYOB_TEST_UV_INSTALL=1 and put uv on PATH)");
         return;
     }
-    let data = TempDir::new("yah-exec-data-").unwrap();
+    let data = TempDir::new("byob-exec-data-").unwrap();
     let mut reg = Registry::default();
     register(&mut reg, Exec { mode: Mode::Sandboxed(Sandbox::new(std::env::current_exe().unwrap())), data_dir: Some(data.path().to_path_buf()) });
-    let ws = TempDir::new("yah-exec-ws-").unwrap();
+    let ws = TempDir::new("byob-exec-ws-").unwrap();
     let cancel = AtomicBool::new(false);
     let ctx = ToolContext::new(ws.path(), &cancel);
     let out = reg.get("install_python_packages").unwrap().run(&json!({"packages": ["six"]}), &ctx);

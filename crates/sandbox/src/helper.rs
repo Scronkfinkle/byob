@@ -1,8 +1,8 @@
-//! The helper: the app binary re-executed as `yah __sandbox-exec <policy> -- <cmd> <args…>`.
+//! The helper: the app binary re-executed as `byob __sandbox-exec <policy> -- <cmd> <args…>`.
 //! It confines *itself* (std's `pre_exec` would need `unsafe`), then becomes or starts the
 //! command, which inherits every restriction.
 //!
-//! Exit codes: the command's own; [`SETUP_FAILED`] with a `yah-sandbox: …` line on stderr
+//! Exit codes: the command's own; [`SETUP_FAILED`] with a `byob-sandbox: …` line on stderr
 //! when the sandbox couldn't be set up (nothing ran); 126/127 when the command couldn't
 //! be started; 128+N when it died from signal N.
 
@@ -20,7 +20,7 @@ pub const PROBE_ARG: &str = "--probe";
 /// Exit code when the sandbox couldn't be set up.
 pub const SETUP_FAILED: u8 = 125;
 /// Prefix of the helper's own error line on stderr.
-pub const ERROR_PREFIX: &str = "yah-sandbox: ";
+pub const ERROR_PREFIX: &str = "byob-sandbox: ";
 
 /// What a run is confined by.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

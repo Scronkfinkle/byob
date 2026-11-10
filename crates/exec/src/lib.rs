@@ -1,13 +1,13 @@
 //! Tools that run code: [`RunCommand`] (`run_command`, a shell command), [`RunPython`]
 //! (`run_python`, Python code or a script) and [`InstallPythonPackages`]
-//! (`install_python_packages`, into yah's managed venv with `uv`).
+//! (`install_python_packages`, into byob's managed venv with `uv`).
 //!
-//! Everything runs through [`yah_sandbox`]: read the system, read+write the workspace and
+//! Everything runs through [`byob_sandbox`]: read the system, read+write the workspace and
 //! a private temp folder, no network unless the call asks (and the user approves), a
 //! minimal environment without inherited secrets, wall-clock timeout, bounded output,
 //! and the whole process tree is killed on timeout or Stop. Where the OS can't sandbox
 //! (no Landlock), commands still run, with a warning in the log and in the tool output;
-//! `YAH_SANDBOX=off` turns the sandbox off explicitly ([`Mode::Unsandboxed`]).
+//! `BYOB_SANDBOX=off` turns the sandbox off explicitly ([`Mode::Unsandboxed`]).
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod python;
@@ -18,10 +18,10 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use byob_sandbox::{Limits, Outcome, Policy, RunOptions, Sandbox, Snapshot, TempDir};
+use byob_tools::{Access, FileChange, Registry, Tool, ToolContext, ToolOutput, ToolSpec, parse_args};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use yah_sandbox::{Limits, Outcome, Policy, RunOptions, Sandbox, Snapshot, TempDir};
-use yah_tools::{Access, FileChange, Registry, Tool, ToolContext, ToolOutput, ToolSpec, parse_args};
 
 pub use python::Python;
 
@@ -41,7 +41,7 @@ const MAX_LISTED: usize = 30;
 #[derive(Debug, Clone)]
 pub enum Mode {
     Sandboxed(Sandbox),
-    /// The user turned the sandbox off (`YAH_SANDBOX=off`): plain child processes, still
+    /// The user turned the sandbox off (`BYOB_SANDBOX=off`): plain child processes, still
     /// with the clean environment, timeout, output caps and group kill.
     Unsandboxed,
 }
@@ -50,8 +50,8 @@ impl Mode {
     /// `Unsandboxed` if the user opted out (logged), else the sandbox via this binary.
     /// Logs what the sandbox can enforce here (a warning if it can't confine anything).
     pub fn from_env() -> Result<Self, String> {
-        if yah_sandbox::disabled_by_user() {
-            log::warn!("{}=off: commands and Python run WITHOUT a sandbox", yah_sandbox::DISABLE_ENV);
+        if byob_sandbox::disabled_by_user() {
+            log::warn!("{}=off: commands and Python run WITHOUT a sandbox", byob_sandbox::DISABLE_ENV);
             return Ok(Self::Unsandboxed);
         }
         let sb = Sandbox::from_current_exe()?;
@@ -67,7 +67,7 @@ impl Mode {
     /// A note for the model/user when runs aren't actually confined.
     fn unconfined_note(&self) -> Option<String> {
         match self {
-            Self::Unsandboxed => Some(format!("ran without a sandbox: {}=off", yah_sandbox::DISABLE_ENV)),
+            Self::Unsandboxed => Some(format!("ran without a sandbox: {}=off", byob_sandbox::DISABLE_ENV)),
             Self::Sandboxed(sb) => {
                 let e = sb.probe();
                 (!e.confined()).then(|| format!("ran without a sandbox: {}", e.notes.join("; ")))
@@ -80,7 +80,7 @@ impl Mode {
 #[derive(Debug, Clone)]
 pub struct Exec {
     pub mode: Mode,
-    /// yah's data folder (holds the managed Python venv); `None` disables it.
+    /// byob's data folder (holds the managed Python venv); `None` disables it.
     pub data_dir: Option<PathBuf>,
 }
 
@@ -133,14 +133,14 @@ impl Exec {
             }
         };
         cmd.current_dir(cwd);
-        yah_sandbox::clean_env(&mut cmd, tmp);
+        byob_sandbox::clean_env(&mut cmd, tmp);
         cmd.envs(job.env);
         let opts = RunOptions { timeout: job.timeout, max_output: MAX_OUTPUT, ..Default::default() };
-        let out = yah_sandbox::run(cmd, &opts, &|| ctx.cancelled())?;
+        let out = byob_sandbox::run(cmd, &opts, &|| ctx.cancelled())?;
         match out.sandbox_error() {
             Some(e) => Err(format!(
                 "the sandbox couldn't start: {e}. Nothing ran. (The user can set {}=off to run commands without a sandbox.)",
-                yah_sandbox::DISABLE_ENV
+                byob_sandbox::DISABLE_ENV
             )),
             None => Ok(out),
         }
@@ -151,11 +151,11 @@ impl Exec {
         if ctx.cancelled() {
             return ToolOutput::err("Stopped by the user.");
         }
-        let root = match yah_tools::sandbox::root(ctx.workspace) {
+        let root = match byob_tools::sandbox::root(ctx.workspace) {
             Ok(r) => r,
             Err(e) => return ToolOutput::err(e),
         };
-        let tmp = match TempDir::new("yah-run-") {
+        let tmp = match TempDir::new("byob-run-") {
             Ok(t) => t,
             Err(e) => return ToolOutput::err(e),
         };
@@ -174,7 +174,7 @@ impl Exec {
     }
 }
 
-fn describe(out: &Outcome, changes: &yah_sandbox::Changes, root: &Path, timeout: Duration, unconfined: Option<String>) -> ToolOutput {
+fn describe(out: &Outcome, changes: &byob_sandbox::Changes, root: &Path, timeout: Duration, unconfined: Option<String>) -> ToolOutput {
     let mut text = String::new();
     if out.cancelled {
         text.push_str("Stopped by the user.\n");
@@ -375,7 +375,7 @@ impl Tool for RunPython {
         let script = match (a.code, a.script) {
             (Some(code), None) if code.len() <= MAX_CODE_LEN && !code.contains('\0') => Source::Code(code),
             (Some(_), None) => return ToolOutput::err(format!("code must be text of at most {MAX_CODE_LEN} bytes")),
-            (None, Some(s)) => match yah_tools::sandbox::resolve_follow(ctx.workspace, &s) {
+            (None, Some(s)) => match byob_tools::sandbox::resolve_follow(ctx.workspace, &s) {
                 Ok(r) if r.abs.is_file() => Source::Script(r.abs),
                 Ok(r) => return ToolOutput::err(format!("{} is not a file in the workspace", r.show())),
                 Err(e) => return ToolOutput::err(e),
@@ -417,7 +417,7 @@ enum Source {
     Script(PathBuf),
 }
 
-/// `install_python_packages`: add packages to yah's managed venv (created on first use)
+/// `install_python_packages`: add packages to byob's managed venv (created on first use)
 /// with `uv`. Wheels only (`--only-binary :all:`), so installing never runs package code.
 pub struct InstallPythonPackages(Arc<Exec>);
 
@@ -431,7 +431,7 @@ impl Tool for InstallPythonPackages {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "install_python_packages".into(),
-            description: "Install Python packages (from PyPI, prebuilt wheels only) into yah's own Python environment, which run_python then uses. \
+            description: "Install Python packages (from PyPI, prebuilt wheels only) into byob's own Python environment, which run_python then uses. \
                 Use it when run_python fails with ModuleNotFoundError, e.g. packages: [\"pandas\", \"matplotlib\"]. Needs internet; the user is asked."
                 .into(),
             parameters: json!({
@@ -468,7 +468,7 @@ impl Tool for InstallPythonPackages {
         if let Some(bad) = a.packages.iter().find(|p| !python::valid_requirement(p)) {
             return ToolOutput::err(format!("{bad:?} is not a package name (like \"pandas\" or \"numpy>=2\")"));
         }
-        let Some(data) = self.0.data_dir.as_deref() else { return ToolOutput::err("yah has no data folder for a Python environment") };
+        let Some(data) = self.0.data_dir.as_deref() else { return ToolOutput::err("byob has no data folder for a Python environment") };
         match install(&self.0, data, &a.packages, ctx) {
             Ok(text) => ToolOutput::ok(text),
             Err(e) => ToolOutput::err(e),
@@ -485,7 +485,7 @@ pub fn install(exec: &Exec, data_dir: &Path, packages: &[String], ctx: &ToolCont
     std::fs::create_dir_all(&root).map_err(|e| format!("can't create {}: {e}", root.display()))?;
     let root = root.canonicalize().map_err(|e| format!("{}: {e}", root.display()))?;
     let venv = root.join("venv");
-    let tmp = TempDir::new("yah-install-")?;
+    let tmp = TempDir::new("byob-install-")?;
     let mut read: Vec<PathBuf> = uv.canonicalize().ok().and_then(|p| p.parent().map(Path::to_path_buf)).into_iter().collect();
     let base = python::system_python();
     if let Some(b) = &base {

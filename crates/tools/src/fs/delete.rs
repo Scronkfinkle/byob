@@ -15,7 +15,7 @@ use crate::{Access, FileChange, Tool, ToolContext, ToolOutput, ToolSpec, sandbox
 const MAX_COUNT: usize = 10_000;
 
 /// Default trash folder, relative to the workspace.
-pub const DEFAULT_TRASH_DIR: &str = ".yah/trash";
+pub const DEFAULT_TRASH_DIR: &str = ".byob/trash";
 
 /// Deleted items go to `<workspace>/<trash_dir>/<id>/<original relative path>`, so they can
 /// be restored by moving them back. `trash_dir` must be relative and inside the workspace.
@@ -166,7 +166,7 @@ mod tests {
         assert!(!out.failed, "{}", out.text);
         assert_eq!(out.changes, vec![FileChange::Deleted(root.join("docs/sub/a.txt"))]);
         assert!(!root.join("docs/sub/a.txt").exists());
-        let batches: Vec<_> = fs::read_dir(root.join(".yah/trash")).unwrap().collect();
+        let batches: Vec<_> = fs::read_dir(root.join(".byob/trash")).unwrap().collect();
         assert_eq!(batches.len(), 1);
         let saved = batches[0].as_ref().unwrap().path().join("docs/sub/a.txt");
         assert_eq!(fs::read_to_string(saved).unwrap(), "keep me");
@@ -175,7 +175,7 @@ mod tests {
         assert!(!run(&DeleteFile::default(), d.path(), json!({"path": "docs/sub/a.txt"})).failed);
         assert!(!run(&DeleteFile::default(), d.path(), json!({"path": "docs"})).failed);
         assert!(!root.join("docs").exists());
-        assert_eq!(fs::read_dir(root.join(".yah/trash")).unwrap().count(), 3);
+        assert_eq!(fs::read_dir(root.join(".byob/trash")).unwrap().count(), 3);
     }
 
     #[test]
@@ -197,20 +197,20 @@ mod tests {
     #[test]
     fn refusals() {
         let d = tempfile::tempdir().unwrap();
-        fs::create_dir_all(d.path().join(".yah/trash")).unwrap();
+        fs::create_dir_all(d.path().join(".byob/trash")).unwrap();
         for args in [
             json!({}),
             json!({"path": "."}),
             json!({"path": ""}),
             json!({"path": ".."}),
             json!({"path": "nope"}),
-            json!({"path": ".yah"}),
-            json!({"path": ".yah/trash"}),
+            json!({"path": ".byob"}),
+            json!({"path": ".byob/trash"}),
         ] {
             let out = run(&DeleteFile::default(), d.path(), args.clone());
             assert!(out.failed && out.changes.is_empty(), "{args}: {}", out.text);
         }
-        assert!(d.path().join(".yah/trash").exists());
+        assert!(d.path().join(".byob/trash").exists());
     }
 
     #[cfg(unix)]
@@ -224,9 +224,9 @@ mod tests {
         assert!(!run(&DeleteFile::default(), d.path(), json!({"path": "link"})).failed);
         assert_eq!(fs::read_to_string(outside.path().join("victim")).unwrap(), "safe");
         // a trash folder that links outside is refused
-        fs::remove_dir_all(d.path().join(".yah")).unwrap();
+        fs::remove_dir_all(d.path().join(".byob")).unwrap();
         fs::write(d.path().join("f"), "").unwrap();
-        std::os::unix::fs::symlink(outside.path(), d.path().join(".yah")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), d.path().join(".byob")).unwrap();
         assert!(run(&DeleteFile::default(), d.path(), json!({"path": "f"})).failed);
         assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
     }

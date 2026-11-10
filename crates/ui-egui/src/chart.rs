@@ -5,9 +5,9 @@
 //! hob's look (rounded bar ends, recessive grid), and must not grab scroll/drag gestures
 //! inside the transcript's scroll area.
 
+use byob_protocol::media::ChartSpec;
+use byob_types::chart::ChartType;
 use egui::{Align2, Color32, CornerRadius, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2, pos2, vec2};
-use yah_protocol::media::ChartSpec;
-use yah_types::chart::ChartType;
 
 use crate::theme::Tokens;
 
@@ -626,7 +626,7 @@ mod tests {
         if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
             o.extend(e.clone());
         }
-        yah_types::chart::validate(&v).unwrap()
+        byob_types::chart::validate(&v).unwrap()
     }
 
     /// Every chart type draws (with and without hover) without panicking, at odd sizes too.

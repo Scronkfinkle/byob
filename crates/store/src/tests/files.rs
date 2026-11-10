@@ -24,7 +24,7 @@ fn settings_round_trip() {
     let s = Settings {
         inference: InferenceSettings { base_url: Some("http://silicon:9931/v1".into()), model: Some("local".into()), ..Default::default() },
         theme: Theme::Dark,
-        workspace: Some(PathBuf::from("/home/me/Documents/yah")),
+        workspace: Some(PathBuf::from("/home/me/Documents/byob")),
         plugin_dirs: vec!["/opt/plugins".into(), "/home/me/ünï plugins".into()],
         ..Default::default()
     };
@@ -153,7 +153,7 @@ fn ensure_creates_dirs() {
     let paths = Paths { config_dir: dir.path().join("c"), data_dir: dir.path().join("d") };
     paths.ensure().unwrap();
     assert!(paths.config_dir.is_dir() && paths.data_dir.is_dir() && paths.undo_dir().is_dir());
-    assert_eq!(paths.db(), dir.path().join("d/yah.db"));
+    assert_eq!(paths.db(), dir.path().join("d/byob.db"));
 }
 
 #[test]
@@ -161,11 +161,11 @@ fn storage_settings_parse_and_default_to_sqlite() {
     let dir = TempDir::new();
     let p = dir.path().join("settings.json");
     assert_eq!(Settings::default().storage, StorageKind::Sqlite);
-    std::fs::write(&p, r#"{"storage": "folder", "chats_folder": "~/yah"}"#).unwrap();
+    std::fs::write(&p, r#"{"storage": "folder", "chats_folder": "~/byob"}"#).unwrap();
     let s = Settings::load(&p).value;
     assert_eq!(s.storage, StorageKind::Folder);
     let root = folder_root(&s, &Paths::at(dir.path()));
-    assert!(root.ends_with("yah") && !root.starts_with("~"), "{}", root.display());
+    assert!(root.ends_with("byob") && !root.starts_with("~"), "{}", root.display());
     assert_eq!(folder_root(&Settings::default(), &Paths::at(dir.path())), dir.path().join("chats-folder"));
     // An unknown backend falls back to the default rather than resetting everything.
     std::fs::write(&p, r#"{"storage": "mongo", "theme": "dark"}"#).unwrap();

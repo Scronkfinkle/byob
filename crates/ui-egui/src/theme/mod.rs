@@ -246,11 +246,11 @@ pub fn ensure_contrast(fg: Color32, bgs: &[Color32], min: f32) -> Color32 {
 
 impl Tokens {
     pub fn dark() -> Self {
-        Self::derive(&presets::YAH_DARK, rgb(presets::YAH_DARK.default_accent()), &Knobs::default())
+        Self::derive(&presets::BYOB_DARK, rgb(presets::BYOB_DARK.default_accent()), &Knobs::default())
     }
 
     pub fn light() -> Self {
-        Self::derive(&presets::YAH_LIGHT, rgb(presets::YAH_LIGHT.default_accent()), &Knobs::default())
+        Self::derive(&presets::BYOB_LIGHT, rgb(presets::BYOB_LIGHT.default_accent()), &Knobs::default())
     }
 
     pub fn has_role(role: &str) -> bool {
@@ -258,7 +258,7 @@ impl Tokens {
     }
 
     /// Tokens for a set of preferences, given the OS/browser theme if known and the user's
-    /// own themes (theme ids not found fall back to yah's pair).
+    /// own themes (theme ids not found fall back to byob's pair).
     pub fn for_prefs(prefs: &Prefs, system: Option<egui::Theme>, user: &[ThemeDef]) -> Self {
         let dark = prefs.theme.is_dark(system);
         let def = file::resolve(prefs.theme_id(dark), dark, user);

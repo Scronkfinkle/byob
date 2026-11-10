@@ -3,9 +3,9 @@
 
 use std::path::PathBuf;
 
+pub use byob_types::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-pub use yah_types::Role;
 
 /// Milliseconds since the Unix epoch (UTC).
 pub type Millis = i64;
@@ -95,7 +95,7 @@ pub struct StoredMessage {
     pub role: Role,
     pub content: String,
     pub reasoning: String,
-    /// False while streaming — or if yah stopped mid-reply (the engine may mark those failed).
+    /// False while streaming — or if byob stopped mid-reply (the engine may mark those failed).
     pub done: bool,
     pub error: Option<String>,
     pub stats: Option<MessageStats>,
@@ -175,7 +175,7 @@ pub struct Step {
     pub title: String,
     pub access: StepAccess,
     pub args: Value,
-    /// `None` while the call is still running (or yah stopped during it).
+    /// `None` while the call is still running (or byob stopped during it).
     pub result: Option<StepResult>,
 }
 

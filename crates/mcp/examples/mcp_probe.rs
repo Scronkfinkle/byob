@@ -1,13 +1,13 @@
 //! Connect to an MCP server, list its tools, and optionally call one.
 //!
 //! ```text
-//! cargo run -p yah-mcp --example mcp_probe -- http://127.0.0.1:8000/mcp [TOOL [JSON_ARGS]]
-//! cargo run -p yah-mcp --example mcp_probe -- --stdio "python3 server.py" [TOOL [JSON_ARGS]]
+//! cargo run -p byob-mcp --example mcp_probe -- http://127.0.0.1:8000/mcp [TOOL [JSON_ARGS]]
+//! cargo run -p byob-mcp --example mcp_probe -- --stdio "python3 server.py" [TOOL [JSON_ARGS]]
 //! ```
 
 use std::time::Duration;
 
-use yah_mcp::{HttpConfig, McpClient, StdioConfig};
+use byob_mcp::{HttpConfig, McpClient, StdioConfig};
 
 fn main() {
     if let Err(e) = run() {

@@ -14,7 +14,7 @@ impl TempDir {
     pub(crate) fn new() -> Self {
         static N: AtomicU32 = AtomicU32::new(0);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("yah-store-test-{}-{nanos}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let dir = std::env::temp_dir().join(format!("byob-store-test-{}-{nanos}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }

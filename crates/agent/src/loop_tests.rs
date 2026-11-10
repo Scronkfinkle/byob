@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use byob_protocol::{ApprovalAnswer, ClientMsg, Connection, Entry, FileChange, PROTOCOL_VERSION, ServerMsg, Step, StepStatus, ToolAccess};
+use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
+use byob_types::InferenceConfig;
 use serde_json::{Value, json};
-use yah_protocol::{ApprovalAnswer, ClientMsg, Connection, Entry, FileChange, PROTOCOL_VERSION, ServerMsg, Step, StepStatus, ToolAccess};
-use yah_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
-use yah_types::InferenceConfig;
 
 use crate::{EngineConfig, EngineHandle, LocalConnection, Policy};
 
@@ -126,7 +126,7 @@ impl Tool for Fake {
         }
         let mut out = ToolOutput::ok(self.reply.clone().unwrap_or_else(|| args.get("text").and_then(Value::as_str).unwrap_or("").to_owned()));
         if self.change {
-            out.changes.push(yah_tools::FileChange::Created(ctx.workspace.join("a.txt")));
+            out.changes.push(byob_tools::FileChange::Created(ctx.workspace.join("a.txt")));
         }
         out
     }
@@ -146,7 +146,7 @@ fn harness_with(script: Vec<Reply>, tool: &'static str, access: Access, reply: O
     harness_at(script, tool, access, reply, None)
 }
 
-fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Option<String>, paths: Option<yah_store::Paths>) -> Harness {
+fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Option<String>, paths: Option<byob_store::Paths>) -> Harness {
     let (url, requests) = fake_llm(script, "final answer");
     let runs = Arc::new(AtomicUsize::new(0));
     let mut tools = Registry::default();
@@ -159,7 +159,7 @@ fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Opt
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
         paths,
         auto_title: false,
-        storage: yah_store::StorageKind::default(),
+        storage: byob_store::StorageKind::default(),
         chats_folder: None,
         adapt: crate::AdaptOptions::default(),
         compaction: crate::CompactOptions::default(),
@@ -466,7 +466,7 @@ fn later_turns_send_only_final_text() {
 
 #[test]
 fn approval_card_then_undo_the_turn() {
-    use yah_protocol::{NoticeLevel, Preview};
+    use byob_protocol::{NoticeLevel, Preview};
     let ws = tempfile::tempdir().unwrap();
     std::fs::write(ws.path().join("old.txt"), "one\ntwo\n").unwrap();
     let (url, _) = fake_llm(
@@ -480,12 +480,12 @@ fn approval_card_then_undo_the_turn() {
     let config = EngineConfig {
         inference: InferenceConfig { base_url: url, ..Default::default() },
         workspace: ws.path().to_path_buf(),
-        tools: yah_tools::builtin(),
+        tools: byob_tools::builtin(),
         policy: Policy::default(),
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
         paths: None,
         auto_title: false,
-        storage: yah_store::StorageKind::default(),
+        storage: byob_store::StorageKind::default(),
         chats_folder: None,
         adapt: crate::AdaptOptions { probe: false, ..Default::default() },
         compaction: crate::CompactOptions::default(),
@@ -541,7 +541,7 @@ fn answer_with(answer: ApprovalAnswer) -> impl FnMut(&Step, &mut LocalConnection
 #[test]
 fn always_allow_is_per_chat_or_global_and_survives_restarts() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = yah_store::Paths::at(dir.path());
+    let paths = byob_store::Paths::at(dir.path());
     let w = |n: &str| call("write", &format!(r#"{{"text":"{n}"}}"#));
     let script = vec![w("1"), Reply::Text("ok1"), w("2"), Reply::Text("ok2"), w("3"), Reply::Text("ok3")];
     let h = harness_at(script, "write", Access::Write, None, Some(paths.clone()));
@@ -573,11 +573,11 @@ fn always_allow_is_per_chat_or_global_and_survives_restarts() {
     assert_eq!(view.reply().content, "ok4");
 }
 
-fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: yah_store::Paths) -> (EngineHandle, Requests) {
+fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: byob_store::Paths) -> (EngineHandle, Requests) {
     let (url, requests) = fake_llm(script, "final answer");
     let mut tools = Registry::default();
-    tools.register(Arc::new(yah_tools::CreateArtifact));
-    tools.register(Arc::new(yah_tools::UpdateArtifact));
+    tools.register(Arc::new(byob_tools::CreateArtifact));
+    tools.register(Arc::new(byob_tools::UpdateArtifact));
     let config = EngineConfig {
         inference: InferenceConfig { base_url: url, ..Default::default() },
         workspace: workspace.to_path_buf(),
@@ -586,7 +586,7 @@ fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: yah_s
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
         paths: Some(paths),
         auto_title: false,
-        storage: yah_store::StorageKind::default(),
+        storage: byob_store::StorageKind::default(),
         chats_folder: None,
         adapt: crate::AdaptOptions::default(),
         compaction: crate::CompactOptions::default(),
@@ -595,7 +595,7 @@ fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: yah_s
 }
 
 /// Run a turn, also collecting the artifact updates that came with it.
-fn artifact_turn(c: &mut LocalConnection, text: &str) -> (View, Vec<yah_protocol::Artifact>) {
+fn artifact_turn(c: &mut LocalConnection, text: &str) -> (View, Vec<byob_protocol::Artifact>) {
     let mut view = View::default();
     let mut updated = Vec::new();
     c.send(ClientMsg::SendMessage { text: text.into(), attachments: vec![] });
@@ -621,7 +621,7 @@ fn artifact_file(c: &mut LocalConnection) -> ServerMsg {
 fn artifacts_are_created_versioned_served_and_restored() {
     let dir = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();
-    let paths = yah_store::Paths::at(dir.path());
+    let paths = byob_store::Paths::at(dir.path());
     let html = r#"{"title":"Calc","filename":"calc.html","content":"<button style=\"color:red\">Go</button>"}"#;
     let (engine, _) = artifact_engine(vec![call("create_artifact", html), Reply::Text("Made it")], ws.path(), paths.clone());
     let mut c = engine.connect(Arc::new(|| {}));
@@ -633,12 +633,12 @@ fn artifacts_are_created_versioned_served_and_restored() {
     assert_eq!(step.status, StepStatus::Done, "{}", step.detail);
     assert_eq!(updated.len(), 1);
     let a = &updated[0];
-    assert_eq!((a.kind, a.versions.len()), (yah_protocol::ArtifactKind::Html, 1));
-    assert_eq!(step.artifacts, vec![yah_protocol::ArtifactRef { id: a.id.clone(), version: 1 }]);
+    assert_eq!((a.kind, a.versions.len()), (byob_protocol::ArtifactKind::Html, 1));
+    assert_eq!(step.artifacts, vec![byob_protocol::ArtifactRef { id: a.id.clone(), version: 1 }]);
     // The client can fetch it; unknown ids are refused.
     c.send(ClientMsg::GetArtifact { id: a.id.clone(), version: 1 });
     let ServerMsg::ArtifactFile { data: Some(data), .. } = artifact_file(&mut c) else { panic!("no file") };
-    assert_eq!(yah_protocol::media::decode(&data).unwrap(), br#"<button style="color:red">Go</button>"#);
+    assert_eq!(byob_protocol::media::decode(&data).unwrap(), br#"<button style="color:red">Go</button>"#);
     c.send(ClientMsg::GetArtifact { id: "nope".into(), version: 1 });
     assert!(matches!(artifact_file(&mut c), ServerMsg::ArtifactFile { data: None, error: Some(_), .. }));
     drop(c);
@@ -659,7 +659,7 @@ fn artifacts_are_created_versioned_served_and_restored() {
         }
     };
     assert_eq!(listed, vec![a.clone()]);
-    assert_eq!(entries[1].steps[0].artifacts, vec![yah_protocol::ArtifactRef { id: a.id.clone(), version: 1 }]);
+    assert_eq!(entries[1].steps[0].artifacts, vec![byob_protocol::ArtifactRef { id: a.id.clone(), version: 1 }]);
     let (view, updated) = artifact_turn(&mut c, "make the button blue");
     assert_eq!(view.reply().steps[0].status, StepStatus::Done, "{}", view.reply().steps[0].detail);
     assert_eq!(updated[0].versions.iter().map(|v| v.n).collect::<Vec<_>>(), vec![1, 2]);
@@ -667,7 +667,7 @@ fn artifacts_are_created_versioned_served_and_restored() {
     assert!(system.contains(&format!("{}: \"Calc\" (app, v1, calc.html)", a.id)), "{system}");
     c.send(ClientMsg::GetArtifact { id: a.id.clone(), version: 2 });
     let ServerMsg::ArtifactFile { data: Some(data), .. } = artifact_file(&mut c) else { panic!("no file") };
-    assert_eq!(yah_protocol::media::decode(&data).unwrap(), br#"<button style="color:blue">Go</button>"#);
+    assert_eq!(byob_protocol::media::decode(&data).unwrap(), br#"<button style="color:blue">Go</button>"#);
 }
 
 // The same tests on the folder backend.

@@ -1,4 +1,4 @@
-//! yah-mcp's Streamable HTTP transport against an in-process fake server.
+//! byob-mcp's Streamable HTTP transport against an in-process fake server.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use byob_mcp::{HttpConfig, McpClient, McpError, TokenProvider};
 use serde_json::{Value, json};
-use yah_mcp::{HttpConfig, McpClient, McpError, TokenProvider};
 
 const SECS: Duration = Duration::from_secs(10);
 const SESSION: &str = "sess-1";
@@ -198,7 +198,7 @@ fn handshake_session_and_protocol_headers() {
     let seen = fake.seen();
     let init = &seen[0];
     assert_eq!(init.rpc_method(), "initialize");
-    assert_eq!(init.body["params"]["protocolVersion"], yah_mcp::PROTOCOL_VERSION);
+    assert_eq!(init.body["params"]["protocolVersion"], byob_mcp::PROTOCOL_VERSION);
     assert!(init.header("accept").unwrap().contains("text/event-stream"));
     assert_eq!(init.header("mcp-session-id"), None);
     let initialized = &seen[1];

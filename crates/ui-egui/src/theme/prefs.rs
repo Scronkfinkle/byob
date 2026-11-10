@@ -52,7 +52,7 @@ impl ThemeKind {
 }
 
 /// The accent colour. `Theme` uses the theme's own; `Named` one of the theme's named
-/// accents (`mauve`); `Custom` any `#rrggbb`. The six fixed colours are yah's original
+/// accents (`mauve`); `Custom` any `#rrggbb`. The six fixed colours are byob's original
 /// accents, kept so version-0 preferences still mean the same colour.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Accent {
@@ -69,7 +69,7 @@ pub enum Accent {
 }
 
 impl Accent {
-    /// yah's six fixed accents (dark and light shades, ≥ 4.5:1 on yah's surfaces).
+    /// byob's six fixed accents (dark and light shades, ≥ 4.5:1 on byob's surfaces).
     pub const FIXED: [Accent; 6] = [Accent::Blue, Accent::Violet, Accent::Green, Accent::Orange, Accent::Pink, Accent::Teal];
 
     pub fn label(&self) -> String {
@@ -88,7 +88,7 @@ impl Accent {
 
     /// The colour of a fixed accent on a dark or light theme.
     pub fn fixed_color(&self, dark: bool) -> Option<u32> {
-        let p = if dark { &presets::YAH_DARK } else { &presets::YAH_LIGHT };
+        let p = if dark { &presets::BYOB_DARK } else { &presets::BYOB_LIGHT };
         let name = match self {
             Accent::Blue => "blue",
             Accent::Violet => "violet",
@@ -223,7 +223,7 @@ pub enum ChartPalette {
     /// The theme's own colours.
     #[default]
     Theme,
-    /// yah's colour-vision-deficiency-checked palette.
+    /// byob's colour-vision-deficiency-checked palette.
     Accessible,
 }
 
@@ -349,8 +349,8 @@ impl Default for Prefs {
         Self {
             version: Self::VERSION,
             theme: ThemeKind::System,
-            dark_theme: presets::YAH_DARK.id.into(),
-            light_theme: presets::YAH_LIGHT.id.into(),
+            dark_theme: presets::BYOB_DARK.id.into(),
+            light_theme: presets::BYOB_LIGHT.id.into(),
             accent: Accent::Theme,
             knobs: Knobs::default(),
             overrides: BTreeMap::new(),
@@ -363,7 +363,7 @@ impl Default for Prefs {
 
 impl Prefs {
     /// Storage key used by the apps.
-    pub const STORAGE_KEY: &'static str = "yah.prefs";
+    pub const STORAGE_KEY: &'static str = "byob.prefs";
     pub const VERSION: u32 = 1;
     /// Most imported themes kept in browser storage, and the largest each may be.
     pub const MAX_IMPORTED: usize = 32;
@@ -382,7 +382,7 @@ impl Prefs {
             self.knobs.high_contrast = hc;
         }
         if self.version < Self::VERSION {
-            // Version 0 had no theme ids: yah's own pair, which is what it drew.
+            // Version 0 had no theme ids: byob's own pair, which is what it drew.
             self.version = Self::VERSION;
         }
         self.knobs = self.knobs.sanitized();
@@ -392,10 +392,10 @@ impl Prefs {
             }
         }
         if self.dark_theme.is_empty() {
-            self.dark_theme = presets::YAH_DARK.id.into();
+            self.dark_theme = presets::BYOB_DARK.id.into();
         }
         if self.light_theme.is_empty() {
-            self.light_theme = presets::YAH_LIGHT.id.into();
+            self.light_theme = presets::BYOB_LIGHT.id.into();
         }
         if let Accent::Custom(hex) = &self.accent
             && super::parse_color(hex).is_none()

@@ -1,5 +1,5 @@
 {
-  description = "yah — yet another harness: a native Rust AI agent harness targeting any inference URL";
+  description = "byob — bring your own brain: a native Rust AI agent harness targeting any inference URL";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -59,9 +59,9 @@
         gsettingsSchemaDir = "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}/glib-2.0/schemas";
         cargoToml = lib.importTOML ./Cargo.toml;
 
-        # The browser UI: yah-web compiled to wasm + wasm-bindgen glue + index.html.
-        yah-web = rustPlatform.buildRustPackage {
-          pname = "yah-web";
+        # The browser UI: byob-web compiled to wasm + wasm-bindgen glue + index.html.
+        byob-web = rustPlatform.buildRustPackage {
+          pname = "byob-web";
           version = cargoToml.workspace.package.version;
           src = lib.cleanSource ./.;
           cargoLock.lockFile = ./Cargo.lock;
@@ -72,13 +72,13 @@
           doCheck = false;
           buildPhase = ''
             runHook preBuild
-            cargo build --release --offline --target wasm32-unknown-unknown -p yah-web
+            cargo build --release --offline --target wasm32-unknown-unknown -p byob-web
             mkdir -p dist
-            wasm-bindgen --target web --no-typescript --out-dir dist target/wasm32-unknown-unknown/release/yah-web.wasm
-            wasm-opt -O2 --enable-bulk-memory --enable-nontrapping-float-to-int -o dist/yah-web_bg.wasm dist/yah-web_bg.wasm
-            cp apps/yah-web/index.html dist/
+            wasm-bindgen --target web --no-typescript --out-dir dist target/wasm32-unknown-unknown/release/byob-web.wasm
+            wasm-opt -O2 --enable-bulk-memory --enable-nontrapping-float-to-int -o dist/byob-web_bg.wasm dist/byob-web_bg.wasm
+            cp apps/byob-web/index.html dist/
             # Precompressed copies; the server sends them on Accept-Encoding: gzip.
-            gzip -9 -k -n dist/yah-web_bg.wasm dist/yah-web.js
+            gzip -9 -k -n dist/byob-web_bg.wasm dist/byob-web.js
             runHook postBuild
           '';
           installPhase = ''
@@ -89,7 +89,7 @@
         };
 
         # The Servo helper that renders HTML app artifacts inline (host/artifact-host). Its own
-        # workspace and lock file: MPL-2.0 + tokio live only in there, never linked into yah.
+        # workspace and lock file: MPL-2.0 + tokio live only in there, never linked into byob.
         # SpiderMonkey comes prebuilt from servo/mozjs releases, fetched here so the build is
         # offline (mozjs_sys reads MOZJS_ARCHIVE). Other systems: build it from source with
         # MOZJS_FROM_SOURCE=1 (needs clang, llvm, python3, m4, gnumake, which; AS=clang).
@@ -103,8 +103,8 @@
           .${system} or null;
         hasHost = mozjsArchive != null && builtins.pathExists ./host/artifact-host/Cargo.lock;
 
-        yah-artifact-host = rustPlatform.buildRustPackage {
-          pname = "yah-artifact-host";
+        byob-artifact-host = rustPlatform.buildRustPackage {
+          pname = "byob-artifact-host";
           version = "0.1.0";
           src = lib.fileset.toSource {
             root = ./.;
@@ -157,35 +157,35 @@
           '';
           doCheck = false;
           postInstall = ''
-            install -Dm644 host/artifact-host/NOTICE $out/share/doc/yah-artifact-host/NOTICE
+            install -Dm644 host/artifact-host/NOTICE $out/share/doc/byob-artifact-host/NOTICE
           '';
           # Software GL through EGL (Mesa llvmpipe), dlopen'ed.
           postFixup = ''
-            wrapProgram $out/bin/yah-artifact-host --prefix LD_LIBRARY_PATH : ${
+            wrapProgram $out/bin/byob-artifact-host --prefix LD_LIBRARY_PATH : ${
               lib.makeLibraryPath [ pkgs.libGL ]
             }
           '';
           meta = {
-            description = "Renders yah's HTML app artifacts with Servo, in a separate process";
+            description = "Renders byob's HTML app artifacts with Servo, in a separate process";
             # Our code is MIT/Apache-2.0; the binary links Servo and SpiderMonkey (MPL-2.0).
             license = with lib.licenses; [
               mit
               asl20
               mpl20
             ];
-            mainProgram = "yah-artifact-host";
+            mainProgram = "byob-artifact-host";
             platforms = [ "x86_64-linux" ];
           };
         };
 
-        yah = rustPlatform.buildRustPackage {
-          pname = "yah";
+        byob = rustPlatform.buildRustPackage {
+          pname = "byob";
           version = cargoToml.workspace.package.version;
           src = lib.cleanSource ./.;
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = [
             "-p"
-            "yah"
+            "byob"
           ];
           # The full suite runs via `cargo xtask ci` in the dev shell.
           doCheck = false;
@@ -194,9 +194,9 @@
           # rusqlite's `bundled`), so it has to be an input here.
           buildInputs = buildInputs ++ [ pkgs.sqlite ];
           postFixup = lib.optionalString isLinux ''
-            wrapProgram $out/bin/yah --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs} \
+            wrapProgram $out/bin/byob --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs} \
               --set-default GSETTINGS_SCHEMA_DIR ${gsettingsSchemaDir} \
-              --set-default YAH_WEB_DIR ${yah-web} ${lib.optionalString hasHost "--set-default YAH_ARTIFACT_HOST ${yah-artifact-host}/bin/yah-artifact-host"}
+              --set-default BYOB_WEB_DIR ${byob-web} ${lib.optionalString hasHost "--set-default BYOB_ARTIFACT_HOST ${byob-artifact-host}/bin/byob-artifact-host"}
           '';
           meta = {
             description = "Native Rust AI agent harness";
@@ -204,17 +204,17 @@
               mit
               asl20
             ];
-            mainProgram = "yah";
+            mainProgram = "byob";
           };
         };
       in
       {
         packages =
           lib.optionalAttrs hasWorkspace {
-            inherit yah yah-web;
-            default = yah;
+            inherit byob byob-web;
+            default = byob;
           }
-          // lib.optionalAttrs hasHost { inherit yah-artifact-host; };
+          // lib.optionalAttrs hasHost { inherit byob-artifact-host; };
 
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [

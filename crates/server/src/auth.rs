@@ -53,7 +53,7 @@ pub fn authorize(peer: IpAddr, req: &Request, allowed_users: &[String]) -> Acces
         log::warn!("ignoring Tailscale identity headers from non-loopback peer {peer}");
     }
     if trusted && req.header("tailscale-funnel-request").is_some() {
-        return Access::Deny("yah does not accept Tailscale Funnel (public internet) traffic. Use `tailscale serve`, which stays inside your tailnet.".into());
+        return Access::Deny("byob does not accept Tailscale Funnel (public internet) traffic. Use `tailscale serve`, which stays inside your tailnet.".into());
     }
     let who = identify(trusted, req);
     if allowed_users.is_empty() {
@@ -61,9 +61,9 @@ pub fn authorize(peer: IpAddr, req: &Request, allowed_users: &[String]) -> Acces
     }
     match who {
         Who::Tailnet { ref login, .. } if allowed_users.iter().any(|u| u.eq_ignore_ascii_case(login)) => Access::Allow(who),
-        Who::Tailnet { login, .. } => Access::Deny(format!("{login} is not allowed to use this yah. Ask its owner to add `--allow-user {login}`.")),
+        Who::Tailnet { login, .. } => Access::Deny(format!("{login} is not allowed to use this byob. Ask its owner to add `--allow-user {login}`.")),
         Who::Local => Access::Allow(Who::Local),
-        Who::Anonymous => Access::Deny("This yah only admits specific Tailscale users, and this request carries no Tailscale identity. Open it through `tailscale serve` from an untagged device.".into()),
+        Who::Anonymous => Access::Deny("This byob only admits specific Tailscale users, and this request carries no Tailscale identity. Open it through `tailscale serve` from an untagged device.".into()),
     }
 }
 

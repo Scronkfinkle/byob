@@ -5,8 +5,8 @@
 
 use std::ops::Range;
 
+use byob_protocol::{ApprovalAnswer, ClientMsg, DiffLine, Entry, FileChange, LineKind, Preview, Step, StepStatus, ToolAccess};
 use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2, pos2, vec2};
-use yah_protocol::{ApprovalAnswer, ClientMsg, DiffLine, Entry, FileChange, LineKind, Preview, Step, StepStatus, ToolAccess};
 
 use crate::markdown;
 use crate::theme::{Tokens, bold_family, mix};
@@ -486,7 +486,7 @@ fn preview(ui: &mut egui::Ui, t: &Tokens, p: &Preview) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yah_protocol::EntryRole;
+    use byob_protocol::EntryRole;
 
     fn entry(steps: Vec<Step>) -> Entry {
         Entry {

@@ -1,5 +1,5 @@
 //! Real enforcement tests. This binary is its own sandbox helper: run as
-//! `enforce __sandbox-exec …` it behaves like `yah __sandbox-exec …`; otherwise it runs
+//! `enforce __sandbox-exec …` it behaves like `byob __sandbox-exec …`; otherwise it runs
 //! the tests below (custom harness: libtest would reject the helper's arguments).
 //!
 //! On a system that can't sandbox (no Landlock) the tests print why and pass.
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use yah_sandbox::{Enforcement, Limits, Outcome, Policy, RunOptions, Sandbox, TempDir, clean_env, dispatch_helper, run};
+use byob_sandbox::{Enforcement, Limits, Outcome, Policy, RunOptions, Sandbox, TempDir, clean_env, dispatch_helper, run};
 
 fn main() -> ExitCode {
     if let Some(code) = dispatch_helper() {
@@ -84,7 +84,7 @@ struct Run {
 
 impl Run {
     fn new() -> Self {
-        Self { ws: TempDir::new("yah-sb-ws-").unwrap(), tmp: TempDir::new("yah-sb-tmp-").unwrap() }
+        Self { ws: TempDir::new("byob-sb-ws-").unwrap(), tmp: TempDir::new("byob-sb-tmp-").unwrap() }
     }
 
     fn policy(&self) -> Policy {
@@ -111,7 +111,7 @@ fn has(cmd: &str) -> bool {
 
 fn write_outside_workspace_is_denied(_: &Enforcement) {
     let r = Run::new();
-    let outside = TempDir::new("yah-sb-out-").unwrap();
+    let outside = TempDir::new("byob-sb-out-").unwrap();
     let o = r.quick("echo hi > in.txt; mkdir -p sub && echo x > sub/y; echo x > \"$1/f\" || echo denied", &[outside.path().to_str().unwrap()]);
     assert!(o.success(), "{o:?}");
     assert_eq!(std::fs::read_to_string(r.ws.path().join("in.txt")).unwrap(), "hi\n");
@@ -125,7 +125,7 @@ fn write_outside_workspace_is_denied(_: &Enforcement) {
 
 fn read_outside_allowed_dirs_is_denied(_: &Enforcement) {
     let r = Run::new();
-    let secret_dir = TempDir::new("yah-sb-secret-").unwrap();
+    let secret_dir = TempDir::new("byob-sb-secret-").unwrap();
     let secret = secret_dir.path().join("id_rsa");
     std::fs::write(&secret, "TOP SECRET").unwrap();
     let o = r.quick("cat \"$1\"; ls \"$2\"", &[secret.to_str().unwrap(), secret_dir.path().to_str().unwrap()]);
@@ -286,7 +286,7 @@ fn garbage_helper_args_fail_cleanly(_: &Enforcement) {
 fn env_is_scrubbed(_: &Enforcement) {
     let r = Run::new();
     // clean_env drops inherited secrets...
-    let o = r.quick("echo \"${YAH_API_KEY:-unset} $HOME $MPLBACKEND\"", &[]);
+    let o = r.quick("echo \"${BYOB_API_KEY:-unset} $HOME $MPLBACKEND\"", &[]);
     assert_eq!(o.stdout.text().trim(), format!("unset {} Agg", r.tmp.path().display()));
     // ...and remove_env drops named ones even without it
     let mut cmd = sandbox().command(&r.policy().remove_env("SECRET_TOKEN"), "sh", ["-c", "echo ${SECRET_TOKEN:-unset}"]);
@@ -311,7 +311,7 @@ fn refuses_when_requirements_unmet_is_not_silent(_: &Enforcement) {
     assert_eq!(o.stdout.text(), "denied\n", "{o:?}");
 }
 
-/// Clients like yah-mcp kill just the process they started (the helper), not its group.
+/// Clients like byob-mcp kill just the process they started (the helper), not its group.
 fn killing_only_the_helper_ends_the_tree(e: &Enforcement) {
     if !e.process_tree {
         println!("  (skipped: no PID namespace)");
@@ -334,7 +334,7 @@ fn landlock_only_fallback(_: &Enforcement) {
     let r = Run::new();
     let mut p = r.policy();
     p.skip_namespaces = true;
-    let outside = TempDir::new("yah-sb-out-").unwrap();
+    let outside = TempDir::new("byob-sb-out-").unwrap();
     let o = r.sh(&p, "echo x > \"$1/f\" || echo denied; echo ok > in", &[outside.path().to_str().unwrap()], &RunOptions::default());
     assert!(o.stdout.text().contains("denied") && !outside.path().join("f").exists() && r.ws.path().join("in").exists(), "{o:?}");
     let o = r.sh(&p, "kill -9 $$", &[], &RunOptions::default());

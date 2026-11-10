@@ -2,7 +2,7 @@
 //! modification times.
 //!
 //! Bounded on purpose: at most [`MAX_FILES`] files and [`MAX_DEPTH`] folders deep; hidden
-//! entries (`.git`, `.yah`, `.venv`, …), `node_modules` and `__pycache__` are skipped and
+//! entries (`.git`, `.byob`, `.venv`, …), `node_modules` and `__pycache__` are skipped and
 //! symlinks aren't followed. A change in a skipped place isn't reported; deletions are
 //! only reported when both walks were complete.
 

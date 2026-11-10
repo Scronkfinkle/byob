@@ -3,18 +3,18 @@
 Last updated: 2026-11-09
 
 ## Done
-- Workspace, nix flake (dev shell + `yah` and `yah-web` packages, gzip web assets), xtask gate.
+- Workspace, nix flake (dev shell + `byob` and `byob-web` packages, gzip web assets), xtask gate.
 - Protocol, engine, server; desktop + browser UI sharing one live session; browser auto-reconnect.
 - Streaming chat against any OpenAI-compatible URL; endpoint probe drives tool-call mode
   (native / prompt-based fallback / auto-retry), history budget and vision.
 - Tool loop, permission gate, approval cards with previews/diffs, steps inline, per-turn undo.
 - Persistent multiple chats (SQLite), sidebar, per-device current chat, settings/secrets files,
   always-allow per chat or global.
-- Sandboxed file tools; `run_command` / `run_python` through `yah-sandbox` (Landlock + namespaces);
+- Sandboxed file tools; `run_command` / `run_python` through `byob-sandbox` (Landlock + namespaces);
   managed Python via uv; hob-compatible plugins (skills, Python tools, MCP connectors).
 - Charts (hob ChartSpec v1, `make_chart` incl. CSV aggregation), inline images, uploads (desktop+web).
 - Markdown, remote-access hardening, Tailscale identity allowlist.
-- Theming: 15 presets (yah, Catppuccin ×4, Gruvbox, Nord, Dracula, Solarized, Tokyo Night, Rosé Pine),
+- Theming: 15 presets (byob, Catppuccin ×4, Gruvbox, Nord, Dracula, Solarized, Tokyo Night, Rosé Pine),
   separate light/dark picks for System, accents, knobs (sizes, fonts, density, radius, bubbles,
   layout, column width, motion, chart colours, pane widths), every colour role overridable,
   JSON theme files (import/export, `<config>/themes`), basic code highlighting.
@@ -28,7 +28,7 @@ Last updated: 2026-11-09
   minimize to chips in chat and pane, "Collapse all"; minimized/background apps stop
   rendering (`Visible` wire message) and pause after 60 s.
 
-- Pluggable chat storage in `yah-store`: `ChatStore` trait, SQLite (default) or a plain-files
+- Pluggable chat storage in `byob-store`: `ChatStore` trait, SQLite (default) or a plain-files
   folder backend (`events.jsonl` per chat + generated `chat.md`; `storage = "folder"`),
   `export` between them, one contract test suite for both. The engine holds a
   `Box<dyn ChatStore>` (`--storage`, `--chats-folder`, `--export-chats-to` to migrate);
@@ -37,17 +37,17 @@ Last updated: 2026-11-09
 ## Next
 0. **Folder storage follow-ups**: settings UI for `storage`/`chats_folder` + "copy my chats" (`export`);
    pass the model so `chat.md` frontmatter can name it; a file watcher so open chats update
-   live; a lock file against two yah processes on one folder.
+   live; a lock file against two byob processes on one folder.
 1. **Artifact host follow-ups**: GPU rendering (surfman hardware context) instead of
    llvmpipe; `<select>`/date pickers (Servo embedder controls) and IME; a fully offline
-   `nix build .#yah-artifact-host` check in CI; macOS/Windows helper builds.
+   `nix build .#byob-artifact-host` check in CI; macOS/Windows helper builds.
 2. **Plugins UI**: list/enable plugins, settings values (secrets), add connector by pasting config.
 3. Persist undo journals, attachments and step media; "denied" step status in the store.
 4. Media shown where the step happened (currently after the reply); header overflow on narrow widths.
 5. Legacy HTTP+SSE MCP transport; OAuth for MCP.
 6. macOS sandbox profile (untested); Windows sandboxing.
 7. Language-aware syntax highlighting; table alignment; markdown for thinking text.
-8. Flaky under load: `yah-mcp` `expired_session_is_reported` (passes alone).
+8. Flaky under load: `byob-mcp` `expired_session_is_reported` (passes alone).
 
 ## Ideas worth deciding early
 - **Endpoint capability probe.** Tool calling differs per server (llama-server needs

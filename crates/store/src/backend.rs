@@ -185,7 +185,7 @@ pub fn folder_root(settings: &Settings, paths: &Paths) -> PathBuf {
     settings.chats_folder.as_deref().map(expand_home).unwrap_or_else(|| paths.chats_folder())
 }
 
-/// Open the backend `settings.storage` selects: `<data>/yah.db`, or the folder store at
+/// Open the backend `settings.storage` selects: `<data>/byob.db`, or the folder store at
 /// `settings.chats_folder` (default `<data>/chats-folder`).
 pub fn open_backend(settings: &Settings, paths: &Paths) -> Result<Box<dyn ChatStore>> {
     Ok(match settings.storage {

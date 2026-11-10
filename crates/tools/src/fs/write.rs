@@ -149,16 +149,16 @@ mod tests {
             json!({"path": "x"}),
             json!({"content": "x"}),
             json!({"path": "../x", "content": ""}),
-            json!({"path": "/tmp/yah-escape-test", "content": ""}),
+            json!({"path": "/tmp/byob-escape-test", "content": ""}),
             json!({"path": "dir", "content": ""}),
             json!({"path": "new/", "content": ""}),
             json!({"path": ".", "content": ""}),
-            json!({"path": ".yah/trash/x", "content": ""}),
+            json!({"path": ".byob/trash/x", "content": ""}),
         ] {
             let out = run(&WriteFile, d.path(), args.clone());
             assert!(out.failed && out.changes.is_empty(), "{args}");
         }
-        assert!(!std::path::Path::new("/tmp/yah-escape-test").exists());
+        assert!(!std::path::Path::new("/tmp/byob-escape-test").exists());
     }
 
     #[cfg(unix)]

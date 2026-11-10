@@ -17,9 +17,9 @@
 
 use std::collections::HashMap;
 
+use byob_protocol::media::{self, ChartSpec};
+use byob_protocol::{Artifact, ArtifactKind, ArtifactRef, ClientMsg, NoticeLevel, ServerMsg};
 use egui::{RichText, Stroke, vec2};
-use yah_protocol::media::{self, ChartSpec};
-use yah_protocol::{Artifact, ArtifactKind, ArtifactRef, ClientMsg, NoticeLevel, ServerMsg};
 
 use crate::appview::{self, AppDoc, AppStatus, AppView};
 use crate::export::Exports;
@@ -867,7 +867,7 @@ impl Artifacts {
                 for e in errors.iter().take(3) {
                     ui.add(egui::Label::new(RichText::new(e).small().monospace().color(t.text)).truncate());
                 }
-                if ui.button("Send error to yah").on_hover_text("Ask yah to fix it").clicked() {
+                if ui.button("Send error to byob").on_hover_text("Ask byob to fix it").clicked() {
                     self.actions.push(Action::SendError { id: a.id.clone(), version, error: errors.join("\n") });
                 }
             });
@@ -891,7 +891,7 @@ fn versioned_name(filename: &str, version: u32) -> String {
     format!("{stem} v{version}{ext}")
 }
 
-fn version_label(v: &yah_protocol::ArtifactVersion) -> String {
+fn version_label(v: &byob_protocol::ArtifactVersion) -> String {
     let note: String = v.note.chars().take(40).collect();
     if note.is_empty() { format!("v{}", v.n) } else { format!("v{} · {note}", v.n) }
 }
@@ -994,12 +994,12 @@ fn convert(ctx: &egui::Context, a: &Artifact, version: u32, bytes: &[u8]) -> Sho
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yah_protocol::ArtifactVersion;
+    use byob_protocol::ArtifactVersion;
 
     fn artifact(id: &str, kind: ArtifactKind, filename: &str, versions: &[u32]) -> Artifact {
         let versions = versions
             .iter()
-            .map(|n| ArtifactVersion { n: *n, path: format!(".yah/artifacts/{id}/v{n}"), created_at: 0, note: format!("note {n}"), size: 3 })
+            .map(|n| ArtifactVersion { n: *n, path: format!(".byob/artifacts/{id}/v{n}"), created_at: 0, note: format!("note {n}"), size: 3 })
             .collect();
         Artifact { id: id.into(), kind, title: id.to_uppercase(), filename: filename.into(), versions }
     }
@@ -1080,7 +1080,7 @@ mod tests {
             assert!(s.take_output().1.iter().any(|(l, _)| *l == NoticeLevel::Error));
             s.set_link_base(Box::new(|| Ok("http://127.0.0.1:9".into())));
             s.begin_frame(&ctx, &Tokens::dark(), false);
-            assert!(s.app_url("app", 2).unwrap().starts_with("http://127.0.0.1:9/artifact/c/app/2#--yah-bg="));
+            assert!(s.app_url("app", 2).unwrap().starts_with("http://127.0.0.1:9/artifact/c/app/2#--byob-bg="));
         }
     }
 

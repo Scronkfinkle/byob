@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn drops_oldest_turns_into_recap_and_keeps_system_and_latest() {
-        let mut h = vec![ChatMessage::system("You are yah.")];
+        let mut h = vec![ChatMessage::system("You are byob.")];
         for i in 0..20 {
             h.push(ChatMessage::user(format!("question {i} {}", big(700))));
             h.push(ChatMessage::assistant(format!("answer {i} {}", big(700))));

@@ -7,8 +7,8 @@
 //! that each fit well inside [`crate::MAX_FRAME_BYTES`].
 
 use base64::Engine as _;
+pub use byob_types::chart::ChartSpec;
 use serde::{Deserialize, Serialize};
-pub use yah_types::chart::ChartSpec;
 
 /// Largest file a user may attach.
 pub const MAX_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;

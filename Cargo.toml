@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/*", "xtask"]
-# The Servo helper is its own workspace (MPL-2.0 + tokio inside it; never linked into yah).
+# The Servo helper is its own workspace (MPL-2.0 + tokio inside it; never linked into byob).
 exclude = ["host/artifact-host"]
 
 [workspace.package]
@@ -10,23 +10,23 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
-repository = "https://github.com/jesse/yah"
+repository = "https://github.com/jesse/byob"
 
 [workspace.dependencies]
 # Internal crates (see docs/architecture.md for layering).
-yah-types = { path = "crates/types" }
-yah-protocol = { path = "crates/protocol" }
-yah-server = { path = "crates/server" }
-yah-llm = { path = "crates/llm" }
-yah-store = { path = "crates/store" }
-yah-tools = { path = "crates/tools" }
-yah-mcp = { path = "crates/mcp" }
-yah-plugins = { path = "crates/plugins" }
-yah-sandbox = { path = "crates/sandbox" }
-yah-exec = { path = "crates/exec" }
-yah-agent = { path = "crates/agent" }
-yah-ui-egui = { path = "crates/ui-egui" }
-yah-artifact-wire = { path = "crates/artifact-wire" }
+byob-types = { path = "crates/types" }
+byob-protocol = { path = "crates/protocol" }
+byob-server = { path = "crates/server" }
+byob-llm = { path = "crates/llm" }
+byob-store = { path = "crates/store" }
+byob-tools = { path = "crates/tools" }
+byob-mcp = { path = "crates/mcp" }
+byob-plugins = { path = "crates/plugins" }
+byob-sandbox = { path = "crates/sandbox" }
+byob-exec = { path = "crates/exec" }
+byob-agent = { path = "crates/agent" }
+byob-ui-egui = { path = "crates/ui-egui" }
+byob-artifact-wire = { path = "crates/artifact-wire" }
 
 # Foundation.
 thiserror = "2"
@@ -75,10 +75,10 @@ pulldown-cmark = { version = "0.13", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22"
 
-# Headless test screenshots (`yah --screenshot`).
+# Headless test screenshots (`byob --screenshot`).
 png = "0.18"
 
-# Sandbox (yah-sandbox). Safe Landlock bindings; `nix` for unshare/killpg/setrlimit
+# Sandbox (byob-sandbox). Safe Landlock bindings; `nix` for unshare/killpg/setrlimit
 # (rustix's `unshare` is `unsafe`, and the workspace forbids unsafe code).
 landlock = "0.4"
 nix = { version = "0.31", default-features = false, features = ["sched", "signal", "resource", "user", "process"] }
