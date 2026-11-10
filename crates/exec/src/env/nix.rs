@@ -159,6 +159,7 @@ impl Nix {
         let found = self.classify(&dir, &state.nixpkgs, &requests, run)?;
         let mut added = Vec::new();
         let mut missing = Vec::new();
+        let mut not_found = Vec::new();
         for (req, f) in requests.iter().zip(&found) {
             match f {
                 Found::Package { attr, name } => {
@@ -173,7 +174,10 @@ impl Nix {
                     }
                     added.push(format!("{name} (Python library)"));
                 }
-                Found::Missing { suggestions } => missing.push(missing_text(&req.query, suggestions)),
+                Found::Missing { suggestions } => {
+                    missing.push(missing_text(&req.query, suggestions));
+                    not_found.push(req.query.clone());
+                }
             }
         }
         if state.packages.len() + state.python.len() > MAX_INSTALLED {
@@ -197,7 +201,7 @@ impl Nix {
                 missing.join("; ")
             ));
         }
-        Ok(Installed { text, failed: !missing.is_empty() })
+        Ok(Installed { text, failed: !missing.is_empty(), missing: not_found })
     }
 
     /// The locked `nixpkgs` every install uses: byob's pin, else the registry's `nixpkgs`

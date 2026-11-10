@@ -10,15 +10,34 @@ pub enum Fix {
     Packages,
     /// Only `install_python_packages` (uv; Python libraries).
     PythonOnly,
+    /// No package manager: tell the user how to get one.
     None,
 }
 
+/// How to get an installer where there is none (pixi works on Linux, macOS and Windows).
+pub const GET_PIXI: &str = "byob has no package manager here. Tell the user that installing pixi (https://pixi.sh, e.g. \
+`curl -fsSL https://pixi.sh/install.sh | sh`, `brew install pixi` or `winget install prefix-dev.pixi`) and restarting byob \
+lets install_packages add programs and Python libraries for this workspace.";
+
 /// A hint for a failed run, from its output and (for `run_command`) the command line.
-pub fn hint(stdout: &str, stderr: &str, command: Option<&str>, fix: Fix) -> Option<String> {
-    if fix == Fix::None {
-        return None;
+/// `system` names the last-resort system installer (Homebrew, winget), if there is one.
+pub fn hint(stdout: &str, stderr: &str, command: Option<&str>, fix: Fix, system: Option<&str>) -> Option<String> {
+    let last_resort = |what: &str| {
+        system.map_or_else(String::new, |s| {
+            format!(" As a last resort, install_system_packages can install {what} system-wide with {s} (the user must approve).")
+        })
+    };
+    let module = missing_module(stderr).or_else(|| missing_module(stdout));
+    let cmd = missing_command(stderr);
+    if fix == Fix::None || (fix == Fix::PythonOnly && module.is_none()) {
+        let (what, pkg) = match (&module, &cmd) {
+            (Some(m), _) => (format!("the Python library `{m}` is"), python_package(m)),
+            (None, Some(c)) => (format!("`{c}` is"), command_package(c).unwrap_or(c).to_owned()),
+            (None, None) => return None,
+        };
+        return Some(format!("Hint: {what} not installed, and {GET_PIXI}{}", last_resort(&pkg)));
     }
-    if let Some(module) = missing_module(stderr).or_else(|| missing_module(stdout)) {
+    if let Some(module) = module {
         let pkg = python_package(&module);
         return Some(match fix {
             Fix::Packages => {
@@ -32,7 +51,7 @@ pub fn hint(stdout: &str, stderr: &str, command: Option<&str>, fix: Fix) -> Opti
     if fix != Fix::Packages {
         return None;
     }
-    if let Some(cmd) = missing_command(stderr) {
+    if let Some(cmd) = cmd {
         let pkg = command_package(&cmd).unwrap_or(&cmd);
         return Some(format!("Hint: `{cmd}` is not installed. Call install_packages with {{\"packages\": [\"{pkg}\"]}}, then run the command again."));
     }
@@ -107,15 +126,24 @@ mod tests {
 
     #[test]
     fn hints_name_the_tool_and_package() {
-        let h = hint("", "sh: 1: convert: not found", Some("convert a.png b.jpg"), Fix::Packages).unwrap();
+        let h = hint("", "sh: 1: convert: not found", Some("convert a.png b.jpg"), Fix::Packages, None).unwrap();
         assert!(h.contains("install_packages") && h.contains("[\"imagemagick\"]"), "{h}");
-        let h = hint("", "ModuleNotFoundError: No module named 'sklearn'", None, Fix::Packages).unwrap();
+        let h = hint("", "ModuleNotFoundError: No module named 'sklearn'", None, Fix::Packages, None).unwrap();
         assert!(h.contains("[\"scikit-learn\"]"), "{h}");
-        let h = hint("", "ModuleNotFoundError: No module named 'PIL'", None, Fix::PythonOnly).unwrap();
+        let h = hint("", "ModuleNotFoundError: No module named 'PIL'", None, Fix::PythonOnly, None).unwrap();
         assert!(h.contains("install_python_packages") && h.contains("[\"pillow\"]"), "{h}");
-        assert!(hint("", "sh: 1: jq: not found", None, Fix::PythonOnly).is_none());
-        assert!(hint("", "error: externally-managed-environment", Some("pip install pandas"), Fix::Packages).unwrap().contains("install_packages"));
-        assert!(hint("", "sh: 1: jq: not found", None, Fix::None).is_none());
-        assert!(hint("", "some other failure", Some("ls"), Fix::Packages).is_none());
+        assert!(hint("", "error: externally-managed-environment", Some("pip install pandas"), Fix::Packages, None).unwrap().contains("install_packages"));
+        assert!(hint("", "some other failure", Some("ls"), Fix::Packages, None).is_none());
+        assert!(hint("", "some other failure", Some("ls"), Fix::None, Some("Homebrew")).is_none());
+    }
+
+    #[test]
+    fn without_an_installer_the_hint_says_how_to_get_pixi() {
+        let h = hint("", "sh: 1: jq: not found", None, Fix::PythonOnly, None).unwrap();
+        assert!(h.contains("`jq` is not installed") && h.contains("https://pixi.sh") && !h.contains("install_system_packages"), "{h}");
+        let h = hint("", "sh: 1: convert: not found", None, Fix::None, Some("Homebrew")).unwrap();
+        assert!(h.contains("pixi") && h.contains("install_system_packages can install imagemagick system-wide with Homebrew"), "{h}");
+        let h = hint("", "No module named 'PIL'", None, Fix::None, None).unwrap();
+        assert!(h.contains("`PIL`") && h.contains("pixi"), "{h}");
     }
 }

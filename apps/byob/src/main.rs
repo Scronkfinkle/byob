@@ -10,7 +10,8 @@
 //!     --model NAME            (default: settings.json)
 //!     --workspace DIR         folder new chats work in (default: settings.json, else current directory)
 //!     --plugin DIR            load the plugin in DIR (repeatable; also <config>/plugins)
-//!     --auto-approve          allow every tool call without asking (testing)
+//!     --auto-approve          allow every tool call without asking (testing); loads workspace
+//!                             environments for this run only; system-wide installs still ask
 //!     --dev-tools             offer trivial test tools (get_time, set_reminder)
 //!     --storage KIND          sqlite | folder: chat storage for this run (default: settings.json `storage`)
 //!     --chats-folder DIR      root of the folder storage (default: settings.json `chats_folder`,

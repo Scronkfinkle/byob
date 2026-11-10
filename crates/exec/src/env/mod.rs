@@ -24,8 +24,9 @@ pub mod choices;
 pub mod hints;
 pub mod nix;
 pub mod project;
+pub mod system;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -151,6 +152,8 @@ pub struct Installed {
     pub text: String,
     /// Some packages weren't found or the build failed.
     pub failed: bool,
+    /// The names it couldn't find (what `install_system_packages` may then try).
+    pub missing: Vec<String>,
 }
 
 /// Override the per-workspace question: `BYOB_WORKSPACE_ENV=off` never loads a workspace's
@@ -268,6 +271,8 @@ pub struct Found {
     pub pixi: Option<PathBuf>,
     /// The `mise` program.
     pub mise: Option<PathBuf>,
+    /// Homebrew or winget, for `install_system_packages` (the last resort).
+    pub system: Option<system::SystemInstaller>,
 }
 
 impl Found {
@@ -284,7 +289,11 @@ impl Found {
                 log::info!("environments: {name} ({})", p.display());
             }
         }
-        Self { nix, pixi, mise }
+        let system = system::SystemInstaller::detect();
+        if let Some(s) = &system {
+            log::info!("environments: {} ({}), only as an approved last resort", s.name(), s.program.display());
+        }
+        Self { nix, pixi, mise, system }
     }
 }
 
@@ -301,6 +310,10 @@ pub struct Envs {
     choices: choices::Choices,
     /// Workspaces whose declined environment the model was told about.
     told: Mutex<BTreeSet<PathBuf>>,
+    system: Option<system::SystemInstaller>,
+    /// Per workspace: names `install_packages` couldn't find (the only ones
+    /// `install_system_packages` may install while there is a workspace installer).
+    missing: Mutex<BTreeMap<PathBuf, BTreeSet<String>>>,
     /// One question at a time, so two runs don't ask the same thing.
     asking: Mutex<()>,
     /// One activation or install at a time (they share caches and GC roots).
@@ -331,7 +344,7 @@ impl Envs {
         }
         let state = data_dir.map(|d| d.join("envs"));
         let choices = choices::Choices::new(state.as_ref().map(|s| s.join("workspaces.json")));
-        Self { nix: found.nix, projects, state, mode, choices, ..Self::default() }
+        Self { nix: found.nix, projects, state, mode, choices, system: found.system, ..Self::default() }
     }
 
     /// No package managers (tests, or a machine without any).
@@ -367,7 +380,33 @@ impl Envs {
 
     /// The support layer every sandboxed run gets.
     pub(crate) fn support(&self) -> Layer {
-        self.nix.as_ref().map(nix::Nix::support).unwrap_or_default()
+        let mut l = self.nix.as_ref().map(nix::Nix::support).unwrap_or_default();
+        if let Some(s) = &self.system {
+            l.stack(&s.layer());
+        }
+        l
+    }
+
+    /// Homebrew or winget, if `install_system_packages` is offered.
+    pub fn system(&self) -> Option<&system::SystemInstaller> {
+        self.system.as_ref()
+    }
+
+    /// May `install_system_packages` install `packages` for `ws`? Only what the workspace
+    /// installer couldn't find, or anything where there is none.
+    pub(crate) fn system_allowed(&self, ws: &Path, packages: &[String]) -> Result<(), String> {
+        let Some(installer) = self.installer() else { return Ok(()) };
+        let missing = self.missing.lock().unwrap_or_else(PoisonError::into_inner);
+        let known = missing.get(ws);
+        let untried: Vec<&str> = packages.iter().filter(|p| !known.is_some_and(|k| k.contains(p.as_str()))).map(String::as_str).collect();
+        if untried.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "Call install_packages with {} first: it installs into this workspace with {installer}. install_system_packages is only \
+             for packages install_packages couldn't find.",
+            serde_json::json!({"packages": untried})
+        ))
     }
 
     /// Layers for one run in workspace `ws` (canonical path).
@@ -399,6 +438,21 @@ impl Envs {
             }
         }
         out
+    }
+
+    /// Remember what an install couldn't find, and point at the last resort.
+    fn note_missing(&self, ws: &Path, done: &mut Installed) {
+        if done.missing.is_empty() {
+            return;
+        }
+        self.missing.lock().unwrap_or_else(PoisonError::into_inner).entry(ws.to_path_buf()).or_default().extend(done.missing.iter().cloned());
+        if let Some(s) = &self.system {
+            done.text.push_str(&format!(
+                "\nOnly if there is no other way: install_system_packages can install {} system-wide with {} (the user must approve it).",
+                serde_json::json!(done.missing),
+                s.name()
+            ));
+        }
     }
 
     /// The project files of `ws` byob can load an environment from, with their labels.
@@ -447,7 +501,9 @@ impl Envs {
     pub(crate) fn install(&self, ws: &Path, packages: &[String], run: &dyn Runner) -> Result<Installed, String> {
         let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
         let (Some(nix), Some(dir)) = (&self.nix, self.ws_dir(ws)) else { return Err("no package manager is available here".into()) };
-        nix.install(&dir, packages, run)
+        let mut done = nix.install(&dir, packages, run)?;
+        self.note_missing(ws, &mut done);
+        Ok(done)
     }
 }
 

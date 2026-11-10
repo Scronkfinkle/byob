@@ -126,9 +126,12 @@ pub fn register(reg: &mut Registry, exec: Exec) {
     reg.register(Arc::new(RunCommand(Arc::clone(&exec))));
     reg.register(Arc::new(RunPython(Arc::clone(&exec))));
     match exec.fix() {
-        hints::Fix::Packages => reg.register(Arc::new(InstallPackages(exec))),
-        hints::Fix::PythonOnly => reg.register(Arc::new(InstallPythonPackages(exec))),
+        hints::Fix::Packages => reg.register(Arc::new(InstallPackages(Arc::clone(&exec)))),
+        hints::Fix::PythonOnly => reg.register(Arc::new(InstallPythonPackages(Arc::clone(&exec)))),
         hints::Fix::None => {}
+    }
+    if exec.envs.system().is_some() {
+        reg.register(Arc::new(InstallSystemPackages(exec)));
     }
 }
 
@@ -271,7 +274,8 @@ impl Exec {
         let changes = before.changes(&Snapshot::take(&root));
         let mut res = describe(&out, &changes, &root, timeout, self.mode.unconfined_note());
         if res.failed
-            && let Some(h) = hints::hint(&out.stdout.text(), &out.stderr.text(), command, self.fix())
+            && let Some(h) =
+                hints::hint(&out.stdout.text(), &out.stderr.text(), command, self.fix(), self.envs.system().map(env::system::SystemInstaller::name))
         {
             res.text.push_str(&format!("\n\n{h}"));
         }
@@ -656,6 +660,87 @@ impl Tool for InstallPackages {
     }
 }
 
+/// `install_system_packages`: the last resort, Homebrew or winget, system-wide. Every call
+/// needs a person's approval (it is never auto-approved), and while there is a workspace
+/// installer it only takes packages `install_packages` couldn't find.
+pub struct InstallSystemPackages(Arc<Exec>);
+
+impl InstallSystemPackages {
+    fn names(args: &Value) -> Vec<String> {
+        args.get("packages")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).take(MAX_PACKAGES).map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    fn by(&self) -> &'static str {
+        self.0.envs.system().map_or("the system package manager", env::system::SystemInstaller::name)
+    }
+}
+
+impl Tool for InstallSystemPackages {
+    fn spec(&self) -> ToolSpec {
+        let by = self.by();
+        let first = match self.0.envs.installer() {
+            Some(_) => "Only for packages install_packages couldn't find: always try install_packages first.",
+            None => "Only when nothing else works.",
+        };
+        ToolSpec {
+            name: "install_system_packages".into(),
+            description: format!(
+                "Last resort: install programs SYSTEM-WIDE with {by}, outside the workspace and the sandbox. {first} \
+                 The user must approve every call and byob can't undo it, so say why you need it."
+            ),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "packages": {"type": "array", "items": {"type": "string"}, "description": format!("{by} package names, e.g. [\"jq\"].")}
+                },
+                "required": ["packages"]
+            }),
+        }
+    }
+
+    fn title(&self, args: &Value) -> String {
+        format!("Install system-wide with {}: {}", self.by(), short(&Self::names(args).join(", "), 80))
+    }
+
+    fn pending_title(&self, args: &Value) -> String {
+        self.title(args)
+    }
+
+    fn access(&self, _args: &Value) -> Access {
+        Access::Execute
+    }
+
+    fn always_ask(&self, args: &Value) -> Option<String> {
+        let names = Self::names(args);
+        Some(self.0.envs.system().map_or_else(|| "Installs system-wide.".to_owned(), |s| s.warning(&names)))
+    }
+
+    fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
+        let a: InstallArgs = match parse_args(args) {
+            Ok(a) => a,
+            Err(e) => return ToolOutput::err(e),
+        };
+        if a.packages.is_empty() || a.packages.len() > MAX_PACKAGES {
+            return ToolOutput::err(format!("give 1 to {MAX_PACKAGES} packages"));
+        }
+        let Some(system) = self.0.envs.system() else { return ToolOutput::err("no system package manager here") };
+        let root = match byob_tools::sandbox::root(ctx.workspace) {
+            Ok(r) => r,
+            Err(e) => return ToolOutput::err(e),
+        };
+        if let Err(e) = self.0.envs.system_allowed(&root, &a.packages) {
+            return ToolOutput::err(e);
+        }
+        match system.install(&a.packages, &|| ctx.cancelled()) {
+            Ok(text) => ToolOutput::ok(text),
+            Err(e) => ToolOutput::err(e),
+        }
+    }
+}
+
 /// Create the managed venv if needed and install `packages` into it. Usable by the app
 /// directly (e.g. a "set up Python for data analysis" button). Runs in the sandbox with
 /// network on, writing only under `<data>/python`.
@@ -766,6 +851,56 @@ mod tests {
         for args in [json!({"packages": []}), json!({"packages": ["--index-url=http://evil"]}), json!({"packages": ["a b"]})] {
             assert!(InstallPythonPackages(Arc::clone(&e)).run(&args, &ctx).failed, "{args}");
         }
+    }
+
+    /// A fake `brew` that logs its arguments next to itself and fails for `bad-pkg`.
+    #[cfg(unix)]
+    fn fake_brew(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let brew = bin.join("brew");
+        std::fs::write(
+            &brew,
+            "#!/bin/sh\necho \"$@\" >> \"$0.log\"\ncase \"$*\" in *bad-pkg*) echo 'Error: No formula' >&2; exit 1;; esac\necho \"==> Pouring $2\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&brew, std::fs::Permissions::from_mode(0o755)).unwrap();
+        brew
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_installs_are_a_confirmed_last_resort() {
+        use env::system::{Kind, SystemInstaller};
+        let d = tempfile::tempdir().unwrap();
+        let brew = fake_brew(d.path());
+        let found = env::Found { system: Some(SystemInstaller { kind: Kind::Brew, program: brew.clone() }), ..Default::default() };
+        let envs = Arc::new(Envs::new(Some(d.path()), found, env::ProjectMode::Ask));
+        let mut reg = Registry::default();
+        register(&mut reg, Exec { mode: Mode::Unsandboxed, data_dir: Some(d.path().to_path_buf()), envs });
+        let tool = reg.get("install_system_packages").expect("offered where brew exists");
+        let args = json!({"packages": ["jq"]});
+        let warning = tool.always_ask(&args).expect("every call needs a person");
+        assert!(warning.contains("SYSTEM-WIDE") && warning.contains("brew uninstall jq"), "{warning}");
+        assert_eq!(tool.title(&args), "Install system-wide with Homebrew: jq");
+        assert!(tool.spec().description.contains("Last resort"));
+
+        let ws = tempfile::tempdir().unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let ctx = ToolContext::new(ws.path(), &cancel);
+        // No workspace installer here (no Nix, no pixi): it may install anything.
+        let out = tool.run(&args, &ctx);
+        assert!(!out.failed && out.text.contains("Installed system-wide with Homebrew: jq"), "{}", out.text);
+        assert_eq!(std::fs::read_to_string(brew.with_extension("log")).unwrap(), "install jq\n");
+        let out = tool.run(&json!({"packages": ["--force"]}), &ctx);
+        assert!(out.failed && out.text.contains("not a package name"), "{}", out.text);
+        let out = tool.run(&json!({"packages": ["bad-pkg"]}), &ctx);
+        assert!(out.failed && out.text.contains("No formula"), "{}", out.text);
+        assert_eq!(std::fs::read_to_string(brew.with_extension("log")).unwrap().lines().count(), 2, "the bad name never reached brew");
+        // A failed run names the last resort next to pixi.
+        let h = hints::hint("", "sh: 1: jq: not found", None, hints::Fix::None, Some("Homebrew")).unwrap();
+        assert!(h.contains("install_system_packages"), "{h}");
     }
 
     #[test]
