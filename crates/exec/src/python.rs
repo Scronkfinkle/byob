@@ -36,8 +36,22 @@ pub struct Python {
 impl Python {
     /// Find an interpreter (see the module docs).
     pub fn resolve(data_dir: Option<&Path>) -> Option<Self> {
+        Self::resolve_in(data_dir, &[])
+    }
+
+    /// Like [`Python::resolve`], but a `python3` in the workspace environment's `PATH`
+    /// entries (installed packages, a `.venv`, the dev shell) comes right after `$BYOB_PYTHON`.
+    pub fn resolve_in(data_dir: Option<&Path>, env_path: &[PathBuf]) -> Option<Self> {
         if let Some(p) = std::env::var_os(PYTHON_ENV).filter(|p| !p.is_empty()) {
             return which(&p).map(|path| Self { path, managed: false });
+        }
+        for dir in env_path {
+            for name in ["python3", "python"] {
+                let p = dir.join(if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() });
+                if which(p.as_os_str()).is_some() {
+                    return Some(Self { path: p, managed: false });
+                }
+            }
         }
         if let Some(d) = data_dir {
             let p = venv_python(&managed_venv(d));

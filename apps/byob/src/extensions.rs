@@ -25,11 +25,16 @@ pub fn load(tools: &mut Registry, linked: Vec<PathBuf>, workspace: &Path) -> Loa
     byob_tools::register_builtins(tools);
 
     let paths = byob_store::Paths::resolve();
-    // run_command / run_python (+ install_python_packages with uv). The sandbox helper is
-    // this binary (`byob __sandbox-exec`, see main).
+    // run_command / run_python (+ install_packages with Nix, else install_python_packages
+    // with uv). The sandbox helper is this binary (`byob __sandbox-exec`, see main).
     let mode = Mode::from_env();
+    let mut exec_prompt = None;
     match &mode {
-        Ok(mode) => byob_exec::register(tools, Exec { mode: mode.clone(), data_dir: paths.as_ref().ok().map(|p| p.data_dir.clone()) }),
+        Ok(mode) => {
+            let exec = Exec::new(mode.clone(), paths.as_ref().ok().map(|p| p.data_dir.clone()));
+            exec_prompt = exec.prompt();
+            byob_exec::register(tools, exec);
+        }
         Err(e) => log::warn!("no run_command/run_python: {e}"),
     }
     // Plugin scripts and local MCP servers go through the same sandbox (unless turned off).
@@ -83,6 +88,10 @@ pub fn load(tools: &mut Registry, linked: Vec<PathBuf>, workspace: &Path) -> Loa
 
     let skills = found.skills();
     let mut prompt = format!("{}\n\n{}", byob_tools::artifact::PROMPT, found.prompt());
+    if let Some(p) = exec_prompt {
+        prompt.push_str("\n\n");
+        prompt.push_str(&p);
+    }
     if !skills.is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(&byob_plugins::skills_prompt(&skills));

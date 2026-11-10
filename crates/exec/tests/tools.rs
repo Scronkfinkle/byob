@@ -54,7 +54,7 @@ fn main() -> ExitCode {
 
 fn tools() -> Registry {
     let mut reg = Registry::default();
-    register(&mut reg, Exec { mode: Mode::Sandboxed(Sandbox::new(std::env::current_exe().unwrap())), data_dir: None });
+    register(&mut reg, Exec { mode: Mode::Sandboxed(Sandbox::new(std::env::current_exe().unwrap())), data_dir: None, envs: Default::default() });
     reg
 }
 
@@ -158,7 +158,10 @@ fn install_packages_with_uv() {
     }
     let data = TempDir::new("byob-exec-data-").unwrap();
     let mut reg = Registry::default();
-    register(&mut reg, Exec { mode: Mode::Sandboxed(Sandbox::new(std::env::current_exe().unwrap())), data_dir: Some(data.path().to_path_buf()) });
+    register(
+        &mut reg,
+        Exec { mode: Mode::Sandboxed(Sandbox::new(std::env::current_exe().unwrap())), data_dir: Some(data.path().to_path_buf()), envs: Default::default() },
+    );
     let ws = TempDir::new("byob-exec-ws-").unwrap();
     let cancel = AtomicBool::new(false);
     let ctx = ToolContext::new(ws.path(), &cancel);
