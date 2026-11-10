@@ -131,7 +131,7 @@ chat's list with the transcript (`Artifacts`), `ArtifactUpdated` on new versions
 `GetArtifact` (for display and Export). Each turn's system prompt lists the chat's artifacts by
 id. The pane has tabs (per chat), collapses to a rail of icons with live/paused dots (a
 floating button with a count on phones; Ctrl+Backslash toggles), and any artifact can be
-minimized to a one-line chip in the chat and the pane ("Collapse all" in the header). Pane
+minimized to a one-line chip in the chat and the pane ("Collapse all artifacts" in the header's ⋯ menu). Pane
 width, open/collapsed, and tabs + minimized artifacts per chat are device prefs
 (`byob-ui-egui::pane`, stored like the appearance prefs). HTML apps render through the
 `AppView` seam in `byob-ui-egui`: an iframe overlay in the
@@ -367,7 +367,8 @@ offers "N more…". **+ Workspace** opens the form: name, a fresh folder in the 
 or an existing one (Browse… lists the engine's folders, Choose… is the desktop's own dialog),
 and where commands run (Container: devcontainer.json or an image, and a check that Docker or
 Podman answers). Workspace settings and the chat settings popover (the sliders button next to
-the chat title) show each value's source with a Reset per field; Settings has the global
+the chat title, or ⋯ → Chat settings) show each value's source with a Reset per field; the app
+Settings (gear in the header and at the bottom of the chat list, Ctrl/Cmd+,) has the global
 defaults. Moving a chat to another workspace isn't offered: its transcript, artifacts
 (`.byob/artifacts` in the folder), uploads and undo backups refer to the old folder.
 
