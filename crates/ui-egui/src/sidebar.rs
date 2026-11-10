@@ -9,7 +9,6 @@
 
 use std::collections::BTreeSet;
 
-use byob_protocol::workspace::EnvKind;
 use byob_protocol::{ChatCursor, ChatSummary, ClientMsg, ServerMsg, WorkspaceSummary};
 
 use crate::theme::Tokens;
@@ -94,16 +93,6 @@ pub fn groups<'a>(workspaces: &'a [WorkspaceSummary], recent: &'a [ChatSummary])
 fn sort(pinned: &mut [ChatSummary], recent: &mut [ChatSummary]) {
     pinned.sort_by(|a, b| b.pinned_at.cmp(&a.pinned_at).then_with(|| b.id.cmp(&a.id)));
     recent.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| b.id.cmp(&a.id)));
-}
-
-/// A word for the environment, shown after a workspace's name (none for Auto).
-fn env_badge(env: EnvKind) -> Option<&'static str> {
-    match env {
-        EnvKind::Auto => None,
-        EnvKind::Host => Some("host"),
-        EnvKind::Nix => Some("nix"),
-        EnvKind::Container => Some("container"),
-    }
 }
 
 impl Sidebar {
@@ -324,6 +313,8 @@ impl Sidebar {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let (arrow, arrow_resp) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
                     crate::icons::disclosure(ui.painter(), arrow, !collapsed, t.text_dim);
+                    crate::icons::env_icon(ui, t, ws.env, t.text_size(14.0));
+                    ui.add_space(2.0);
                     let color = if current { t.text_strong } else { t.text };
                     let mut text = egui::text::LayoutJob::default();
                     text.append(
@@ -335,9 +326,6 @@ impl Sidebar {
                             ..Default::default()
                         },
                     );
-                    if let Some(b) = env_badge(ws.env) {
-                        text.append(&format!("  {b}"), 0.0, egui::TextFormat::simple(egui::FontId::proportional(t.text_size(11.0)), t.accent));
-                    }
                     let header =
                         ui.add(egui::Label::new(text).truncate().sense(egui::Sense::click())).on_hover_text(format!("{}\n{} chat(s)", ws.folder, ws.chats));
                     if header.clicked() || arrow_resp.clicked() {
@@ -447,6 +435,7 @@ fn section(ui: &mut egui::Ui, t: &Tokens, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byob_protocol::workspace::EnvKind;
 
     fn chat(id: &str, updated_at: i64, pinned_at: Option<i64>) -> ChatSummary {
         ChatSummary { id: id.into(), title: id.to_uppercase(), updated_at, pinned_at, busy: false, workspace: None }

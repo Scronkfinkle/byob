@@ -553,7 +553,14 @@ impl NewWorkspaceForm {
         ui.label(RichText::new("Where commands run").color(t.text));
         ui.horizontal_wrapped(|ui| {
             for k in EnvKind::ALL {
-                let r = ui.radio_value(&mut self.env, k, k.label());
+                // Icon and choice wrap as one.
+                let r = ui
+                    .horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        crate::icons::env_icon(ui, t, k, t.text_size(14.0));
+                        ui.radio_value(&mut self.env, k, k.label())
+                    })
+                    .inner;
                 if r.changed() && k == EnvKind::Container && support.runtime.is_some() && self.check.is_none() && !self.checking {
                     self.checking = true;
                     out.msgs.push(ClientMsg::CheckContainers);
