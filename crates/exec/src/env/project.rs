@@ -70,37 +70,10 @@ impl JsonEnvTool {
     /// Run the tool with `args`; with `capture`, its stdout goes to a file (not the
     /// bounded tool output) and is returned.
     fn run_tool(&self, args: &[&str], ws: &Path, run: &dyn Runner, capture: bool) -> Result<Option<String>, String> {
-        let tmp = byob_sandbox::TempDir::new("byob-env-")?;
-        let out_file = tmp.path().join("env.json");
-        // `sh -c 'exec "$@" > "$BYOB_OUT"' sh tool args…`: the file avoids the output cap.
-        let mut argv: Vec<OsString> = vec!["-c".into(), if capture { r#"exec "$@" > "$BYOB_OUT""# } else { r#"exec "$@""# }.into(), "sh".into()];
-        argv.push(self.program.clone().into_os_string());
-        argv.extend(args.iter().map(OsString::from));
-        let mut job = Job::new("sh".into(), argv, LOAD_TIMEOUT);
-        job.network = true;
-        job.layer.write.push(ws.to_path_buf());
-        if let Some(s) = &self.state {
-            std::fs::create_dir_all(s).map_err(|e| format!("can't create {}: {e}", s.display()))?;
-            job.layer.write.push(s.clone());
-        }
-        job.env = self.vars(ws);
-        job.env.push(("BYOB_OUT".into(), out_file.clone().into_os_string()));
-        let out = run.run(job, ws, tmp.path())?;
-        if out.cancelled {
-            return Err(STOPPED.into());
-        }
-        if !out.success() {
-            let err = out.stderr.text();
-            return Err(format!("`{} {}` failed: {}", self.label_cmd(), args.join(" "), err.trim()));
-        }
-        if !capture {
-            return Ok(None);
-        }
-        let size = std::fs::metadata(&out_file).map(|m| m.len()).unwrap_or(0);
-        if size > MAX_JSON {
-            return Err(format!("the environment is too large ({size} bytes)"));
-        }
-        std::fs::read_to_string(&out_file).map(Some).map_err(|e| format!("no environment from {}: {e}", self.label_cmd()))
+        let mut write = vec![ws.to_path_buf()];
+        write.extend(self.state.clone());
+        let t = ToolRun { program: &self.program, name: self.label_cmd(), cwd: ws, write, env: self.vars(ws) };
+        run_tool(&t, args, run, capture)
     }
 
     fn label_cmd(&self) -> &'static str {
@@ -109,6 +82,53 @@ impl JsonEnvTool {
             Kind::Mise => "mise",
         }
     }
+}
+
+/// One sandboxed, networked run of a package tool (pixi, mise).
+pub(crate) struct ToolRun<'a> {
+    pub program: &'a Path,
+    /// For messages: "pixi".
+    pub name: &'a str,
+    pub cwd: &'a Path,
+    /// Folders it may write (created if missing).
+    pub write: Vec<PathBuf>,
+    pub env: Vec<(String, OsString)>,
+}
+
+/// Run `t` with `args`; with `capture`, its stdout goes to a file (not the bounded tool
+/// output) and is returned. A failure's error is the tool's stderr.
+pub(crate) fn run_tool(t: &ToolRun<'_>, args: &[&str], run: &dyn Runner, capture: bool) -> Result<Option<String>, String> {
+    let tmp = byob_sandbox::TempDir::new("byob-env-")?;
+    let out_file = tmp.path().join("env.json");
+    // `sh -c 'exec "$@" > "$BYOB_OUT"' sh tool args…`: the file avoids the output cap.
+    let mut argv: Vec<OsString> = vec!["-c".into(), if capture { r#"exec "$@" > "$BYOB_OUT""# } else { r#"exec "$@""# }.into(), "sh".into()];
+    argv.push(t.program.as_os_str().to_owned());
+    argv.extend(args.iter().map(OsString::from));
+    let mut job = Job::new("sh".into(), argv, LOAD_TIMEOUT);
+    job.network = true;
+    job.big_memory = true;
+    for w in &t.write {
+        std::fs::create_dir_all(w).map_err(|e| format!("can't create {}: {e}", w.display()))?;
+        job.layer.write.push(w.clone());
+    }
+    job.env.clone_from(&t.env);
+    job.env.push(("BYOB_OUT".into(), out_file.clone().into_os_string()));
+    let out = run.run(job, t.cwd, tmp.path())?;
+    if out.cancelled {
+        return Err(STOPPED.into());
+    }
+    if !out.success() {
+        let err = out.stderr.text();
+        return Err(format!("`{} {}` failed: {}", t.name, args.join(" "), err.trim()));
+    }
+    if !capture {
+        return Ok(None);
+    }
+    let size = std::fs::metadata(&out_file).map(|m| m.len()).unwrap_or(0);
+    if size > MAX_JSON {
+        return Err(format!("the environment is too large ({size} bytes)"));
+    }
+    std::fs::read_to_string(&out_file).map(Some).map_err(|e| format!("no environment from {}: {e}", t.name))
 }
 
 impl Project for JsonEnvTool {
@@ -143,7 +163,10 @@ impl Project for JsonEnvTool {
             }
         };
         let host: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-        parse_env(self.kind, text.as_deref().unwrap_or_default(), &host)
+        let mut layer = parse_env(self.kind, text.as_deref().unwrap_or_default(), &host)?;
+        // Tools it installed outside the workspace (mise's data folder) load their libraries from there.
+        layer.read.extend(self.state.clone());
+        Ok(layer)
     }
 }
 

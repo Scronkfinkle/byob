@@ -23,6 +23,7 @@
 pub mod choices;
 pub mod hints;
 pub mod nix;
+pub mod pixi;
 pub mod project;
 pub mod system;
 
@@ -302,6 +303,8 @@ impl Found {
 #[derive(Debug, Default)]
 pub struct Envs {
     nix: Option<nix::Nix>,
+    /// The installer where there's no Nix.
+    pixi: Option<pixi::Pixi>,
     /// Project environments, in order of precedence.
     projects: Vec<Box<dyn Project>>,
     /// `<data>/envs`, holding one folder per workspace.
@@ -344,7 +347,12 @@ impl Envs {
         }
         let state = data_dir.map(|d| d.join("envs"));
         let choices = choices::Choices::new(state.as_ref().map(|s| s.join("workspaces.json")));
-        Self { nix: found.nix, projects, state, mode, choices, system: found.system, ..Self::default() }
+        // Nix first wherever it's present (conda-forge binaries need nix-ld on NixOS).
+        let pixi = match (&found.nix, &found.pixi, data_dir) {
+            (None, Some(program), Some(data)) => Some(pixi::Pixi::new(program.clone(), data)),
+            _ => None,
+        };
+        Self { nix: found.nix, pixi, projects, state, mode, choices, system: found.system, ..Self::default() }
     }
 
     /// No package managers (tests, or a machine without any).
@@ -354,7 +362,8 @@ impl Envs {
 
     /// The package manager `install_packages` uses here, if any.
     pub fn installer(&self) -> Option<&'static str> {
-        self.nix.as_ref().filter(|_| self.state.is_some()).map(|_| "Nix")
+        self.state.as_ref()?;
+        if self.nix.is_some() { Some("Nix") } else { self.pixi.as_ref().map(|_| "pixi") }
     }
 
     /// A short paragraph for the system prompt.
@@ -415,10 +424,15 @@ impl Envs {
         let load = self.project_consent(ws, run, &mut out.notes);
         let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
         let dir = self.ws_dir(ws);
-        if let (Some(nix), Some(dir)) = (&self.nix, &dir)
-            && let Some(l) = nix.installed(dir)
-        {
-            out.layer.stack(&l);
+        if let Some(dir) = &dir {
+            let installed = match (&self.nix, &self.pixi) {
+                (Some(nix), _) => nix.installed(dir),
+                (None, Some(pixi)) => pixi.installed(dir),
+                (None, None) => None,
+            };
+            if let Some(l) = installed {
+                out.layer.stack(&l);
+            }
         }
         if let Some(l) = venv_layer(ws) {
             out.layer.stack(&l);
@@ -500,8 +514,12 @@ impl Envs {
     /// Install `packages` for workspace `ws`.
     pub(crate) fn install(&self, ws: &Path, packages: &[String], run: &dyn Runner) -> Result<Installed, String> {
         let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
-        let (Some(nix), Some(dir)) = (&self.nix, self.ws_dir(ws)) else { return Err("no package manager is available here".into()) };
-        let mut done = nix.install(&dir, packages, run)?;
+        let Some(dir) = self.ws_dir(ws) else { return Err("byob has no data folder to install packages into".into()) };
+        let mut done = match (&self.nix, &self.pixi) {
+            (Some(nix), _) => nix.install(&dir, packages, run)?,
+            (None, Some(pixi)) => pixi.install(&dir, packages, run)?,
+            (None, None) => return Err(format!("no package manager is available here: {}", hints::GET_PIXI)),
+        };
         self.note_missing(ws, &mut done);
         Ok(done)
     }

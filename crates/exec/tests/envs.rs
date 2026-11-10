@@ -13,6 +13,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use std::sync::Arc;
+
+use byob_exec::env::{Envs, Found, ProjectMode};
 use byob_exec::{Exec, Mode, register};
 use byob_sandbox::{Sandbox, TempDir, dispatch_helper};
 use byob_tools::{Answer, Asker, Question, Registry, ToolContext, ToolOutput};
@@ -30,6 +33,7 @@ fn main() -> ExitCode {
         ("declined_flake_is_not_loaded", declined_flake_is_not_loaded, Needs::Nix),
         ("mise_project_env", mise_project_env, Needs::Mise),
         ("pixi_project_env", pixi_project_env, Needs::Pixi),
+        ("pixi_installs_packages_without_nix", pixi_installs_packages_without_nix, Needs::Pixi),
     ];
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--list") {
@@ -114,6 +118,17 @@ impl World {
         let ws = TempDir::new("byob-nix-ws-").unwrap();
         let mut reg = Registry::default();
         register(&mut reg, Exec::new(Mode::Sandboxed(Sandbox::new(std::env::current_exe().unwrap())), Some(data.path().to_path_buf())));
+        Self { data, ws, reg, asker: Asks { answer: Answer::Yes, asked: AtomicUsize::new(0) } }
+    }
+
+    /// Only what `found` lists (e.g. pixi with Nix hidden).
+    fn with(found: Found) -> Self {
+        let data = TempDir::new("byob-env-data-").unwrap();
+        let ws = TempDir::new("byob-env-ws-").unwrap();
+        let mut reg = Registry::default();
+        let envs = Arc::new(Envs::new(Some(data.path()), found, ProjectMode::Ask));
+        let exec = Exec { mode: Mode::Sandboxed(Sandbox::new(std::env::current_exe().unwrap())), data_dir: Some(data.path().to_path_buf()), envs };
+        register(&mut reg, exec);
         Self { data, ws, reg, asker: Asks { answer: Answer::Yes, asked: AtomicUsize::new(0) } }
     }
 
@@ -257,4 +272,27 @@ fn pixi_project_env() {
     let out = w.call("run_command", json!({"command": "echo \"$PIXI_PROJECT_NAME $CONDA_PREFIX\"", "timeout_s": 60}));
     assert!(!out.failed && out.text.contains("Loaded the workspace's pixi environment from pixi.toml"), "{}", out.text);
     assert!(out.text.contains("t ") && out.text.contains(".pixi/envs/default"), "{}", out.text);
+}
+
+/// pixi as the installer, with Nix hidden: conda-forge packages in byob's data folder,
+/// on PATH and in run_python's python3; the workspace stays untouched.
+fn pixi_installs_packages_without_nix() {
+    let w = World::with(Found { pixi: byob_sandbox::which("pixi".as_ref()), ..Default::default() });
+    assert!(w.reg.get("install_packages").is_some() && w.reg.get("install_python_packages").is_none());
+    let out = w.call("install_packages", json!({"packages": ["jq", "matplotlib", "nosuchpkg-xyz"], }));
+    assert!(out.failed, "a missing name is reported");
+    assert!(out.text.contains("Installed with pixi (conda-forge) for this workspace: jq, matplotlib"), "{}", out.text);
+    assert!(out.text.contains("Not found on conda-forge: \"nosuchpkg-xyz\""), "{}", out.text);
+    let out = w.call("run_command", json!({"command": "echo '{\"a\": [1, 2]}' | jq '.a[1]' && command -v jq"}));
+    assert!(!out.failed && out.text.contains("\n2\n") && out.text.contains("/pixi/.pixi/envs/default/bin/jq"), "{}", out.text);
+    let out = w.call("run_python", json!({"code": "import matplotlib\nmatplotlib.use('Agg')\nimport matplotlib.pyplot as plt\nplt.plot([1, 2])\nplt.savefig('p.png')\nprint('ok', matplotlib.__version__)"}));
+    assert!(!out.failed && out.text.contains("ok ") && w.ws.path().join("p.png").is_file(), "{}", out.text);
+    // Adding more keeps the earlier ones.
+    let out = w.call("install_packages", json!({"packages": ["python3Packages.six"]}));
+    assert!(!out.failed, "{}", out.text);
+    let out = w.call("run_python", json!({"code": "import six, matplotlib\nprint('both')"}));
+    assert!(!out.failed && out.text.contains("both"), "{}", out.text);
+    let names: Vec<String> = std::fs::read_dir(w.ws.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(names, vec!["p.png".to_owned()], "nothing of pixi's in the workspace");
+    assert!(w.data.path().join("pixi/cache").is_dir());
 }

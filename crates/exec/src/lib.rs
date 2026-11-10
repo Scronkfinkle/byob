@@ -145,11 +145,13 @@ pub(crate) struct Job {
     pub layer: Layer,
     /// Variables set last (after the layer's).
     pub env: Vec<(String, OsString)>,
+    /// No address-space limit: package managers (pixi) map far more than they use.
+    pub big_memory: bool,
 }
 
 impl Job {
     pub fn new(program: OsString, args: Vec<OsString>, timeout: Duration) -> Self {
-        Self { program, args, network: false, timeout, layer: Layer::default(), env: Vec::new() }
+        Self { program, args, network: false, timeout, layer: Layer::default(), env: Vec::new(), big_memory: false }
     }
 }
 
@@ -188,7 +190,7 @@ impl Exec {
             Mode::Sandboxed(sb) => {
                 let mut policy = Policy::for_workspace(cwd, tmp)
                     .network(job.network)
-                    .limits(Limits::for_timeout(secs))
+                    .limits(Limits { memory_bytes: if job.big_memory { None } else { Limits::for_timeout(secs).memory_bytes }, ..Limits::for_timeout(secs) })
                     // Where the OS can't confine, run anyway (warned at startup and in the output).
                     .allow_unsandboxed(true)
                     .allow_path_dirs(path.as_deref().or(host_path.as_deref()));
@@ -378,7 +380,7 @@ impl Tool for RunCommand {
                 Sandboxed: it can read system files and read/write only the workspace (plus a private temp folder); no network unless `network` is true. \
                 Use it to inspect, search, convert or process files (e.g. `wc -l data.csv`, `head -5 data.csv`, `ls -R`). No interactive programs.{}",
                 self.0.envs.installer().map_or(String::new(), |_| {
-                    " Packages from install_packages are on PATH, and a workspace flake.nix / shell.nix dev shell is loaded automatically. \
+                    " Packages from install_packages are on PATH, and so is the workspace's own environment (flake.nix, pixi.toml, …) once the user agrees to load it. \
                     If a program is missing, call install_packages instead of pip, apt or sudo."
                         .into()
                 })
@@ -901,6 +903,41 @@ mod tests {
         // A failed run names the last resort next to pixi.
         let h = hints::hint("", "sh: 1: jq: not found", None, hints::Fix::None, Some("Homebrew")).unwrap();
         assert!(h.contains("install_system_packages"), "{h}");
+    }
+
+    /// With a workspace installer (a fake pixi that finds nothing), the system installer
+    /// only takes what install_packages reported missing.
+    #[cfg(unix)]
+    #[test]
+    fn system_installs_wait_for_the_workspace_installer() {
+        use env::system::{Kind, SystemInstaller};
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let brew = fake_brew(d.path());
+        let pixi = d.path().join("bin/pixi");
+        std::fs::write(&pixi, "#!/bin/sh\nfor a; do last=$a; done\nprintf 'Error: Cannot solve the request because of: No candidates were found for\\n    %s *.\\n' \"$last\" >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&pixi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let found = env::Found { pixi: Some(pixi), system: Some(SystemInstaller { kind: Kind::Brew, program: brew.clone() }), ..Default::default() };
+        let envs = Arc::new(Envs::new(Some(d.path()), found, env::ProjectMode::Ask));
+        assert_eq!(envs.installer(), Some("pixi"));
+        let mut reg = Registry::default();
+        register(&mut reg, Exec { mode: Mode::Unsandboxed, data_dir: Some(d.path().to_path_buf()), envs });
+        assert!(reg.get("install_python_packages").is_none());
+        let ws = tempfile::tempdir().unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let ctx = ToolContext::new(ws.path(), &cancel);
+        let system = reg.get("install_system_packages").unwrap();
+        assert!(system.spec().description.contains("try install_packages first"));
+        let out = system.run(&json!({"packages": ["sometool"]}), &ctx);
+        assert!(out.failed && out.text.contains("Call install_packages with {\"packages\":[\"sometool\"]} first"), "{}", out.text);
+        assert!(!brew.with_extension("log").exists());
+        let out = reg.get("install_packages").unwrap().run(&json!({"packages": ["sometool"]}), &ctx);
+        assert!(out.failed && out.text.contains("Not found on conda-forge: \"sometool\""), "{}", out.text);
+        assert!(out.text.contains("install_system_packages can install [\"sometool\"] system-wide with Homebrew"), "{}", out.text);
+        let out = system.run(&json!({"packages": ["sometool"]}), &ctx);
+        assert!(!out.failed, "{}", out.text);
+        assert_eq!(std::fs::read_to_string(brew.with_extension("log")).unwrap(), "install sometool\n");
+        assert!(std::fs::read_dir(ws.path()).unwrap().next().is_none(), "the workspace is untouched");
     }
 
     #[test]
