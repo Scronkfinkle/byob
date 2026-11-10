@@ -288,14 +288,12 @@ fn delegations_in_one_round_run_in_parallel_up_to_the_slot_cap() {
     let (url, seen) = routed(script(&["task one", "task two", "task three"], child, delay));
     let s = engine(url, ws.path(), None, Access::Write, Some(2));
     let (mut c, _) = hello(&s.engine);
-    let started = Instant::now();
     let view = run(&mut c, "do three things", |_, _| {});
-    let took = view.finished_at.unwrap() - started;
     assert_eq!(view.finished, Some(None));
+    // The fake server counts children in flight at once: that's the parallelism, without
+    // a wall-clock bound (one flaked under a loaded full-suite run).
     let max = seen.lock().unwrap().max_active;
     assert_eq!(max, 2, "two at once (the cap), not three and not one");
-    // Three children of 400 ms with two slots: about 800 ms, not 1200.
-    assert!(took < Duration::from_millis(1150), "{took:?}");
     let steps = &view.reply().steps;
     assert_eq!(steps.len(), 3);
     assert!(steps.iter().all(|s| s.delegation.as_ref().is_some_and(|d| d.state == DelegationState::Done)));
