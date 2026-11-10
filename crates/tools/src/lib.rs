@@ -59,11 +59,39 @@ pub struct ToolContext<'a> {
     journal: Option<&'a Journal>,
     chat: Option<&'a str>,
     asker: Option<&'a dyn Asker>,
+    env: Option<&'a EnvPlan>,
+}
+
+/// Where a chat's commands run, as its workspace and chat settings decide (the engine
+/// resolves them; see `byob_types::config`). The default leaves everything to the answers
+/// the user gave for the folder (asked once).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnvPlan {
+    /// In the workspace's container (`Some(true)`), on this machine (`Some(false)`), or as
+    /// the user answered for the folder (`None`). Chosen in the settings, so never asked.
+    pub container: Option<bool>,
+    /// Load the folder's project environment (flake.nix, …) without asking (`Some(true)`),
+    /// never (`Some(false)`), or as answered (`None`).
+    pub project: Option<bool>,
+    /// The container's image; `None`: the folder's devcontainer.json, else the default.
+    pub image: Option<String>,
 }
 
 impl<'a> ToolContext<'a> {
     pub fn new(workspace: &'a Path, cancel: &'a AtomicBool) -> Self {
-        Self { workspace, cancel, journal: None, chat: None, asker: None }
+        Self { workspace, cancel, journal: None, chat: None, asker: None, env: None }
+    }
+
+    /// Run commands where `plan` says (see [`EnvPlan`]).
+    #[must_use]
+    pub fn with_env(mut self, plan: &'a EnvPlan) -> Self {
+        self.env = Some(plan);
+        self
+    }
+
+    /// Where this chat's commands run (the default when the engine didn't say).
+    pub fn env(&self) -> EnvPlan {
+        self.env.cloned().unwrap_or_default()
     }
 
     /// Let the tool ask the user questions while it runs (see [`ToolContext::ask`]).
@@ -184,10 +212,17 @@ pub trait Asker: Send + Sync {
 /// (provided by the code-running tools, `byob-exec`). Calls may block for a while
 /// (stopping a container): the engine makes them off its own thread.
 pub trait EnvControl: Send + Sync {
-    /// The settings and state of workspace `ws`.
-    fn describe(&self, ws: &Path) -> byob_protocol::WorkspaceEnv;
+    /// The settings and state of workspace `ws`, whose settings say `plan`.
+    fn describe(&self, ws: &Path, plan: &EnvPlan) -> byob_protocol::WorkspaceEnv;
     /// Change them; returns what happened, for the user.
     fn apply(&self, ws: &Path, action: &byob_protocol::EnvAction) -> Result<String, String>;
+    /// What this machine offers (Nix, a container runtime). Cheap.
+    fn support(&self) -> byob_protocol::EnvSupport;
+    /// Whether the container runtime answers; the error says what to do. May take seconds.
+    fn check_containers(&self) -> Result<String, String>;
+    /// Forget everything byob keeps for `ws` outside the folder: its answers, installed
+    /// packages and container. The folder itself is never touched. May take seconds.
+    fn forget(&self, ws: &Path) -> Result<String, String>;
 }
 
 /// Result of a call. `text` goes back to the model; keep it bounded.

@@ -24,6 +24,7 @@ image.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+byob-exec.workspace = true
 
 [lints]
 workspace = true

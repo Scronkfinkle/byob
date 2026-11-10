@@ -286,8 +286,9 @@ impl Connection for WsConnection {
                 }
                 ewebsock::WsEvent::Message(ewebsock::WsMessage::Text(text)) => match ServerMsg::from_json(&text) {
                     Ok(msg) => {
-                        if let ServerMsg::ChatOpened { chat } = &msg {
-                            self.view = Some(chat.as_ref().map_or(ClientMsg::NewChat, |c| ClientMsg::OpenChat { id: c.id.clone() }));
+                        if let ServerMsg::ChatOpened { chat, workspace } = &msg {
+                            self.view =
+                                Some(chat.as_ref().map_or(ClientMsg::NewChat { workspace: workspace.clone() }, |c| ClientMsg::OpenChat { id: c.id.clone() }));
                         }
                         return Some(msg);
                     }

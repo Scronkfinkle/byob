@@ -620,6 +620,7 @@ dependencies = [
 name = "byob-agent"
 version = "0.1.0"
 dependencies = [
+ "byob-exec",
  "byob-llm",
  "byob-plugins",
  "byob-protocol",

@@ -13,7 +13,7 @@ use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
 use byob_types::InferenceConfig;
 use serde_json::{Value, json};
 
-use crate::{AdaptOptions, EngineConfig, EngineHandle, LocalConnection, Policy, ToolMode};
+use crate::{AdaptOptions, EngineConfig, EngineHandle, LocalConnection, ToolMode};
 
 #[derive(Clone)]
 enum Reply {
@@ -176,7 +176,11 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
         inference: InferenceConfig { base_url: url, model: "m".into(), api_key: None },
         workspace: PathBuf::from("/ws"),
         tools,
-        policy: Policy::default(),
+        policy: None,
+        defaults: crate::Layer::default(),
+        scoped_keys: Default::default(),
+        workspaces_root: None,
+        register_workspace: false,
         system_prompt: "You are a test.".into(),
         adapt,
         paths: None,

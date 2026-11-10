@@ -141,13 +141,7 @@ pub fn detect() -> Vec<Detected> {
     })
 }
 
-/// Scheme, host and port of a URL, lowercased ("http://127.0.0.1:8080").
-fn origin(url: &str) -> String {
-    let u = url.trim().to_ascii_lowercase();
-    let (scheme, rest) = u.split_once("://").unwrap_or(("", u.as_str()));
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    format!("{scheme}://{host}")
-}
+use byob_types::config::origin;
 
 /// A client-supplied endpoint, refused if absurdly long.
 pub fn check_lengths(base_url: &str, model: &str, api_key: Option<&str>) -> Result<(), String> {
@@ -237,15 +231,21 @@ impl Engine {
         }
     }
 
-    /// A reply ended: a success proves the link, a connection error breaks it.
-    pub(crate) fn turn_outcome(&mut self, error: Option<&str>) {
-        match error {
-            None => self.set_link(Link::Ok),
-            Some(e) => {
-                if let Some(problem) = Problem::classify(e) {
-                    self.set_link(Link::Failed { problem: Some(problem), detail: e.to_owned() });
-                }
-            }
+    /// A reply from `endpoint` ended: a success proves the link, a connection error breaks
+    /// it. Endpoints other than the global one (a workspace's or a chat's) are tracked apart.
+    pub(crate) fn turn_outcome(&mut self, endpoint: &InferenceConfig, error: Option<&str>) {
+        let link = match error {
+            None => Link::Ok,
+            Some(e) => match Problem::classify(e) {
+                Some(problem) => Link::Failed { problem: Some(problem), detail: e.to_owned() },
+                None => return,
+            },
+        };
+        let key = adapt::key(endpoint);
+        if key == adapt::key(&self.config) {
+            self.set_link(link);
+        } else {
+            self.links.insert(key, link);
         }
     }
 

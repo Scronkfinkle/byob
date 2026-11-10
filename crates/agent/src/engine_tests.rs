@@ -56,7 +56,7 @@ fn hello(conn: &mut LocalConnection) -> Hello {
         match recv(conn) {
             ServerMsg::State(s) => state = Some(s),
             ServerMsg::Chats { pinned, recent, .. } => chats = pinned.into_iter().chain(recent).collect(),
-            ServerMsg::ChatOpened { chat: c } => chat = c,
+            ServerMsg::ChatOpened { chat: c, .. } => chat = c,
             ServerMsg::Transcript { entries } => transcript = Some(entries),
             ServerMsg::Artifacts { .. } if transcript.is_some() => {
                 return Hello { state: state.unwrap(), chats, chat, entries: transcript.unwrap_or_default() };
@@ -68,7 +68,7 @@ fn hello(conn: &mut LocalConnection) -> Hello {
 
 /// Wait for the transcript after NewChat/OpenChat.
 fn opened(conn: &mut LocalConnection) -> (Option<ChatSummary>, Vec<Entry>) {
-    let (ServerMsg::ChatOpened { chat }, _) = recv_until(conn, |m| matches!(m, ServerMsg::ChatOpened { .. })) else { unreachable!() };
+    let (ServerMsg::ChatOpened { chat, .. }, _) = recv_until(conn, |m| matches!(m, ServerMsg::ChatOpened { .. })) else { unreachable!() };
     let (ServerMsg::Transcript { entries }, _) = recv_until(conn, |m| matches!(m, ServerMsg::Transcript { .. })) else { unreachable!() };
     recv_until(conn, |m| matches!(m, ServerMsg::Artifacts { .. }));
     (chat, entries)
@@ -248,7 +248,7 @@ fn restart_restores_chats_and_transcripts() {
         hello(&mut c);
         c.send(ClientMsg::SendMessage { text: "remember me".into(), attachments: vec![] });
         assert_eq!(finish(&mut c).0, None);
-        c.send(ClientMsg::NewChat);
+        c.send(ClientMsg::NewChat { workspace: None });
         opened(&mut c);
         c.send(ClientMsg::SendMessage { text: "second chat".into(), attachments: vec![] });
         assert_eq!(finish(&mut c).0, None);
@@ -320,7 +320,7 @@ fn clients_have_their_own_chat_and_deltas_go_only_to_viewers() {
     hello(&mut a);
     hello(&mut b);
     a.send(ClientMsg::SendMessage { text: "running chat".into(), attachments: vec![] });
-    let (ServerMsg::ChatOpened { chat: Some(chat) }, _) = recv_until(&mut a, |m| matches!(m, ServerMsg::ChatOpened { .. })) else { panic!() };
+    let (ServerMsg::ChatOpened { chat: Some(chat), .. }, _) = recv_until(&mut a, |m| matches!(m, ServerMsg::ChatOpened { .. })) else { panic!() };
     recv_until(&mut a, |m| matches!(m, ServerMsg::EntryDelta { .. }));
     // B still looks at its own new chat: it hears about the chat, not its entries.
     let seen = drain(&mut b);
@@ -328,7 +328,7 @@ fn clients_have_their_own_chat_and_deltas_go_only_to_viewers() {
     assert!(!seen.iter().any(|m| matches!(m, ServerMsg::EntryAdded(_) | ServerMsg::EntryDelta { .. } | ServerMsg::ChatOpened { .. })));
 
     // A switches away mid-turn; the turn keeps going.
-    a.send(ClientMsg::NewChat);
+    a.send(ClientMsg::NewChat { workspace: None });
     let (now, entries) = opened(&mut a);
     assert!(now.is_none() && entries.is_empty());
     // B opens the running chat and sees the partial reply.
@@ -358,7 +358,7 @@ fn chats_can_be_renamed_pinned_listed_and_deleted() {
     let mut b = engine.connect(Arc::new(|| {}));
     hello(&mut a);
     for text in ["one", "two", "three"] {
-        a.send(ClientMsg::NewChat);
+        a.send(ClientMsg::NewChat { workspace: None });
         opened(&mut a);
         a.send(ClientMsg::SendMessage { text: text.into(), attachments: vec![] });
         finish(&mut a);
@@ -403,13 +403,13 @@ fn running_chats_cannot_be_deleted_and_other_chats_run_in_parallel() {
     let mut a = engine.connect(Arc::new(|| {}));
     hello(&mut a);
     a.send(ClientMsg::SendMessage { text: "slow".into(), attachments: vec![] });
-    let (ServerMsg::ChatOpened { chat: Some(chat) }, _) = recv_until(&mut a, |m| matches!(m, ServerMsg::ChatOpened { .. })) else { panic!() };
+    let (ServerMsg::ChatOpened { chat: Some(chat), .. }, _) = recv_until(&mut a, |m| matches!(m, ServerMsg::ChatOpened { .. })) else { panic!() };
     recv_until(&mut a, |m| matches!(m, ServerMsg::EntryDelta { .. }));
     a.send(ClientMsg::DeleteChat { id: chat.id.clone() });
     let (ServerMsg::Notice { text, .. }, _) = recv_until(&mut a, |m| matches!(m, ServerMsg::Notice { .. })) else { panic!() };
     assert!(text.contains("stop it first"), "{text}");
     // A second chat can run while the first one waits.
-    a.send(ClientMsg::NewChat);
+    a.send(ClientMsg::NewChat { workspace: None });
     opened(&mut a);
     a.send(ClientMsg::SendMessage { text: "fast".into(), attachments: vec![] });
     recv_until(&mut a, |m| matches!(m, ServerMsg::EntryDelta { .. }));

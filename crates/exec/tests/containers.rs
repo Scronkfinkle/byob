@@ -103,7 +103,7 @@ fn default_image_runs_as_the_user_with_network_per_call_and_survives_restarts() 
     // No devcontainer.json: only the setting turns it on.
     let out = w.call("run_command", json!({"command": "echo on-the-host"}));
     assert!(!out.text.contains("container"), "{}", out.text);
-    assert_eq!(w.envs.describe(&w.ws).container.state, None);
+    assert_eq!(w.envs.describe(&w.ws, &byob_tools::EnvPlan::default()).container.state, None);
     w.envs.apply(&w.ws, &EnvAction::Container { on: Some(true) }).unwrap();
 
     let out = w.call("run_command", json!({"command": "id -u; pwd; touch made.txt; python3 --version", "timeout_s": 600}));
@@ -114,7 +114,7 @@ fn default_image_runs_as_the_user_with_network_per_call_and_survives_restarts() 
     assert!(out.text.contains("Python 3") && out.text.contains("Files created: made.txt"), "{}", out.text);
     assert_eq!(my_uid(&w.ws.join("made.txt")), uid, "not owned by root");
     let id = w.container_id();
-    assert_eq!(w.envs.describe(&w.ws).container.state.as_deref(), Some("running"));
+    assert_eq!(w.envs.describe(&w.ws, &byob_tools::EnvPlan::default()).container.state.as_deref(), Some("running"));
 
     // Reused, and quiet the second time.
     let out = w.call("run_python", json!({"code": "import sys; print('py', sys.version_info[0])"}));
@@ -153,11 +153,11 @@ fn default_image_runs_as_the_user_with_network_per_call_and_survives_restarts() 
 
     // Stop and remove from the settings.
     w.envs.apply(&w.ws, &EnvAction::StopContainer).unwrap();
-    assert_eq!(w.envs.describe(&w.ws).container.state.as_deref(), Some("exited"));
+    assert_eq!(w.envs.describe(&w.ws, &byob_tools::EnvPlan::default()).container.state.as_deref(), Some("exited"));
     let out = w.call("run_command", json!({"command": "echo back"}));
     assert!(!out.failed && out.text.contains("back"), "started again: {}", out.text);
     w.envs.apply(&w.ws, &EnvAction::RemoveContainer).unwrap();
-    assert_eq!(w.envs.describe(&w.ws).container.state, None);
+    assert_eq!(w.envs.describe(&w.ws, &byob_tools::EnvPlan::default()).container.state, None);
 }
 
 #[cfg(unix)]
@@ -174,7 +174,7 @@ fn devcontainer_json_is_asked_once_and_honoured() {
         "features": {"ghcr.io/devcontainers/features/node:1": {}},
     }"#;
     std::fs::write(w.ws.join(".devcontainer/devcontainer.json"), config).unwrap();
-    let d = w.envs.describe(&w.ws);
+    let d = w.envs.describe(&w.ws, &byob_tools::EnvPlan::default());
     assert_eq!(
         (d.container.devcontainer.as_deref(), d.container.use_container, d.container.image.as_str()),
         (Some(".devcontainer/devcontainer.json"), None, "debian:stable-slim")

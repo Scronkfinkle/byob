@@ -25,6 +25,11 @@ pub struct Script {
     pub then: Vec<Command>,
     /// Put this endpoint (URL, model) in the connection form and test it, once connected.
     pub test_connection: Option<(String, String)>,
+    /// Open this workspace view once the messages are done (`--open-panel`).
+    pub open_panel: Option<String>,
+    /// Create this workspace (name, environment) through the New workspace form first,
+    /// then send the messages in it (`--new-workspace`).
+    pub new_workspace: Option<(String, byob_types::config::EnvKind)>,
 }
 
 /// Something done to the artifacts in a scripted run.
@@ -72,6 +77,8 @@ pub struct Runner {
     /// The last message sent: when, and whether the app has been busy since.
     waiting: Option<(Instant, bool)>,
     requested: bool,
+    /// `--new-workspace` was sent.
+    created: bool,
     /// When the last `then` command ran; the next one runs no earlier than `next_at`.
     then_at: Option<Instant>,
     next_at: Option<Instant>,
@@ -82,7 +89,17 @@ pub struct Runner {
 impl Runner {
     pub fn new(mut script: Script) -> Self {
         script.send.reverse();
-        Self { script, started: Instant::now(), waiting: None, requested: false, then_at: None, next_at: None, done: Arc::default(), result: Arc::default() }
+        Self {
+            script,
+            started: Instant::now(),
+            waiting: None,
+            requested: false,
+            created: false,
+            then_at: None,
+            next_at: None,
+            done: Arc::default(),
+            result: Arc::default(),
+        }
     }
 
     pub fn frame(&mut self, app: &mut byob_ui_egui::ByobApp, ctx: &egui::Context) {
@@ -90,6 +107,17 @@ impl Runner {
             && let Some((url, model)) = self.script.test_connection.take()
         {
             app.test_connection(&url, &model);
+        }
+        if let Some((name, env)) = self.script.new_workspace.clone() {
+            if !self.created && app.settled() {
+                app.create_workspace(&name, env);
+                self.created = true;
+            }
+            if !app.in_workspace(&name) {
+                ctx.request_repaint_after(Duration::from_millis(100));
+                return;
+            }
+            self.script.new_workspace = None;
         }
         for path in std::mem::take(&mut self.script.attach) {
             match byob_ui_egui::upload::read_path(&path) {
@@ -114,6 +142,13 @@ impl Runner {
         if self.waiting.is_some() || !self.script.send.is_empty() {
             ctx.request_repaint_after(Duration::from_millis(100));
             return;
+        }
+        // Once the messages are done: open a workspace view (retried until it can open).
+        if let Some(name) = self.script.open_panel.clone()
+            && app.settled()
+            && app.open_panel(&name)
+        {
+            self.script.open_panel = None;
         }
         let Some(path) = self.script.screenshot.clone() else { return };
         ctx.request_repaint_after(Duration::from_millis(100));

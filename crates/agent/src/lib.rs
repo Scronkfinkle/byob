@@ -40,6 +40,9 @@ mod subagents;
 #[cfg(test)]
 mod test_store;
 mod turn;
+#[cfg(test)]
+mod workspace_tests;
+mod workspaces;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -60,6 +63,7 @@ use byob_store::{ChatStore, GrantScope, NewMessage, Paths, Role, Secrets, Settin
 use byob_tools::Registry;
 pub use byob_tools::artifact;
 use byob_types::InferenceConfig;
+pub use byob_types::config::Layer;
 pub use compact::CompactOptions;
 pub use delegate::SubagentOptions;
 pub use permissions::{Policy, Rule};
@@ -77,7 +81,20 @@ pub struct EngineConfig {
     pub workspace: PathBuf,
     /// Tools offered to the model.
     pub tools: Registry,
-    pub policy: Policy,
+    /// Forces this permission policy on every chat, whatever the approvals settings say
+    /// (`--auto-approve`, tests). `None`: each chat's resolved approvals decide.
+    pub policy: Option<Policy>,
+    /// The global level of the layered settings (settings.json), apart from the endpoint,
+    /// which is `inference`. See `byob_types::config`.
+    pub defaults: Layer,
+    /// API keys of workspaces and chats with their own endpoint (`secrets.json`
+    /// `scoped_keys`, by `workspace:<id>` / `chat:<id>`).
+    pub scoped_keys: BTreeMap<String, String>,
+    /// Where "New workspace" creates fresh folders.
+    pub workspaces_root: Option<PathBuf>,
+    /// Register `workspace` as a workspace at startup (`--workspace`, or the saved
+    /// default), rather than when its first chat is made.
+    pub register_workspace: bool,
     /// System prompt for every turn (plugins and skills append to it).
     pub system_prompt: String,
     /// Where the database, settings and secrets live. `None` keeps chats in memory and
@@ -119,7 +136,11 @@ impl EngineConfig {
             inference,
             workspace,
             tools: Registry::default(),
-            policy: Policy::default(),
+            policy: None,
+            defaults: Layer::default(),
+            scoped_keys: BTreeMap::new(),
+            workspaces_root: None,
+            register_workspace: false,
             system_prompt: turn::DEFAULT_SYSTEM_PROMPT.to_owned(),
             paths: None,
             storage: StorageKind::default(),
@@ -180,6 +201,11 @@ enum Input {
     Env {
         client: ClientId,
         env: byob_protocol::WorkspaceEnv,
+    },
+    /// A worker thread's answer for `client` (folder listings, container checks).
+    Reply {
+        client: ClientId,
+        msg: Box<ServerMsg>,
     },
 }
 
@@ -289,6 +315,17 @@ struct Client {
     chat: Option<String>,
     /// Said `Hello`: gets broadcasts (before that it has no transcript to apply them to).
     attached: bool,
+    /// The new chat this client is about to start (`chat: None`): its workspace (else the
+    /// default one), and the settings and key given to it before its first message.
+    new_in: Option<String>,
+    new_layer: Layer,
+    new_key: Option<String>,
+}
+
+impl Client {
+    fn new(tx: Sender<ServerMsg>, wake: Waker) -> Self {
+        Self { tx, wake, chat: None, attached: false, new_in: None, new_layer: Layer::default(), new_key: None }
+    }
 }
 
 /// An approval card waiting for an answer.
@@ -338,6 +375,10 @@ struct Running {
     title_from: Option<String>,
     /// Its subagent runs, by `delegate` step id.
     children: BTreeMap<u64, ChildRun>,
+    /// The chat's settings when the turn started: who decides on its calls, and which
+    /// endpoint it talks to (for the title and the link status).
+    policy: Policy,
+    llm: byob_llm::Client,
 }
 
 struct Engine {
@@ -354,7 +395,22 @@ struct Engine {
     live: BTreeMap<String, Live>,
     turns: BTreeMap<u64, Running>,
     tools: Registry,
-    policy: Policy,
+    /// A policy that beats the settings (`--auto-approve`, tests).
+    forced_policy: Option<Policy>,
+    /// Global level of the layered settings, apart from the endpoint (`config`).
+    defaults: Layer,
+    /// `--tool-mode` (anything but auto) beats the settings.
+    forced: byob_types::config::Forced,
+    /// Workspaces and each chat's own settings.
+    workspaces: byob_store::Workspaces,
+    /// Keys of workspaces and chats with their own endpoint, by `workspace:<id>` / `chat:<id>`.
+    scoped_keys: BTreeMap<String, String>,
+    /// Chat count and latest activity per workspace folder (refreshed when chats are
+    /// made or deleted).
+    folder_stats: Vec<byob_store::FolderStats>,
+    workspaces_root: Option<PathBuf>,
+    /// How endpoints other than the global one did, by [`adapt::key`].
+    links: BTreeMap<String, Link>,
     system_prompt: String,
     /// Approval requests by step id.
     pending: BTreeMap<u64, Pending>,
@@ -429,7 +485,17 @@ impl Engine {
         }
         let slots = Arc::new(delegate::Slots::new(config.subagents.parallel(None)));
         let detect = config.detect_local && !config.onboarded;
+        let workspaces = byob_store::Workspaces::open(config.paths.as_ref()).value;
+        let forced = byob_types::config::Forced { approvals: None, tool_mode: Some(config.adapt.tool_mode).filter(|m| *m != ToolMode::Auto) };
         let mut engine = Self {
+            forced_policy: config.policy,
+            defaults: config.defaults,
+            forced,
+            workspaces,
+            scoped_keys: config.scoped_keys,
+            folder_stats: Vec::new(),
+            workspaces_root: config.workspaces_root,
+            links: BTreeMap::new(),
             link: Link::Unknown,
             checks: config.adapt.probe,
             onboarded: config.onboarded,
@@ -448,7 +514,6 @@ impl Engine {
             live: BTreeMap::new(),
             turns: BTreeMap::new(),
             tools: config.tools,
-            policy: config.policy,
             system_prompt: config.system_prompt,
             pending: BTreeMap::new(),
             step_ids: Arc::default(),
@@ -468,6 +533,13 @@ impl Engine {
         if detect {
             engine.detect_endpoints();
         }
+        if config.register_workspace {
+            let dir = engine.default_workspace.clone();
+            if let Err(e) = engine.workspaces.ensure(&dir) {
+                log::warn!("registering the workspace {}: {e}", dir.display());
+            }
+        }
+        engine.refresh_folder_stats();
         engine
     }
 
@@ -479,7 +551,7 @@ impl Engine {
 
     fn summary(&self, chat: &str) -> Option<ChatSummary> {
         match self.store.chat(chat) {
-            Ok(Some(c)) => Some(chats::summary(&c, self.chat_busy(chat))),
+            Ok(Some(c)) => Some(self.chat_summary(&c)),
             Ok(None) => None,
             Err(e) => {
                 log::error!("reading chat {chat}: {e}");
@@ -556,10 +628,14 @@ impl Engine {
         if let Some(client) = self.clients.get_mut(&id) {
             client.chat.clone_from(&chat);
         }
+        let workspace = match &summary {
+            Some(s) => s.workspace.clone(),
+            None => self.new_chat_workspace(id).map(|w| w.id),
+        };
         if send_state {
-            self.send_to(id, ServerMsg::State(self.state(chat.as_deref())));
+            self.send_to(id, ServerMsg::State(self.client_state(id)));
         }
-        self.send_to(id, ServerMsg::ChatOpened { chat: summary });
+        self.send_to(id, ServerMsg::ChatOpened { chat: summary, workspace });
         self.send_to(id, ServerMsg::Transcript { entries });
         self.send_to(id, ServerMsg::Compactions { chat: chat.clone(), items: compactions });
         if let Some(usage) = chat.as_deref().and_then(|c| self.usage(c)) {
@@ -576,8 +652,8 @@ impl Engine {
         let page = self.store.list_chats(limit, after.as_ref().map(chats::store_cursor).as_ref());
         match (pinned, page) {
             (Ok(pinned), Ok(page)) => {
-                let pinned = pinned.iter().map(|c| chats::summary(c, self.chat_busy(&c.id))).collect();
-                let recent = page.chats.iter().filter(|c| !c.pinned()).map(|c| chats::summary(c, self.chat_busy(&c.id))).collect();
+                let pinned = pinned.iter().map(|c| self.chat_summary(c)).collect();
+                let recent = page.chats.iter().filter(|c| !c.pinned()).map(|c| self.chat_summary(c)).collect();
                 let next = page.next.as_ref().map(chats::protocol_cursor);
                 self.send_to(id, ServerMsg::Chats { pinned, recent, after, next });
             }
@@ -585,13 +661,15 @@ impl Engine {
         }
     }
 
-    /// Create a chat titled after its first message.
-    fn create_chat(&mut self, first_message: &str) -> Result<String, StoreError> {
+    /// Create a chat titled after its first message, in the workspace `client` chose for
+    /// it, with the settings it gave it beforehand.
+    fn create_chat(&mut self, client: ClientId, first_message: &str) -> Result<String, StoreError> {
         let title = chats::heuristic_title(first_message);
+        let folder = self.new_chat_workspace(client).map_or_else(|| self.default_workspace.clone(), |w| w.folder);
         let mut attempt = 0;
         let chat = loop {
             let id = chats::new_chat_id();
-            match self.store.create_chat(&id, &title, &self.default_workspace) {
+            match self.store.create_chat(&id, &title, &folder) {
                 Ok(chat) => break chat,
                 // Id collision (clock went backwards): try another.
                 Err(e) if attempt < 3 => {
@@ -610,7 +688,14 @@ impl Engine {
             tally: compact::Tally::default(),
         };
         self.live.insert(chat.id.clone(), live);
-        self.broadcast(ServerMsg::ChatUpdated(chats::summary(&chat, false)));
+        self.adopt_new_chat_settings(client, &chat.id);
+        let new_workspace = self.ensure_workspace(&chat.workspace);
+        self.broadcast(ServerMsg::ChatUpdated(self.chat_summary(&chat)));
+        self.refresh_folder_stats();
+        if new_workspace {
+            log::info!("{} is a workspace now", chat.workspace.display());
+        }
+        self.broadcast_workspaces();
         Ok(chat.id)
     }
 
@@ -641,6 +726,17 @@ impl Engine {
             self.notice(client, "a reply is running in that chat; stop it first".into());
             return;
         }
+        if let Err(e) = self.remove_chat(chat) {
+            self.notice(client, e);
+            return;
+        }
+        self.refresh_folder_stats();
+        self.broadcast_workspaces();
+    }
+
+    /// Delete a chat with what byob keeps for it (undo backups, its settings and key) and
+    /// tell every client. The caller refreshes the workspace list.
+    fn remove_chat(&mut self, chat: &str) -> Result<(), String> {
         match self.store.delete_chat(chat) {
             Ok(tasks) => {
                 if let Some(paths) = &self.paths {
@@ -649,18 +745,20 @@ impl Engine {
                     }
                 }
             }
-            Err(e) => {
-                self.notice(client, format!("couldn't delete the chat: {e}"));
-                return;
-            }
+            Err(e) => return Err(format!("couldn't delete the chat: {e}")),
         }
         self.live.remove(chat);
         self.provisional.remove(chat);
+        if let Err(e) = self.workspaces.forget_chat(chat) {
+            log::warn!("forgetting the settings of chat {chat}: {e}");
+        }
+        self.set_scoped_key(&format!("chat:{chat}"), None);
         self.broadcast(ServerMsg::ChatDeleted { id: chat.to_owned() });
         let viewers: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.chat.as_deref() == Some(chat)).map(|(id, _)| *id).collect();
         for id in viewers {
             self.show_chat(id, None);
         }
+        Ok(())
     }
 
     fn pin_chat(&mut self, client: ClientId, chat: &str, pinned: bool) {
@@ -685,7 +783,32 @@ impl Engine {
 
     // ---- clients ----------------------------------------------------------------------
 
+    /// The state as the viewers of `chat` see it.
     fn state(&self, chat: Option<&str>) -> EngineState {
+        let effective = chat.map(|c| self.chat_settings(Some(c), None));
+        self.state_with(chat, effective)
+    }
+
+    /// The state as client `id` sees it (its chat, or the new chat it is about to start).
+    fn client_state(&self, id: ClientId) -> EngineState {
+        let chat = self.client_chat(id);
+        let effective = self.chat_settings(chat.as_deref(), Some(id));
+        self.state_with(chat.as_deref(), Some(effective))
+    }
+
+    fn state_with(&self, chat: Option<&str>, effective: Option<workspaces::ChatSettings>) -> EngineState {
+        let tool_mode = effective.as_ref().map_or(ToolMode::Auto, |e| e.effective.tool_mode.value);
+        let chat_endpoint = effective.filter(|e| e.inference != self.config).map(|e| {
+            let key = adapt::key(&e.inference);
+            byob_protocol::ChatEndpoint {
+                base_url: e.inference.base_url.clone(),
+                model: e.inference.model.clone(),
+                from: e.effective.base_url.from.max(e.effective.model.from),
+                has_api_key: e.inference.api_key.is_some(),
+                link: if key == adapt::key(&self.config) { self.link.clone() } else { self.links.get(&key).cloned().unwrap_or_default() },
+                info: Some(self.endpoints.info_with(&e.inference, e.effective.tool_mode.value)),
+            }
+        });
         EngineState {
             version: env!("CARGO_PKG_VERSION").into(),
             inference_base_url: self.config.base_url.clone(),
@@ -693,11 +816,12 @@ impl Engine {
             has_api_key: self.config.api_key.is_some(),
             endpoint: self.llm.as_ref().ok().map(|c| c.endpoint().to_string()),
             busy: chat.is_some_and(|c| self.chat_busy(c)),
-            endpoint_info: Some(self.endpoints.info(&self.config)),
+            endpoint_info: Some(self.endpoints.info_with(&self.config, tool_mode)),
             link: self.link.clone(),
             onboarded: self.onboarded,
             detected: self.detected.clone(),
             detecting: self.detecting,
+            chat_endpoint,
         }
     }
 
@@ -705,7 +829,7 @@ impl Engine {
     fn broadcast_state(&mut self) {
         let ids: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.attached).map(|(id, _)| *id).collect();
         for id in ids {
-            let state = self.state(self.clients.get(&id).and_then(|c| c.chat.as_deref()));
+            let state = self.client_state(id);
             self.send_to(id, ServerMsg::State(state));
         }
     }
@@ -713,7 +837,7 @@ impl Engine {
     fn handle(&mut self, input: Input) {
         match input {
             Input::Connect { id, tx, wake } => {
-                self.clients.insert(id, Client { tx, wake, chat: None, attached: false });
+                self.clients.insert(id, Client::new(tx, wake));
             }
             Input::Disconnect { id } => {
                 self.clients.remove(&id);
@@ -741,10 +865,15 @@ impl Engine {
             Input::Compacted(done) => self.manual_compacted(*done),
             Input::Link(event) => self.handle_connect(event),
             Input::Env { client, env } => self.send_to(client, ServerMsg::WorkspaceEnv(env)),
+            Input::Reply { client, msg } => self.send_to(client, *msg),
         }
     }
 
     fn handle_client(&mut self, id: ClientId, msg: ClientMsg) {
+        if let Err(e) = msg.check_sizes() {
+            self.notice(id, e);
+            return;
+        }
         match msg {
             ClientMsg::Hello { protocol, client } => {
                 if protocol != PROTOCOL_VERSION {
@@ -763,8 +892,12 @@ impl Engine {
                     log::error!("opening chat {c}: {e}");
                     chat = None;
                 }
+                if let Some(c) = self.clients.get_mut(&id) {
+                    c.chat.clone_from(&chat);
+                }
                 // State first: it is the documented answer to Hello.
-                self.send_to(id, ServerMsg::State(self.state(chat.as_deref())));
+                self.send_to(id, ServerMsg::State(self.client_state(id)));
+                self.send_to(id, self.workspaces_msg());
                 self.send_chats(id, None, FIRST_PAGE);
                 self.show_chat_with(id, chat, false);
             }
@@ -787,7 +920,7 @@ impl Engine {
             ClientMsg::Approve { step, answer } => self.answer(step, answer),
             ClientMsg::Undo { entry } => self.undo(id, entry),
             ClientMsg::ListChats { after, limit } => self.send_chats(id, after, usize::try_from(limit).unwrap_or(FIRST_PAGE)),
-            ClientMsg::NewChat => self.show_chat(id, None),
+            ClientMsg::NewChat { workspace } => self.new_chat(id, workspace),
             ClientMsg::OpenChat { id: chat } => self.show_chat(id, Some(chat)),
             ClientMsg::RenameChat { id: chat, title } => self.rename_chat(id, &chat, &title),
             ClientMsg::DeleteChat { id: chat } => self.delete_chat(id, &chat),
@@ -802,15 +935,35 @@ impl Engine {
             ClientMsg::GetMedia { path } => self.serve_media(id, path),
             ClientMsg::GetArtifact { id: artifact, version } => self.serve_artifact(id, artifact, version),
             ClientMsg::Compact { focus } => self.compact_chat(id, focus),
-            ClientMsg::WorkspaceEnv { action } => self.workspace_env(id, action),
+            ClientMsg::WorkspaceEnv { action, workspace } => self.workspace_env(id, action, workspace),
+            ClientMsg::CreateWorkspace { name, folder, config } => self.create_workspace(id, &name, folder, config),
+            ClientMsg::RenameWorkspace { id: ws, name } => self.rename_workspace(id, &ws, &name),
+            ClientMsg::RemoveWorkspace { id: ws, clean } => self.remove_workspace(id, &ws, clean),
+            ClientMsg::GetConfig { scope } => self.send_config(id, scope),
+            ClientMsg::SetConfig { scope, layer, api_key } => self.set_config(id, scope, layer, api_key),
+            ClientMsg::ListFolders { path } => self.list_folders(id, path),
+            ClientMsg::CheckContainers => self.check_containers(id),
         }
     }
 
-    /// `ClientMsg::WorkspaceEnv`: apply `action` to the workspace of the chat `client` looks
-    /// at and send back its environment, from a worker thread (stopping a container takes
-    /// seconds).
-    fn workspace_env(&mut self, client: ClientId, action: Option<byob_protocol::EnvAction>) {
-        let ws = self.client_workspace(client);
+    /// `ClientMsg::WorkspaceEnv`: apply `action` to workspace `workspace` (default: the one
+    /// of the chat `client` looks at) and send back its environment, from a worker thread
+    /// (stopping a container takes seconds).
+    fn workspace_env(&mut self, client: ClientId, action: Option<byob_protocol::EnvAction>, workspace: Option<String>) {
+        let (ws, plan) = match workspace {
+            Some(id) => match self.workspaces.get(&id) {
+                Some(w) => (Arc::new(w.folder.clone()), self.workspace_plan(&id)),
+                None => {
+                    self.notice(client, "that workspace no longer exists".into());
+                    return;
+                }
+            },
+            None => {
+                let ws = self.client_workspace(client);
+                let plan = self.workspaces.by_folder(&ws).map(|w| w.id.clone()).map(|id| self.workspace_plan(&id)).unwrap_or_default();
+                (ws, plan)
+            }
+        };
         let Some(envs) = self.envs.clone() else {
             let env = byob_protocol::WorkspaceEnv {
                 workspace: ws.display().to_string(),
@@ -825,7 +978,7 @@ impl Engine {
         let spawned = thread::Builder::new().name("byob-env".into()).spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 let done = action.map(|a| envs.apply(&ws, &a));
-                let mut env = envs.describe(&ws);
+                let mut env = envs.describe(&ws, &plan);
                 match done {
                     Some(Ok(text)) => env.message = Some(text).filter(|t| !t.is_empty()),
                     Some(Err(e)) => {
@@ -845,10 +998,14 @@ impl Engine {
         }
     }
 
-    /// The workspace of the chat `client` looks at (the default one for a new chat).
+    /// The workspace folder of the chat `client` looks at (for a new chat, the one it will
+    /// be created in).
     fn client_workspace(&mut self, client: ClientId) -> Arc<PathBuf> {
         let chat = self.client_chat(client);
-        chat.and_then(|c| self.live(&c).ok().map(|l| Arc::clone(&l.workspace))).unwrap_or_else(|| Arc::new(self.default_workspace.clone()))
+        if let Some(ws) = chat.and_then(|c| self.live(&c).ok().map(|l| Arc::clone(&l.workspace))) {
+            return ws;
+        }
+        Arc::new(self.new_chat_workspace(client).map_or_else(|| self.default_workspace.clone(), |w| w.folder))
     }
 
     /// Load a chart or image for one client off the engine thread (decoding can take a while).
@@ -1030,7 +1187,7 @@ impl Engine {
             false
         });
         let always = step.ask.as_ref().map(|a| a.always);
-        match permissions::decide_ask(&self.policy, granted, step.access, always) {
+        match permissions::decide_ask(&run.policy, granted, step.access, always) {
             permissions::Gate::Allow => {
                 let _ = reply.send(turn::Verdict::Allow);
             }
@@ -1147,8 +1304,10 @@ impl Engine {
     /// Add the user's message (and a reply entry) to the client's chat, creating the chat if
     /// it is new, and start the turn.
     fn begin_turn(&mut self, client: ClientId, text: String, attached: Vec<MediaRef>) {
-        let llm = match &self.llm {
-            Ok(llm) => llm.clone(),
+        // The chat's settings: global, then its workspace's, then its own.
+        let settings = self.chat_settings(self.client_chat(client).as_deref(), Some(client));
+        let llm = match self.llm_for(&settings.inference) {
+            Ok(llm) => llm,
             Err(e) => {
                 let text = format!("inference URL is invalid: {e}");
                 self.notice(client, text);
@@ -1157,7 +1316,7 @@ impl Engine {
         };
         let chat = match self.client_chat(client) {
             Some(chat) => chat,
-            None => match self.create_chat(&text) {
+            None => match self.create_chat(client, &text) {
                 Ok(chat) => {
                     self.show_chat(client, Some(chat.clone()));
                     chat
@@ -1172,13 +1331,16 @@ impl Engine {
             self.notice(client, "a reply is still running in this chat; stop it first".into());
             return;
         }
-        let plan = self.endpoints.plan(&self.config);
+        let eff = &settings.effective;
+        let plan = self.endpoints.plan_with(&settings.inference, eff.tool_mode.value);
         let workspace_dir = self.live(&chat).map(|l| Arc::clone(&l.workspace)).ok();
-        let delegation = workspace_dir.as_deref().and_then(|ws| self.delegation_env(&llm, &plan, ws));
-        let mut base_prompt = self.system_prompt.clone();
+        let delegation = workspace_dir.as_deref().filter(|_| eff.subagents.value).and_then(|ws| self.delegation_env(&settings.inference, &llm, &plan, ws));
+        let mut base_prompt = self.prompt_with_instructions(eff);
         if let Some(env) = &delegation {
             base_prompt = format!("{base_prompt}\n\n{}", delegate::prompt_section(&env.agents));
         }
+        let compaction = self.compact_options(eff);
+        let policy = self.policy_for(eff);
         let (history, ids, prior, workspace, first) = match self.live(&chat) {
             Ok(live) => {
                 let system_prompt = system_prompt(&base_prompt, live);
@@ -1217,6 +1379,8 @@ impl Engine {
                 steps: BTreeMap::new(),
                 title_from,
                 children: BTreeMap::new(),
+                policy,
+                llm: llm.clone(),
             },
         );
         self.chat_changed(&chat);
@@ -1231,7 +1395,7 @@ impl Engine {
             workspace,
             chat: chat.clone(),
             step_ids: Arc::clone(&self.step_ids),
-            compact: self.compaction.auto.then(|| turn::AutoCompact { at: self.compaction.threshold(&plan), keep_turns: self.compaction.keep_turns }),
+            compact: compaction.auto.then(|| turn::AutoCompact { at: compaction.threshold(&plan), keep_turns: compaction.keep_turns }),
             plan,
             ids,
             prior,
@@ -1239,6 +1403,7 @@ impl Engine {
             parent_cancel: None,
             max_calls: limits::MAX_CALLS,
             delegate: delegation.map(Arc::new),
+            env: Arc::new(settings.env.clone()),
         };
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });
@@ -1335,16 +1500,17 @@ impl Engine {
             self.notice(client, "a reply is still running in this chat; stop it first".into());
             return;
         }
-        let llm = match &self.llm {
-            Ok(llm) => llm.clone(),
+        let settings = self.chat_settings(Some(&chat), None);
+        let llm = match self.llm_for(&settings.inference) {
+            Ok(llm) => llm,
             Err(e) => {
                 self.notice(client, format!("inference URL is invalid: {e}"));
                 return;
             }
         };
-        let plan = self.endpoints.plan(&self.config);
+        let plan = self.endpoints.plan_with(&settings.inference, settings.effective.tool_mode.value);
         let specs = turn::specs(&self.tools);
-        let base_prompt = self.system_prompt.clone();
+        let base_prompt = self.prompt_with_instructions(&settings.effective);
         let (messages, through) = match self.live(&chat) {
             Ok(live) => {
                 let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base_prompt, live));
@@ -1444,9 +1610,12 @@ impl Engine {
     /// The header meter of `chat`, if it is loaded.
     fn usage(&self, chat: &str) -> Option<byob_protocol::ChatUsage> {
         let live = self.live.get(chat)?;
-        let plan = self.endpoints.plan(&self.config);
+        let settings = self.chat_settings(Some(chat), None);
+        let plan = self.endpoints.plan_with(&settings.inference, settings.effective.tool_mode.value);
+        let compaction = self.compact_options(&settings.effective);
         let (context_used, estimated) = live.tally.context.unwrap_or_else(|| {
-            let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&self.system_prompt, live));
+            let base = self.prompt_with_instructions(&settings.effective);
+            let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base, live));
             (u64::try_from(plan.raw_tokens(&messages, &turn::specs(&self.tools))).unwrap_or(u64::MAX), true)
         });
         let t = &live.tally;
@@ -1456,7 +1625,7 @@ impl Engine {
             context_used,
             estimated,
             context_window: n(plan.context),
-            compact_at: if self.compaction.auto { n(self.compaction.threshold(&plan)) } else { 0 },
+            compact_at: if compaction.auto { n(compaction.threshold(&plan)) } else { 0 },
             last_prompt_tokens: t.last_prompt,
             last_completion_tokens: t.last_completion,
             prompt_tokens: t.prompt_tokens,
@@ -1518,9 +1687,11 @@ impl Engine {
         self.chat_changed(&run.chat);
         self.viewer_states(&run.chat);
         self.send_usage(&run.chat);
-        self.turn_outcome(error.as_deref());
-        if let (Some(user), Some(reply), None, Ok(llm)) = (run.title_from, content, &error, &self.llm) {
-            chats::spawn_titler(llm.clone(), run.chat.clone(), user, reply, self.inbox.clone());
+        self.turn_outcome(run.llm.config(), error.as_deref());
+        // A changed link shows in the header of everyone looking at the chat.
+        self.viewer_states(&run.chat);
+        if let (Some(user), Some(reply), None) = (run.title_from, content, &error) {
+            chats::spawn_titler(run.llm.clone(), run.chat.clone(), user, reply, self.inbox.clone());
         }
         self.gc();
     }
@@ -1597,4 +1768,17 @@ fn deliver(client: &Client, msg: ServerMsg) -> Result<(), ()> {
     client.tx.send(msg).map_err(|_| ())?;
     (client.wake)();
     Ok(())
+}
+
+/// Run `work` on its own named thread, off the engine thread; a panic there is logged.
+pub(crate) fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
+    let label = name.to_owned();
+    let spawned = thread::Builder::new().name(name.into()).spawn(move || {
+        if catch_unwind(AssertUnwindSafe(work)).is_err() {
+            log::error!("{label} crashed");
+        }
+    });
+    if let Err(e) = spawned {
+        log::error!("could not start {name}: {e}");
+    }
 }

@@ -8,7 +8,8 @@
 //!     --allow-user LOGIN      only admit this Tailscale login via `tailscale serve` (repeatable)
 //!     --inference-url URL     OpenAI-compatible base URL (default: settings.json)
 //!     --model NAME            (default: settings.json)
-//!     --workspace DIR         folder new chats work in (default: settings.json, else current directory)
+//!     --workspace DIR         the workspace new chats start in: the one for DIR, made if there is
+//!                             none (default: settings.json `workspace`, else the current directory)
 //!     --plugin DIR            load the plugin in DIR (repeatable; also <config>/plugins)
 //!     --auto-approve          allow every tool call without asking (testing); loads workspace
 //!                             environments for this run only; system-wide installs still ask
@@ -34,6 +35,10 @@
 //!     --compact-at TOKENS     compact the context when a request passes TOKENS (default:
 //!                             settings.json `compaction`, 80% of the window)
 //!     --test-connection URL MODEL  fill the connection form and press Test connection
+//!     --new-workspace NAME ENV  create workspace NAME (auto | host | nix | container) in a fresh
+//!                             folder through the New workspace form, then send the messages in it
+//!     --open-panel NAME       open new-workspace, new-workspace-container, workspace-settings
+//!                             or chat-settings once the messages are done
 //! ```
 //!
 //! Chats live in `byob.db` (or, with `storage = "folder"`, in plain files); preferences in `settings.json` and the API key in `secrets.json`
@@ -182,6 +187,26 @@ fn parse_args() -> Result<Args, String> {
                 let url = it.next().ok_or("--test-connection needs a URL and a model")?;
                 let model = it.next().ok_or("--test-connection needs a URL and a model")?;
                 args.script.test_connection = Some((url, model));
+            }
+            // Hidden, for testing: make a workspace through the New workspace form first.
+            "--new-workspace" => {
+                let name = it.next().ok_or("--new-workspace needs a name and auto, host, nix or container")?;
+                let env = match it.next().as_deref() {
+                    Some("auto") => byob_types::config::EnvKind::Auto,
+                    Some("host") => byob_types::config::EnvKind::Host,
+                    Some("nix") => byob_types::config::EnvKind::Nix,
+                    Some("container") => byob_types::config::EnvKind::Container,
+                    other => return Err(format!("--new-workspace {name}: unknown environment {other:?} (auto, host, nix, container)")),
+                };
+                args.script.new_workspace = Some((name, env));
+            }
+            // Hidden, for testing: open a workspace view (new-workspace, workspace-settings, …).
+            "--open-panel" => {
+                let v = it.next().ok_or("--open-panel needs a name")?;
+                if !byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == v) {
+                    return Err(format!("unknown panel {v:?} ({})", byob_ui_egui::ByobApp::PANELS));
+                }
+                args.script.open_panel = Some(v);
             }
             "--attach" => args.script.attach.push(it.next().ok_or("--attach needs a file")?.into()),
             "--screenshot" => args.script.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into()),
@@ -371,21 +396,26 @@ fn run() -> Result<(), String> {
     config.paths = saved.paths;
     config.storage = storage.storage;
     config.chats_folder = storage.chats_folder;
+    // Beats every settings level for this run (testing).
     config.adapt.tool_mode = args.tool_mode;
+    // The global level of the layered settings (tool mode, approvals, compaction,
+    // subagents, instructions); workspaces and chats may override them.
+    config.defaults = byob_agent::Layer { base_url: None, model: None, ..saved.settings.global_layer() };
+    config.scoped_keys = saved.secrets.scoped_keys.clone();
+    config.workspaces_root = saved.settings.workspaces_root();
     let c = saved.settings.compaction;
-    config.compaction = byob_agent::CompactOptions {
-        auto: c.auto || args.compact_at.is_some(),
-        threshold_percent: c.threshold_percent,
-        at_tokens: args.compact_at,
-        keep_turns: usize::from(c.keep_turns),
-    };
+    // On here; each chat's settings decide (`--compact-at` forces it on everywhere).
+    config.compaction =
+        byob_agent::CompactOptions { auto: true, threshold_percent: c.threshold_percent, at_tokens: args.compact_at, keep_turns: usize::from(c.keep_turns) };
     if args.auto_approve {
         log::warn!("--auto-approve: every tool call runs without asking");
-        let allow = byob_agent::Rule::Allow;
-        config.policy = byob_agent::Policy { read: allow, write: allow, network: allow, execute: allow };
+        config.policy = Some(byob_agent::Policy::ALLOW_ALL);
     }
     if let Some(dir) = workspace(&args, &saved.settings)? {
         config.workspace = dir;
+        // `--workspace DIR` (or the saved default) selects that folder's workspace,
+        // making it one if it isn't yet.
+        config.register_workspace = true;
     }
     let saved_theme = theme_kind(saved.settings.theme);
     let themes_dir = config.paths.as_ref().map(Paths::themes_dir);
@@ -399,7 +429,8 @@ fn run() -> Result<(), String> {
     config.models = model_roles(&config.inference, &saved.settings, &saved.secrets);
     let sub = saved.settings.subagents;
     config.subagents = byob_agent::SubagentOptions {
-        enabled: sub.enabled,
+        // Whether a chat may delegate is a layered setting (global `subagents.enabled`).
+        enabled: true,
         max_parallel: sub.max_parallel.map(usize::from),
         max_calls: usize::from(sub.max_tool_calls.max(1)),
         time_limit: std::time::Duration::from_secs(u64::from(sub.time_limit_minutes.max(1)) * 60),

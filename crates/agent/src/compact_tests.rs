@@ -15,7 +15,7 @@ use byob_types::InferenceConfig;
 use serde_json::{Value, json};
 
 use crate::compact::{SUMMARY_ACK, SUMMARY_HEADER, SYSTEM};
-use crate::{CompactOptions, EngineConfig, EngineHandle, LocalConnection, Policy};
+use crate::{CompactOptions, EngineConfig, EngineHandle, LocalConnection};
 
 #[derive(Clone)]
 enum Reply {
@@ -126,7 +126,11 @@ fn engine(url: String, compaction: CompactOptions, tools: bool, paths: Option<Pa
         inference: InferenceConfig { base_url: url, model: "m".into(), api_key: None },
         workspace: PathBuf::from("/ws"),
         tools: registry,
-        policy: Policy::default(),
+        policy: None,
+        defaults: crate::Layer::default(),
+        scoped_keys: Default::default(),
+        workspaces_root: None,
+        register_workspace: false,
         system_prompt: "You are a test.".into(),
         adapt: crate::AdaptOptions { probe: false, ..Default::default() },
         paths,

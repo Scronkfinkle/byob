@@ -20,30 +20,14 @@ use crate::Input;
 /// Replaces image parts for endpoints that say they cannot see.
 const NO_VISION_NOTE: &str = "[an image was attached here, but this model cannot see images]";
 
-/// How turns call tools, regardless of the probe (for testing and troubleshooting).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ToolMode {
-    /// Follow the probe; try native first when it is inconclusive.
-    #[default]
-    Auto,
-    Native,
-    Prompt,
-}
-
-impl ToolMode {
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "auto" => Some(Self::Auto),
-            "native" => Some(Self::Native),
-            "prompt" => Some(Self::Prompt),
-            _ => None,
-        }
-    }
-}
+/// How turns call tools: follow the probe (`Auto`), or force one way. Set per level (see
+/// `byob_types::config`); `--tool-mode` forces it for a run.
+pub use byob_types::config::ToolMode;
 
 /// Endpoint adaptation settings of an engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdaptOptions {
+    /// Anything but `Auto` beats every settings level (`--tool-mode`, tests).
     pub tool_mode: ToolMode,
     /// Probe endpoints in the background. Off in this crate's unit tests, whose scripted
     /// fake servers expect an exact sequence of requests.
@@ -191,11 +175,17 @@ impl Endpoints {
     }
 
     pub fn plan(&self, config: &InferenceConfig) -> Plan {
+        self.plan_with(config, self.opts.tool_mode)
+    }
+
+    /// The plan for `config` with tool calling `mode` (a forced mode in the options wins).
+    pub fn plan_with(&self, config: &InferenceConfig, mode: ToolMode) -> Plan {
         let key = key(config);
         let caps = self.cache.get(&key);
         let context = caps.map_or(budget::DEFAULT_CONTEXT_TOKENS, Capabilities::effective_context);
         let reserve = budget::default_reply_reserve(context);
-        let (prompt_tools, fallback) = match self.opts.tool_mode {
+        let mode = if self.opts.tool_mode == ToolMode::Auto { mode } else { self.opts.tool_mode };
+        let (prompt_tools, fallback) = match mode {
             ToolMode::Native => (false, false),
             ToolMode::Prompt => (true, false),
             ToolMode::Auto if self.rejected.contains(&key) => (true, false),
@@ -213,8 +203,15 @@ impl Endpoints {
         self.cache.get(&key(config)).and_then(|c| c.slots)
     }
 
+    #[cfg(test)]
     pub fn info(&self, config: &InferenceConfig) -> EndpointInfo {
-        let plan = self.plan(config);
+        self.info_with(config, self.opts.tool_mode)
+    }
+
+    /// What the header shows about the endpoint `config`, for a chat whose settings pick
+    /// tool calling `mode`.
+    pub fn info_with(&self, config: &InferenceConfig, mode: ToolMode) -> EndpointInfo {
+        let plan = self.plan_with(config, mode);
         let caps = self.cache.get(&plan.key);
         let tools = if plan.prompt_tools {
             ToolsMode::Prompt

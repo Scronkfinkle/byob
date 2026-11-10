@@ -38,9 +38,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use byob_protocol::{ContainerEnv, EnvAction, WorkspaceEnv};
+use byob_protocol::{ContainerEnv, EnvAction, EnvSupport, WorkspaceEnv};
 use byob_sandbox::Outcome;
-use byob_tools::{Access, Answer, EnvControl, Question};
+use byob_tools::{Access, Answer, EnvControl, EnvPlan, Question};
 use serde::{Deserialize, Serialize};
 
 use crate::Job;
@@ -146,6 +146,14 @@ pub(crate) trait Runner {
     /// The user pressed Stop.
     fn cancelled(&self) -> bool {
         false
+    }
+    /// What the chat's settings decide about where it runs (see [`EnvPlan`]).
+    fn plan(&self) -> EnvPlan {
+        EnvPlan::default()
+    }
+    /// The chat the call runs in, if known (the model is told things once per chat).
+    fn chat(&self) -> Option<String> {
+        None
     }
 }
 
@@ -339,9 +347,9 @@ pub struct Envs {
     told: Mutex<BTreeSet<PathBuf>>,
     system: Option<system::SystemInstaller>,
     containers: Option<container::Containers>,
-    /// Workspaces whose container the model was told about (or whose declined
-    /// devcontainer it was told about).
-    told_container: Mutex<BTreeSet<PathBuf>>,
+    /// Workspaces (and chats in them) whose container the model was told about (or whose
+    /// declined devcontainer it was told about).
+    told_container: Mutex<BTreeSet<(PathBuf, Option<String>)>>,
     /// Per workspace: names `install_packages` couldn't find (the only ones
     /// `install_system_packages` may install while there is a workspace installer).
     missing: Mutex<BTreeMap<PathBuf, BTreeSet<String>>>,
@@ -438,8 +446,8 @@ impl Envs {
 
     /// May `install_system_packages` install `packages` for `ws`? Only what the workspace
     /// installer couldn't find, or anything where there is none.
-    pub(crate) fn system_allowed(&self, ws: &Path, packages: &[String]) -> Result<(), String> {
-        if self.containers.is_some() && self.choices.get(ws).container == Some(true) {
+    pub(crate) fn system_allowed(&self, ws: &Path, packages: &[String], plan: &EnvPlan) -> Result<(), String> {
+        if self.containers.is_some() && plan.container.or(self.choices.get(ws).container) == Some(true) {
             return Err("This workspace's commands run in its container: call install_packages, which installs there.".into());
         }
         let Some(installer) = self.installer() else { return Ok(()) };
@@ -498,11 +506,13 @@ impl Envs {
     /// what the model should hear once.
     pub(crate) fn container(&self, ws: &Path, run: &dyn Runner, notes: &mut Vec<String>) -> Option<Result<container::Ready, String>> {
         let devcontainer = devcontainer::find(ws);
-        let choice = self.choices.get(ws).container;
+        let plan = run.plan();
+        // The workspace's (or chat's) environment setting decides; else the folder's answer.
+        let choice = plan.container.or_else(|| self.choices.get(ws).container);
         let Some(c) = &self.containers else {
             return (choice == Some(true)).then(|| {
                 Err("This workspace is set to run commands in a container, but neither Docker nor Podman is installed. Nothing ran. \
-                     Install one, or turn containers off in Settings → Workspace environment."
+                     Install one, or change the environment in the workspace's settings."
                     .to_owned())
             });
         };
@@ -525,14 +535,14 @@ impl Envs {
                 }
             }
         };
-        let first = self.told_container.lock().unwrap_or_else(PoisonError::into_inner).insert(ws.to_path_buf());
+        let first = self.told_container.lock().unwrap_or_else(PoisonError::into_inner).insert((ws.to_path_buf(), run.chat().filter(|_| want)));
         if !want {
             if let (Some(file), true) = (devcontainer, first) {
                 notes.push(format!("This workspace has {file}, but the user chose to run commands on their machine, not in the dev container."));
             }
             return None;
         }
-        let spec = match devcontainer::Spec::for_workspace(ws, &c.default_image) {
+        let spec = match spec_for(ws, &plan, &c.default_image) {
             Ok(s) => s,
             Err(e) => return Some(Err(format!("The workspace's dev container can't be used: {e}. Nothing ran."))),
         };
@@ -585,10 +595,12 @@ impl Envs {
         if files.is_empty() || self.state.is_none() {
             return false;
         }
-        let allowed = match self.mode {
-            ProjectMode::Never => return false,
-            ProjectMode::Always => true,
-            ProjectMode::Ask => {
+        let allowed = match (self.mode, run.plan().project) {
+            (ProjectMode::Never, _) => return false,
+            (ProjectMode::Always, _) => true,
+            // The workspace's environment setting (Nix) decided; no question.
+            (ProjectMode::Ask, Some(v)) => v,
+            (ProjectMode::Ask, None) => {
                 let _one = self.asking.lock().unwrap_or_else(PoisonError::into_inner);
                 match self.choices.get(ws).project {
                     Some(v) => v,
@@ -643,33 +655,85 @@ fn canonical(ws: &Path) -> PathBuf {
     ws.canonicalize().unwrap_or_else(|_| ws.to_path_buf())
 }
 
+/// How to make `ws`'s container: the image its settings name, else its devcontainer.json,
+/// else `default_image`.
+fn spec_for(ws: &Path, plan: &EnvPlan, default_image: &str) -> Result<devcontainer::Spec, String> {
+    match plan.image.as_deref().filter(|i| devcontainer::valid_image(i)) {
+        Some(image) => Ok(devcontainer::Spec::default_image(image)),
+        None => devcontainer::Spec::for_workspace(ws, default_image),
+    }
+}
+
 impl EnvControl for Envs {
-    fn describe(&self, ws: &Path) -> WorkspaceEnv {
+    fn describe(&self, ws: &Path, plan: &EnvPlan) -> WorkspaceEnv {
         let ws = canonical(ws);
         let c = self.choices.get(&ws);
         WorkspaceEnv {
             workspace: ws.display().to_string(),
             project_files: self.project_files(&ws).into_iter().map(|(f, _)| f.to_owned()).collect(),
             project_env: c.project,
-            project_env_forced: match self.mode {
-                ProjectMode::Always => Some(true),
-                ProjectMode::Never => Some(false),
-                ProjectMode::Ask => None,
+            project_env_forced: match (self.mode, plan.project) {
+                (ProjectMode::Always, _) => Some(true),
+                (ProjectMode::Never, _) => Some(false),
+                (ProjectMode::Ask, forced) => forced,
             },
             installer: self.installer().map(str::to_owned),
             container: match &self.containers {
-                None => ContainerEnv { use_container: c.container, devcontainer: devcontainer::find(&ws).map(str::to_owned), ..ContainerEnv::default() },
+                None => ContainerEnv {
+                    use_container: plan.container.or(c.container),
+                    devcontainer: devcontainer::find(&ws).map(str::to_owned),
+                    ..ContainerEnv::default()
+                },
                 Some(k) => ContainerEnv {
                     runtime: Some(k.runtime.name().to_owned()),
                     devcontainer: devcontainer::find(&ws).map(str::to_owned),
-                    use_container: c.container,
-                    image: devcontainer::Spec::for_workspace(&ws, &k.default_image).map_or_else(|e| e, |s| s.describe(&ws)),
+                    use_container: plan.container.or(c.container),
+                    image: spec_for(&ws, plan, &k.default_image).map_or_else(|e| e, |s| s.describe(&ws)),
                     state: k.state(&ws),
                 },
             },
             message: None,
             failed: false,
         }
+    }
+
+    fn support(&self) -> EnvSupport {
+        EnvSupport {
+            nix: self.nix.is_some(),
+            installer: self.installer().map(str::to_owned),
+            runtime: self.containers.as_ref().map(|c| c.runtime.name().to_owned()),
+        }
+    }
+
+    fn check_containers(&self) -> Result<String, String> {
+        let c = self.containers.as_ref().ok_or("Neither Docker nor Podman is installed on the machine byob runs on.")?;
+        c.runtime.check()?;
+        Ok(format!("{} is running.", c.runtime.name()))
+    }
+
+    fn forget(&self, ws: &Path) -> Result<String, String> {
+        let ws = canonical(ws);
+        let mut done = Vec::new();
+        if let Some(c) = &self.containers
+            && c.state(&ws).is_some()
+        {
+            c.remove(&ws)?;
+            done.push("removed its container");
+        }
+        if let Some(dir) = self.ws_dir(&ws).filter(|d| d.exists()) {
+            std::fs::remove_dir_all(&dir).map_err(|e| format!("couldn't delete {}: {e}", dir.display()))?;
+            done.push("deleted its installed packages and caches");
+        }
+        let had = self.choices.get(&ws) != choices::Choice::default();
+        self.choices.set(&ws, choices::Field::Project, None, true)?;
+        self.choices.set(&ws, choices::Field::Container, None, true)?;
+        if had {
+            done.push("forgot its answers");
+        }
+        self.told.lock().unwrap_or_else(PoisonError::into_inner).remove(&ws);
+        self.told_container.lock().unwrap_or_else(PoisonError::into_inner).retain(|(w, _)| *w != ws);
+        self.missing.lock().unwrap_or_else(PoisonError::into_inner).remove(&ws);
+        Ok(if done.is_empty() { "byob kept nothing else for this folder.".into() } else { format!("byob {}.", done.join(", ")) })
     }
 
     fn apply(&self, ws: &Path, action: &EnvAction) -> Result<String, String> {
@@ -687,7 +751,7 @@ impl EnvControl for Envs {
             }
             EnvAction::Container { on } => {
                 self.choices.set(&ws, choices::Field::Container, *on, true)?;
-                self.told_container.lock().unwrap_or_else(PoisonError::into_inner).remove(&ws);
+                self.told_container.lock().unwrap_or_else(PoisonError::into_inner).retain(|(w, _)| *w != ws);
                 Ok(match on {
                     Some(true) => "Commands run in the workspace's container from the next one on.",
                     Some(false) => "Commands run on this machine (the container is kept until you remove it).",
@@ -708,7 +772,7 @@ fn container_question(file: &str, runtime: &str) -> Question {
         text: format!(
             "byob would create a long-lived {runtime} container from {file} for this workspace and run run_command and run_python inside it, \
              as your user, with the workspace mounted at the same path. Getting or building the image can take minutes and uses the \
-             internet; its setup commands run once. Your answer is remembered for this workspace; change it in Settings → Workspace environment."
+             internet; its setup commands run once. Your answer is remembered for this workspace; change it in the workspace's settings (its menu in the chat list)."
         ),
         warning: None,
         access: Access::Execute,
@@ -726,7 +790,7 @@ fn project_question(files: &[(&str, &str)]) -> Question {
             "byob would load the environment {} declares before every run_command and run_python, so its programs are available. \
              The first load can take minutes, downloads with internet access, runs the project's setup code, and may write lock files \
              (flake.lock, pixi.lock) or a .pixi folder into the workspace. Your answer is remembered for this workspace; \
-             change it in Settings → Workspace environment.",
+             change it in the workspace's settings (its menu in the chat list).",
             names.join(" / ")
         ),
         warning: None,
@@ -937,13 +1001,13 @@ mod tests {
         // Forget it in the settings: asked again; yes loads it, and is remembered.
         let forgot = e.apply(&ws, &EnvAction::ProjectEnv { load: None }).unwrap();
         assert!(forgot.contains("asks again"), "{forgot}");
-        assert_eq!(e.describe(&ws).project_env, None);
+        assert_eq!(e.describe(&ws, &byob_tools::EnvPlan::default()).project_env, None);
         let p = e.prepare(&ws, &yes);
         assert_eq!((yes.count(), loads()), (1, 1));
         assert!(p.layer.var("A") == Some("1") && p.notes[0].starts_with("Loaded"), "{:?}", p.notes);
         e.prepare(&ws, &yes);
         assert_eq!(yes.count(), 1);
-        let d = e.describe(&ws);
+        let d = e.describe(&ws, &byob_tools::EnvPlan::default());
         assert_eq!((d.project_files, d.project_env, d.project_env_forced), (vec!["fake.toml".to_owned()], Some(true), None));
     }
 
@@ -960,7 +1024,7 @@ mod tests {
         e.prepare(&ws, &auto);
         assert_eq!(auto.count(), 1, "asked once per session");
         let (again, _) = envs_with_fake(data.path(), ProjectMode::Ask);
-        assert_eq!(again.describe(&ws).project_env, None, "not saved");
+        assert_eq!(again.describe(&ws, &byob_tools::EnvPlan::default()).project_env, None, "not saved");
         // Nobody to ask (no asker): not loaded, nothing saved.
         let nobody = NoRun;
         assert!(again.prepare(&ws, &nobody).layer.var("A").is_none());
@@ -970,7 +1034,7 @@ mod tests {
         assert!(never.prepare(&ws, &yes).layer.is_empty() && yes.count() == 0);
         let (always, _) = envs_with_fake(data.path(), ProjectMode::Always);
         assert!(always.prepare(&ws, &yes).layer.var("A") == Some("1") && yes.count() == 0);
-        assert_eq!(always.describe(&ws).project_env_forced, Some(true));
+        assert_eq!(always.describe(&ws, &byob_tools::EnvPlan::default()).project_env_forced, Some(true));
         assert!(fake.0.load(std::sync::atomic::Ordering::SeqCst) >= 1);
     }
 

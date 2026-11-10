@@ -30,6 +30,20 @@ impl Default for Policy {
 }
 
 impl Policy {
+    /// Every call runs without asking (`--auto-approve`); must-confirm calls still ask.
+    pub const ALLOW_ALL: Self = Self { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow };
+
+    /// The rules an approvals setting stands for.
+    pub fn for_approvals(a: byob_types::config::Approvals) -> Self {
+        use byob_types::config::Approvals;
+        match a {
+            Approvals::Ask => Self::default(),
+            Approvals::AllowEdits => Self { write: Rule::Allow, ..Self::default() },
+            Approvals::AllowAll => Self::ALLOW_ALL,
+            Approvals::ReadOnly => Self { read: Rule::Allow, write: Rule::Deny, network: Rule::Deny, execute: Rule::Deny },
+        }
+    }
+
     pub fn rule(&self, access: ToolAccess) -> Rule {
         match access {
             ToolAccess::Read => self.read,

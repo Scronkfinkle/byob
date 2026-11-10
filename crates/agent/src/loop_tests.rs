@@ -61,7 +61,7 @@ pub(crate) type Requests = Arc<Mutex<Vec<Value>>>;
 
 /// Replies with `script` in order (repeating the last one); requests without `tools`
 /// always get `no_tools`.
-fn fake_llm(script: Vec<Reply>, no_tools: &'static str) -> (String, Requests) {
+pub(crate) fn fake_llm(script: Vec<Reply>, no_tools: &'static str) -> (String, Requests) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let requests: Requests = Arc::default();
@@ -155,7 +155,11 @@ fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Opt
         inference: InferenceConfig { base_url: url, ..Default::default() },
         workspace: PathBuf::from("/ws"),
         tools,
-        policy: Policy::default(),
+        policy: None,
+        defaults: crate::Layer::default(),
+        scoped_keys: Default::default(),
+        workspaces_root: None,
+        register_workspace: false,
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
         paths,
         auto_title: false,
@@ -487,7 +491,11 @@ fn approval_card_then_undo_the_turn() {
         inference: InferenceConfig { base_url: url, ..Default::default() },
         workspace: ws.path().to_path_buf(),
         tools: byob_tools::builtin(),
-        policy: Policy::default(),
+        policy: None,
+        defaults: crate::Layer::default(),
+        scoped_keys: Default::default(),
+        workspaces_root: None,
+        register_workspace: false,
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
         paths: None,
         auto_title: false,
@@ -542,7 +550,7 @@ fn approval_card_then_undo_the_turn() {
 
 /// Switch `c` to a new, empty chat.
 fn new_chat(c: &mut LocalConnection) {
-    c.send(ClientMsg::NewChat);
+    c.send(ClientMsg::NewChat { workspace: None });
     while !matches!(recv(c), ServerMsg::Transcript { .. }) {}
 }
 
@@ -594,7 +602,11 @@ fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: byob_
         inference: InferenceConfig { base_url: url, ..Default::default() },
         workspace: workspace.to_path_buf(),
         tools,
-        policy: Policy::default(),
+        policy: None,
+        defaults: crate::Layer::default(),
+        scoped_keys: Default::default(),
+        workspaces_root: None,
+        register_workspace: false,
         system_prompt: crate::turn::DEFAULT_SYSTEM_PROMPT.into(),
         paths: Some(paths),
         auto_title: false,
@@ -752,7 +764,7 @@ fn question_engine(script: Vec<Reply>, policy: Policy) -> (EngineHandle, Request
     let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
     config.workspace = PathBuf::from("/ws");
     config.tools = tools;
-    config.policy = policy;
+    config.policy = Some(policy);
     config.auto_title = false;
     config.detect_local = false;
     (EngineHandle::spawn_with(config).unwrap(), requests)
@@ -770,13 +782,23 @@ fn hello(engine: &EngineHandle) -> LocalConnection {
 struct FakeEnvs(Mutex<Vec<byob_protocol::EnvAction>>);
 
 impl byob_tools::EnvControl for FakeEnvs {
-    fn describe(&self, ws: &std::path::Path) -> byob_protocol::WorkspaceEnv {
+    fn describe(&self, ws: &std::path::Path, plan: &byob_tools::EnvPlan) -> byob_protocol::WorkspaceEnv {
         let n = self.0.lock().unwrap().len();
-        byob_protocol::WorkspaceEnv { workspace: ws.display().to_string(), project_files: vec![format!("seen {n}")], ..Default::default() }
+        let container = byob_protocol::ContainerEnv { use_container: plan.container, ..Default::default() };
+        byob_protocol::WorkspaceEnv { workspace: ws.display().to_string(), project_files: vec![format!("seen {n}")], container, ..Default::default() }
     }
     fn apply(&self, _ws: &std::path::Path, action: &byob_protocol::EnvAction) -> Result<String, String> {
         self.0.lock().unwrap().push(action.clone());
         if *action == byob_protocol::EnvAction::RemoveContainer { Err("daemon down".into()) } else { Ok("done".into()) }
+    }
+    fn support(&self) -> byob_protocol::EnvSupport {
+        byob_protocol::EnvSupport { runtime: Some("docker".into()), ..Default::default() }
+    }
+    fn check_containers(&self) -> Result<String, String> {
+        Err("Docker isn't running".into())
+    }
+    fn forget(&self, _ws: &std::path::Path) -> Result<String, String> {
+        Ok("forgot".into())
     }
 }
 
@@ -791,7 +813,7 @@ fn clients_see_and_change_the_workspace_environment() {
     let engine = EngineHandle::spawn_with(config).unwrap();
     let mut c = hello(&engine);
     let mut ask = |action: Option<byob_protocol::EnvAction>| {
-        c.send(ClientMsg::WorkspaceEnv { action });
+        c.send(ClientMsg::WorkspaceEnv { action, workspace: None });
         loop {
             if let ServerMsg::WorkspaceEnv(env) = recv(&mut c) {
                 return env;

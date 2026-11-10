@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(u.after(9).map(|c| c.id).collect::<Vec<_>>(), [2]);
         assert!(u.usage.is_some());
         // Opening another chat resets, but leaves the message to the other handlers.
-        assert!(!u.apply(&ServerMsg::ChatOpened { chat: None }));
+        assert!(!u.apply(&ServerMsg::ChatOpened { chat: None, workspace: None }));
         assert!(u.usage.is_none() && u.compactions.is_empty());
         assert!(!u.apply(&ServerMsg::Notice { level: byob_protocol::NoticeLevel::Info, text: String::new() }));
     }

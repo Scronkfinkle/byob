@@ -57,11 +57,24 @@ impl ByobApp {
             }
         }
         ui.add_space(10.0);
-        ui.label(RichText::new("Workspace environment").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong))
-            .on_hover_text("Where run_command and run_python get their programs, for the workspace of this chat");
-        if let Some(msg) = self.envs.show(ui, &t) {
+        ui.label(RichText::new("Defaults for every chat").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong))
+            .on_hover_text("Saved in settings.json; a workspace or a chat can change each of them for itself");
+        if let Some(msg) = self.workspaces.defaults.show(ui, &t, crate::workspace::GLOBAL_FIELDS) {
             self.conn.send(msg);
         }
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new("Workspaces override these, and choose where commands run (Docker, Nix, …): the … menu of each workspace in the chat list. A chat: the settings button next to its title.")
+                    .small()
+                    .color(t.text_dim),
+            );
+            if let Some(ws) = self.sidebar.current_workspace().map(|w| w.id.clone())
+                && ui.small_button("This workspace's settings…").clicked()
+            {
+                self.workspaces.open_settings(&ws, false);
+            }
+        });
         ui.add_space(10.0);
         ui.label(RichText::new("Appearance").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong)).on_hover_text("Saved on this device only");
         self.appearance_settings(ui);

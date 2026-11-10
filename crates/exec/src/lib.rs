@@ -194,6 +194,14 @@ impl Runner for CallRunner<'_> {
     fn cancelled(&self) -> bool {
         self.ctx.cancelled()
     }
+
+    fn plan(&self) -> byob_tools::EnvPlan {
+        self.ctx.env()
+    }
+
+    fn chat(&self) -> Option<String> {
+        self.ctx.chat().map(str::to_owned)
+    }
 }
 
 impl Exec {
@@ -817,7 +825,7 @@ impl Tool for InstallSystemPackages {
             Ok(r) => r,
             Err(e) => return ToolOutput::err(e),
         };
-        if let Err(e) = self.0.envs.system_allowed(&root, &a.packages) {
+        if let Err(e) = self.0.envs.system_allowed(&root, &a.packages, &ctx.env()) {
             return ToolOutput::err(e);
         }
         match system.install(&a.packages, &|| ctx.cancelled()) {
@@ -1069,14 +1077,14 @@ mod tests {
         assert!(!out.failed && out.text.contains("chose to run commands on their machine"), "{}", out.text);
         assert!(!log.exists(), "docker wasn't called");
         assert!(!run(&reg, byob_tools::Answer::Yes).text.contains("chose to run"), "told once, and the answer stuck");
-        assert_eq!(envs.describe(&ws).container.use_container, Some(false));
+        assert_eq!(envs.describe(&ws, &byob_tools::EnvPlan::default()).container.use_container, Some(false));
         std::fs::remove_file(ws.join("ran.txt")).unwrap();
         // Turned on, but the daemon is down: a clear error, nothing ran.
         envs.apply(&ws, &byob_protocol::EnvAction::Container { on: Some(true) }).unwrap();
         let out = run(&reg, byob_tools::Answer::Yes);
         assert!(out.failed && out.text.contains("Docker isn't running") && out.text.contains("Cannot connect"), "{}", out.text);
         assert!(!ws.join("ran.txt").exists());
-        let d = envs.describe(&ws).container;
+        let d = envs.describe(&ws, &byob_tools::EnvPlan::default()).container;
         assert_eq!((d.runtime.as_deref(), d.use_container, d.state, d.image.as_str()), (Some("docker"), Some(true), None, "alpine"));
         // Turned on where there's no runtime at all.
         let d2 = tempfile::tempdir().unwrap();
@@ -1085,6 +1093,52 @@ mod tests {
         let out = run(&reg2, byob_tools::Answer::Yes);
         assert!(out.failed && out.text.contains("neither Docker nor Podman is installed"), "{}", out.text);
         assert!(envs2.apply(&ws, &byob_protocol::EnvAction::StopContainer).is_err());
+    }
+
+    /// The workspace's (or chat's) environment setting decides where commands run, with no
+    /// question, and names the image; the folder's own answers apply only without one.
+    #[cfg(unix)]
+    #[test]
+    fn environment_settings_decide_without_asking() {
+        use byob_tools::{EnvControl, EnvPlan};
+        let d = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let ws = ws.path().canonicalize().unwrap();
+        std::fs::write(ws.join(".devcontainer.json"), r#"{"image": "alpine"}"#).unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let (reg, envs, log) = fake_docker_world(d.path(), true);
+        /// Fails the test if anything is asked.
+        struct NoQuestions;
+        impl byob_tools::Asker for NoQuestions {
+            fn ask(&self, q: &byob_tools::Question) -> byob_tools::Answer {
+                panic!("asked {q:?}")
+            }
+        }
+        let run = |plan: &EnvPlan| {
+            let ctx = ToolContext::new(&ws, &cancel).with_asker(&NoQuestions).with_env(plan).with_chat("c1");
+            reg.get("run_command").unwrap().run(&json!({"command": "echo hi"}), &ctx)
+        };
+        // Container: straight to docker (whose daemon is down here), with the chosen image.
+        let container = EnvPlan { container: Some(true), image: Some("debian:stable-slim".into()), ..EnvPlan::default() };
+        let out = run(&container);
+        assert!(out.failed && out.text.contains("Docker isn't running"), "{}", out.text);
+        assert!(std::fs::read_to_string(&log).unwrap().contains("info"), "docker was asked");
+        let shown = envs.describe(&ws, &container).container;
+        assert_eq!((shown.use_container, shown.image.as_str()), (Some(true), "debian:stable-slim"));
+        // A chat that runs on this machine: no docker, no devcontainer question.
+        std::fs::remove_file(&log).unwrap();
+        let host = EnvPlan { container: Some(false), ..EnvPlan::default() };
+        let out = run(&host);
+        assert!(!out.failed && out.text.contains("hi") && out.text.contains("chose to run commands on their machine"), "{}", out.text);
+        assert!(!log.exists(), "docker wasn't called");
+        // The folder's own answer is untouched by settings.
+        assert_eq!(envs.describe(&ws, &EnvPlan::default()).container.use_container, None);
+        // Forgetting the workspace clears what byob kept for it.
+        envs.apply(&ws, &byob_protocol::EnvAction::Container { on: Some(false) }).unwrap();
+        assert!(envs.forget(&ws).unwrap().contains("forgot its answers"));
+        assert_eq!(envs.describe(&ws, &EnvPlan::default()).container.use_container, None);
+        assert_eq!(EnvControl::support(&*envs).runtime.as_deref(), Some("docker"));
+        assert!(envs.check_containers().unwrap_err().contains("Docker isn't running"));
     }
 
     #[test]

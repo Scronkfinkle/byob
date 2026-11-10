@@ -9,6 +9,7 @@ pub mod connect;
 mod envpanel;
 pub mod export;
 mod highlight;
+mod icons;
 pub mod markdown;
 pub mod media;
 pub mod pane;
@@ -18,6 +19,7 @@ pub mod steps;
 pub mod theme;
 pub mod upload;
 pub mod usage;
+pub mod workspace;
 pub mod ws;
 
 use byob_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, StepStatus};
@@ -78,8 +80,11 @@ pub struct ByobApp {
     artifacts: artifact::Artifacts,
     /// Context meter and compaction dividers.
     usage: usage::Usage,
-    /// Settings → Workspace environment.
-    envs: envpanel::EnvPanel,
+    /// Workspaces: the new-workspace form, workspace settings, the chat settings popover,
+    /// the global defaults.
+    workspaces: workspace::WorkspaceUi,
+    /// Where the chat settings button was last drawn (the popover opens below it).
+    chat_button: egui::Rect,
 }
 
 impl ByobApp {
@@ -110,7 +115,8 @@ impl ByobApp {
             uploads: upload::Uploads::default(),
             artifacts: artifact::Artifacts::default(),
             usage: usage::Usage::default(),
-            envs: envpanel::EnvPanel::default(),
+            workspaces: workspace::WorkspaceUi::default(),
+            chat_button: egui::Rect::NOTHING,
         }
     }
 
@@ -155,7 +161,10 @@ impl ByobApp {
 
     fn pump(&mut self) {
         while let Some(msg) = self.conn.try_recv() {
-            if self.usage.apply(&msg) || self.sidebar.apply(&msg) || self.artifacts.apply(&msg) {
+            if matches!(msg, ServerMsg::ChatOpened { .. }) {
+                self.workspaces.chat_changed();
+            }
+            if self.usage.apply(&msg) || self.workspaces.apply(&msg) || self.sidebar.apply(&msg) || self.artifacts.apply(&msg) {
                 continue;
             }
             match msg {
@@ -202,7 +211,13 @@ impl ByobApp {
                 // Handled by the usage meter above.
                 ServerMsg::Usage(_) | ServerMsg::Compactions { .. } | ServerMsg::Compacted(_) => {}
                 ServerMsg::InferenceTested(test) => self.connect.tested(test),
-                ServerMsg::WorkspaceEnv(env) => self.envs.received(env),
+                // Handled by the workspace views and the sidebar above.
+                ServerMsg::WorkspaceEnv(_)
+                | ServerMsg::Workspaces { .. }
+                | ServerMsg::Config(_)
+                | ServerMsg::Folders(_)
+                | ServerMsg::ContainersChecked { .. }
+                | ServerMsg::WorkspaceCreated { .. } => {}
             }
         }
     }
@@ -291,6 +306,50 @@ impl ByobApp {
         self.connect.start_test();
     }
 
+    /// Scripted runs: open a workspace view: `new-workspace`, `new-workspace-container`,
+    /// `workspace-settings` (of the chat in view's workspace), `chat-settings`. False for an
+    /// unknown name, or a workspace view before the workspace list arrived.
+    pub fn open_panel(&mut self, name: &str) -> bool {
+        use byob_protocol::workspace::EnvKind;
+        match name {
+            "new-workspace" => self.workspaces.open_new(EnvKind::Auto),
+            "new-workspace-container" => {
+                self.workspaces.open_new(EnvKind::Container);
+                self.conn.send(ClientMsg::CheckContainers);
+            }
+            "workspace-settings" => match self.sidebar.current_workspace().map(|w| w.id.clone()) {
+                Some(id) => self.workspaces.open_settings(&id, false),
+                None => return false,
+            },
+            "chat-settings" => {
+                if self.workspaces.chat.is_none() {
+                    self.workspaces.toggle_chat();
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Scripted runs: fill the New workspace form (a fresh folder) and press Create, as a
+    /// person would.
+    pub fn create_workspace(&mut self, name: &str, env: byob_protocol::workspace::EnvKind) {
+        self.workspaces.open_new(env);
+        if let Some(form) = &mut self.workspaces.form {
+            form.name = name.to_owned();
+            let msg = form.create_msg();
+            self.conn.send(msg);
+        }
+    }
+
+    /// The chat in view (or the new chat) is in the workspace called `name`.
+    pub fn in_workspace(&self, name: &str) -> bool {
+        self.sidebar.current_workspace().is_some_and(|w| w.name == name)
+    }
+
+    /// The names [`ByobApp::open_panel`] knows.
+    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings";
+
     /// Scripted runs: open the settings at an appearance section (`knobs`, `advanced`).
     pub fn reveal_settings(&mut self, section: &str) {
         self.show_settings = true;
@@ -341,8 +400,6 @@ impl ByobApp {
                     .auto_shrink([false, true])
                     .show(ui, |ui| self.settings(ui));
             });
-        } else {
-            self.envs.closed();
         }
         let t = self.tokens;
         if narrow && list_open {
@@ -385,6 +442,18 @@ impl ByobApp {
 
     /// After drawing: artifact actions and overlays, and what they want sent or shown.
     fn end_frame(&mut self, ctx: &egui::Context) {
+        for r in self.sidebar.take_requests() {
+            match r {
+                sidebar::Request::NewWorkspace => self.workspaces.open_new(byob_protocol::workspace::EnvKind::Auto),
+                sidebar::Request::WorkspaceSettings { id, remove } => self.workspaces.open_settings(&id, remove),
+            }
+        }
+        let t = self.tokens;
+        let title = self.sidebar.current().map_or("New chat", |c| c.title.as_str()).to_owned();
+        let anchor = egui::pos2(self.chat_button.left(), self.chat_button.bottom() + 6.0);
+        let anchor = if self.chat_button.is_positive() { anchor } else { egui::pos2(ctx.content_rect().center().x - 200.0, 48.0) };
+        let msgs = self.workspaces.windows(ctx, &t, self.sidebar.workspaces(), &title, anchor);
+        self.send_all(msgs);
         self.artifacts.end_frame(ctx);
         let (msgs, notices) = self.artifacts.take_output();
         self.send_all(msgs);
@@ -430,11 +499,25 @@ impl ByobApp {
             theme::spinner(ui, t, None);
         }
         let title = self.sidebar.current().map_or("New chat", |c| c.title.as_str()).to_owned();
+        // "Workspace / title", the workspace dimmed (dropped on phones).
+        let ws = self.sidebar.current_workspace().map(|w| w.name.clone()).filter(|_| !narrow);
         let room = ui.available_width();
         ui.scope(|ui| {
             ui.set_max_width((room * 0.4).max(40.0));
-            ui.add(egui::Label::new(egui::RichText::new(&title).color(t.text_strong)).truncate()).on_hover_text(&title);
+            let mut job = egui::text::LayoutJob::default();
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            if let Some(ws) = &ws {
+                job.append(&format!("{ws} / "), 0.0, egui::TextFormat::simple(font.clone(), t.text_dim));
+            }
+            job.append(&title, 0.0, egui::TextFormat::simple(font, t.text_strong));
+            let tip = ws.as_ref().map_or_else(|| title.clone(), |w| format!("{title}\nin the workspace {w}"));
+            ui.add(egui::Label::new(job).truncate()).on_hover_text(tip);
         });
+        let gear = icons::settings_button(ui, t).on_hover_text("This chat's settings: model, approvals, where commands run…");
+        self.chat_button = gear.rect;
+        if gear.clicked() {
+            self.workspaces.toggle_chat();
+        }
         // The connection: its status dot, model and server; a click opens its settings.
         let room = ui.available_width();
         let clicked = ui
@@ -444,15 +527,20 @@ impl ByobApp {
                     Some(s) => connect::chip(ui, t, s, narrow),
                     None => {
                         ui.label(egui::RichText::new("connecting…").color(t.text_dim));
-                        false
+                        None
                     }
                 }
             })
             .inner;
-        if clicked {
-            self.open_connection();
+        match clicked {
+            Some(connect::ChipClick::Connection) => self.open_connection(),
+            Some(connect::ChipClick::ChatSettings) if self.workspaces.chat.is_none() => self.workspaces.toggle_chat(),
+            Some(connect::ChipClick::ChatSettings) | None => {}
         }
-        let info = self.state.as_ref().filter(|s| s.link.is_ok()).and_then(|s| s.endpoint_info.as_ref()).map(byob_protocol::EndpointInfo::summary);
+        let info = self.state.as_ref().and_then(|s| match &s.chat_endpoint {
+            Some(e) => e.link.is_ok().then_some(e.info.as_ref()).flatten().map(byob_protocol::EndpointInfo::summary),
+            None => s.link.is_ok().then_some(s.endpoint_info.as_ref()).flatten().map(byob_protocol::EndpointInfo::summary),
+        });
         if let Some(info) = info.filter(|_| !narrow && ui.available_width() > 360.0) {
             let room = ui.available_width() - 160.0;
             ui.scope(|ui| {
@@ -746,7 +834,10 @@ mod app_tests {
             let title = "A chat with a remarkably long title that would never fit in any header at all, really".to_owned();
             fake.inbox.lock().unwrap().extend([
                 ServerMsg::State(state(Link::Ok, true)),
-                ServerMsg::ChatOpened { chat: Some(ChatSummary { id: "c".into(), title, updated_at: 1, pinned_at: None, busy: false }) },
+                ServerMsg::ChatOpened {
+                    chat: Some(ChatSummary { id: "c".into(), title, updated_at: 1, pinned_at: None, busy: false, workspace: None }),
+                    workspace: None,
+                },
             ]);
             let ctx = egui::Context::default();
             let mut app = ByobApp::new(Box::new(fake), "test");

@@ -157,6 +157,8 @@ pub struct Setup {
     pub max_calls: usize,
     /// The turn may hand tasks to subagents (top-level turns only: subagents can't delegate).
     pub delegate: Option<Arc<delegate::Env>>,
+    /// Where `run_command` and friends run, as the chat's settings decide.
+    pub env: Arc<byob_tools::EnvPlan>,
 }
 
 /// Send a turn's event to the engine, as a child's event if `child` is set.
@@ -591,6 +593,7 @@ impl Turn {
             workspace: Arc::clone(&self.s.workspace),
             chat: self.s.chat.clone(),
             step_ids: Arc::clone(&self.s.step_ids),
+            env: Arc::clone(&self.s.env),
         };
         match delegate::launch(&env, job, launch) {
             Ok(report) => {
@@ -678,7 +681,11 @@ impl Turn {
             tool: name.to_owned(),
             at: self.content_len,
         };
-        let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel).with_journal(&self.journal).with_chat(&self.s.chat).with_asker(&asker);
+        let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel)
+            .with_journal(&self.journal)
+            .with_chat(&self.s.chat)
+            .with_asker(&asker)
+            .with_env(&self.s.env);
         let output = catch_unwind(AssertUnwindSafe(|| tool.run(args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
         let (ops, complete) = crate::steps::undo_ops(self.journal.take(), &output.changes);
         if !ops.is_empty() || !complete {

@@ -177,6 +177,8 @@ pub struct Launch {
     pub workspace: Arc<PathBuf>,
     pub chat: String,
     pub step_ids: Arc<AtomicU64>,
+    /// Where the chat's commands run (subagents run theirs there too).
+    pub env: Arc<byob_tools::EnvPlan>,
 }
 
 impl Env {
@@ -443,6 +445,7 @@ fn run(job: Job, l: &Launch, step: &mut Step, slots: &Arc<Slots>, opts: Subagent
         parent_cancel: Some(Arc::clone(&l.cancel)),
         max_calls: opts.max_calls,
         delegate: None,
+        env: Arc::clone(&l.env),
     };
     let out = turn::run_child(setup);
     done.store(true, Ordering::Relaxed);

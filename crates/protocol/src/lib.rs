@@ -11,18 +11,20 @@ pub mod delegation;
 pub mod env;
 pub mod media;
 pub mod usage;
+pub mod workspace;
 
 use serde::{Deserialize, Serialize};
 
 pub use artifact::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion};
 pub use connect::{Detected, InferenceTest, Link, PRESETS, Preset, Problem};
 pub use delegation::{Delegation, DelegationState, DelegationUpdate};
-pub use env::{ContainerEnv, EnvAction, WorkspaceEnv};
+pub use env::{ContainerEnv, EnvAction, EnvSupport, WorkspaceEnv};
 pub use media::{MediaContent, MediaKind, MediaRef};
 pub use usage::{ChatUsage, Compaction};
+pub use workspace::{ChatEndpoint, ConfigScope, ConfigView, FolderList, NewFolder, WorkspaceSummary};
 
 /// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -84,9 +86,13 @@ pub enum ClientMsg {
         after: Option<ChatCursor>,
         limit: u32,
     },
-    /// Start a new, empty chat in this client. The chat is created when the first message
-    /// is sent; until then this client sees an empty transcript.
-    NewChat,
+    /// Start a new, empty chat in this client, in workspace `workspace` (default: the
+    /// workspace of the chat in view, else the default one). The chat is created when the
+    /// first message is sent; until then this client sees an empty transcript.
+    NewChat {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
     /// Look at another chat. Only this client switches; a turn running elsewhere goes on.
     OpenChat {
         id: String,
@@ -131,12 +137,55 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         focus: Option<String>,
     },
-    /// Ask for the environment settings of the chat in view's workspace, after applying
-    /// `action` if given; answered with [`ServerMsg::WorkspaceEnv`].
+    /// Ask for the environment state of workspace `workspace` (default: the chat in view's),
+    /// after applying `action` if given; answered with [`ServerMsg::WorkspaceEnv`].
     WorkspaceEnv {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         action: Option<EnvAction>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
     },
+    /// Make a workspace: a name, a folder on the engine's machine, its own settings
+    /// (validated for the workspace level). Answered with [`ServerMsg::WorkspaceCreated`];
+    /// on success this client starts a new chat in it.
+    CreateWorkspace {
+        name: String,
+        folder: NewFolder,
+        #[serde(default)]
+        config: workspace::Layer,
+    },
+    RenameWorkspace {
+        id: String,
+        name: String,
+    },
+    /// Remove a workspace from byob with its chats; the folder and its files stay. `clean`
+    /// also deletes what byob keeps for it elsewhere (installed packages, its container).
+    RemoveWorkspace {
+        id: String,
+        #[serde(default)]
+        clean: bool,
+    },
+    /// Ask for one level's settings; answered with [`ServerMsg::Config`].
+    GetConfig {
+        scope: ConfigScope,
+    },
+    /// Replace one level's own settings (`None` fields inherit). `api_key` as for
+    /// [`ClientMsg::SetInference`], for a level with its own URL. Answered with
+    /// [`ServerMsg::Config`].
+    SetConfig {
+        scope: ConfigScope,
+        layer: workspace::Layer,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
+    },
+    /// List the subfolders of `path` on the engine's machine (default: the home folder);
+    /// answered with [`ServerMsg::Folders`].
+    ListFolders {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    /// Is Docker/Podman reachable? Answered with [`ServerMsg::ContainersChecked`].
+    CheckContainers,
 }
 
 /// Engine -> client(s).
@@ -166,9 +215,14 @@ pub enum ServerMsg {
     ChatUpdated(ChatSummary),
     /// A chat was deleted. Sent to every client.
     ChatDeleted { id: String },
-    /// This client now looks at `chat` (`None`: a new chat, not sent yet). The chat's
-    /// [`ServerMsg::Transcript`] follows; entry messages only arrive for the chat in view.
-    ChatOpened { chat: Option<ChatSummary> },
+    /// This client now looks at `chat` (`None`: a new chat, not sent yet), which is in
+    /// workspace `workspace`. The chat's [`ServerMsg::Transcript`] follows; entry messages
+    /// only arrive for the chat in view.
+    ChatOpened {
+        chat: Option<ChatSummary>,
+        #[serde(default)]
+        workspace: Option<String>,
+    },
     /// An upload finished (`attachment`) or failed (`error`). Only sent to the uploader.
     Uploaded { upload: u64, attachment: Option<MediaRef>, error: Option<String> },
     /// Answer to [`ClientMsg::GetMedia`].
@@ -191,8 +245,20 @@ pub enum ServerMsg {
     Delegation { entry: u64, step: u64, update: DelegationUpdate },
     /// Answer to [`ClientMsg::TestInference`].
     InferenceTested(InferenceTest),
-    /// Answer to [`ClientMsg::WorkspaceEnv`]: the environment of the chat in view's workspace.
+    /// Answer to [`ClientMsg::WorkspaceEnv`]: the environment of a workspace.
     WorkspaceEnv(WorkspaceEnv),
+    /// Every workspace, most recently active first; sent on connect and whenever one is
+    /// added, renamed, removed or changes its chat count. `current` is where new chats go
+    /// by default; `root` is where fresh workspace folders are created.
+    Workspaces { items: Vec<WorkspaceSummary>, current: Option<String>, root: String, support: EnvSupport },
+    /// Answer to [`ClientMsg::GetConfig`] / [`ClientMsg::SetConfig`].
+    Config(Box<ConfigView>),
+    /// Answer to [`ClientMsg::ListFolders`].
+    Folders(FolderList),
+    /// Answer to [`ClientMsg::CheckContainers`].
+    ContainersChecked { ok: bool, message: String },
+    /// Answer to [`ClientMsg::CreateWorkspace`].
+    WorkspaceCreated { id: Option<String>, error: Option<String> },
 }
 
 /// A chat as shown in the sidebar.
@@ -207,6 +273,9 @@ pub struct ChatSummary {
     /// A reply is running in this chat.
     #[serde(default)]
     pub busy: bool,
+    /// The workspace it belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 impl ChatSummary {
@@ -497,6 +566,10 @@ pub struct EngineState {
     /// The engine is looking for them.
     #[serde(default)]
     pub detecting: bool,
+    /// The chat in view uses another endpoint than the one above (its workspace's or its
+    /// own); `None`: it uses the global one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_endpoint: Option<ChatEndpoint>,
 }
 
 /// How turns pass tools to the model.
@@ -737,18 +810,18 @@ mod tests {
 
     #[test]
     fn chat_messages_round_trip() {
-        let summary = ChatSummary { id: "c1".into(), title: "Plans".into(), updated_at: 5, pinned_at: None, busy: true };
+        let summary = ChatSummary { id: "c1".into(), title: "Plans".into(), updated_at: 5, pinned_at: None, busy: true, workspace: Some("w1".into()) };
         for m in [
             ServerMsg::Chats { pinned: vec![], recent: vec![summary.clone()], after: None, next: Some(summary.cursor()) },
             ServerMsg::ChatUpdated(summary.clone()),
-            ServerMsg::ChatOpened { chat: Some(summary) },
+            ServerMsg::ChatOpened { chat: Some(summary), workspace: None },
             ServerMsg::ChatDeleted { id: "c1".into() },
         ] {
             assert_eq!(ServerMsg::from_json(&m.to_json()).unwrap(), m);
         }
         let m = ClientMsg::ListChats { after: Some(ChatCursor { updated_at: 1, id: "x".into() }), limit: 50 };
         assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m);
-        assert_eq!(ClientMsg::NewChat.to_json(), r#"{"type":"new_chat"}"#);
+        assert_eq!(ClientMsg::NewChat { workspace: None }.to_json(), r#"{"type":"new_chat"}"#);
     }
 
     #[test]

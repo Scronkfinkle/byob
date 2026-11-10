@@ -22,11 +22,18 @@ fn new_run_id() -> String {
 
 impl Engine {
     /// What a turn in `workspace` needs to delegate, if subagents are on and there are tools.
-    pub(crate) fn delegation_env(&self, llm: &byob_llm::Client, plan: &adapt::Plan, workspace: &Path) -> Option<delegate::Env> {
+    /// `main` is the chat's own endpoint (subagents without a model role use it).
+    pub(crate) fn delegation_env(
+        &self,
+        main: &byob_types::InferenceConfig,
+        llm: &byob_llm::Client,
+        plan: &adapt::Plan,
+        workspace: &Path,
+    ) -> Option<delegate::Env> {
         if !self.subagents.enabled || self.tools.is_empty() {
             return None;
         }
-        let main = delegate::Model { config: self.config.clone(), llm: llm.clone(), plan: plan.clone() };
+        let main = delegate::Model { config: main.clone(), llm: llm.clone(), plan: plan.clone() };
         let mut roles = BTreeMap::new();
         for (name, config) in &self.models {
             match byob_llm::Client::new(config.clone()) {

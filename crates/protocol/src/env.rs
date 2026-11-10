@@ -44,6 +44,20 @@ pub struct WorkspaceEnv {
     pub failed: bool,
 }
 
+/// What the engine's machine offers for workspace environments.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvSupport {
+    /// Nix is installed (the Nix environment loads a folder's dev shell).
+    #[serde(default)]
+    pub nix: bool,
+    /// What `install_packages` uses ("Nix", "pixi"), if anything.
+    #[serde(default)]
+    pub installer: Option<String>,
+    /// "docker" or "podman", if one is installed.
+    #[serde(default)]
+    pub runtime: Option<String>,
+}
+
 /// The container side of a [`WorkspaceEnv`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContainerEnv {

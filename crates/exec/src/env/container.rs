@@ -137,8 +137,8 @@ fn unreachable_message(rt: &Runtime, detail: &str) -> String {
     let what = if rt.kind == RuntimeKind::Docker { "Docker isn't running or can't be reached" } else { "Podman doesn't work here" };
     let detail: String = detail.lines().take(3).collect::<Vec<_>>().join(" ");
     format!(
-        "{what} (`{} info`: {detail}). Nothing ran. Start it, or turn off \"Run commands in a container\" for this workspace in \
-         Settings → Workspace environment.",
+        "{what} (`{} info`: {detail}). Nothing ran. Start it, or choose another environment in the workspace's settings \
+         (its menu in the chat list).",
         rt.name()
     )
 }
@@ -727,6 +727,6 @@ mod tests {
     fn the_daemon_being_down_says_what_to_do() {
         let rt = Runtime { kind: RuntimeKind::Docker, program: "docker".into() };
         let m = unreachable_message(&rt, "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?");
-        assert!(m.contains("Docker isn't running") && m.contains("Cannot connect") && m.contains("Settings"), "{m}");
+        assert!(m.contains("Docker isn't running") && m.contains("Cannot connect") && m.contains("workspace's settings"), "{m}");
     }
 }
