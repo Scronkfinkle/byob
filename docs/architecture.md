@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10 (open protocol: negotiation, caps, views, plugin channel)
+Last updated: 2026-11-10 (artifact types and renderers are registrations)
 
 ## Shape
 
@@ -35,13 +35,14 @@ bumps (`crates/protocol/src/version.rs`, `view.rs`).
   minor is informational.
 - **Caps** are feature strings (`[a-z0-9_.-]`, ≤ 64 of ≤ 64 chars). A feature both sides must
   understand is used only when both list its cap (`version::shared`); unknown caps are
-  ignored. Today: `views`, `plugin_channel`.
+  ignored. Today: `views`, `plugin_channel`. Minors so far: 1 — `Artifact::content_type`.
 - **Compatibility rules.** Bump the major only for changes an older peer can't survive (a
   renamed/removed field, a changed meaning). Everything else is additive: new fields are
   `#[serde(default)]` (and skipped when empty); new messages and features go behind a cap
   where the receiver must act on them; enums that grow decode unknown values into a fallback
   with `#[serde(other)]`: `ServerMsg::Unknown` (clients skip it, logging once per type),
-  `ClientMsg::Unknown` (the engine answers with a notice), `ArtifactKind` → `Text`,
+  `ClientMsg::Unknown` (the engine answers with a notice), `ArtifactKind` → `Text` (and
+  artifacts carry an open content type besides, see Artifacts),
   `MediaKind` → `File`, `NoticeLevel` → `Info`, `ApprovalAnswer::Unknown` (= deny),
   `SlashKind::Other`, `PluginAction::Other`, `EnvAction::Unsupported`, `Preview::Other`,
   `FileChange::Other`, `DelegationUpdate::Other` (not shown / ignored).
@@ -160,12 +161,14 @@ artifacts get the theme as `--byob-*` CSS variables (`THEME_VARS`, additive only
 
 ## Artifacts
 
-Files the model makes to keep, beside the conversation, versioned and exportable. The kind
-follows the file name: `.md` (rendered, Preview/Source), `.html` (single-file app), `.chart.json`
-(native chart), PNG/JPEG, anything else as text. `create_artifact` / `update_artifact` (find/
+Files the model makes to keep, beside the conversation, versioned and exportable. What one
+is, is an open **content type** that follows the file name: `.md` → `text/markdown` (rendered,
+Preview/Source), `.html` → `text/html` (single-file app), `.chart.json` →
+`application/vnd.byob.chart+json` (native chart), `image/png` / `image/jpeg`, anything else
+`text/plain` (shown as source). `create_artifact` / `update_artifact` (find/
 replace edits, each `find` must occur exactly once) / `read_artifact` write only new files
-under `.byob/artifacts/<id>/` in the chat's workspace — `artifact.json` (chat, kind, title, file
-name, versions) and `v<n>.<ext>` per version — so they are auto-allowed. Charts and images
+under `.byob/artifacts/<id>/` in the chat's workspace — `artifact.json` (chat, content type,
+kind, title, file name, versions) and `v<n>.<ext>` per version — so they are auto-allowed. Charts and images
 other tools make are adopted (an index pointing at the file where it is). A version an undo
 removed drops out of the list; numbers are never reused.
 
@@ -185,6 +188,50 @@ width, open/collapsed, and tabs + minimized artifacts per chat are device prefs
 browser (positioned from Rust each frame, egui popups cut out with a clip-path); on the
 desktop, Servo in a helper process (below), or a summary card with Open/Export when the
 helper isn't installed.
+
+### Artifact types and renderers: registries on both sides
+
+No code outside the registrations knows a particular type; byob's own types register through
+the same API third parties (and, in P3, bundled plugins) use.
+
+- **Protocol.** `Artifact::content_type` (13.1, additive; `[a-z0-9.+_-]/…`, no parameters).
+  `kind` (`ArtifactKind`) stays for 13.0 clients: the engine fills it from the type
+  (unregistered types are `Text`), and a client of a 13.0 engine derives the type from it
+  (`Artifact::content_type()`). Index files written before content types get theirs the same
+  way when loaded. `artifact::mime` turns a type into a `Content-Type` (text gets a charset,
+  `…+json` is `application/json`).
+- **Engine: `byob_tools::ArtifactTypes`** (`crates/tools/src/artifact_types/`). An
+  `ArtifactType` has the content type, file-name suffixes (longest match wins; nothing matches
+  → `text/plain`), a label ("app", "document"), its 13.0 `kind`, whether it is text, how
+  `create_artifact` describes it, its clause in the prompt's "pick the format" list, extra prompt
+  guidance, and `ArtifactHooks`: `check` (validate/normalise content before saving, note for the
+  model), `serve` (the body served for viewing; the CSP stays the server's, the same for every
+  type) and `shrink_for_client` (a version too big for one message). The registry is shared
+  (`EngineConfig::artifact_types`, cloned into the artifact tools by
+  `register_builtins_with`, `EngineHandle::artifact_types` for the server): the tools, the
+  prompt (`ArtifactTypes::prompt`, `create_artifact`'s description, the prompt's artifact list
+  with labels), the server and `GetArtifact` all go through it. Built-ins, one module each:
+  `text` (also the fallback), `markdown`, `html_app` (the prompt's HTML rules, the network-use
+  warning, and `wrap_html`: theme defaults, the error-reporting/theme script, no WebRTC — what
+  the server and the desktop helper load), `chart` (spec validation), `image` (not writable;
+  downscaled for clients).
+- **Client: `byob_ui_egui::renderers::ArtifactRenderers`** (`crates/ui-egui/src/renderers/`).
+  Content type → `ArtifactRenderer`: an exact registration, else `type/*`, else the fallback
+  (text source). A renderer declares `RendererCaps` — badge label, `text` (Copy),
+  `source_view` (the pane's Preview/Source switch; the pane draws the source), `web_surface`
+  (runs on the `AppView`: held in the background when hidden, running/paused dots, the
+  minimize hint) — and draws `card` (the preview under a card's buttons), `pane` and
+  `actions` (extra buttons in the card and pane rows). Through `ArtifactCx` it gets the
+  version's bytes (fetched once), `prepared::<T>` (its own parse of them, cached with the
+  bytes), the web surface, the served URL, and requests (open in the browser, send the model a
+  message). The artifact UI keeps the frame (cards, chips, tabs, rail, maximize, versions,
+  Export, Copy, fetching, minimizing) and has no per-type checks. Built-ins: `text`
+  (fallback), `markdown`, `chart`, `image` (PNG and JPEG), `html_app` (live card, pane with the
+  app's reported errors and "Send error to byob", Open). Register more with
+  `ByobApp::artifact_renderers_mut` (like `views_mut` for step views).
+- The HTML-app, chart and markdown pieces live together per side (`artifact_types::html_app` +
+  `renderers::html_app`, …), ready to move into bundled plugins; the web-surface runtimes
+  (Servo helper, iframe) stay core.
 
 ### Desktop HTML apps: the Servo helper
 
