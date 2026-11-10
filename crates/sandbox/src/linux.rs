@@ -39,7 +39,10 @@ const ABI_WANTED: ABI = ABI::V6;
 
 pub fn probe() -> Enforcement {
     let policy = Policy { allow_unsandboxed: true, ..Default::default() };
-    let ns = enter_namespaces(true);
+    let ns = match apparmor_blocks_userns() {
+        Some(why) => Err(why),
+        None => enter_namespaces(true),
+    };
     let mut e = assess(&policy, &ns).0;
     if e.filesystem != "none" {
         match landlock(&policy) {
@@ -54,7 +57,13 @@ pub fn probe() -> Enforcement {
 }
 
 pub fn run(policy: &Policy, program: &OsStr, args: &[OsString]) -> ExitCode {
-    let ns = if policy.skip_namespaces { Err("turned off by the policy".into()) } else { enter_namespaces(!policy.network) };
+    let ns = if policy.skip_namespaces {
+        Err("turned off by the policy".into())
+    } else if let Some(why) = apparmor_blocks_userns() {
+        Err(why)
+    } else {
+        enter_namespaces(!policy.network)
+    };
     let (_, verdict) = assess(policy, &ns);
     if let Err(e) = verdict {
         return fail(&e);
@@ -165,6 +174,22 @@ fn assess(policy: &Policy, ns: &Result<(), String>) -> (Enforcement, Result<(), 
         Err(format!("can't sandbox here: {}", e.notes.join("; ")))
     };
     (e, verdict)
+}
+
+/// Ubuntu 23.10+ (and GitHub's runners) set `kernel.apparmor_restrict_unprivileged_userns`:
+/// an unconfined program may still create a user namespace, but AppArmor then confines it
+/// so tightly that the command inside breaks (its forks fail with ENOMEM). Use the
+/// Landlock-only sandbox there, unless byob runs under its own AppArmor profile (which is
+/// how a packaged byob would be allowed real namespaces).
+fn apparmor_blocks_userns() -> Option<String> {
+    let restricted = std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").is_ok_and(|v| v.trim() == "1");
+    if !restricted {
+        return None;
+    }
+    let label = std::fs::read_to_string("/proc/self/attr/apparmor/current").or_else(|_| std::fs::read_to_string("/proc/self/attr/current")).unwrap_or_default();
+    let label = label.trim().trim_end_matches('\0').trim();
+    (label.is_empty() || label == "unconfined")
+        .then(|| "AppArmor restricts unprivileged user namespaces here (kernel.apparmor_restrict_unprivileged_userns = 1)".to_owned())
 }
 
 /// New user + PID + IPC (+ network) namespaces, with our uid/gid mapped to themselves.

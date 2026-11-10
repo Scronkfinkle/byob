@@ -146,6 +146,30 @@ fn cancel_stops_early() {
 }
 
 #[test]
+fn stop_works_while_the_server_is_silent() {
+    // A server that accepts the request and then says nothing (like a local model still
+    // processing a long prompt): Stop must not wait for the first byte.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for s in listener.incoming().flatten() {
+            held.push(s);
+        }
+    });
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let c = std::sync::Arc::clone(&cancel);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        c.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let started = std::time::Instant::now();
+    let out = client(format!("http://{addr}/v1")).stream_chat(&[ChatMessage::user("q")], &[], &cancel, |_| {}).unwrap();
+    assert!(out.cancelled);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
+}
+
+#[test]
 fn a_stream_that_ends_with_nothing_is_an_error_not_an_empty_reply() {
     // A dropped connection (or a server that sends headers and hangs up) must not look like
     // the model answering with nothing.
