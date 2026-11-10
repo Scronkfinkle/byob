@@ -2,12 +2,19 @@
 //! a single-file HTML app, a chart, an image, any other text file — and that are versioned
 //! and exportable.
 //!
-//! An artifact's kind follows its file name ([`ArtifactKind::for_filename`]). Every version
-//! is a separate file in the chat's workspace (normally `.byob/artifacts/<id>/v<n>.<ext>`;
-//! charts and images that tools made elsewhere are adopted where they are). Steps that made
-//! or changed one carry an [`ArtifactRef`]; clients get the chat's artifacts in
-//! [`crate::ServerMsg::Artifacts`] and fetch a version's bytes with
-//! [`crate::ClientMsg::GetArtifact`] (for display and export).
+//! What an artifact is, is an open **content type** ([`Artifact::content_type`], e.g.
+//! `text/markdown`, `text/html`, [`TYPE_CHART`], `image/png`, `text/plain`), which the
+//! engine resolves from the file name through its registry of artifact types (built-ins and,
+//! later, plugins' registrations). Clients pick a renderer by it and fall back to showing the
+//! text source for types they don't know. [`ArtifactKind`] is the closed set older clients
+//! understand; the engine still sends it (unknown types as [`ArtifactKind::Text`]) and a
+//! client of an older engine derives the type from it.
+//!
+//! Every version is a separate file in the chat's workspace (normally
+//! `.byob/artifacts/<id>/v<n>.<ext>`; charts and images that tools made elsewhere are
+//! adopted where they are). Steps that made or changed one carry an [`ArtifactRef`]; clients
+//! get the chat's artifacts in [`crate::ServerMsg::Artifacts`] and fetch a version's bytes
+//! with [`crate::ClientMsg::GetArtifact`] (for display and export).
 
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +22,40 @@ use serde::{Deserialize, Serialize};
 /// (base64 makes it 4/3 bigger, still well inside a frame).
 pub const MAX_ARTIFACT_SEND_BYTES: usize = 2 * 1024 * 1024;
 
-/// What an artifact is, which decides how it is shown.
+/// Content types of byob's built-in artifact types.
+pub const TYPE_MARKDOWN: &str = "text/markdown";
+pub const TYPE_HTML: &str = "text/html";
+pub const TYPE_CHART: &str = "application/vnd.byob.chart+json";
+pub const TYPE_PNG: &str = "image/png";
+pub const TYPE_JPEG: &str = "image/jpeg";
+/// Any other text file, and the fallback for types nobody registered.
+pub const TYPE_TEXT: &str = "text/plain";
+
+/// Longest content type.
+pub const MAX_CONTENT_TYPE_CHARS: usize = 100;
+
+/// A content type is `type/subtype`, lowercase ASCII letters, digits and `.+-_` (no
+/// parameters): a lookup key, safe in a header.
+pub fn valid_content_type(t: &str) -> bool {
+    let ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'+' | b'-' | b'_'));
+    t.len() <= MAX_CONTENT_TYPE_CHARS && t.split_once('/').is_some_and(|(a, b)| ok(a) && ok(b))
+}
+
+/// The `Content-Type` to serve or save a version of `content_type` with: text gets a
+/// charset, structured JSON (`…+json`) is plain `application/json`.
+pub fn mime(content_type: &str) -> String {
+    if !valid_content_type(content_type) {
+        "application/octet-stream".to_owned()
+    } else if content_type.starts_with("text/") {
+        format!("{content_type}; charset=utf-8")
+    } else if content_type.ends_with("+json") {
+        "application/json".to_owned()
+    } else {
+        content_type.to_owned()
+    }
+}
+
+/// What an artifact is, as clients of protocol 13.0 knew it (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
@@ -34,48 +74,16 @@ pub enum ArtifactKind {
 }
 
 impl ArtifactKind {
-    /// The kind of a file, by its name. Every name is something: unknown extensions are text.
-    pub fn for_filename(name: &str) -> Self {
-        let lower = name.to_ascii_lowercase();
-        let ends = |exts: &[&str]| exts.iter().any(|e| lower.ends_with(e));
-        if ends(&[".chart.json"]) {
-            Self::Chart
-        } else if ends(&[".md", ".markdown"]) {
-            Self::Markdown
-        } else if ends(&[".html", ".htm"]) {
-            Self::Html
-        } else if ends(&[".png", ".jpg", ".jpeg"]) {
-            Self::Image
-        } else {
-            Self::Text
-        }
-    }
-
-    pub fn label(self) -> &'static str {
+    /// The content type this kind stands for (`filename` tells PNG from JPEG).
+    pub fn content_type(self, filename: &str) -> &'static str {
         match self {
-            Self::Markdown => "document",
-            Self::Html => "app",
-            Self::Chart => "chart",
-            Self::Image => "image",
-            Self::Text => "file",
+            Self::Markdown => TYPE_MARKDOWN,
+            Self::Html => TYPE_HTML,
+            Self::Chart => TYPE_CHART,
+            Self::Image if filename.to_ascii_lowercase().ends_with(".png") => TYPE_PNG,
+            Self::Image => TYPE_JPEG,
+            Self::Text => TYPE_TEXT,
         }
-    }
-
-    /// Content type for serving or downloading a version.
-    pub fn mime(self, filename: &str) -> &'static str {
-        match self {
-            Self::Markdown => "text/markdown; charset=utf-8",
-            Self::Html => "text/html; charset=utf-8",
-            Self::Chart => "application/json",
-            Self::Image if filename.to_ascii_lowercase().ends_with(".png") => "image/png",
-            Self::Image => "image/jpeg",
-            Self::Text => "text/plain; charset=utf-8",
-        }
-    }
-
-    /// Shown as text (the bytes are UTF-8 source).
-    pub fn is_text(self) -> bool {
-        !matches!(self, Self::Image)
     }
 }
 
@@ -99,7 +107,12 @@ pub struct ArtifactVersion {
 pub struct Artifact {
     /// `[a-z0-9-]`, unique in the workspace.
     pub id: String,
+    /// For clients of protocol 13.0; [`Artifact::content_type`] is what it is.
     pub kind: ArtifactKind,
+    /// What it is (13.1+; empty from older engines and in older index files: then
+    /// [`Artifact::content_type`] derives it from `kind`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content_type: String,
     pub title: String,
     /// Name to export it as, e.g. `loan-calculator.html`.
     pub filename: String,
@@ -108,6 +121,12 @@ pub struct Artifact {
 }
 
 impl Artifact {
+    /// Its content type: the one the engine sent if it is well-formed, else the one its
+    /// [`ArtifactKind`] stands for.
+    pub fn content_type(&self) -> &str {
+        if valid_content_type(&self.content_type) { &self.content_type } else { self.kind.content_type(&self.filename) }
+    }
+
     pub fn latest(&self) -> Option<&ArtifactVersion> {
         self.versions.iter().max_by_key(|v| v.n)
     }
@@ -166,16 +185,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kinds_follow_the_file_name() {
-        assert_eq!(ArtifactKind::for_filename("Sales.chart.json"), ArtifactKind::Chart);
-        assert_eq!(ArtifactKind::for_filename("data.json"), ArtifactKind::Text);
-        assert_eq!(ArtifactKind::for_filename("summary.MD"), ArtifactKind::Markdown);
-        assert_eq!(ArtifactKind::for_filename("calc.html"), ArtifactKind::Html);
-        assert_eq!(ArtifactKind::for_filename("plot.jpeg"), ArtifactKind::Image);
-        assert_eq!(ArtifactKind::for_filename("script.py"), ArtifactKind::Text);
-        assert_eq!(ArtifactKind::for_filename("noext"), ArtifactKind::Text);
-        assert_eq!(ArtifactKind::Image.mime("a.png"), "image/png");
-        assert!(!ArtifactKind::Image.is_text() && ArtifactKind::Html.is_text());
+    fn content_types_and_their_fallbacks() {
+        let a = |kind, content_type: &str, filename: &str| Artifact {
+            id: "a".into(),
+            kind,
+            content_type: content_type.into(),
+            title: "A".into(),
+            filename: filename.into(),
+            versions: vec![],
+        };
+        // From a 13.1 engine: the type it sent, whatever the kind says.
+        assert_eq!(a(ArtifactKind::Text, "application/vnd.acme.sheet+json", "x.sheet").content_type(), "application/vnd.acme.sheet+json");
+        // From an older engine (or index file): derived from the kind.
+        assert_eq!(a(ArtifactKind::Image, "", "p.PNG").content_type(), TYPE_PNG);
+        assert_eq!(a(ArtifactKind::Image, "", "p.jpg").content_type(), TYPE_JPEG);
+        assert_eq!(a(ArtifactKind::Chart, "", "s.chart.json").content_type(), TYPE_CHART);
+        // Garbage is ignored.
+        assert_eq!(a(ArtifactKind::Html, "Text/HTML; x=<y>", "a.html").content_type(), TYPE_HTML);
+        assert!(valid_content_type("text/x-python") && !valid_content_type("text") && !valid_content_type("/x"));
+        assert!(!valid_content_type(&format!("a/{}", "b".repeat(100))));
+        assert_eq!(mime(TYPE_MARKDOWN), "text/markdown; charset=utf-8");
+        assert_eq!(mime(TYPE_CHART), "application/json");
+        assert_eq!(mime(TYPE_PNG), "image/png");
+        assert_eq!(mime("bad"), "application/octet-stream");
+        // Not sent when empty; old JSON without it parses.
+        let json = serde_json::to_string(&a(ArtifactKind::Text, "", "n")).unwrap();
+        assert!(!json.contains("content_type"));
+        let back: Artifact = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.content_type(), TYPE_TEXT);
     }
 
     #[test]
@@ -189,7 +226,14 @@ mod tests {
     #[test]
     fn latest_and_lookup() {
         let v = |n| ArtifactVersion { n, path: format!("v{n}"), created_at: 0, note: String::new(), size: 1 };
-        let a = Artifact { id: "a".into(), kind: ArtifactKind::Html, title: "A".into(), filename: "a.html".into(), versions: vec![v(1), v(3), v(2)] };
+        let a = Artifact {
+            id: "a".into(),
+            kind: ArtifactKind::Html,
+            content_type: TYPE_HTML.into(),
+            title: "A".into(),
+            filename: "a.html".into(),
+            versions: vec![v(1), v(3), v(2)],
+        };
         assert_eq!(a.latest().map(|v| v.n), Some(3));
         assert_eq!(a.version(2).map(|v| v.path.as_str()), Some("v2"));
         assert!(a.version(9).is_none());

@@ -755,6 +755,7 @@ version = "0.2.1"
 dependencies = [
  "byob-protocol",
  "byob-types",
+ "image",
  "log",
  "proptest",
  "serde",

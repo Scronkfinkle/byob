@@ -429,7 +429,7 @@ mod tests {
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let ctx = byob_tools::ToolContext::new(ws, &cancel).with_chat("c1");
         let args = serde_json::json!({"title": "Calc", "filename": "calc.html", "content": "<!doctype html><button>Go</button>"});
-        let out = byob_tools::Tool::run(&byob_tools::CreateArtifact, &args, &ctx);
+        let out = byob_tools::Tool::run(&byob_tools::CreateArtifact::default(), &args, &ctx);
         assert!(!out.failed, "{}", out.text);
         let id = byob_agent::artifact::list(ws, "c1")[0].id.clone();
         let mut engine_config = byob_agent::EngineConfig::new(byob_types::InferenceConfig::default());

@@ -1006,7 +1006,14 @@ mod tests {
     #[test]
     fn artifact_messages_round_trip() {
         let v = ArtifactVersion { n: 2, path: ".byob/artifacts/calc/v2.html".into(), created_at: 1, note: "blue button".into(), size: 10 };
-        let a = Artifact { id: "calc".into(), kind: ArtifactKind::Html, title: "Calc".into(), filename: "calc.html".into(), versions: vec![v] };
+        let a = Artifact {
+            id: "calc".into(),
+            kind: ArtifactKind::Html,
+            content_type: artifact::TYPE_HTML.into(),
+            title: "Calc".into(),
+            filename: "calc.html".into(),
+            versions: vec![v],
+        };
         let msgs = vec![
             ServerMsg::Artifacts { chat: Some("c1".into()), artifacts: vec![a.clone()] },
             ServerMsg::Artifacts { chat: None, artifacts: vec![] },

@@ -197,6 +197,7 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
         envs: None,
         plugins: None,
         channels: Default::default(),
+        artifact_types: Default::default(),
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), seen, runs }
 }

@@ -24,9 +24,10 @@ pub struct Loaded {
     pub plugins: PluginsConfig,
 }
 
-/// Register the built-in tools into `tools`; `linked`: `--plugin` folders.
-pub fn load(tools: &mut Registry, linked: Vec<PathBuf>) -> Loaded {
-    byob_tools::register_builtins(tools);
+/// Register the built-in tools into `tools` (the artifact tools for the engine's
+/// `artifact_types`); `linked`: `--plugin` folders.
+pub fn load(tools: &mut Registry, artifact_types: &byob_tools::ArtifactTypes, linked: Vec<PathBuf>) -> Loaded {
+    byob_tools::register_builtins_with(tools, artifact_types);
 
     let paths = byob_store::Paths::resolve();
     // run_command / run_python (+ install_packages with Nix or pixi, else
@@ -65,7 +66,7 @@ pub fn load(tools: &mut Registry, linked: Vec<PathBuf>) -> Loaded {
         Err(e) => log::warn!("no config folder ({e}); only --plugin folders are loaded"),
     }
 
-    let mut prompt = byob_tools::artifact::PROMPT.to_owned();
+    let mut prompt = artifact_types.prompt();
     if let Some(p) = exec_prompt {
         prompt.push_str("\n\n");
         prompt.push_str(&p);

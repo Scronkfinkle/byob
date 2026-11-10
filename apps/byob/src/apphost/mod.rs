@@ -75,7 +75,7 @@ struct App {
 
 impl App {
     fn new(source: &str) -> Self {
-        let html = byob_server::artifact::wrap_html(source);
+        let html = byob_tools::artifact_types::html_app::wrap_html(source);
         let state = if html.len() > wire::MAX_HTML { State::Stopped("It's too large to run here.".into()) } else { State::Live };
         Self {
             helper: None,
@@ -686,7 +686,7 @@ mod tests {
     fn drive(path: &std::path::Path, html: &str, inputs: &[Input]) -> (Vec<String>, wire::Frame) {
         let mut h = helper::Helper::spawn(path, || {}).unwrap();
         h.send(Request::Load(Box::new(wire::Load {
-            html: byob_server::artifact::wrap_html(&format!("{html}{REPORT_JS}")),
+            html: byob_tools::artifact_types::html_app::wrap_html(&format!("{html}{REPORT_JS}")),
             theme: wire::Theme::default(),
             viewport: Viewport { width: 400, height: 300, scale: 1.0 },
         })));

@@ -141,6 +141,9 @@ pub struct EngineConfig {
     pub plugins: Option<PluginsConfig>,
     /// Engine-side handlers of the plugin channel ([`ClientMsg::Plugin`]), by plugin id.
     pub channels: PluginChannels,
+    /// Artifact types (content type, file names, prompt guidance, checks, serving). Shared:
+    /// hand the same registry to the artifact tools (`byob_tools::register_builtins_with`).
+    pub artifact_types: byob_tools::ArtifactTypes,
 }
 
 impl EngineConfig {
@@ -171,6 +174,7 @@ impl EngineConfig {
             envs: None,
             plugins: None,
             channels: PluginChannels::default(),
+            artifact_types: byob_tools::ArtifactTypes::builtin(),
         }
     }
 }
@@ -260,6 +264,7 @@ struct ManualDone {
 pub struct EngineHandle {
     inbox: Sender<Input>,
     next_id: Arc<std::sync::atomic::AtomicU64>,
+    artifact_types: byob_tools::ArtifactTypes,
 }
 
 impl EngineHandle {
@@ -275,9 +280,15 @@ impl EngineHandle {
         let config = test_store::applied(config);
         let store = open_store(&config).map_err(std::io::Error::other)?;
         let (inbox, rx) = channel();
+        let artifact_types = config.artifact_types.clone();
         let engine = Engine::new(config, store, inbox.clone());
         thread::Builder::new().name("byob-engine".into()).spawn(move || run(engine, rx))?;
-        Ok(Self { inbox, next_id: Arc::default() })
+        Ok(Self { inbox, next_id: Arc::default(), artifact_types })
+    }
+
+    /// The engine's artifact types (the server serves versions by them).
+    pub fn artifact_types(&self) -> &byob_tools::ArtifactTypes {
+        &self.artifact_types
     }
 
     /// The workspace folder of `chat`, or `None` if there is no such chat (or the engine
@@ -463,6 +474,7 @@ struct Engine {
     provisional: BTreeMap<String, String>,
     /// Probed endpoint capabilities (see [`adapt`]).
     endpoints: adapt::Endpoints,
+    artifact_types: byob_tools::ArtifactTypes,
     /// Files being uploaded, and finished uploads that may be attached.
     uploads: attachments::Uploads,
     compaction: CompactOptions,
@@ -587,6 +599,7 @@ impl Engine {
             turns: BTreeMap::new(),
             tools,
             system_prompt: config.system_prompt,
+            artifact_types: config.artifact_types,
             pending: BTreeMap::new(),
             step_ids: Arc::default(),
             journals: steps::Journals::default(),
@@ -1152,10 +1165,11 @@ impl Engine {
             return;
         };
         let workspace = self.client_workspace(id);
+        let types = self.artifact_types.clone();
         let Some(client) = self.clients.get(&id) else { return };
         let (tx, wake) = (client.tx.clone(), Arc::clone(&client.wake));
         let spawned = thread::Builder::new().name("byob-artifact".into()).spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| attachments::artifact_for_client(&workspace, &chat, &artifact, version)))
+            let result = catch_unwind(AssertUnwindSafe(|| attachments::artifact_for_client(&types, &workspace, &chat, &artifact, version)))
                 .unwrap_or_else(|_| Err("internal error while loading".into()));
             let (data, error) = match result {
                 Ok(bytes) => (Some(byob_protocol::media::encode(&bytes)), None),
@@ -1489,8 +1503,9 @@ impl Engine {
         };
         let tool_set = turn::ToolSet::new(turn_tools);
         let (history, ids, prior, workspace, first) = {
+            let types = self.artifact_types.clone();
             let live = self.live(&chat)?;
-            let system_prompt = system_prompt(&base_prompt, live);
+            let system_prompt = system_prompt(&base_prompt, live, &types);
             let (history, ids) = compact::history(&live.entries, latest(live), Some(&model_text), &system_prompt);
             let prior = live.entries.last().map_or(0, |e| e.id);
             (history, ids, prior, Arc::clone(&live.workspace), live.entries.is_empty())
@@ -1656,9 +1671,10 @@ impl Engine {
         let plan = self.endpoints.plan_with(&settings.inference, settings.effective.tool_mode.value);
         let specs = turn::specs(&self.tools);
         let base_prompt = self.prompt_with(&settings.effective, self.ext_prompts.get(&chat).map_or("", String::as_str));
+        let types = self.artifact_types.clone();
         let (messages, through) = match self.live(&chat) {
             Ok(live) => {
-                let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base_prompt, live));
+                let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base_prompt, live, &types));
                 (messages, live.entries.last().map_or(0, |e| e.id))
             }
             Err(e) => return error(e),
@@ -1760,7 +1776,7 @@ impl Engine {
         let compaction = self.compact_options(&settings.effective);
         let (context_used, estimated) = live.tally.context.unwrap_or_else(|| {
             let base = self.prompt_with(&settings.effective, self.ext_prompts.get(chat).map_or("", String::as_str));
-            let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base, live));
+            let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base, live, &self.artifact_types));
             (u64::try_from(plan.raw_tokens(&messages, &turn::specs(&self.tools))).unwrap_or(u64::MAX), true)
         });
         let t = &live.tally;
@@ -1936,8 +1952,8 @@ impl Engine {
 }
 
 /// The system prompt of a chat's turns: later turns must know its artifacts by id.
-fn system_prompt(base: &str, live: &Live) -> String {
-    let listed = artifact::prompt_list(&live.artifacts);
+fn system_prompt(base: &str, live: &Live, types: &byob_tools::ArtifactTypes) -> String {
+    let listed = artifact::prompt_list(types, &live.artifacts);
     if listed.is_empty() { base.to_owned() } else { format!("{base}\n\n{listed}") }
 }
 

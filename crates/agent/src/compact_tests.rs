@@ -146,6 +146,7 @@ fn engine(url: String, compaction: CompactOptions, tools: bool, paths: Option<Pa
         envs: None,
         plugins: None,
         channels: Default::default(),
+        artifact_types: Default::default(),
     };
     EngineHandle::spawn_with(config).unwrap()
 }

@@ -434,7 +434,7 @@ fn run() -> Result<(), String> {
     let saved_theme = theme_kind(saved.settings.theme);
     let themes_dir = config.paths.as_ref().map(Paths::themes_dir);
     let plugins = args.plugins.clone();
-    let extra = extensions::load(&mut config.tools, plugins);
+    let extra = extensions::load(&mut config.tools, &config.artifact_types, plugins);
     if !extra.prompt.is_empty() {
         config.system_prompt = format!("{}\n\n{}", config.system_prompt, extra.prompt);
     }

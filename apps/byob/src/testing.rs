@@ -50,12 +50,14 @@ pub enum Command {
     ExpandAll,
     /// Maximize the pane, or restore it.
     Maximize,
+    /// Bring the pane's next tab to the front.
+    NextTab,
     /// Let this many seconds pass before the next command.
     Wait(u64),
 }
 
 impl Command {
-    pub const NAMES: &'static str = "open-all, toggle-pane, collapse-all, expand-all, maximize, wait:SECONDS";
+    pub const NAMES: &'static str = "open-all, toggle-pane, collapse-all, expand-all, maximize, next-tab, wait:SECONDS";
 
     pub fn parse(s: &str) -> Option<Self> {
         if let Some(n) = s.strip_prefix("wait:") {
@@ -67,6 +69,7 @@ impl Command {
             "collapse-all" => Self::CollapseAll,
             "expand-all" => Self::ExpandAll,
             "maximize" => Self::Maximize,
+            "next-tab" => Self::NextTab,
             _ => return None,
         })
     }
@@ -79,6 +82,7 @@ impl Command {
             Self::CollapseAll => a.minimize_all(true),
             Self::ExpandAll => a.minimize_all(false),
             Self::Maximize => a.toggle_maximized(),
+            Self::NextTab => a.next_tab(),
             Self::Wait(_) => {}
         }
     }

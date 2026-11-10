@@ -1,8 +1,13 @@
-//! Artifacts in the UI: a card where a step made or changed one (title, kind, version,
-//! Show / Open / Export, a versions menu), and the artifact pane beside the conversation
-//! (full screen on narrow windows) showing the selected one large — markdown with a
-//! Preview/Source switch, charts natively, images, text as source with Copy, and HTML apps
-//! through the [`AppView`] seam.
+//! Artifacts in the UI: a card where a step made or changed one (title, type, version,
+//! Show / Export, a versions menu), and the artifact pane beside the conversation (full
+//! screen on narrow windows) showing the selected one large, with Copy for text and a
+//! Preview/Source switch for types that render their source.
+//!
+//! What is drawn inside the card and the pane (and extra buttons such as an app's Open)
+//! comes from the artifact's renderer, picked by its content type in the
+//! [`ArtifactRenderers`] registry (see [`crate::renderers`]): markdown, charts, images, HTML
+//! apps (through the [`AppView`] web surface) and the text-source fallback are registered
+//! there like anyone else's.
 //!
 //! The pane has tabs (closing one keeps the artifact) and collapses to a rail of icons on
 //! the right (a floating button with a count on phones); Ctrl+Backslash (Cmd on macOS) toggles it.
@@ -10,7 +15,7 @@
 //! Restore to go back; per session, and the running app keeps its state). Any
 //! artifact can be minimized to a one-line chip, in the chat and the pane; "Collapse all"
 //! in the header does that for the whole chat. Minimized apps, background tabs and apps
-//! behind the rail are [held](AppView::hold): they keep running without rendering for a
+//! behind the rail (anything on the web surface) are [held](AppView::hold): they keep running without rendering for a
 //! while, then pause. What is open and minimized is kept per chat ([`crate::pane`]).
 //!
 //! The engine sends the chat's artifacts with the transcript and an update whenever a
@@ -19,22 +24,15 @@
 
 use std::collections::HashMap;
 
-use byob_protocol::media::{self, ChartSpec};
-use byob_protocol::{Artifact, ArtifactKind, ArtifactRef, ClientMsg, NoticeLevel, ServerMsg};
+use byob_protocol::media;
+use byob_protocol::{Artifact, ArtifactRef, ClientMsg, NoticeLevel, ServerMsg};
 use egui::{RichText, Stroke, vec2};
 
-use crate::appview::{self, AppDoc, AppStatus, AppView};
+use crate::appview::{self, AppStatus, AppView};
 use crate::export::Exports;
-use crate::markdown;
 use crate::pane::{Pane, PanePrefs, Shown as PaneShown};
+use crate::renderers::{ArtifactCx, ArtifactRenderer, ArtifactRenderers, File, Files, Links, Place, RendererCaps, Request};
 use crate::theme::Tokens;
-
-/// Tallest an image or chart preview is drawn in a card.
-const CARD_PREVIEW_HEIGHT: f32 = 260.0;
-/// Lines of text shown in a card.
-const CARD_LINES: usize = 4;
-/// Versions kept in memory before old ones are dropped (they are fetched again if needed).
-const MAX_FILES: usize = 64;
 /// Width of the collapsed pane's rail.
 const RAIL_WIDTH: f32 = 46.0;
 /// Size of a rail icon.
@@ -50,19 +48,6 @@ pub const MAXIMIZE_SHORTCUT: egui::KeyboardShortcut = egui::KeyboardShortcut::ne
 /// starting a server if needed. The browser client uses its own origin.
 pub type LinkBase = Box<dyn Fn() -> Result<String, String>>;
 
-enum Shown {
-    Text { text: String, doc: Option<Box<markdown::Doc>> },
-    Chart(Box<ChartSpec>),
-    Image(egui::TextureHandle),
-    Bad(String),
-}
-
-enum File {
-    Requested,
-    Ready { bytes: Vec<u8>, shown: Option<Shown> },
-    Failed(String),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Action {
     Select {
@@ -77,11 +62,8 @@ enum Action {
         id: String,
         version: u32,
     },
-    SendError {
-        id: String,
-        version: u32,
-        error: String,
-    },
+    /// Send the model a message (a renderer asked, e.g. an app's "Send error to byob").
+    Send(String),
     /// Collapse the pane to the rail (on phones: back to the chat).
     Close,
     Expand,
@@ -100,16 +82,19 @@ enum Action {
 pub struct Artifacts {
     chat: Option<String>,
     list: Vec<Artifact>,
-    files: HashMap<(String, u32), File>,
-    /// Insertion order of `files`, for dropping the oldest.
-    order: Vec<(String, u32)>,
+    files: Files,
+    /// Content type → renderer.
+    renderers: ArtifactRenderers,
+    /// What renderers asked for this frame.
+    requests: Vec<Request>,
     /// Tabs, minimized artifacts, open/collapsed.
     pane: Pane,
     /// A version picked for a tab (else the latest).
     versions: HashMap<String, u32>,
     /// This frame is narrow (phones).
     narrow: bool,
-    /// The HTML app the pane drew this frame (the other tabs are held in the background).
+    /// The web-surface artifact the pane drew this frame (the other tabs are held in the
+    /// background).
     drawn_app: Option<String>,
     /// Markdown shows its source instead of the preview.
     source: bool,
@@ -136,8 +121,9 @@ impl Default for Artifacts {
         Self {
             chat: None,
             list: Vec::new(),
-            files: HashMap::new(),
-            order: Vec::new(),
+            files: Files::default(),
+            renderers: ArtifactRenderers::default(),
+            requests: Vec::new(),
             pane: Pane::default(),
             versions: HashMap::new(),
             narrow: false,
@@ -165,6 +151,11 @@ impl Artifacts {
 
     pub fn set_link_base(&mut self, base: LinkBase) {
         self.link_base = Some(base);
+    }
+
+    /// Register renderers for more content types (or replace byob's own).
+    pub fn renderers_mut(&mut self) -> &mut ArtifactRenderers {
+        &mut self.renderers
     }
 
     /// What this device remembers about the pane (to store).
@@ -204,6 +195,15 @@ impl Artifacts {
         self.pane.expand(self.narrow);
     }
 
+    /// Bring the tab after the one in front to the front (scripted runs).
+    pub fn next_tab(&mut self) {
+        let tabs = self.pane.tabs();
+        let next = tabs.iter().position(|t| Some(t.as_str()) == self.pane.active()).map_or(0, |i| i.saturating_add(1)) % tabs.len().max(1);
+        if let Some(id) = tabs.get(next).cloned() {
+            self.actions.push(Action::Activate(id));
+        }
+    }
+
     /// Apply a server message; returns whether it was one of ours.
     pub fn apply(&mut self, msg: &ServerMsg) -> bool {
         match msg {
@@ -211,7 +211,6 @@ impl Artifacts {
                 if *chat != self.chat {
                     self.chat.clone_from(chat);
                     self.files.clear();
-                    self.order.clear();
                     self.versions.clear();
                     self.pane.switch_chat(chat.as_deref());
                     self.pending_export.clear();
@@ -229,17 +228,17 @@ impl Artifacts {
             }
             ServerMsg::ArtifactFile { id, version, data, error } => {
                 let key = (id.clone(), *version);
-                if !matches!(self.files.get(&key), Some(File::Requested)) {
+                if !matches!(self.files.map.get(&key), Some(File::Requested)) {
                     return true;
                 }
                 let file = match (data, error) {
                     (Some(data), _) => match media::decode(data) {
-                        Ok(bytes) => File::Ready { bytes, shown: None },
+                        Ok(bytes) => File::Ready { bytes, prepared: None },
                         Err(e) => File::Failed(e),
                     },
                     (None, e) => File::Failed(e.clone().unwrap_or_else(|| "not available".into())),
                 };
-                self.files.insert(key.clone(), file);
+                self.files.map.insert(key.clone(), file);
                 if let Some(i) = self.pending_export.iter().position(|k| *k == key) {
                     self.pending_export.remove(i);
                     self.export(&key.0, key.1);
@@ -252,7 +251,7 @@ impl Artifacts {
 
     /// Something is still being fetched (for scripted screenshots).
     pub fn loading(&self) -> bool {
-        self.files.values().any(|f| matches!(f, File::Requested))
+        self.files.map.values().any(|f| matches!(f, File::Requested))
     }
 
     /// The chat in view has no artifacts.
@@ -296,57 +295,55 @@ impl Artifacts {
         Some((a.clone(), n))
     }
 
-    /// Running / paused, for HTML apps the view runs.
+    /// What draws `a`, and what it is.
+    fn renderer(&self, a: &Artifact) -> (std::rc::Rc<dyn ArtifactRenderer>, RendererCaps) {
+        let r = self.renderers.of(a);
+        let caps = r.caps();
+        (r, caps)
+    }
+
+    /// Running / paused, for artifacts on the web surface.
     fn app_status(&self, a: &Artifact, version: u32) -> AppStatus {
-        if a.kind == ArtifactKind::Html { self.view.status(&a.id, version) } else { AppStatus::Unknown }
+        if self.renderer(a).1.web_surface { self.view.status(&a.id, version) } else { AppStatus::Unknown }
     }
 
     /// The file of a version, asking for it the first time.
     fn file(&mut self, id: &str, version: u32) -> &mut File {
-        let key = (id.to_owned(), version);
-        if !self.files.contains_key(&key) {
-            if self.order.len() >= MAX_FILES {
-                let old = self.order.remove(0);
-                self.files.remove(&old);
-            }
-            self.order.push(key.clone());
-            self.outbox.push(ClientMsg::GetArtifact { id: id.to_owned(), version });
-        }
-        self.files.entry(key).or_insert(File::Requested)
+        self.files.fetch(&mut self.outbox, id, version)
     }
 
-    /// The version's content, converted for display.
-    fn shown(&mut self, ctx: &egui::Context, a: &Artifact, version: u32) -> Result<&mut Shown, Option<String>> {
-        match self.file(&a.id, version) {
-            File::Requested => Err(None),
-            File::Failed(e) => Err(Some(e.clone())),
-            File::Ready { bytes, shown } => match shown.get_or_insert_with(|| convert(ctx, a, version, bytes)) {
-                Shown::Bad(e) => Err(Some(e.clone())),
-                s => Ok(s),
-            },
-        }
+    fn links(&self) -> Links<'_> {
+        Links { chat: self.chat.as_deref(), base: self.link_base.as_ref(), theme: &self.theme }
     }
 
-    /// The URL an HTML app version is served at, theme in the hash.
+    /// The URL a version is served at, theme in the hash.
     fn app_url(&self, id: &str, version: u32) -> Result<String, String> {
-        let chat = self.chat.as_deref().ok_or("this chat has no artifacts yet")?;
-        let base = if cfg!(target_arch = "wasm32") {
-            String::new()
-        } else {
-            match &self.link_base {
-                Some(f) => f()?,
-                None => return Err("opening artifacts isn't available here".into()),
-            }
+        self.links().url(id, version)
+    }
+
+    /// Run `f` with what a renderer draws `a` (version `version`) with.
+    fn with_cx<R>(&mut self, t: &Tokens, a: &Artifact, version: u32, id: egui::Id, f: impl FnOnce(&mut ArtifactCx<'_>) -> R) -> R {
+        let mut cx = ArtifactCx {
+            t,
+            artifact: a,
+            version,
+            id,
+            files: &mut self.files,
+            outbox: &mut self.outbox,
+            web: &mut *self.view,
+            requests: &mut self.requests,
+            links: Links { chat: self.chat.as_deref(), base: self.link_base.as_ref(), theme: &self.theme },
         };
-        Ok(format!("{base}/artifact/{chat}/{id}/{version}{}", appview::theme_hash(&self.theme)))
+        f(&mut cx)
     }
 
     fn export(&mut self, id: &str, version: u32) {
         let Some(a) = self.get(id).cloned() else { return };
-        match self.files.get(&(id.to_owned(), version)) {
+        match self.files.map.get(&(id.to_owned(), version)) {
             Some(File::Ready { bytes, .. }) => {
                 let name = if version == a.latest().map_or(version, |l| l.n) { a.filename.clone() } else { versioned_name(&a.filename, version) };
-                self.exports.save(&self.ctx, &name, a.kind.mime(&a.filename), bytes.clone());
+                let mime = byob_protocol::artifact::mime(a.content_type());
+                self.exports.save(&self.ctx, &name, &mime, bytes.clone());
             }
             Some(File::Failed(e)) => self.notices.push((NoticeLevel::Error, format!("Couldn't export {}: {e}", a.filename))),
             Some(File::Requested) | None => {
@@ -390,13 +387,7 @@ impl Artifacts {
                 Ok(url) => self.exports.open(ctx, &url),
                 Err(e) => self.notices.push((NoticeLevel::Error, e)),
             },
-            Action::SendError { id, version, error } => {
-                let title = self.get(&id).map_or(id.clone(), |a| a.title.clone());
-                let text = format!(
-                    "The artifact \"{title}\" (id {id}, version {version}) shows this error when it runs:\n```\n{error}\n```\nPlease fix it with update_artifact."
-                );
-                self.outbox.push(ClientMsg::SendMessage { text, attachments: Vec::new() });
-            }
+            Action::Send(text) => self.outbox.push(ClientMsg::SendMessage { text, attachments: Vec::new() }),
         }
     }
 
@@ -437,16 +428,22 @@ impl Artifacts {
     /// Per frame, after drawing: run what the user asked for, keep background tabs alive,
     /// sync the app overlay.
     pub fn end_frame(&mut self, ctx: &egui::Context) {
+        for r in std::mem::take(&mut self.requests) {
+            self.actions.push(match r {
+                Request::Open { id, version } => Action::Open { id, version },
+                Request::Send(text) => Action::Send(text),
+            });
+        }
         for a in std::mem::take(&mut self.actions) {
             self.handle(ctx, a);
         }
-        // Apps in tabs the pane didn't draw (behind another tab, or the rail) keep running
-        // for a while without rendering.
+        // Web-surface artifacts in tabs the pane didn't draw (behind another tab, or the
+        // rail) keep running for a while without rendering.
         for id in self.pane.tabs().to_vec() {
             if self.drawn_app.as_deref() == Some(id.as_str()) {
                 continue;
             }
-            if let Some((a, v)) = self.tab_artifact(&id).filter(|(a, _)| a.kind == ArtifactKind::Html) {
+            if let Some((a, v)) = self.tab_artifact(&id).filter(|(a, _)| self.renderer(a).1.web_surface) {
                 self.view.hold(&a.id, v);
             }
         }
@@ -595,6 +592,7 @@ impl Artifacts {
             return;
         }
         let note = a.version(version).map(|v| v.note.clone()).unwrap_or_default();
+        let (renderer, caps) = self.renderer(&a);
         let stroke = if selected { t.accent } else { t.border };
         egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, stroke)).corner_radius(t.round(8.0)).inner_margin(vec2(t.pad(10.0), t.pad(8.0))).show(
             ui,
@@ -602,11 +600,11 @@ impl Artifacts {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if minimize_button(ui, t, a.kind).clicked() {
+                        if minimize_button(ui, t, &caps).clicked() {
                             self.actions.push(Action::Minimize { id: a.id.clone(), minimized: true });
                         }
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            kind_badge(ui, t, a.kind);
+                            kind_badge(ui, t, &caps.label);
                             ui.add(egui::Label::new(RichText::new(&a.title).strong().color(t.text_strong)).truncate());
                             ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
                             if !note.is_empty() {
@@ -619,9 +617,8 @@ impl Artifacts {
                     if ui.button("Show").on_hover_text("Show it beside the chat").clicked() {
                         self.actions.push(Action::Select { id: a.id.clone(), version: Some(version) });
                     }
-                    if a.kind == ArtifactKind::Html && ui.button("Open").on_hover_text("Open the app in a browser tab").clicked() {
-                        self.actions.push(Action::Open { id: a.id.clone(), version });
-                    }
+                    let card_id = egui::Id::unique(("artifact-card", &a.id, version));
+                    self.with_cx(t, &a, version, card_id, |cx| renderer.actions(ui, cx, Place::Card));
                     if ui.button("Export").on_hover_text(format!("Save {}", a.filename)).clicked() {
                         self.actions.push(Action::Export { id: a.id.clone(), version });
                     }
@@ -642,7 +639,8 @@ impl Artifacts {
                         }
                     }
                 });
-                self.card_preview(ui, t, &a, version);
+                let id = egui::Id::unique(("artifact-card", &a.id, version));
+                self.with_cx(t, &a, version, id, |cx| renderer.card(ui, cx));
             },
         );
     }
@@ -650,7 +648,8 @@ impl Artifacts {
     /// A minimized artifact: one line with its kind, title, version and (apps) whether it
     /// still runs, and Restore. Keeps a running app alive in the background.
     fn chip(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32, selected: bool, in_chat: bool) {
-        if a.kind == ArtifactKind::Html {
+        let caps = self.renderer(a).1;
+        if caps.web_surface {
             self.view.hold(&a.id, version);
         }
         let status = self.app_status(a, version);
@@ -670,7 +669,7 @@ impl Artifacts {
                             self.actions.push(Action::Select { id: a.id.clone(), version: Some(version) });
                         }
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            kind_badge(ui, t, a.kind);
+                            kind_badge(ui, t, &caps.label);
                             ui.add(egui::Label::new(RichText::new(&a.title).color(t.text_strong)).truncate()).on_hover_text(&a.filename);
                             ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
                             if let Some(label) = status.label() {
@@ -682,58 +681,6 @@ impl Artifacts {
                 });
             },
         );
-    }
-
-    fn card_preview(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32) {
-        if a.kind == ArtifactKind::Html {
-            let size = a.version(version).map_or(0, |v| v.size);
-            if self.view.live_cards() {
-                let source = match self.file(&a.id, version) {
-                    File::Ready { bytes, .. } => Some(String::from_utf8_lossy(bytes).into_owned()),
-                    _ => None,
-                };
-                if let Some(source) = source {
-                    ui.add_space(4.0);
-                    let doc = AppDoc { id: &a.id, url: None, title: &a.title, version, size, source: Some(&source) };
-                    if let Some(resp) = self.view.card(ui, t, &doc) {
-                        if resp.open {
-                            self.actions.push(Action::Open { id: a.id.clone(), version });
-                        }
-                        return;
-                    }
-                }
-            }
-            ui.label(RichText::new(format!("Interactive app · {}", media::size_label(size))).small().color(t.text_dim));
-            return;
-        }
-        let ctx = ui.ctx().clone();
-        let key = egui::Id::unique(("artifact-card", &a.id, version));
-        match self.shown(&ctx, a, version) {
-            Err(None) => {
-                crate::theme::spinner(ui, t, Some(12.0));
-            }
-            Err(Some(e)) => {
-                ui.label(RichText::new(format!("Couldn't show it: {e}")).small().color(t.text_dim));
-            }
-            Ok(Shown::Bad(_)) => {}
-            Ok(Shown::Chart(spec)) => {
-                ui.add_space(4.0);
-                crate::chart::show(ui, t, spec, key);
-            }
-            Ok(Shown::Image(tex)) => image(ui, t, tex, CARD_PREVIEW_HEIGHT),
-            Ok(Shown::Text { text, .. }) => {
-                let markdown = a.kind == ArtifactKind::Markdown;
-                for line in text.lines().filter(|l| !l.trim().is_empty()).take(CARD_LINES) {
-                    // Markdown reads better without its markers.
-                    let line = if markdown { line.trim_start_matches(['#', '>', ' ']) } else { line };
-                    let mut rt = RichText::new(line).small().color(t.text_dim);
-                    if !markdown {
-                        rt = rt.monospace();
-                    }
-                    ui.add(egui::Label::new(rt).truncate());
-                }
-            }
-        }
     }
 
     // ---- pane ---------------------------------------------------------------------------
@@ -751,7 +698,7 @@ impl Artifacts {
             ui.add_space(6.0);
             self.chip(ui, t, &a, version, false, false);
             ui.add_space(6.0);
-            let hint = if a.kind == ArtifactKind::Html {
+            let hint = if self.renderer(&a).1.web_surface {
                 "Minimized: the app keeps running in the background for a minute, then pauses (a snapshot is kept; restoring it after that starts it afresh)."
             } else {
                 "Minimized. Restore shows it in full here and in the chat."
@@ -759,39 +706,23 @@ impl Artifacts {
             ui.label(RichText::new(hint).small().color(t.text_faint));
             return;
         }
-        let ctx = ui.ctx().clone();
         let id = egui::Id::unique(("artifact-pane", &a.id, version));
-        if a.kind == ArtifactKind::Html {
-            self.app(ui, t, &a, version);
+        let (renderer, caps) = self.renderer(&a);
+        if caps.source_view && self.source {
+            let text = match self.file(&a.id, version) {
+                File::Ready { bytes, .. } => Some(String::from_utf8_lossy(bytes).into_owned()),
+                _ => None,
+            };
+            match text {
+                Some(text) => crate::renderers::source(ui, &text),
+                None => self.with_cx(t, &a, version, id, |cx| crate::renderers::text::Text.pane(ui, cx)),
+            }
             return;
         }
-        let source = self.source;
-        match self.shown(&ctx, &a, version) {
-            Err(None) => {
-                ui.centered_and_justified(|ui| crate::theme::spinner(ui, t, None));
-            }
-            Err(Some(e)) => {
-                ui.label(RichText::new(format!("Couldn't show {}: {e}", a.filename)).color(t.text_dim));
-            }
-            Ok(Shown::Bad(_)) => {}
-            Ok(Shown::Chart(spec)) => {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| crate::chart::show(ui, t, spec, id));
-            }
-            Ok(Shown::Image(tex)) => {
-                egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| image(ui, t, tex, f32::INFINITY));
-            }
-            Ok(Shown::Text { text, doc }) => match doc {
-                Some(doc) if !source => {
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| markdown::show(ui, t, doc, id));
-                }
-                _ => {
-                    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-                        let mut view = text.as_str();
-                        ui.add(egui::TextEdit::multiline(&mut view).code_editor().desired_width(f32::INFINITY));
-                    });
-                }
-            },
+        if caps.web_surface {
+            self.drawn_app = Some(a.id.clone());
         }
+        self.with_cx(t, &a, version, id, |cx| renderer.pane(ui, cx));
     }
 
     /// Back (phones) · the tabs … collapse to the rail.
@@ -864,14 +795,15 @@ impl Artifacts {
     }
 
     fn pane_header(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32, minimized: bool) {
-        // Title row: kind · title … minimize.
+        let (renderer, caps) = self.renderer(a);
+        // Title row: type · title … minimize.
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !minimized && minimize_button(ui, t, a.kind).clicked() {
+                if !minimized && minimize_button(ui, t, &caps).clicked() {
                     self.actions.push(Action::Minimize { id: a.id.clone(), minimized: true });
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    kind_badge(ui, t, a.kind);
+                    kind_badge(ui, t, &caps.label);
                     ui.add(egui::Label::new(RichText::new(&a.title).strong().size(t.text_size(15.0)).color(t.text_strong)).truncate())
                         .on_hover_text(&a.filename);
                 });
@@ -894,59 +826,22 @@ impl Artifacts {
             if let Some(n) = pick {
                 self.actions.push(Action::Select { id: a.id.clone(), version: Some(n) });
             }
-            if a.kind == ArtifactKind::Markdown {
+            if caps.source_view {
                 ui.selectable_value(&mut self.source, false, "Preview");
                 ui.selectable_value(&mut self.source, true, "Source");
             }
-            if a.kind == ArtifactKind::Html && ui.button("Open").on_hover_text("Open in a browser tab").clicked() {
-                self.actions.push(Action::Open { id: a.id.clone(), version });
-            }
+            let id = egui::Id::unique(("artifact-pane", &a.id, version));
+            self.with_cx(t, a, version, id, |cx| renderer.actions(ui, cx, Place::Pane));
             if ui.button("Export").on_hover_text(format!("Save {}", a.filename)).clicked() {
                 self.actions.push(Action::Export { id: a.id.clone(), version });
             }
-            if a.kind.is_text()
-                && let Some(File::Ready { bytes, .. }) = self.files.get(&(a.id.clone(), version))
+            if caps.text
+                && let Some(File::Ready { bytes, .. }) = self.files.map.get(&(a.id.clone(), version))
                 && ui.button("Copy").on_hover_text("Copy the file's text").clicked()
             {
                 ui.ctx().copy_text(String::from_utf8_lossy(bytes).into_owned());
             }
         });
-    }
-
-    fn app(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32) {
-        // The iframe loads the app by URL; the desktop renderer and the placeholder take the source.
-        let url = if self.view.wants_url() { self.app_url(&a.id, version).ok() } else { None };
-        let source = if self.view.wants_source() {
-            match self.file(&a.id, version) {
-                File::Ready { bytes, .. } => Some(String::from_utf8_lossy(bytes).into_owned()),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        let errors = self.view.errors();
-        if !errors.is_empty() {
-            egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, t.danger)).corner_radius(t.round(6.0)).inner_margin(t.pad(8.0)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(
-                    RichText::new(if errors.len() == 1 { "The app reported an error".to_owned() } else { format!("The app reported {} errors", errors.len()) })
-                        .color(t.danger),
-                );
-                for e in errors.iter().take(3) {
-                    ui.add(egui::Label::new(RichText::new(e).small().monospace().color(t.text)).truncate());
-                }
-                if ui.button("Send error to byob").on_hover_text("Ask byob to fix it").clicked() {
-                    self.actions.push(Action::SendError { id: a.id.clone(), version, error: errors.join("\n") });
-                }
-            });
-            ui.add_space(4.0);
-        }
-        let size = a.version(version).map_or(0, |v| v.size);
-        let doc = AppDoc { id: &a.id, url: url.as_deref(), title: &a.title, version, size, source: source.as_deref() };
-        self.drawn_app = Some(a.id.clone());
-        if self.view.show(ui, t, &doc).open {
-            self.actions.push(Action::Open { id: a.id.clone(), version });
-        }
     }
 }
 
@@ -981,8 +876,8 @@ fn maximize_button(ui: &mut egui::Ui, t: &Tokens) -> egui::Response {
     resp
 }
 
-fn minimize_button(ui: &mut egui::Ui, t: &Tokens, kind: ArtifactKind) -> egui::Response {
-    let tip = if kind == ArtifactKind::Html { "Minimize (it keeps running for a minute, then pauses)" } else { "Minimize to one line" };
+fn minimize_button(ui: &mut egui::Ui, t: &Tokens, caps: &RendererCaps) -> egui::Response {
+    let tip = if caps.web_surface { "Minimize (it keeps running for a minute, then pauses)" } else { "Minimize to one line" };
     ui.add(egui::Button::new(RichText::new("–").strong().color(t.text_dim)).frame(false)).on_hover_text(tip)
 }
 
@@ -1036,56 +931,27 @@ fn rail_icon(ui: &mut egui::Ui, t: &Tokens, a: &Artifact, active: bool, status: 
     resp
 }
 
-fn kind_badge(ui: &mut egui::Ui, t: &Tokens, kind: ArtifactKind) {
+fn kind_badge(ui: &mut egui::Ui, t: &Tokens, label: &str) {
     egui::Frame::new().fill(crate::theme::mix(t.accent, t.code_bg, 0.8)).corner_radius(t.round(4.0)).inner_margin(vec2(t.pad(5.0), t.pad(1.0))).show(
         ui,
         |ui| {
-            ui.label(RichText::new(kind.label().to_uppercase()).small().color(t.accent));
+            ui.label(RichText::new(label.to_uppercase()).small().color(t.accent));
         },
     );
-}
-
-fn image(ui: &mut egui::Ui, t: &Tokens, tex: &egui::TextureHandle, max_height: f32) {
-    let natural = tex.size_vec2();
-    if natural.x <= 0.0 || natural.y <= 0.0 {
-        return;
-    }
-    let scale = (ui.available_width() / natural.x).min(max_height / natural.y).min(1.0);
-    ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), natural * scale)).corner_radius(t.round(6.0)));
-    let _ = t;
-}
-
-fn convert(ctx: &egui::Context, a: &Artifact, version: u32, bytes: &[u8]) -> Shown {
-    match a.kind {
-        ArtifactKind::Image => match crate::media::decode_image(bytes) {
-            Ok(img) => Shown::Image(ctx.load_texture(format!("artifact-{}-{version}", a.id), img, egui::TextureOptions::LINEAR)),
-            Err(e) => Shown::Bad(e),
-        },
-        ArtifactKind::Chart => match ChartSpec::from_json(&String::from_utf8_lossy(bytes)) {
-            Ok(spec) => Shown::Chart(Box::new(spec)),
-            Err(e) => Shown::Bad(e),
-        },
-        ArtifactKind::Markdown => {
-            let text = String::from_utf8_lossy(bytes).into_owned();
-            let mut doc = markdown::Doc::default();
-            doc.update(&text, true);
-            Shown::Text { text, doc: Some(Box::new(doc)) }
-        }
-        ArtifactKind::Html | ArtifactKind::Text => Shown::Text { text: String::from_utf8_lossy(bytes).into_owned(), doc: None },
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byob_protocol::ArtifactVersion;
+    use crate::appview::AppDoc;
+    use byob_protocol::{ArtifactKind, ArtifactVersion};
 
     fn artifact(id: &str, kind: ArtifactKind, filename: &str, versions: &[u32]) -> Artifact {
         let versions = versions
             .iter()
             .map(|n| ArtifactVersion { n: *n, path: format!(".byob/artifacts/{id}/v{n}"), created_at: 0, note: format!("note {n}"), size: 3 })
             .collect();
-        Artifact { id: id.into(), kind, title: id.to_uppercase(), filename: filename.into(), versions }
+        Artifact { id: id.into(), kind, content_type: kind.content_type(filename).into(), title: id.to_uppercase(), filename: filename.into(), versions }
     }
 
     fn frame(ctx: &egui::Context, f: impl FnMut(&mut egui::Ui)) {
@@ -1123,7 +989,7 @@ mod tests {
         assert_eq!(s.take_output().0, vec![ClientMsg::GetArtifact { id: "notes".into(), version: 2 }]);
         // Another chat starts over.
         s.apply(&ServerMsg::Artifacts { chat: Some("c2".into()), artifacts: vec![] });
-        assert!(!s.is_open() && s.files.is_empty());
+        assert!(!s.is_open() && s.files.map.is_empty());
     }
 
     #[test]
@@ -1132,10 +998,10 @@ mod tests {
         s.apply(&ServerMsg::Artifacts { chat: Some("c".into()), artifacts: vec![artifact("p", ArtifactKind::Image, "p.png", &[1])] });
         // A file nobody asked for is ignored.
         s.apply(&ServerMsg::ArtifactFile { id: "p".into(), version: 1, data: Some(media::encode(b"x")), error: None });
-        assert!(s.files.is_empty());
+        assert!(s.files.map.is_empty());
         let _ = s.file("p", 1);
         s.apply(&ServerMsg::ArtifactFile { id: "p".into(), version: 1, data: Some("!!".into()), error: None });
-        assert!(matches!(s.files.get(&("p".into(), 1)), Some(File::Failed(_))));
+        assert!(matches!(s.files.map.get(&("p".into(), 1)), Some(File::Failed(_))));
         let ctx = egui::Context::default();
         let t = Tokens::light();
         s.handle(&ctx, Action::Select { id: "p".into(), version: None });
@@ -1154,7 +1020,9 @@ mod tests {
         s.handle(&ctx, Action::Export { id: "app".into(), version: 1 });
         assert_eq!(s.pending_export, vec![("app".to_owned(), 1)]);
         assert_eq!(s.take_output().0, vec![ClientMsg::GetArtifact { id: "app".into(), version: 1 }]);
-        s.handle(&ctx, Action::SendError { id: "app".into(), version: 2, error: "x is not defined".into() });
+        // What a renderer asks for is done after the frame.
+        s.requests.push(Request::Send(crate::renderers::html_app::error_report("APP", "app", 2, "x is not defined")));
+        s.end_frame(&ctx);
         let (out, _) = s.take_output();
         let [ClientMsg::SendMessage { text, .. }] = &out[..] else { panic!("{out:?}") };
         assert!(text.contains("\"APP\" (id app, version 2)") && text.contains("x is not defined") && text.contains("update_artifact"), "{text}");
@@ -1404,5 +1272,79 @@ mod tests {
         assert_eq!(versioned_name("loan.html", 2), "loan v2.html");
         assert_eq!(versioned_name("Sales.chart.json", 3), "Sales v3.chart.json");
         assert_eq!(versioned_name("noext", 1), "noext v1");
+    }
+
+    /// A renderer registered from outside draws its type in the card and the pane, adds
+    /// its buttons, gets the bytes, and with `web_surface` is kept alive like an HTML app;
+    /// a type nobody registered still shows (as its source).
+    #[test]
+    fn a_registered_renderer_is_used() {
+        use crate::renderers::{ArtifactCx, ArtifactRenderer, Fetch, Place, RendererCaps};
+        type Log = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
+        struct Sheet(Log);
+        impl ArtifactRenderer for Sheet {
+            fn caps(&self) -> RendererCaps {
+                RendererCaps { label: "sheet".into(), text: true, source_view: true, web_surface: true }
+            }
+            fn card(&self, _ui: &mut egui::Ui, cx: &mut ArtifactCx<'_>) {
+                let rows = match cx.prepared(|b| Ok(String::from_utf8_lossy(b).lines().count())) {
+                    Fetch::Ready(n) => *n,
+                    _ => 0,
+                };
+                self.0.borrow_mut().push(format!("card {} {rows} rows", cx.artifact.id));
+            }
+            fn pane(&self, _ui: &mut egui::Ui, cx: &mut ArtifactCx<'_>) {
+                self.0.borrow_mut().push(format!("pane {}", cx.artifact.id));
+            }
+            fn actions(&self, _ui: &mut egui::Ui, cx: &mut ArtifactCx<'_>, place: Place) {
+                self.0.borrow_mut().push(format!("actions {place:?}"));
+                if place == Place::Pane {
+                    cx.send_message("sum column B".into());
+                }
+            }
+        }
+        let log = Log::default();
+        let mut s = Artifacts::default();
+        let rec = Recorder::default();
+        let held = std::rc::Rc::clone(&rec.log);
+        s.set_app_view(Box::new(rec));
+        s.renderers_mut().register("application/vnd.acme.sheet+json", Sheet(std::rc::Rc::clone(&log)));
+        let mut sheet = artifact("budget", ArtifactKind::Text, "budget.sheet", &[1]);
+        sheet.content_type = "application/vnd.acme.sheet+json".into();
+        let mut odd = artifact("odd", ArtifactKind::Text, "odd.thing", &[1]);
+        odd.content_type = "application/x-nobody-knows".into();
+        s.apply(&ServerMsg::Artifacts { chat: Some("c".into()), artifacts: vec![sheet, odd] });
+        let ctx = egui::Context::default();
+        let t = Tokens::dark();
+        let refs = [ArtifactRef { id: "budget".into(), version: 1 }, ArtifactRef { id: "odd".into(), version: 1 }];
+        let run = |s: &mut Artifacts| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                s.begin_frame(ui.ctx(), &t, false);
+                s.side_panel(ui, &t);
+                egui::CentralPanel::default().show(ui, |ui| s.cards(ui, &t, &refs));
+            });
+            out.textures_delta.clear();
+            s.end_frame(&ctx);
+        };
+        run(&mut s);
+        for id in ["budget", "odd"] {
+            s.apply(&ServerMsg::ArtifactFile { id: id.into(), version: 1, data: Some(media::encode(b"a,1\nb,2\n")), error: None });
+        }
+        run(&mut s);
+        assert!(log.borrow().contains(&"card budget 2 rows".to_owned()) && log.borrow().contains(&"actions Card".to_owned()), "{:?}", log.borrow());
+        // In the pane: its view, its buttons, its requests; shown in another tab, it is held.
+        s.handle(&ctx, Action::Select { id: "budget".into(), version: None });
+        run(&mut s);
+        assert!(log.borrow().contains(&"pane budget".to_owned()) && log.borrow().contains(&"actions Pane".to_owned()));
+        let (out, _) = s.take_output();
+        assert!(out.iter().any(|m| matches!(m, ClientMsg::SendMessage { text, .. } if text == "sum column B")), "{out:?}");
+        assert_eq!(s.app_status(s.get("budget").unwrap(), 1), AppStatus::Running);
+        s.handle(&ctx, Action::Select { id: "odd".into(), version: None });
+        drain(&held);
+        run(&mut s);
+        assert!(drain(&held).contains(&"hold budget/1".to_owned()));
+        // The unknown type got the text fallback (nothing recorded for it, no crash).
+        assert!(!log.borrow().iter().any(|l| l.contains("odd")));
+        assert_eq!(s.app_status(s.get("odd").unwrap(), 1), AppStatus::Unknown);
     }
 }

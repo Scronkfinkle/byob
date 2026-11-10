@@ -11,12 +11,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
-use std::io::{Cursor, ErrorKind, Read as _, Write as _};
+use std::io::{ErrorKind, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use byob_llm::ChatMessage;
 use byob_protocol::media::{self, MAX_ATTACHMENTS, MAX_IMAGE_BYTES, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_BYTES};
 use byob_protocol::{Entry, MediaContent, MediaKind, MediaRef, ServerMsg};
+use byob_tools::images::fit as fit_image;
 use byob_tools::sandbox;
 
 /// Workspace folder uploads are saved in.
@@ -33,11 +34,8 @@ const MAX_CHART_FILE: u64 = 8 * 1024 * 1024;
 /// Images larger than this on disk are not decoded.
 const MAX_IMAGE_FILE: u64 = 64 * 1024 * 1024;
 /// Longest side of an image sent to clients, and to the model.
-const CLIENT_IMAGE_SIDE: u32 = 2048;
+const CLIENT_IMAGE_SIDE: u32 = byob_tools::artifact_types::image::CLIENT_IMAGE_SIDE;
 const MODEL_IMAGE_SIDE: u32 = 1024;
-/// Decoder limits: refuse decompression bombs.
-const MAX_DECODE_SIDE: u32 = 16_384;
-const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
 /// CSV preview given to the model.
 const PREVIEW_LINES: usize = 8;
 const PREVIEW_CHARS: usize = 2_000;
@@ -276,17 +274,14 @@ pub fn answer(transcript: &[Entry], workspace: &Path, path: &str) -> MediaConten
     if referenced(transcript, path) { load(workspace, path) } else { MediaContent::Error { message: "not part of this conversation".into() } }
 }
 
-/// One artifact version's bytes for a client: as saved, except an image too big for one
-/// message, which is downscaled. Runs off the engine thread.
-pub fn artifact_for_client(workspace: &Path, chat: &str, id: &str, version: u32) -> Result<Vec<u8>, String> {
+/// One artifact version's bytes for a client: as saved, unless too big for one message —
+/// then its type may make it fit (images are downscaled). Runs off the engine thread.
+pub fn artifact_for_client(types: &byob_tools::ArtifactTypes, workspace: &Path, chat: &str, id: &str, version: u32) -> Result<Vec<u8>, String> {
     let (artifact, bytes) = byob_tools::artifact::read_version(workspace, chat, id, version, byob_tools::artifact::MAX_FILE_BYTES)?;
     if bytes.len() <= byob_protocol::artifact::MAX_ARTIFACT_SEND_BYTES {
         return Ok(bytes);
     }
-    if artifact.kind == byob_protocol::ArtifactKind::Image {
-        return fit_image(bytes, CLIENT_IMAGE_SIDE, byob_protocol::artifact::MAX_ARTIFACT_SEND_BYTES).map(|(_, b)| b);
-    }
-    Err(format!("{} is too big to show here ({}); it's in the workspace", artifact.filename, media::size_label(bytes.len() as u64)))
+    types.of(&artifact).hooks.shrink_for_client(bytes, byob_protocol::artifact::MAX_ARTIFACT_SEND_BYTES).map_err(|e| format!("{}: {e}", artifact.filename))
 }
 
 fn read_capped(path: &Path, max: u64) -> Result<Vec<u8>, String> {
@@ -301,48 +296,6 @@ fn read_capped(path: &Path, max: u64) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     File::open(path).and_then(|f| f.take(max).read_to_end(&mut out)).map_err(|e| format!("{name}: {e}"))?;
     Ok(out)
-}
-
-fn sniff(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some("image/jpeg")
-    } else {
-        None
-    }
-}
-
-/// A PNG/JPEG no larger than `max_side` px and `max_bytes`: passed through when it already
-/// fits, else decoded (with limits), downscaled and re-encoded.
-fn fit_image(bytes: Vec<u8>, max_side: u32, max_bytes: usize) -> Result<(&'static str, Vec<u8>), String> {
-    let mime = sniff(&bytes).ok_or("not a PNG or JPEG image")?;
-    let mut reader = image::ImageReader::new(Cursor::new(&bytes));
-    reader.set_format(if mime == "image/png" { image::ImageFormat::Png } else { image::ImageFormat::Jpeg });
-    let (w, h) = reader.into_dimensions().map_err(|e| format!("unreadable image: {e}"))?;
-    if bytes.len() <= max_bytes && w <= max_side && h <= max_side {
-        return Ok((mime, bytes));
-    }
-    let mut reader = image::ImageReader::new(Cursor::new(&bytes));
-    reader.set_format(if mime == "image/png" { image::ImageFormat::Png } else { image::ImageFormat::Jpeg });
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_DECODE_SIDE);
-    limits.max_image_height = Some(MAX_DECODE_SIDE);
-    limits.max_alloc = Some(MAX_DECODE_ALLOC);
-    reader.limits(limits);
-    let img = reader.decode().map_err(|e| format!("unreadable image: {e}"))?;
-    let mut side = max_side;
-    loop {
-        let small = if img.width() > side || img.height() > side { img.thumbnail(side, side) } else { img.clone() };
-        let mut out = Vec::new();
-        let (fmt, mime) = if small.color().has_alpha() { (image::ImageFormat::Png, "image/png") } else { (image::ImageFormat::Jpeg, "image/jpeg") };
-        let small = if fmt == image::ImageFormat::Jpeg { image::DynamicImage::ImageRgb8(small.to_rgb8()) } else { small };
-        small.write_to(&mut Cursor::new(&mut out), fmt).map_err(|e| format!("can't re-encode image: {e}"))?;
-        if out.len() <= max_bytes || side <= 256 {
-            return Ok((mime, out));
-        }
-        side = side.saturating_mul(3) / 4;
-    }
 }
 
 /// An earlier user message as the model sees it again: the text plus which files came with it.
@@ -518,7 +471,7 @@ mod tests {
     fn png(w: u32, h: u32) -> Vec<u8> {
         let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]));
         let mut out = Vec::new();
-        image::DynamicImage::ImageRgb8(img).write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        image::DynamicImage::ImageRgb8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
         out
     }
 

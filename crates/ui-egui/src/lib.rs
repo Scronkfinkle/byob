@@ -16,6 +16,7 @@ pub mod media;
 pub mod pane;
 pub mod plugins;
 pub mod queue;
+pub mod renderers;
 mod settings;
 pub mod sidebar;
 pub mod slash;
@@ -146,6 +147,11 @@ impl ByobApp {
     /// Register renderers for more view kinds.
     pub fn views_mut(&mut self) -> &mut views::ViewRegistry {
         &mut self.views
+    }
+
+    /// Register renderers for more artifact content types (or replace byob's own).
+    pub fn artifact_renderers_mut(&mut self) -> &mut renderers::ArtifactRenderers {
+        self.artifacts.renderers_mut()
     }
 
     /// The engine lists `cap` (see `byob_protocol::version`); `false` until it said.
@@ -1005,6 +1011,7 @@ mod app_tests {
         let artifact = byob_protocol::artifact::Artifact {
             id: "a".into(),
             kind: byob_protocol::artifact::ArtifactKind::Markdown,
+            content_type: byob_protocol::artifact::TYPE_MARKDOWN.into(),
             title: "Notes".into(),
             filename: "notes.md".into(),
             versions: vec![byob_protocol::artifact::ArtifactVersion { n: 1, path: "a/v1.md".into(), created_at: 1, note: String::new(), size: 1 }],

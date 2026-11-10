@@ -1,10 +1,14 @@
 //! Artifacts: versioned files the model makes beside the conversation (see
 //! [`byob_protocol::artifact`]). `create_artifact`, `update_artifact` and `read_artifact`.
 //!
+//! What an artifact is and what is done with it per type (content checks, prompt guidance,
+//! how it is served) comes from the [`ArtifactTypes`] registry the tools are given; nothing
+//! here knows a particular type.
+//!
 //! Layout, in the chat's workspace:
 //!
 //! ```text
-//! .byob/artifacts/<id>/artifact.json   the index: chat, kind, title, file name, versions
+//! .byob/artifacts/<id>/artifact.json   the index: chat, type, title, file name, versions
 //! .byob/artifacts/<id>/v1.html         one file per version, never overwritten
 //! ```
 //!
@@ -21,6 +25,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use byob_protocol::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion, MediaKind, MediaRef, artifact::valid_id};
+
+use crate::artifact_types::{ArtifactType, ArtifactTypes};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -47,16 +53,6 @@ const MAX_LISTED: usize = 2000;
 const MAX_ADOPTED: usize = 4;
 /// Text returned by `read_artifact`.
 const MAX_READ_CHARS: usize = 200_000;
-
-/// What the system prompt says about artifacts (appended where the tools are registered).
-pub const PROMPT: &str = "Artifacts: when the user wants something to keep, reuse or export — a report, summary or document, an interactive tool, calculator, game or app, a data file — \
-make it an artifact with create_artifact rather than pasting it into the chat; it shows in a pane beside the conversation and can be exported. Pick the format that fits: \
-summary/report/notes → .md; interactive tool or app → a single-file .html app; data → .csv or .json; a chart of numbers → make_chart (or .html for a custom visualisation). \
-To change an artifact, call update_artifact with its id and small find/replace edits (read_artifact shows its current text) — never create a new one for a change. \
-HTML apps: one self-contained file with inline <style> and <script>; nothing from the network (no CDNs, web fonts, fetch or images by URL — all blocked); \
-style with the theme's CSS variables var(--byob-bg), var(--byob-surface), var(--byob-fg), var(--byob-muted), var(--byob-accent), var(--byob-on-accent), var(--byob-border), var(--byob-danger), var(--byob-success), var(--byob-warning), var(--byob-link), var(--byob-code-bg), var(--byob-code-fg), var(--byob-radius) \
-and var(--byob-chart-a) … var(--byob-chart-h) for data series (give fallbacks); \
-fit any container width (fluid layout, no fixed page widths). After making one, say in a sentence or two what it is; don't repeat its content.";
 
 /// The index file: an artifact and the chat it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +129,8 @@ pub fn load(workspace: &Path, id: &str) -> Result<Meta, String> {
         return Err(format!("artifact {id:?} has a broken index"));
     }
     meta.artifact.versions.retain(|v| version_file(workspace, &v.path).is_some());
+    // Indices written before content types (or with a broken one): what its kind stands for.
+    meta.artifact.content_type = meta.artifact.content_type().to_owned();
     if meta.artifact.versions.is_empty() {
         return Err(format!("artifact {id:?} no longer exists"));
     }
@@ -267,20 +265,18 @@ fn clip(s: &str, max: usize) -> String {
 }
 
 /// A model-given file name made safe, and the extension its versions are saved with.
-fn clean_filename(raw: &str, title: &str) -> Result<(String, String), String> {
+fn clean_filename(types: &ArtifactTypes, raw: &str, title: &str) -> Result<(String, String), String> {
     let last = raw.trim().rsplit(['/', '\\']).next().unwrap_or_default();
     let name: String = last.chars().filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ')).take(100).collect();
     let name = name.trim().trim_start_matches('.').to_owned();
     let lower = name.to_ascii_lowercase();
-    let ext = if lower.ends_with(".chart.json") {
-        "chart.json".to_owned()
+    let ext = if let Some(ext) = types.compound_extension(&lower) {
+        ext
     } else {
         match lower.rsplit_once('.') {
             Some((stem, ext)) if !stem.is_empty() && (1..=10).contains(&ext.len()) && ext.bytes().all(|b| b.is_ascii_alphanumeric()) => ext.to_owned(),
             _ => {
-                return Err(format!(
-                    "filename {raw:?} needs an extension that says what it is: .md for a document or summary, .html for an interactive app, .csv or .json for data, .chart.json for a chart"
-                ));
+                return Err(format!("filename {raw:?} {}", types.extension_hint()));
             }
         }
     };
@@ -296,38 +292,16 @@ fn write_version(dir: &Path, n: u32, ext: &str, content: &str) -> Result<PathBuf
     Ok(path)
 }
 
-/// Check (and for charts normalise) content for `kind`. Returns the text to save and notes
-/// for the model.
-fn check_content(kind: ArtifactKind, content: &str) -> Result<(String, String), String> {
+/// Check content for type `ty` (size, then the type's own check). Returns the text to save
+/// and notes for the model.
+fn check_content(ty: &ArtifactType, content: &str) -> Result<(String, String), String> {
     if content.len() > MAX_CONTENT_BYTES {
         return Err(format!("the content is too big ({} bytes; the limit is {MAX_CONTENT_BYTES})", content.len()));
     }
     if content.trim().is_empty() {
         return Err("the content is empty".into());
     }
-    match kind {
-        ArtifactKind::Image => {
-            Err("create_artifact writes text files; images that tools make (make_chart, run_python) show up as artifacts on their own".into())
-        }
-        ArtifactKind::Chart => {
-            let value: Value = serde_json::from_str(content).map_err(|e| format!("a .chart.json artifact must be a chart spec (JSON): {e}"))?;
-            let spec = byob_types::chart::validate(&value)?;
-            Ok((spec.to_json(), String::new()))
-        }
-        ArtifactKind::Html => {
-            let lower = content.to_ascii_lowercase();
-            let external = ["src=\"http", "src='http", "href=\"http", "href='http", "src=\"//", "@import url(", "url(http", "fetch(", "xmlhttprequest"]
-                .iter()
-                .any(|p| lower.contains(p));
-            let note = if external {
-                " Warning: it seems to load things from the network (a URL, fetch or a CDN). That is blocked in artifacts; inline everything instead."
-            } else {
-                ""
-            };
-            Ok((content.to_owned(), note.to_owned()))
-        }
-        ArtifactKind::Markdown | ArtifactKind::Text => Ok((content.to_owned(), String::new())),
-    }
+    ty.hooks.check(content)
 }
 
 fn chat_of<'a>(ctx: &ToolContext<'a>) -> Result<&'a str, String> {
@@ -341,11 +315,19 @@ fn adopt(workspace: &Path, chat: &str, media: &[MediaRef]) -> Vec<ArtifactRef> {
     for m in media.iter().filter(|m| m.kind != MediaKind::File).take(MAX_ADOPTED) {
         let kind = if m.kind == MediaKind::Chart { ArtifactKind::Chart } else { ArtifactKind::Image };
         let name = m.name().to_owned();
+        let content_type = kind.content_type(&name).to_owned();
         let title = name.strip_suffix(".chart.json").or_else(|| name.rsplit_once('.').map(|(s, _)| s)).unwrap_or(&name).to_owned();
         let size = version_file(workspace, &m.path).and_then(|p| std::fs::metadata(p).ok()).map_or(m.size, |md| md.len());
         let result = new_artifact_dir(workspace, &title).and_then(|(id, dir)| {
             let version = ArtifactVersion { n: 1, path: m.path.clone(), created_at: now_ms(), note: String::new(), size };
-            let artifact = Artifact { id: id.clone(), kind, title: clip(&title, MAX_TITLE_CHARS), filename: name.clone(), versions: vec![version] };
+            let artifact = Artifact {
+                id: id.clone(),
+                kind,
+                content_type: content_type.clone(),
+                title: clip(&title, MAX_TITLE_CHARS),
+                filename: name.clone(),
+                versions: vec![version],
+            };
             save(&dir, &Meta { chat: chat.to_owned(), artifact }).map(|()| id)
         });
         match result {
@@ -373,14 +355,14 @@ pub fn for_call(workspace: &Path, chat: &str, changes: &[FileChange], media: &[M
 }
 
 /// Lines for the system prompt naming the chat's artifacts, so later turns can update them.
-pub fn prompt_list(artifacts: &[Artifact]) -> String {
+pub fn prompt_list(types: &ArtifactTypes, artifacts: &[Artifact]) -> String {
     if artifacts.is_empty() {
         return String::new();
     }
     let mut out = String::from("Artifacts in this chat (update them by id):");
     for a in artifacts.iter().rev().take(30) {
         let v = a.latest().map_or(1, |v| v.n);
-        out.push_str(&format!("\n- {}: \"{}\" ({}, v{v}, {})", a.id, a.title, a.kind.label(), a.filename));
+        out.push_str(&format!("\n- {}: \"{}\" ({}, v{v}, {})", a.id, a.title, types.of(a).label, a.filename));
     }
     out
 }
@@ -388,9 +370,23 @@ pub fn prompt_list(artifacts: &[Artifact]) -> String {
 // ---------------------------------------------------------------------------------------
 // Tools
 
-pub struct CreateArtifact;
-pub struct UpdateArtifact;
-pub struct ReadArtifact;
+/// `create_artifact`, for the types in its registry.
+#[derive(Clone, Default)]
+pub struct CreateArtifact {
+    pub types: ArtifactTypes,
+}
+
+/// `update_artifact`.
+#[derive(Clone, Default)]
+pub struct UpdateArtifact {
+    pub types: ArtifactTypes,
+}
+
+/// `read_artifact`.
+#[derive(Clone, Default)]
+pub struct ReadArtifact {
+    pub types: ArtifactTypes,
+}
 
 #[derive(Deserialize)]
 struct CreateArgs {
@@ -435,10 +431,7 @@ impl Tool for CreateArtifact {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "create_artifact".into(),
-            description: "Make an artifact: a file shown beside the chat that the user can open, keep and export, with versions. \
-                The file name's extension decides what it is: .md (document, report, summary), .html (interactive single-file app: HTML+CSS+JS in one file, no network), \
-                .csv/.json/.py/… (data or code, shown as source), .chart.json (a chart spec). Returns the artifact's id for update_artifact."
-                .into(),
+            description: self.types.tool_description(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -465,29 +458,36 @@ impl Tool for CreateArtifact {
     }
 
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
-        match create(args, ctx) {
+        match create(&self.types, args, ctx) {
             Ok(out) => out,
             Err(e) => ToolOutput::err(e),
         }
     }
 }
 
-fn create(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
+fn create(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
     let chat = chat_of(ctx)?;
     let a: CreateArgs = parse_args(args)?;
     let title = clip(&a.title, MAX_TITLE_CHARS);
     if title.is_empty() {
         return Err("give the artifact a title".into());
     }
-    let (filename, ext) = clean_filename(&a.filename, &title)?;
-    let kind = ArtifactKind::for_filename(&filename);
-    let (content, warning) = check_content(kind, &a.content)?;
+    let (filename, ext) = clean_filename(types, &a.filename, &title)?;
+    let ty = types.for_filename(&filename);
+    let (content, warning) = check_content(&ty, &a.content)?;
     let (id, dir) = new_artifact_dir(ctx.workspace, &title)?;
     let result = (|| {
         let file = write_version(&dir, 1, &ext, &content)?;
         let root = sandbox::root(ctx.workspace)?;
         let version = ArtifactVersion { n: 1, path: rel(&root, &file), created_at: now_ms(), note: clip(&a.note, MAX_NOTE_CHARS), size: content.len() as u64 };
-        let artifact = Artifact { id: id.clone(), kind, title: title.clone(), filename: filename.clone(), versions: vec![version] };
+        let artifact = Artifact {
+            id: id.clone(),
+            kind: ty.kind,
+            content_type: ty.content_type.clone(),
+            title: title.clone(),
+            filename: filename.clone(),
+            versions: vec![version],
+        };
         save(&dir, &Meta { chat: chat.to_owned(), artifact })?;
         Ok::<_, String>(file)
     })();
@@ -500,7 +500,7 @@ fn create(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
     };
     let text = format!(
         "Created the {} artifact \"{title}\" (id {id}, version 1, {filename}). It shows beside the chat. To change it later, call update_artifact with id {id}.{warning}",
-        kind.label()
+        ty.label
     );
     Ok(ToolOutput { text, failed: false, changes: vec![FileChange::Created(file)] })
 }
@@ -539,7 +539,7 @@ impl Tool for UpdateArtifact {
     }
 
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
-        match update(args, ctx) {
+        match update(&self.types, args, ctx) {
             Ok(out) => out,
             Err(e) => ToolOutput::err(e),
         }
@@ -584,14 +584,14 @@ pub fn apply_edits(text: &str, edits: &[(String, String)]) -> Result<String, Str
     Ok(out)
 }
 
-fn update(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
+fn update(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
     let chat = chat_of(ctx)?;
     let a: UpdateArgs = parse_args(args)?;
     let mut meta = load_in_chat(ctx.workspace, chat, a.id.trim())?;
     let id = meta.artifact.id.clone();
-    let kind = meta.artifact.kind;
-    if kind == ArtifactKind::Image {
-        return Err(format!("{id} is an image; images can't be edited as text. Make a new one instead"));
+    let ty = types.of(&meta.artifact);
+    if !ty.text {
+        return Err(format!("{id} is not a text file ({}); it can't be edited as text. Make a new one instead", ty.label));
     }
     if meta.artifact.versions.len() >= MAX_VERSIONS {
         return Err(format!("{id} has too many versions; create a new artifact"));
@@ -613,12 +613,12 @@ fn update(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
             out
         }
     };
-    let (content, warning) = check_content(kind, &new_text)?;
+    let (content, warning) = check_content(&ty, &new_text)?;
     let (root, dir) = artifact_dir(ctx.workspace, &id)?;
     // Version numbers are never reused, even if a version was undone.
     let ext = latest.path.rsplit_once("/v").and_then(|(_, f)| f.split_once('.')).map(|(_, e)| e.to_owned()).unwrap_or_else(|| {
         let lower = meta.artifact.filename.to_ascii_lowercase();
-        if lower.ends_with(".chart.json") { "chart.json".to_owned() } else { lower.rsplit_once('.').map_or("txt".to_owned(), |(_, e)| e.to_owned()) }
+        types.compound_extension(&lower).unwrap_or_else(|| lower.rsplit_once('.').map_or("txt".to_owned(), |(_, e)| e.to_owned()))
     });
     let all = serde_json::from_slice::<Meta>(&read_capped(&dir.join(META_FILE), MAX_META_BYTES)?).map_err(|e| e.to_string())?;
     let n = all.artifact.versions.iter().map(|v| v.n).max().unwrap_or(0).saturating_add(1);
@@ -672,8 +672,9 @@ impl Tool for ReadArtifact {
                 Some(n) => meta.artifact.version(n).cloned().ok_or_else(|| format!("{} has no version {n}", meta.artifact.id))?,
                 None => meta.artifact.latest().cloned().ok_or("no versions")?,
             };
-            if !meta.artifact.kind.is_text() {
-                return Err(format!("{} is an image; it can't be read as text", meta.artifact.id));
+            let ty = self.types.of(&meta.artifact);
+            if !ty.text {
+                return Err(format!("{} is not a text file ({}); it can't be read as text", meta.artifact.id, ty.label));
             }
             let (_, bytes) = read_version(ctx.workspace, chat, &meta.artifact.id, v.n, MAX_FILE_BYTES)?;
             let text = String::from_utf8_lossy(&bytes);
@@ -719,7 +720,7 @@ mod tests {
     fn create_update_read_and_versions() {
         let d = tempfile::tempdir().unwrap();
         let ws = d.path();
-        let out = run_in(&CreateArtifact, ws, "c1", json!({"title": "Loan calculator", "filename": "loan.html", "content": HTML}));
+        let out = run_in(&CreateArtifact::default(), ws, "c1", json!({"title": "Loan calculator", "filename": "loan.html", "content": HTML}));
         assert!(!out.failed, "{}", out.text);
         let id = id_of(&out);
         assert!(id.starts_with("loan-calculator-"), "{id}");
@@ -729,7 +730,12 @@ mod tests {
         assert_eq!(a.versions[0].path, format!(".byob/artifacts/{id}/v1.html"));
         assert!(list(ws, "other").is_empty(), "artifacts are per chat");
 
-        let out = run_in(&UpdateArtifact, ws, "c1", json!({"id": id, "edits": [{"find": "background:red", "replace": "background:blue"}], "note": "blue"}));
+        let out = run_in(
+            &UpdateArtifact::default(),
+            ws,
+            "c1",
+            json!({"id": id, "edits": [{"find": "background:red", "replace": "background:blue"}], "note": "blue"}),
+        );
         assert!(!out.failed, "{}", out.text);
         assert_eq!(parse_version_path(&id_of_path(&out)).unwrap().version, 2);
         let (a, v2) = read_version(ws, "c1", &id, 2, MAX_FILE_BYTES).unwrap();
@@ -738,21 +744,21 @@ mod tests {
         // v1 is untouched
         assert_eq!(read_version(ws, "c1", &id, 1, MAX_FILE_BYTES).unwrap().1, HTML.as_bytes());
 
-        let read = run_in(&ReadArtifact, ws, "c1", json!({"id": id}));
+        let read = run_in(&ReadArtifact::default(), ws, "c1", json!({"id": id}));
         assert!(read.text.contains("version 2") && read.text.contains("background:blue"), "{}", read.text);
-        let other_chat = run_in(&ReadArtifact, ws, "c2", json!({"id": id}));
+        let other_chat = run_in(&ReadArtifact::default(), ws, "c2", json!({"id": id}));
         assert!(other_chat.failed);
-        assert!(run_in(&UpdateArtifact, ws, "c2", json!({"id": id, "content": "x"})).failed, "can't touch another chat's artifact");
+        assert!(run_in(&UpdateArtifact::default(), ws, "c2", json!({"id": id, "content": "x"})).failed, "can't touch another chat's artifact");
         assert!(read_version(ws, "c2", &id, 1, MAX_FILE_BYTES).is_err());
 
         // a whole-content rewrite
-        let out = run_in(&UpdateArtifact, ws, "c1", json!({"id": id, "content": "<p>new</p>"}));
+        let out = run_in(&UpdateArtifact::default(), ws, "c1", json!({"id": id, "content": "<p>new</p>"}));
         assert!(!out.failed, "{}", out.text);
         assert_eq!(load(ws, &id).unwrap().artifact.latest().unwrap().n, 3);
         // an undone version (file removed) drops out; numbers are never reused
         std::fs::remove_file(ws.join(format!(".byob/artifacts/{id}/v3.html"))).unwrap();
         assert_eq!(load(ws, &id).unwrap().artifact.latest().unwrap().n, 2);
-        let out = run_in(&UpdateArtifact, ws, "c1", json!({"id": id, "content": "<p>again</p>"}));
+        let out = run_in(&UpdateArtifact::default(), ws, "c1", json!({"id": id, "content": "<p>again</p>"}));
         assert!(!out.failed, "{}", out.text);
         assert_eq!(load(ws, &id).unwrap().artifact.versions.iter().map(|v| v.n).collect::<Vec<_>>(), vec![1, 2, 4]);
     }
@@ -763,7 +769,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let ws = d.path();
         for (chat, title) in [("c1", "One"), ("c1", "Two"), ("c2", "Other")] {
-            assert!(!run_in(&CreateArtifact, ws, chat, json!({"title": title, "filename": "a.md", "content": "# hi"})).failed);
+            assert!(!run_in(&CreateArtifact::default(), ws, chat, json!({"title": title, "filename": "a.md", "content": "# hi"})).failed);
         }
         assert_eq!(remove_chat(ws, "c1"), 2);
         assert!(list(ws, "c1").is_empty());
@@ -802,16 +808,16 @@ mod tests {
     fn failed_edits_write_nothing() {
         let d = tempfile::tempdir().unwrap();
         let ws = d.path();
-        let id = id_of(&run_in(&CreateArtifact, ws, "c", json!({"title": "T", "filename": "t.html", "content": HTML})));
-        let out = run_in(&UpdateArtifact, ws, "c", json!({"id": id, "edits": [{"find": "button", "replace": "x"}]}));
+        let id = id_of(&run_in(&CreateArtifact::default(), ws, "c", json!({"title": "T", "filename": "t.html", "content": HTML})));
+        let out = run_in(&UpdateArtifact::default(), ws, "c", json!({"id": id, "edits": [{"find": "button", "replace": "x"}]}));
         assert!(out.failed && out.text.contains("occurs 4 times"), "{}", out.text);
         assert!(out.changes.is_empty());
         assert_eq!(load(ws, &id).unwrap().artifact.versions.len(), 1);
-        let both = run_in(&UpdateArtifact, ws, "c", json!({"id": id, "content": "x", "edits": [{"find": "Go", "replace": "x"}]}));
+        let both = run_in(&UpdateArtifact::default(), ws, "c", json!({"id": id, "content": "x", "edits": [{"find": "Go", "replace": "x"}]}));
         assert!(both.failed && both.text.contains("not both"));
-        assert!(run_in(&UpdateArtifact, ws, "c", json!({"id": id})).failed);
-        assert!(run_in(&UpdateArtifact, ws, "c", json!({"id": "../../etc", "content": "x"})).failed);
-        let same = run_in(&UpdateArtifact, ws, "c", json!({"id": id, "edits": [{"find": "Go", "replace": "Go"}]}));
+        assert!(run_in(&UpdateArtifact::default(), ws, "c", json!({"id": id})).failed);
+        assert!(run_in(&UpdateArtifact::default(), ws, "c", json!({"id": "../../etc", "content": "x"})).failed);
+        let same = run_in(&UpdateArtifact::default(), ws, "c", json!({"id": id, "edits": [{"find": "Go", "replace": "Go"}]}));
         assert!(same.failed && same.text.contains("change nothing"));
     }
 
@@ -819,7 +825,7 @@ mod tests {
     fn create_validates_names_kinds_and_sizes() {
         let d = tempfile::tempdir().unwrap();
         let ws = d.path();
-        let c = |args: Value| run_in(&CreateArtifact, ws, "c", args);
+        let c = |args: Value| run_in(&CreateArtifact::default(), ws, "c", args);
         assert!(c(json!({"title": "T", "filename": "noext", "content": "x"})).text.contains("extension"));
         assert!(c(json!({"title": "T", "filename": "p.png", "content": "x"})).text.contains("images"));
         assert!(c(json!({"title": "", "filename": "a.md", "content": "x"})).failed);
@@ -854,7 +860,39 @@ mod tests {
         assert!(Path::new(&id_of_path(&chart)).ends_with("v1.chart.json"));
         // no chat, no artifacts
         let cancel = AtomicBool::new(false);
-        assert!(CreateArtifact.run(&json!({"title": "T", "filename": "a.md", "content": "x"}), &ToolContext::new(ws, &cancel)).failed);
+        assert!(CreateArtifact::default().run(&json!({"title": "T", "filename": "a.md", "content": "x"}), &ToolContext::new(ws, &cancel)).failed);
+    }
+
+    /// A type registered from outside: its file names, check and label are used, its
+    /// content type is kept (13.0 clients see text), and edits go through its check too.
+    #[test]
+    fn a_registered_type_is_used_end_to_end() {
+        struct Rows;
+        impl crate::ArtifactHooks for Rows {
+            fn check(&self, content: &str) -> Result<(String, String), String> {
+                if content.lines().all(|l| l.split(',').count() == 2) {
+                    Ok((content.to_owned(), " Two columns.".into()))
+                } else {
+                    Err("every row needs two cells".into())
+                }
+            }
+        }
+        let types = ArtifactTypes::builtin();
+        types.register(ArtifactType::new("text/csv", "table", ArtifactKind::Text).suffixes(&[".csv"]).hooks(std::sync::Arc::new(Rows)));
+        let d = tempfile::tempdir().unwrap();
+        let ws = d.path();
+        let create = CreateArtifact { types: types.clone() };
+        assert!(run_in(&create, ws, "c", json!({"title": "P", "filename": "p.csv", "content": "a,b,c"})).failed);
+        let out = run_in(&create, ws, "c", json!({"title": "P", "filename": "p.csv", "content": "a,b\n1,2"}));
+        assert!(out.text.contains("Created the table artifact") && out.text.ends_with("Two columns."), "{}", out.text);
+        let a = &list(ws, "c")[0];
+        assert_eq!((a.kind, a.content_type.as_str()), (ArtifactKind::Text, "text/csv"));
+        let update = UpdateArtifact { types: types.clone() };
+        assert!(run_in(&update, ws, "c", json!({"id": a.id, "edits": [{"find": "1,2", "replace": "1,2,3"}]})).failed);
+        assert!(!run_in(&update, ws, "c", json!({"id": a.id, "edits": [{"find": "1,2", "replace": "3,4"}]})).failed);
+        assert!(prompt_list(&types, &list(ws, "c")).contains("(table, v2, p.csv)"));
+        // Without the registration (say the plugin is gone) it is plain text again.
+        assert!(prompt_list(&ArtifactTypes::builtin(), &list(ws, "c")).contains("(file, v2, p.csv)"));
     }
 
     #[cfg(unix)]
@@ -864,7 +902,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join(".byob")).unwrap();
         std::os::unix::fs::symlink(outside.path(), d.path().join(ARTIFACT_DIR)).unwrap();
-        let out = run_in(&CreateArtifact, d.path(), "c", json!({"title": "T", "filename": "a.md", "content": "x"}));
+        let out = run_in(&CreateArtifact::default(), d.path(), "c", json!({"title": "T", "filename": "a.md", "content": "x"}));
         assert!(out.failed, "{}", out.text);
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
@@ -900,9 +938,9 @@ mod tests {
     #[test]
     fn prompt_lists_latest_versions() {
         let d = tempfile::tempdir().unwrap();
-        let id = id_of(&run_in(&CreateArtifact, d.path(), "c", json!({"title": "Calc", "filename": "calc.html", "content": HTML})));
-        let p = prompt_list(&list(d.path(), "c"));
+        let id = id_of(&run_in(&CreateArtifact::default(), d.path(), "c", json!({"title": "Calc", "filename": "calc.html", "content": HTML})));
+        let p = prompt_list(&ArtifactTypes::builtin(), &list(d.path(), "c"));
         assert!(p.contains(&format!("{id}: \"Calc\" (app, v1, calc.html)")), "{p}");
-        assert_eq!(prompt_list(&[]), "");
+        assert_eq!(prompt_list(&ArtifactTypes::builtin(), &[]), "");
     }
 }

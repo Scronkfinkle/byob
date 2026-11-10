@@ -175,6 +175,7 @@ fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Opt
         envs: None,
         plugins: None,
         channels: Default::default(),
+        artifact_types: Default::default(),
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests, runs }
 }
@@ -513,6 +514,7 @@ fn approval_card_then_undo_the_turn() {
         envs: None,
         plugins: None,
         channels: Default::default(),
+        artifact_types: Default::default(),
     };
     let h = Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests: Arc::default(), runs: Arc::default() };
     let (mut c, _) = client(&h);
@@ -600,8 +602,8 @@ fn always_allow_is_per_chat_or_global_and_survives_restarts() {
 fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: byob_store::Paths) -> (EngineHandle, Requests) {
     let (url, requests) = fake_llm(script, "final answer");
     let mut tools = Registry::default();
-    tools.register(Arc::new(byob_tools::CreateArtifact));
-    tools.register(Arc::new(byob_tools::UpdateArtifact));
+    tools.register(Arc::new(byob_tools::CreateArtifact::default()));
+    tools.register(Arc::new(byob_tools::UpdateArtifact::default()));
     let config = EngineConfig {
         inference: InferenceConfig { base_url: url, ..Default::default() },
         workspace: workspace.to_path_buf(),
@@ -626,6 +628,7 @@ fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: byob_
         envs: None,
         plugins: None,
         channels: Default::default(),
+        artifact_types: Default::default(),
     };
     (EngineHandle::spawn_with(config).unwrap(), requests)
 }
