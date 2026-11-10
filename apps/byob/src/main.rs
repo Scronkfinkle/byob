@@ -4,7 +4,7 @@
 //! byob                         desktop window
 //! byob --serve [ADDR]          desktop window + browser access (default 127.0.0.1:7470)
 //! byob --headless [ADDR]       browser access only, no window
-//!     --web-dir DIR           built web bundle to serve (default: $BYOB_WEB_DIR, else apps/byob-web/dist)
+//!     --web-dir DIR           built web bundle to serve (default: $BYOB_WEB_DIR, else web/ next to the binary, else apps/byob-web/dist)
 //!     --allow-user LOGIN      only admit this Tailscale login via `tailscale serve` (repeatable)
 //!     --inference-url URL     OpenAI-compatible base URL (default: settings.json)
 //!     --model NAME            (default: settings.json)
@@ -88,13 +88,23 @@ fn storage_kind(flag: &str, v: Option<String>) -> Result<StorageKind, String> {
     }
 }
 
+/// `$BYOB_WEB_DIR`; else `web/` next to the executable (release archives); else the dev
+/// build output `apps/byob-web/dist`.
+fn default_web_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("BYOB_WEB_DIR") {
+        return PathBuf::from(dir);
+    }
+    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.join("web")));
+    beside.filter(|d| d.join("index.html").is_file()).unwrap_or_else(|| PathBuf::from("apps/byob-web/dist"))
+}
+
 fn parse_args() -> Result<Args, String> {
     let default_addr = SocketAddr::from(([127, 0, 0, 1], 7470));
     let mut args = Args {
         serve: None,
         headless: false,
         allowed_users: Vec::new(),
-        web_dir: std::env::var_os("BYOB_WEB_DIR").map_or_else(|| PathBuf::from("apps/byob-web/dist"), PathBuf::from),
+        web_dir: default_web_dir(),
         inference_url: None,
         model: None,
         api_key: std::env::var("BYOB_API_KEY").ok().filter(|k| !k.is_empty()),
