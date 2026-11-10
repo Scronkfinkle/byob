@@ -38,6 +38,20 @@ fn settings_round_trip() {
 }
 
 #[test]
+fn last_good_endpoint_marks_onboarded() {
+    let dir = TempDir::new();
+    let p = dir.path().join("settings.json");
+    assert!(!Settings::load(&p).value.inference.onboarded());
+    Settings::update(&p, |s| s.inference.last_good = Some("http://127.0.0.1:11434/v1".into())).unwrap();
+    let s = Settings::load(&p).value;
+    assert!(s.inference.onboarded());
+    assert_eq!(read_json(&p)["inference"]["last_good"], json!("http://127.0.0.1:11434/v1"));
+    // A blank value (hand-edited) doesn't count.
+    std::fs::write(&p, r#"{"inference":{"last_good":"  "}}"#).unwrap();
+    assert!(!Settings::load(&p).value.inference.onboarded());
+}
+
+#[test]
 fn unknown_fields_are_preserved() {
     let dir = TempDir::new();
     let p = dir.path().join("settings.json");

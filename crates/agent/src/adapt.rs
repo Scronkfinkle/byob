@@ -239,7 +239,7 @@ fn conclusive(c: &Capabilities) -> bool {
     !c.models.is_empty() || c.context_length.is_some() || c.tools != ToolSupport::Unknown || c.server != ServerKind::Unknown
 }
 
-fn server_name(k: ServerKind) -> &'static str {
+pub(crate) fn server_name(k: ServerKind) -> &'static str {
     match k {
         ServerKind::LlamaCpp => "llama.cpp",
         ServerKind::Vllm => "vLLM",

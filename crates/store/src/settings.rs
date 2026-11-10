@@ -42,6 +42,10 @@ pub struct InferenceSettings {
     pub base_url: Option<String>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The base URL that last answered (a connection check or a reply worked). Set once
+    /// byob has been connected to something, so returning users skip the welcome screen.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub last_good: Option<String>,
     /// Fields this build doesn't know (written by a newer byob, or by hand); preserved.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -49,7 +53,12 @@ pub struct InferenceSettings {
 
 impl InferenceSettings {
     fn is_empty(&self) -> bool {
-        self.base_url.is_none() && self.model.is_none() && self.extra.is_empty()
+        self.base_url.is_none() && self.model.is_none() && self.last_good.is_none() && self.extra.is_empty()
+    }
+
+    /// An endpoint has worked before.
+    pub fn onboarded(&self) -> bool {
+        self.last_good.as_deref().is_some_and(|u| !u.trim().is_empty())
     }
 }
 

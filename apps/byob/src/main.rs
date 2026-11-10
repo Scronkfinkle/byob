@@ -357,6 +357,9 @@ fn run() -> Result<(), String> {
         return export_chats(to, saved.paths.as_ref(), &storage);
     }
     let mut config = EngineConfig::new(inference_config(&args, &saved.settings, &saved.secrets));
+    // Returning users (an endpoint worked before) and explicit `--inference-url` runs go
+    // straight to the chat; everyone else gets the welcome screen until something answers.
+    config.onboarded = saved.settings.inference.onboarded() || args.inference_url.is_some();
     config.paths = saved.paths;
     config.storage = storage.storage;
     config.chats_folder = storage.chats_folder;

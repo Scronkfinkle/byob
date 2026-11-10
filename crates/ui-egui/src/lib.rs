@@ -194,6 +194,7 @@ impl ByobApp {
                 ServerMsg::Artifacts { .. } | ServerMsg::ArtifactUpdated(_) | ServerMsg::ArtifactFile { .. } => {}
                 // Handled by the usage meter above.
                 ServerMsg::Usage(_) | ServerMsg::Compactions { .. } | ServerMsg::Compacted(_) => {}
+                ServerMsg::InferenceTested(_) => {}
             }
         }
     }

@@ -137,6 +137,8 @@ fn engine(url: String, compaction: CompactOptions, tools: bool, paths: Option<Pa
         agents: Vec::new(),
         models: Default::default(),
         subagents: Default::default(),
+        onboarded: false,
+        detect_local: false,
     };
     EngineHandle::spawn_with(config).unwrap()
 }

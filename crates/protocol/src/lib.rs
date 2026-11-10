@@ -6,6 +6,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod artifact;
+pub mod connect;
 pub mod delegation;
 pub mod media;
 pub mod usage;
@@ -13,12 +14,13 @@ pub mod usage;
 use serde::{Deserialize, Serialize};
 
 pub use artifact::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion};
+pub use connect::{Detected, InferenceTest, Link, PRESETS, Preset, Problem};
 pub use delegation::{Delegation, DelegationState, DelegationUpdate};
 pub use media::{MediaContent, MediaKind, MediaRef};
 pub use usage::{ChatUsage, Compaction};
 
 /// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -32,12 +34,28 @@ pub enum ClientMsg {
         protocol: u32,
         client: String,
     },
-    /// Point the engine at a different inference endpoint.
+    /// Point the engine at a different inference endpoint (saved, then checked). `api_key`:
+    /// `None` keeps the stored key if the server (scheme, host, port) is unchanged and drops
+    /// it otherwise; `Some("")` removes it.
     SetInference {
         base_url: String,
         model: String,
         api_key: Option<String>,
     },
+    /// Try an endpoint without switching to it; answered with [`ServerMsg::InferenceTested`].
+    /// `api_key` as for [`ClientMsg::SetInference`].
+    TestInference {
+        base_url: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
+    },
+    /// Look again for inference servers on this machine's usual ports
+    /// ([`EngineState::detected`]).
+    DetectEndpoints,
+    /// Run the last message of the chat in view again, after its reply failed before
+    /// producing anything (e.g. the server was down). The failed reply is removed.
+    Retry,
     /// Send a user message and start a turn. `attachments` are paths the engine returned
     /// in [`ServerMsg::Uploaded`].
     SendMessage {
@@ -163,6 +181,8 @@ pub enum ServerMsg {
     Compacted(Compaction),
     /// The subagent run of step `step` (in entry `entry`) changed.
     Delegation { entry: u64, step: u64, update: DelegationUpdate },
+    /// Answer to [`ClientMsg::TestInference`].
+    InferenceTested(InferenceTest),
 }
 
 /// A chat as shown in the sidebar.
@@ -435,6 +455,19 @@ pub struct EngineState {
     /// What the engine knows about the inference endpoint (from its capability probe).
     #[serde(default)]
     pub endpoint_info: Option<EndpointInfo>,
+    /// Whether the current endpoint answers.
+    #[serde(default)]
+    pub link: Link,
+    /// An endpoint has worked before (saved in settings.json): returning users skip the
+    /// welcome screen.
+    #[serde(default)]
+    pub onboarded: bool,
+    /// Inference servers found on this machine's usual ports.
+    #[serde(default)]
+    pub detected: Vec<Detected>,
+    /// The engine is looking for them.
+    #[serde(default)]
+    pub detecting: bool,
 }
 
 /// How turns pass tools to the model.
@@ -779,6 +812,34 @@ mod tests {
         // Stats from an older engine have no call count.
         let s: TurnStats = serde_json::from_str(r#"{"prompt_tokens":1,"completion_tokens":2,"elapsed_ms":3}"#).unwrap();
         assert_eq!(s.model_calls, 0);
+    }
+
+    #[test]
+    fn connection_messages_round_trip() {
+        for m in [
+            ClientMsg::TestInference { base_url: "http://127.0.0.1:11434/v1".into(), model: "qwen3".into(), api_key: None },
+            ClientMsg::TestInference { base_url: "https://api.openai.com/v1".into(), model: "m".into(), api_key: Some("sk".into()) },
+            ClientMsg::DetectEndpoints,
+            ClientMsg::Retry,
+        ] {
+            assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m);
+        }
+        assert_eq!(ClientMsg::Retry.to_json(), r#"{"type":"retry"}"#);
+        let t = InferenceTest { base_url: "u".into(), model: "m".into(), ok: false, problem: Some(Problem::Unauthorized), detail: "x".into(), models: vec![] };
+        let m = ServerMsg::InferenceTested(t);
+        assert_eq!(ServerMsg::from_json(&m.to_json()).unwrap(), m);
+        let state = EngineState {
+            link: Link::failed("could not reach u: refused"),
+            onboarded: true,
+            detected: vec![Detected { preset: "ollama".into(), base_url: "http://127.0.0.1:11434/v1".into(), models: vec!["qwen3".into()] }],
+            ..Default::default()
+        };
+        let m = ServerMsg::State(state);
+        assert_eq!(ServerMsg::from_json(&m.to_json()).unwrap(), m);
+        // State from an older engine: link unknown, not onboarded.
+        let old = r#"{"version":"0","inference_base_url":"u","inference_model":"m","has_api_key":false,"endpoint":null,"busy":false}"#;
+        let s = serde_json::from_str::<EngineState>(old).unwrap();
+        assert_eq!((s.link, s.onboarded, s.detected.len()), (Link::Unknown, false, 0));
     }
 
     #[test]

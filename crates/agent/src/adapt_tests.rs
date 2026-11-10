@@ -188,6 +188,8 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
         agents: Vec::new(),
         models: Default::default(),
         subagents: Default::default(),
+        onboarded: false,
+        detect_local: false,
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), seen, runs }
 }
@@ -398,8 +400,9 @@ fn probe_runs_in_the_background() {
     assert!(started.elapsed() < Duration::from_millis(1200), "blocked on the probe: {:?}", started.elapsed());
     let state = wait_state(&mut c, |s| s.endpoint_info.as_ref().is_some_and(|i| !i.probing));
     assert_eq!(state.endpoint_info.unwrap().context_tokens, Some(8192));
-    // Re-applying the same settings uses the cache instead of probing again.
-    let probes = || h.seen.lock().unwrap().iter().filter(|(_, p, _)| p == "/v1/models").count();
+    // Re-applying the same settings uses the cache instead of probing again (`/props` is
+    // asked only by the probe; `/v1/models` also by the quick link check).
+    let probes = || h.seen.lock().unwrap().iter().filter(|(_, p, _)| p == "/props").count();
     assert_eq!(probes(), 1);
     c.send(ClientMsg::SetInference { base_url: state.inference_base_url.clone(), model: "m".into(), api_key: None });
     let state = wait_state(&mut c, |_| true);

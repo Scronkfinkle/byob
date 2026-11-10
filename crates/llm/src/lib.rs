@@ -104,12 +104,18 @@ impl Client {
 
     /// `GET {base}/models`: model ids the server advertises.
     pub fn list_models(&self) -> Result<Vec<String>, LlmError> {
+        self.list_models_within(Duration::from_secs(30))
+    }
+
+    /// [`Client::list_models`] that gives up after `timeout` (connecting included): a cheap
+    /// "is anything there, and does it take our key" check.
+    pub fn list_models_within(&self, timeout: Duration) -> Result<Vec<String>, LlmError> {
         let url = self.base.join("models")?;
         let mut req = self.agent.get(url.as_str());
         if let Some(key) = &self.config.api_key {
             req = req.header("Authorization", &format!("Bearer {key}"));
         }
-        let resp = req.call().map_err(|e| LlmError::Transport { url: url.to_string(), source: Box::new(e) })?;
+        let resp = req.config().timeout_global(Some(timeout)).build().call().map_err(|e| LlmError::Transport { url: url.to_string(), source: Box::new(e) })?;
         let status = resp.status().as_u16();
         let body = resp.into_body().with_config().limit(1024 * 1024).read_to_string().map_err(|e| LlmError::Stream(e.to_string()))?;
         if status >= 400 {
