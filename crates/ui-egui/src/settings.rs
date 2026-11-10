@@ -47,9 +47,10 @@ impl ByobApp {
         let t = self.tokens;
         ui.add_space(4.0);
         // Which settings these are (a chat and a workspace have their own), and the way out.
+        // Close on the right, then the title; the subtitle wraps (on a phone it ran off-screen
+        // and widened everything below it).
         ui.horizontal(|ui| {
             ui.label(RichText::new("App settings").size(t.text_size(16.0)).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
-            ui.label(RichText::new("connection and defaults for every chat; appearance on this device").small().color(t.text_dim));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let shortcut = crate::header::settings_shortcut(ui.ctx());
                 if ui.button("Close").on_hover_text(format!("Close the settings ({shortcut})")).clicked() {
@@ -57,48 +58,42 @@ impl ByobApp {
                 }
             });
         });
-        ui.add_space(6.0);
+        ui.label(RichText::new("Connection and defaults for every chat; appearance on this device.").small().color(t.text_dim));
+        ui.add_space(8.0);
         if std::mem::take(&mut self.reveal_connection) {
             ui.scroll_to_cursor(Some(egui::Align::Min));
         }
-        ui.label(RichText::new("Connection").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong))
-            .on_hover_text("The model server byob talks to; saved for every window and browser tab");
-        match &self.state {
+        section(ui, &t, "Connection", "The model server byob talks to; saved for every window and browser tab.", |ui| match &self.state {
             Some(state) => self.connect.form(ui, &t, state, "settings"),
             None => {
                 ui.label(RichText::new("connecting…").color(t.text_dim));
             }
-        }
-        ui.add_space(10.0);
-        ui.label(RichText::new("Defaults for every chat").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong))
-            .on_hover_text("Saved in settings.json; a workspace or a chat can change each of them for itself");
-        if let Some(msg) = self.workspaces.defaults.show(ui, &t, crate::workspace::GLOBAL_FIELDS) {
-            self.conn.send(msg);
-        }
-        ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Workspaces override these, and choose where commands run (Docker, Nix, …): the … menu of each workspace in the chat list. A chat: the sliders next to its title in the header.")
-                    .small()
-                    .color(t.text_dim),
-            );
-            if let Some(ws) = self.sidebar.current_workspace().map(|w| w.id.clone())
-                && ui.small_button("This workspace's settings…").clicked()
-            {
-                self.workspaces.open_settings(&ws, false);
-            }
         });
-        ui.add_space(10.0);
+        section(ui, &t, "Defaults for every chat", "Saved in settings.json. A workspace or a chat can change each of them for itself.", |ui| {
+            if let Some(msg) = self.workspaces.defaults.show(ui, &t, crate::workspace::GLOBAL_FIELDS) {
+                self.conn.send(msg);
+            }
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new("Workspaces override these, and choose where commands run (Docker, Nix, …): the … menu of each workspace in the chat list. A chat: the sliders next to its title in the header.")
+                        .small()
+                        .color(t.text_dim),
+                );
+                if let Some(ws) = self.sidebar.current_workspace().map(|w| w.id.clone())
+                    && ui.small_button("This workspace's settings…").clicked()
+                {
+                    self.workspaces.open_settings(&ws, false);
+                }
+            });
+        });
         if std::mem::take(&mut self.plugins.reveal) {
             ui.scroll_to_cursor(Some(egui::Align::Min));
         }
-        ui.label(RichText::new("Plugins").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong))
-            .on_hover_text("What the chat in view can use: plugins of this chat, its workspace and every chat");
-        self.plugins.panel(ui, &t, &crate::plugins::Filter::All);
-        ui.add_space(10.0);
-        ui.label(RichText::new("Appearance").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong)).on_hover_text("Saved on this device only");
-        self.appearance_settings(ui);
-        ui.add_space(6.0);
+        section(ui, &t, "Plugins", "What the chat in view can use: plugins of this chat, its workspace and every chat.", |ui| {
+            self.plugins.panel(ui, &t, &crate::plugins::Filter::All);
+        });
+        section(ui, &t, "Appearance", "Saved on this device only.", |ui| self.appearance_settings(ui));
     }
 
     /// Imports that finished picking, and export outcomes (every frame).
@@ -230,11 +225,10 @@ impl ByobApp {
         ui.add_space(4.0);
         self.theme_files(ui, &t, narrow, &current, &prefs);
 
-        ui.add_space(6.0);
         if self.appearance.reveal.as_deref() == Some("knobs") {
             ui.scroll_to_cursor(Some(egui::Align::Min));
         }
-        ui.label(RichText::new("Knobs").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
+        subsection(ui, &t, "Knobs");
         knobs(ui, &t, narrow, &current, &mut prefs);
         ui.horizontal_wrapped(|ui| {
             if ui.button("Reset knobs").on_hover_text("Sizes, fonts, spacing and layout back to defaults").clicked() {
@@ -246,7 +240,7 @@ impl ByobApp {
             }
         });
 
-        ui.add_space(4.0);
+        subsection_rule(ui, &t);
         let reveal = self.appearance.reveal.as_deref() == Some("advanced");
         if reveal {
             ui.scroll_to_cursor(Some(egui::Align::Min));
@@ -479,6 +473,7 @@ fn scale_buttons(ui: &mut egui::Ui, value: &mut f32) {
 fn knobs(ui: &mut egui::Ui, t: &Tokens, narrow: bool, current: &ThemeDef, prefs: &mut Prefs) {
     row(ui, narrow, "Accent", |ui| accent_picker(ui, t, current, &mut prefs.accent));
     let k = &mut prefs.knobs;
+    ui.add_space(t.pad(10.0)); // groups: colour, text, look, layout, other
     row(ui, narrow, "Text size", |ui| scale_buttons(ui, &mut k.font_scale));
     row(ui, narrow, "Code size", |ui| scale_buttons(ui, &mut k.code_scale));
     row(ui, narrow, "Font", |ui| {
@@ -491,6 +486,7 @@ fn knobs(ui: &mut egui::Ui, t: &Tokens, narrow: bool, current: &ThemeDef, prefs:
             ui.selectable_value(&mut k.mono_font, f, f.label());
         }
     });
+    ui.add_space(t.pad(10.0));
     row(ui, narrow, "Density", |ui| {
         for d in Density::ALL {
             ui.selectable_value(&mut k.density, d, d.label());
@@ -509,6 +505,7 @@ fn knobs(ui: &mut egui::Ui, t: &Tokens, narrow: bool, current: &ThemeDef, prefs:
             ui.selectable_value(&mut k.assistant_bubble, s, s.label());
         }
     });
+    ui.add_space(t.pad(10.0));
     row(ui, narrow, "Layout", |ui| {
         for a in Align::ALL {
             ui.selectable_value(&mut k.align, a, a.label());
@@ -525,6 +522,7 @@ fn knobs(ui: &mut egui::Ui, t: &Tokens, narrow: bool, current: &ThemeDef, prefs:
             }
         }
     });
+    ui.add_space(t.pad(10.0));
     row(ui, narrow, "Chart colours", |ui| {
         for c in ChartPalette::ALL {
             ui.selectable_value(&mut k.chart, c, c.label());
@@ -539,6 +537,7 @@ fn knobs(ui: &mut egui::Ui, t: &Tokens, narrow: bool, current: &ThemeDef, prefs:
             k.pane_share = pct / 100.0;
         }
     });
+    ui.add_space(t.pad(10.0));
     row(ui, narrow, "Accessibility", |ui| {
         ui.checkbox(&mut k.high_contrast, "High contrast");
         ui.checkbox(&mut k.reduce_motion, "Reduce motion");
@@ -642,6 +641,39 @@ fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool, t: &Tokens) -> egui
     }
     ui.painter().circle_filled(center, r - 4.0, color);
     resp
+}
+
+/// One settings section: a card with a heading and a line saying what it's for, set apart
+/// from the next (a single column of labels read as one wall of text).
+fn section(ui: &mut egui::Ui, t: &Tokens, title: &str, blurb: &str, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(t.app_bg)
+        .stroke(egui::Stroke::new(1.0, t.border))
+        .corner_radius(t.round(8.0))
+        .inner_margin(egui::vec2(t.pad(14.0), t.pad(12.0)))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(RichText::new(title).size(t.text_size(15.0)).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
+            ui.label(RichText::new(blurb).small().color(t.text_dim));
+            ui.add_space(t.pad(8.0));
+            add(ui);
+        });
+    ui.add_space(t.pad(12.0));
+}
+
+/// A divider and a heading between the parts of one section.
+fn subsection(ui: &mut egui::Ui, t: &Tokens, title: &str) {
+    subsection_rule(ui, t);
+    ui.label(RichText::new(title).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
+    ui.add_space(t.pad(2.0));
+}
+
+fn subsection_rule(ui: &mut egui::Ui, t: &Tokens) {
+    ui.add_space(t.pad(10.0));
+    let y = ui.cursor().top();
+    let x = ui.max_rect().x_range();
+    ui.painter().hline(x, y, egui::Stroke::new(1.0, t.separator));
+    ui.add_space(t.pad(10.0));
 }
 
 #[cfg(test)]
