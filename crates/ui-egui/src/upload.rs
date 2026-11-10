@@ -92,6 +92,21 @@ impl Uploads {
         !self.ready.is_empty()
     }
 
+    /// The attached files, taken out of the composer (to set them aside while editing a
+    /// queued message).
+    pub fn take_ready(&mut self) -> Vec<MediaRef> {
+        std::mem::take(&mut self.ready)
+    }
+
+    /// Put files back into the composer (a queued message being edited, or a set-aside draft).
+    pub fn restore(&mut self, files: Vec<MediaRef>) {
+        for f in files {
+            if self.ready.len() < MAX_ATTACHMENTS && !self.ready.iter().any(|r| r.path == f.path) {
+                self.ready.push(f);
+            }
+        }
+    }
+
     /// Per frame: start reading dropped files, upload what the picker or drops produced.
     /// Returns errors to show.
     pub fn poll(&mut self, ctx: &egui::Context, conn: &mut dyn Connection) -> Vec<String> {

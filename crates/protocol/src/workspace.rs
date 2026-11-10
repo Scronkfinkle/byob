@@ -138,7 +138,7 @@ impl ClientMsg {
             Self::GetConfig { scope: ConfigScope::Workspace { id: i } } | Self::SetConfig { scope: ConfigScope::Workspace { id: i }, .. } => id(i),
             Self::ListFolders { path: Some(p) } => path(p),
             Self::WorkspaceEnv { workspace: Some(w), .. } => id(w),
-            _ => Ok(()),
+            _ => crate::queue::check_sizes(self),
         }
     }
 }

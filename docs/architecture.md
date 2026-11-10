@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10 (workspaces)
+Last updated: 2026-11-10 (message queue)
 
 ## Shape
 
@@ -195,6 +195,36 @@ keeps every message and clients draw a divider. `ClientMsg::Compact` / `/compact
 compacts on demand. A failed or longer-than-before summary changes nothing and
 `fit_history` stays the safety net. `ServerMsg::Usage` feeds the header meter: context in use
 (the server's last prompt + completion, else an estimate), window, threshold, chat totals.
+
+## Message queue
+
+While a reply (or a manual compaction) runs in a chat, `SendMessage` goes into that chat's
+queue in the engine (`byob-agent` `queue.rs`) instead of being refused, attachments included.
+The queue belongs to the chat, not to a client: every window and tab looking at the chat gets
+it as `ServerMsg::Queue` (after the transcript and on every change) and may edit it, and it
+keeps going when the window that filled it closes.
+
+- A turn that ends normally starts the next queued message as a new turn, in order. The
+  next turn's own auto-compaction runs before its first request, as for any turn; a queued
+  `/compact` runs as a manual compaction.
+- **Stop** or a **failed** reply pauses the queue (`ChatQueue::paused`: stopped / failed). It
+  waits, unchanged, until someone presses Resume (`ResumeQueue`), Send now on an item, or
+  Retry on the failed reply. A message sent to the free chat meanwhile goes at once; the
+  queue stays paused. A queued message that can't start (e.g. an invalid endpoint) goes back
+  to the front and pauses the queue as failed.
+- A turn **waiting for an approval** is still running; the queue just waits.
+- `Unqueue`, `EditQueued` (in place; empty removes), `MoveQueued` and `SendQueuedNow` (move to
+  the front, resume, and stop the running turn without pausing) act on the chat in view;
+  unknown ids get a notice.
+- Caps: 20 messages, 256 KB of text each, 1 MB per chat; attachments must be uploads.
+- Queued messages are not in the transcript (or `chat.md`) until sent; the title generator,
+  Retry and the usage meter only ever see sent messages.
+- In memory only: an engine restart drops every queue. Deleting the chat (or removing its
+  workspace) drops its queue.
+
+The composer shows the queue as compact rows above the input: Enter (or **Queue**) adds while
+a reply runs, with **Stop** beside it; clicking a row edits it in the composer (the draft
+there is set aside until Save or Esc).
 
 ## Subagents
 

@@ -17,6 +17,13 @@ pub struct Script {
     pub attach: Vec<PathBuf>,
     /// Sent one at a time, each once the previous reply finished.
     pub send: Vec<String>,
+    /// Sent while the first reply runs, so they queue (`--queue`).
+    pub queue: Vec<String>,
+    /// Press Stop this long after the queued messages went out (`--stop-after`).
+    pub stop_after: Option<Duration>,
+    /// Take the screenshot as soon as the queued messages show, while the reply runs
+    /// (`--shoot-queued`).
+    pub shoot_queued: bool,
     pub screenshot: Option<PathBuf>,
     /// Minimum time before the screenshot (lets the window settle); counted from the
     /// commands when there are any.
@@ -79,6 +86,9 @@ pub struct Runner {
     requested: bool,
     /// `--new-workspace` was sent.
     created: bool,
+    /// When the `--queue` messages went out, and whether Stop was pressed since.
+    queued_at: Option<Instant>,
+    stopped: bool,
     /// When the last `then` command ran; the next one runs no earlier than `next_at`.
     then_at: Option<Instant>,
     next_at: Option<Instant>,
@@ -95,6 +105,8 @@ impl Runner {
             waiting: None,
             requested: false,
             created: false,
+            queued_at: None,
+            stopped: false,
             then_at: None,
             next_at: None,
             done: Arc::default(),
@@ -139,7 +151,25 @@ impl Runner {
             app.submit(text);
             self.waiting = Some((Instant::now(), false));
         }
-        if self.waiting.is_some() || !self.script.send.is_empty() {
+        // Follow-ups typed while the first reply runs.
+        if !self.script.queue.is_empty() && app.busy() {
+            for text in std::mem::take(&mut self.script.queue) {
+                app.submit(text);
+            }
+            self.queued_at = Some(Instant::now());
+        }
+        if let (Some(after), Some(at)) = (self.script.stop_after, self.queued_at)
+            && !self.stopped
+            && at.elapsed() >= after
+        {
+            app.stop();
+            self.stopped = true;
+        }
+        if self.script.shoot_queued && self.queued_at.is_some() && app.queued() > 0 {
+            self.shoot(ctx);
+            return;
+        }
+        if self.waiting.is_some() || !self.script.send.is_empty() || !self.script.queue.is_empty() {
             ctx.request_repaint_after(Duration::from_millis(100));
             return;
         }
@@ -150,13 +180,11 @@ impl Runner {
         {
             self.script.open_panel = None;
         }
-        let Some(path) = self.script.screenshot.clone() else { return };
+        if self.script.screenshot.is_none() {
+            return;
+        }
         ctx.request_repaint_after(Duration::from_millis(100));
-        if self.done.load(Ordering::Acquire) {
-            if let Some(msg) = self.result.lock().unwrap_or_else(PoisonError::into_inner).take() {
-                eprintln!("byob: {msg}");
-            }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        if self.close_when_shot(ctx) {
             return;
         }
         let elapsed = self.started.elapsed();
@@ -176,18 +204,40 @@ impl Runner {
         }
         let waited = self.then_at.map_or(elapsed, |t| t.elapsed());
         let ready = waited >= self.script.after && settled;
-        if ready && !self.requested {
-            self.requested = true;
-            let (done, result) = (Arc::clone(&self.done), Arc::clone(&self.result));
-            ctx.request_screenshot(move |image| {
-                let msg = match save_png(&path, &image) {
-                    Ok(()) => format!("screenshot saved to {}", path.display()),
-                    Err(e) => format!("screenshot failed: {e}"),
-                };
-                *result.lock().unwrap_or_else(PoisonError::into_inner) = Some(msg);
-                done.store(true, Ordering::Release);
-            });
+        if ready {
+            self.shoot(ctx);
         }
+    }
+
+    /// Take the screenshot (once); the window closes when it is saved.
+    fn shoot(&mut self, ctx: &egui::Context) {
+        ctx.request_repaint_after(Duration::from_millis(100));
+        if self.close_when_shot(ctx) || self.requested {
+            return;
+        }
+        let Some(path) = self.script.screenshot.clone() else { return };
+        self.requested = true;
+        let (done, result) = (Arc::clone(&self.done), Arc::clone(&self.result));
+        ctx.request_screenshot(move |image| {
+            let msg = match save_png(&path, &image) {
+                Ok(()) => format!("screenshot saved to {}", path.display()),
+                Err(e) => format!("screenshot failed: {e}"),
+            };
+            *result.lock().unwrap_or_else(PoisonError::into_inner) = Some(msg);
+            done.store(true, Ordering::Release);
+        });
+    }
+
+    /// The screenshot is saved: say so and close. True if it was.
+    fn close_when_shot(&self, ctx: &egui::Context) -> bool {
+        if !self.done.load(Ordering::Acquire) {
+            return false;
+        }
+        if let Some(msg) = self.result.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            eprintln!("byob: {msg}");
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        true
     }
 }
 

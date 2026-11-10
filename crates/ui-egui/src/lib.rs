@@ -14,6 +14,7 @@ mod icons;
 pub mod markdown;
 pub mod media;
 pub mod pane;
+pub mod queue;
 mod settings;
 pub mod sidebar;
 pub mod steps;
@@ -84,6 +85,8 @@ pub struct ByobApp {
     /// Workspaces: the new-workspace form, workspace settings, the chat settings popover,
     /// the global defaults.
     workspaces: workspace::WorkspaceUi,
+    /// Follow-ups queued while a reply runs.
+    queue: queue::QueueUi,
 }
 
 impl ByobApp {
@@ -115,6 +118,7 @@ impl ByobApp {
             artifacts: artifact::Artifacts::default(),
             usage: usage::Usage::default(),
             workspaces: workspace::WorkspaceUi::default(),
+            queue: queue::QueueUi::default(),
         }
     }
 
@@ -161,6 +165,12 @@ impl ByobApp {
         while let Some(msg) = self.conn.try_recv() {
             if matches!(msg, ServerMsg::ChatOpened { .. }) {
                 self.workspaces.chat_changed();
+                // The queued message being edited stays queued in the chat we leave.
+                self.end_edit();
+            }
+            if self.queue.apply(&msg) {
+                self.queue_changed();
+                continue;
             }
             if self.usage.apply(&msg) || self.workspaces.apply(&msg) || self.sidebar.apply(&msg) || self.artifacts.apply(&msg) {
                 continue;
@@ -209,6 +219,8 @@ impl ByobApp {
                 // Handled by the usage meter above.
                 ServerMsg::Usage(_) | ServerMsg::Compactions { .. } | ServerMsg::Compacted(_) => {}
                 ServerMsg::InferenceTested(test) => self.connect.tested(test),
+                // Handled by the queue above.
+                ServerMsg::Queue(_) => {}
                 // Handled by the workspace views and the sidebar above.
                 ServerMsg::WorkspaceEnv(_)
                 | ServerMsg::Workspaces { .. }
@@ -362,13 +374,88 @@ impl ByobApp {
         self.conn.send(ClientMsg::SendMessage { text, attachments });
     }
 
-    /// Connected, and nothing will change without the user: no turn running and every
-    /// entry finished streaming (and its charts/images loaded), or a turn is waiting on an
-    /// approval card.
+    /// Connected, and nothing will change without the user: no turn running, no queued
+    /// message about to go, and every entry finished streaming (and its charts/images
+    /// loaded), or a turn is waiting on an approval card.
     pub fn settled(&self) -> bool {
         self.state.is_some()
             && (steps::awaiting_approval(&self.entries)
-                || (!self.busy() && self.entries.iter().all(|e| e.done) && !self.uploads.busy() && !self.media.loading() && !self.artifacts.loading()))
+                || (!self.busy()
+                    && !self.queue.moving()
+                    && self.entries.iter().all(|e| e.done)
+                    && !self.uploads.busy()
+                    && !self.media.loading()
+                    && !self.artifacts.loading()))
+    }
+
+    /// Messages queued in the chat in view (scripted runs).
+    pub fn queued(&self) -> usize {
+        self.queue.queue.items.len()
+    }
+
+    /// Stop the running reply, as the Stop button does (scripted runs).
+    pub fn stop(&mut self) {
+        self.conn.send(ClientMsg::Cancel);
+    }
+
+    /// Edit queued message `id` in the composer: the draft there is set aside until done.
+    fn begin_edit(&mut self, id: u64) {
+        let Some(item) = self.queue.item(id).cloned() else { return };
+        if self.queue.editing.is_none() {
+            self.queue.stash = Some((std::mem::take(&mut self.input), self.uploads.take_ready()));
+        } else {
+            let _ = self.uploads.take_ready();
+        }
+        self.input = item.text;
+        self.uploads.restore(item.attachments);
+        self.queue.editing = Some(id);
+    }
+
+    /// Stop editing a queued message: the set-aside draft comes back.
+    fn end_edit(&mut self) {
+        if self.queue.editing.take().is_none() {
+            return;
+        }
+        let _ = self.uploads.take_ready();
+        let (text, files) = self.queue.stash.take().unwrap_or_default();
+        self.input = text;
+        self.uploads.restore(files);
+    }
+
+    /// The queue changed: if the message being edited left it (it was sent), what is in the
+    /// composer becomes an ordinary draft, with the set-aside one after it.
+    fn queue_changed(&mut self) {
+        if !self.queue.editing.is_some_and(|id| self.queue.item(id).is_none()) {
+            return;
+        }
+        self.queue.editing = None;
+        if let Some((text, files)) = self.queue.stash.take() {
+            if !text.trim().is_empty() {
+                if !self.input.trim().is_empty() {
+                    self.input.push_str("\n\n");
+                }
+                self.input.push_str(&text);
+            }
+            self.uploads.restore(files);
+        }
+        self.notice(NoticeLevel::Info, "That queued message was sent before you finished editing; your edit is a draft now.".into());
+    }
+
+    fn queue_actions(&mut self, actions: Vec<queue::Action>) {
+        for a in actions {
+            match a {
+                queue::Action::Edit(id) => self.begin_edit(id),
+                queue::Action::Remove(id) => {
+                    if self.queue.editing == Some(id) {
+                        self.end_edit();
+                    }
+                    self.conn.send(ClientMsg::Unqueue { id });
+                }
+                queue::Action::SendNow(id) => self.conn.send(ClientMsg::SendQueuedNow { id }),
+                queue::Action::Move(id, to) => self.conn.send(ClientMsg::MoveQueued { id, to }),
+                queue::Action::Resume => self.conn.send(ClientMsg::ResumeQueue),
+            }
+        }
     }
 
     /// The engine has answered (its state arrived).
@@ -486,22 +573,32 @@ impl ByobApp {
             ui.label(egui::RichText::new(text).color(color));
         }
         let id = egui::Id::unique("composer");
-        // Enter sends; Shift+Enter inserts a newline (consume Enter before the editor sees it).
-        let enter = ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        // Enter sends (queues while a reply runs); Shift+Enter inserts a newline (consume
+        // Enter before the editor sees it). Escape stops editing a queued message.
+        let focused = ui.memory(|m| m.has_focus(id));
+        let enter = focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let busy = self.busy();
-        let mut send = enter && !busy;
+        let editing = self.queue.editing;
+        let mut send = enter;
+        let mut cancel_edit = editing.is_some() && focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let actions = self.queue.show(ui, &t);
+        self.queue_actions(actions);
         self.uploads.chips(ui, &t);
+        let hint = match (editing.is_some(), busy) {
+            (true, _) => "Edit the queued message…  (Enter to save, Esc to cancel)",
+            (false, true) => "Queue a follow-up…  (Enter to queue, Shift+Enter for newline)",
+            (false, false) => "Message byob…  (Enter to send, Shift+Enter for newline)",
+        };
         ui.horizontal(|ui| {
             self.uploads.button(ui);
-            let width = (ui.available_width() - 72.0).max(100.0);
-            ui.add(
-                egui::TextEdit::multiline(&mut self.input)
-                    .id(id)
-                    .desired_rows(2)
-                    .desired_width(width)
-                    .hint_text("Message byob…  (Enter to send, Shift+Enter for newline)"),
-            );
-            if busy {
+            let buttons = if editing.is_some() || busy { 132.0 } else { 72.0 };
+            let width = (ui.available_width() - buttons).max(100.0);
+            ui.add(egui::TextEdit::multiline(&mut self.input).id(id).desired_rows(2).desired_width(width).hint_text(hint));
+            if editing.is_some() {
+                send |= ui.button("Save").on_hover_text("Save the queued message").clicked();
+                cancel_edit |= ui.button("Cancel").clicked();
+            } else if busy {
+                send |= ui.button("Queue").on_hover_text("Send this when the reply is done").clicked();
                 if ui.button("Stop").clicked() {
                     self.conn.send(ClientMsg::Cancel);
                 }
@@ -509,11 +606,27 @@ impl ByobApp {
                 send |= ui.button("Send").clicked();
             }
         });
+        if cancel_edit {
+            self.end_edit();
+        }
         // Wait for attachments to finish uploading before sending.
-        if send && (!self.input.trim().is_empty() || self.uploads.has_ready()) && !self.uploads.busy() {
-            let text = std::mem::take(&mut self.input);
-            self.submit(text);
-            ui.memory_mut(|m| m.request_focus(id));
+        let ready = (!self.input.trim().is_empty() || self.uploads.has_ready()) && !self.uploads.busy();
+        match self.queue.editing {
+            Some(item) if send && !self.uploads.busy() => {
+                let msg = ClientMsg::EditQueued { id: item, text: std::mem::take(&mut self.input), attachments: self.uploads.take() };
+                self.conn.send(msg);
+                self.queue.editing = None;
+                let (text, files) = self.queue.stash.take().unwrap_or_default();
+                self.input = text;
+                self.uploads.restore(files);
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+            None if send && ready => {
+                let text = std::mem::take(&mut self.input);
+                self.submit(text);
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+            _ => {}
         }
         ui.add_space(6.0);
     }
@@ -889,6 +1002,71 @@ mod app_tests {
         let last = fake.sent.lock().unwrap().last().cloned();
         let Some(ClientMsg::CreateWorkspace { name, folder, config }) = last else { panic!("{last:?}") };
         assert_eq!((name.as_str(), folder, config.env), ("Fresh", byob_protocol::NewFolder::Create, Some(byob_protocol::workspace::EnvKind::Container)));
+    }
+
+    fn press_enter(ctx: &egui::Context, app: &mut ByobApp) {
+        ctx.memory_mut(|m| m.request_focus(egui::Id::unique("composer")));
+        frame(ctx, app, 1000.0);
+        let key = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+            events: vec![key],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+        out.textures_delta.clear();
+    }
+
+    fn queued(texts: &[(u64, &str)], paused: Option<byob_protocol::QueuePause>) -> ServerMsg {
+        let items = texts.iter().map(|(id, t)| byob_protocol::QueuedMessage { id: *id, text: (*t).into(), attachments: vec![] }).collect();
+        ServerMsg::Queue(byob_protocol::ChatQueue { chat: Some("c".into()), items, paused })
+    }
+
+    #[test]
+    fn enter_while_busy_queues_and_queued_rows_edit_remove_and_send_now() {
+        let fake = Fake::default();
+        let busy = EngineState { busy: true, ..state(Link::Ok, true) };
+        fake.inbox.lock().unwrap().extend([ServerMsg::State(busy), queued(&[(1, "first follow-up"), (2, "second\nwith more")], None)]);
+        let ctx = egui::Context::default();
+        let mut app = ByobApp::new(Box::new(fake.clone()), "test");
+        frame(&ctx, &mut app, 1000.0);
+        assert_eq!(app.queued(), 2);
+        assert!(!app.settled(), "messages are about to go");
+        // Enter while a reply runs sends the message; the engine queues it.
+        app.input = "third".into();
+        press_enter(&ctx, &mut app);
+        assert!(app.input.is_empty());
+        assert_eq!(fake.sent.lock().unwrap().last(), Some(&ClientMsg::SendMessage { text: "third".into(), attachments: vec![] }));
+        // Clicking a row edits it in the composer; the draft is set aside meanwhile.
+        app.input = "my draft".into();
+        app.queue_actions(vec![queue::Action::Edit(2)]);
+        assert_eq!((app.input.as_str(), app.queue.editing), ("second\nwith more", Some(2)));
+        frame(&ctx, &mut app, 1000.0);
+        app.input = "second, edited".into();
+        press_enter(&ctx, &mut app);
+        assert_eq!(fake.sent.lock().unwrap().last(), Some(&ClientMsg::EditQueued { id: 2, text: "second, edited".into(), attachments: vec![] }));
+        assert_eq!((app.input.as_str(), app.queue.editing), ("my draft", None));
+        app.queue_actions(vec![queue::Action::Remove(1), queue::Action::SendNow(2), queue::Action::Move(2, 0), queue::Action::Resume]);
+        let sent = fake.sent.lock().unwrap().clone();
+        assert_eq!(
+            sent[sent.len() - 4..],
+            [ClientMsg::Unqueue { id: 1 }, ClientMsg::SendQueuedNow { id: 2 }, ClientMsg::MoveQueued { id: 2, to: 0 }, ClientMsg::ResumeQueue]
+        );
+        // A message sent while being edited leaves the edit as a draft, the set-aside one after it.
+        app.input = String::new();
+        app.queue_actions(vec![queue::Action::Edit(1)]);
+        app.input.push_str(" (changed)");
+        fake.inbox.lock().unwrap().push(queued(&[(2, "second, edited")], Some(byob_protocol::QueuePause::Stopped)));
+        frame(&ctx, &mut app, 1000.0);
+        assert_eq!((app.input.as_str(), app.queue.editing), ("first follow-up (changed)", None));
+        assert!(app.notices.iter().any(|(_, t)| t.contains("draft now")));
+        // Paused, nothing moves on its own: idle counts as settled.
+        fake.inbox.lock().unwrap().push(ServerMsg::State(state(Link::Ok, true)));
+        frame(&ctx, &mut app, 1000.0);
+        assert!(app.settled());
+        // Narrow and light: the rows still draw.
+        app.set_prefs(theme::Prefs { theme: theme::ThemeKind::Light, ..Default::default() });
+        frame(&ctx, &mut app, 320.0);
     }
 
     #[test]
