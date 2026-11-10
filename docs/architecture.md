@@ -261,22 +261,29 @@ MCP servers get a looser policy (read anything, network on, writes confined).
 
 ### Workspace environments (getting tools)
 
-`byob_exec::env::Envs` prepares every `run_command` / `run_python` call by stacking layers
-(`PATH` entries, variables, sandbox access) onto that clean environment, first match winning:
+`byob_exec::env::Envs` prepares every `run_command` / `run_python` call. First it decides
+*where* the call runs: in the workspace's **container** (Docker/Podman, opt-in per workspace,
+asked once when there is a `.devcontainer/devcontainer.json`; `env/container.rs`,
+`env/devcontainer.rs`), or here in the sandbox. Here, it stacks layers (`PATH` entries,
+variables, sandbox access) onto that clean environment, first match winning:
 
-1. **Installed packages** from `install_packages` (registered when Nix is present; it then
-   replaces `install_python_packages`): per workspace under `<data>/envs/<name>-<hash>/`, one
-   Nix `buildEnv` (programs, plus one `python3.withPackages` for Python libraries) behind a
-   GC-root out-link, nixpkgs pinned in `<data>/nix/nixpkgs.json`. Names are checked first
-   (`nix eval`; unknown ones get similar names back), pip-style and import names are mapped
-   (`sklearn` → `scikit-learn`, `convert` → `imagemagick`).
+1. **Installed packages** from `install_packages`, per workspace under
+   `<data>/envs/<name>-<hash>/`. With Nix: one `buildEnv` (programs, plus one
+   `python3.withPackages` for Python libraries) behind a GC-root out-link, nixpkgs pinned in
+   `<data>/nix/nixpkgs.json`; names are checked first (`nix eval`; unknown ones get similar
+   names back), pip-style and import names are mapped (`sklearn` → `scikit-learn`, `convert` →
+   `imagemagick`). Without Nix: pixi (conda-forge) into a byob-owned manifest, activated with
+   `pixi shell-hook --json` and cached (`env/pixi.rs`). With neither, `install_python_packages`
+   (uv) is offered instead and failed runs say how to get pixi.
 2. **A workspace `.venv` / `venv`** (any OS).
-3. **Project environments**, loaded once (sandboxed, with network, may write the workspace,
-   e.g. `flake.lock`) and cached in the workspace's state folder until their files change:
-   `flake.nix` / `shell.nix` (`nix print-dev-env --profile`, so GC-rooted; the `shellHook` runs
-   once and its variable changes are kept), `pixi.toml` (`pixi shell-hook --json`), mise
-   (`mise env --json`). A failure is reported once in the tool output; commands still run.
-   `BYOB_WORKSPACE_ENV=off` skips this step.
+3. **Project environments**, loaded once the user agreed (asked once per workspace through
+   an approval card, answer kept in `<data>/envs/workspaces.json`; `env/choices.rs`), then
+   loaded once (sandboxed, with network, may write the workspace, e.g. `flake.lock`) and
+   cached in the workspace's state folder until their files change: `flake.nix` /
+   `shell.nix` (`nix print-dev-env --profile`, so GC-rooted; the `shellHook` runs once and its
+   variable changes are kept), `pixi.toml` (`pixi shell-hook --json`), mise (`mise env
+   --json`). A failure is reported once in the tool output; commands still run.
+   `BYOB_WORKSPACE_ENV=off` skips this step, `on` loads without asking.
 4. **Support for the `nix` CLI** in every run: `/nix/var/nix` and `/etc/nix` readable, the
    daemon socket reachable (Seatbelt needs an explicit rule; Linux allows it), a shared
    `NIX_CACHE_HOME`, and `NIX_CONFIG` with flakes on, `substitute = true` (the client turns
@@ -286,8 +293,12 @@ MCP servers get a looser policy (read anything, network on, writes confined).
    in a run without network.
 
 Failed runs get a one-line hint naming the call to make (`jq: not found`,
-`ModuleNotFoundError`, `pip install`/`apt`/`sudo` attempts). Plan for other OSes:
-`docs/environments.md`.
+`ModuleNotFoundError`, `pip install`/`apt`/`sudo` attempts). The last resort,
+`install_system_packages` (Homebrew/winget, system-wide), is a tool whose `always_ask` makes
+every call an approval card that no grant or `--auto-approve` answers. Tools ask such
+questions mid-call through `ToolContext::ask` (a `Step` with `ask` set, Allow/Deny only);
+Settings shows and changes the per-workspace answers through `ClientMsg::WorkspaceEnv` and
+the `byob_tools::EnvControl` the engine is given. Details and plans: `docs/environments.md`.
 
 ## Inference
 

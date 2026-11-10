@@ -2,23 +2,27 @@
 //!
 //! Models fail most often not on the task but on a missing tool (`jq: not found`,
 //! `No module named 'matplotlib'`, a `pip install` that can't work on NixOS). So every
-//! `run_command` / `run_python` call is prepared by [`Envs`], which stacks **layers** onto
-//! the clean sandbox environment, first match winning:
+//! `run_command` / `run_python` call is prepared by [`Envs`]. If the user opted the
+//! workspace into a [`container`] (Docker/Podman; asked once when it has a
+//! devcontainer.json), the call runs there. Otherwise [`Envs`] stacks **layers** onto the
+//! clean sandbox environment, first match winning:
 //!
 //! 1. **Installed**: packages the model asked for with `install_packages`, kept per
-//!    workspace under `<data>/envs/` (Nix: one `buildEnv`, a GC root, nixpkgs pinned).
+//!    workspace under `<data>/envs/` (Nix: one `buildEnv`, a GC root, nixpkgs pinned;
+//!    without Nix: a [`pixi`] manifest of conda-forge packages).
 //! 2. **Project venv**: a `.venv` / `venv` in the workspace (any OS).
 //! 3. **Project environments** (`Project`): what the workspace declares itself, loaded
-//!    once (sandboxed, with network) and cached until its files change — a `flake.nix` /
-//!    `shell.nix` dev shell (`nix print-dev-env`, shellHook included), a pixi project
-//!    (`pixi shell-hook --json`), mise tools (`mise env --json`).
+//!    once the user agreed ([`choices`], asked once per workspace), then cached until its
+//!    files change — a `flake.nix` / `shell.nix` dev shell (`nix print-dev-env`, shellHook
+//!    included), a pixi project (`pixi shell-hook --json`), mise tools (`mise env --json`).
 //! 4. **Support**: what a package manager's own CLI needs inside the sandbox, so the model
 //!    can also run `nix shell nixpkgs#foo --command …` itself (store, daemon socket,
-//!    config, a persistent eval cache).
+//!    config, a persistent eval cache), and Homebrew's `bin`.
 //!
-//! Installing on request is Nix-only for now (the plan for macOS, Windows and other Linux
-//! is in `docs/environments.md`). Failed output gets a [`hints`] line that names the one
-//! tool to call, because small models follow an explicit next step far better than prose.
+//! The last resort, [`system`] (Homebrew / winget, system-wide), always needs a person's
+//! approval. Failed output gets a [`hints`] line that names the one tool to call, because
+//! small models follow an explicit next step far better than prose. Design and plans:
+//! `docs/environments.md`.
 
 pub mod choices;
 pub mod container;

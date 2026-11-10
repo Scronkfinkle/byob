@@ -1,11 +1,14 @@
 //! Tools that run code: [`RunCommand`] (`run_command`, a shell command), [`RunPython`]
 //! (`run_python`, Python code or a script), [`InstallPackages`] (`install_packages`,
-//! programs and Python libraries for the workspace, with Nix) and
-//! [`InstallPythonPackages`] (`install_python_packages`, into byob's managed venv with
-//! `uv`, where there is no package manager for `install_packages`).
+//! programs and Python libraries for the workspace, with Nix or pixi, or in the workspace's
+//! container), [`InstallPythonPackages`] (`install_python_packages`, into byob's managed
+//! venv with `uv`, where there is no package manager for `install_packages`) and
+//! [`InstallSystemPackages`] (`install_system_packages`, Homebrew/winget, the last resort a
+//! person approves every time).
 //!
-//! Every run is prepared by [`env::Envs`]: installed packages, the workspace's `.venv`
-//! and its Nix dev shell go on `PATH`, and the `nix` CLI works inside the sandbox.
+//! Every run is prepared by [`env::Envs`]: it runs in the workspace's container if the user
+//! opted in; otherwise installed packages, the workspace's `.venv` and (once the user agreed)
+//! its dev shell go on `PATH`, and the `nix` CLI works inside the sandbox.
 //!
 //! Everything runs through [`byob_sandbox`]: read the system, read+write the workspace and
 //! a private temp folder, no network unless the call asks (and the user approves), a
