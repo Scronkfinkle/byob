@@ -6,6 +6,7 @@ name: Publish crates
 on:
   release:
     types: [published]
+  pull_request: # TEMPORARY: dry-run validation on PR #1
   workflow_dispatch:
     inputs:
       dry_run:
@@ -43,5 +44,11 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           flags=(--workspace --exclude byob-web --exclude xtask --locked --allow-dirty)
-          if [[ "${{ github.event_name }}" == workflow_dispatch && "${{ inputs.dry_run }}" == true ]]; then flags+=(--dry-run); fi
+          # Upload only for a published release or a manual run with dry_run off;
+          # anything else (including test triggers) is a dry run.
+          if [[ "${{ github.event_name }}" == release ]] || [[ "${{ github.event_name }}" == workflow_dispatch && "${{ inputs.dry_run }}" == false ]]; then
+            echo "Publishing to crates.io"
+          else
+            flags+=(--dry-run)
+          fi
           nix develop --command cargo publish "${flags[@]}"
