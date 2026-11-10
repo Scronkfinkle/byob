@@ -1,5 +1,5 @@
 [package]
-name = "yah-store"
+name = "byob-store"
 description = "Pluggable chat storage (SQLite or a plain-files folder) for chats, messages, tool steps, grants and the undo journal; settings and secrets files (L1)"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-yah-types.workspace = true
+byob-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -1,5 +1,5 @@
 [package]
-name = "yah-mcp"
+name = "byob-mcp"
 description = "Blocking MCP client: stdio and streamable HTTP transports, tools/list and tools/call (L2)"
 version.workspace = true
 edition.workspace = true
@@ -18,7 +18,7 @@ url.workspace = true
 # A scripted MCP server over stdio, used by the integration tests
 # (`CARGO_BIN_EXE_yah-mcp-fake-server`). Not shipped.
 [[bin]]
-name = "yah-mcp-fake-server"
+name = "byob-mcp-fake-server"
 path = "tests/support/fake_server.rs"
 test = false
 doc = false

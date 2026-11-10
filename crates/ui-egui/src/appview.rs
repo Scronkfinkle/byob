@@ -7,12 +7,12 @@
 //!   `clip-path`. The theme goes in the URL hash and, when it changes, by `postMessage`;
 //!   errors the app reports come back the same way.
 //! - Desktop: the app binary plugs in a renderer that runs each app in a Servo helper
-//!   process (`apps/yah/src/apphost`) via [`crate::YahApp::set_app_view`]; it also shows
+//!   process (`apps/byob/src/apphost`) via [`crate::ByobApp::set_app_view`]; it also shows
 //!   apps live in chat cards ([`AppView::card`]). Without the helper, [`Placeholder`] shows a
 //!   summary and points at Open (system browser) and Export.
 
 use egui::{RichText, Stroke};
-use yah_protocol::artifact::THEME_VARS;
+use byob_protocol::artifact::THEME_VARS;
 
 use crate::theme::Tokens;
 
@@ -145,7 +145,7 @@ pub fn theme_vars(t: &Tokens) -> Vec<(&'static str, String)> {
     THEME_VARS.iter().zip(values).map(|(k, v)| (*k, v)).collect()
 }
 
-/// `#--yah-bg=%2316171a&…`, read by the helper script in served apps.
+/// `#--byob-bg=%2316171a&…`, read by the helper script in served apps.
 pub fn theme_hash(vars: &[(&'static str, String)]) -> String {
     let parts: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", v.replace('#', "%23"))).collect();
     format!("#{}", parts.join("&"))
@@ -175,7 +175,7 @@ impl AppView for Placeholder {
                     let name = doc.source.and_then(html_title).unwrap_or_else(|| doc.title.to_owned());
                     ui.label(RichText::new(name).strong().size(t.text_size(17.0)).color(t.text_strong));
                     ui.label(
-                        RichText::new(format!("Interactive app · version {} · {}", doc.version, yah_protocol::media::size_label(doc.size)))
+                        RichText::new(format!("Interactive app · version {} · {}", doc.version, byob_protocol::media::size_label(doc.size)))
                             .small()
                             .color(t.text_dim),
                     );
@@ -430,15 +430,15 @@ mod tests {
         let vars = theme_vars(&Tokens::dark());
         assert_eq!(vars.len(), THEME_VARS.len());
         let hash = theme_hash(&vars);
-        assert!(hash.starts_with("#--yah-bg=%23") && hash.contains("&--yah-accent=%23"), "{hash}");
+        assert!(hash.starts_with("#--byob-bg=%23") && hash.contains("&--byob-accent=%23"), "{hash}");
         assert!(!hash[1..].contains('#'));
-        // The desktop helper only accepts `--yah-` + lowercase letters and dashes.
+        // The desktop helper only accepts `--byob-` + lowercase letters and dashes.
         for (k, v) in &vars {
-            let name = k.strip_prefix("--yah-").unwrap_or_default();
+            let name = k.strip_prefix("--byob-").unwrap_or_default();
             assert!(!name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'), "{k}");
             assert!(v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'#'), "{k}={v}");
         }
-        assert!(vars.contains(&("--yah-radius", "6px".to_owned())));
+        assert!(vars.contains(&("--byob-radius", "6px".to_owned())));
     }
 
     #[test]

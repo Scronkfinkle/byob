@@ -1,4 +1,4 @@
-//! Chats on disk: mapping between `yah-store` rows and protocol types, chat ids, and titles
+//! Chats on disk: mapping between `byob-store` rows and protocol types, chat ids, and titles
 //! (a first-line heuristic at once, then a short model request after the first reply).
 
 use std::sync::Arc;
@@ -8,11 +8,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use yah_llm::{ChatMessage, StreamEvent};
-use yah_protocol::{
+use byob_llm::{ChatMessage, StreamEvent};
+use byob_protocol::{
     ArtifactRef, ChatSummary, Delegation, DelegationState, Entry, EntryRole, FileChange, MediaKind, MediaRef, Step, StepStatus, ToolAccess, TurnStats,
 };
-use yah_store::{AgentRun, Chat, MessageStats, NewStep, Role, StepAccess, StepChange, StepResult, StoredMessage};
+use byob_store::{AgentRun, Chat, MessageStats, NewStep, Role, StepAccess, StepChange, StepResult, StoredMessage};
 
 use crate::Input;
 use crate::limits::{DETAIL_CHARS, one_line, prefix};
@@ -21,8 +21,8 @@ use crate::limits::{DETAIL_CHARS, one_line, prefix};
 pub const UNTITLED: &str = "New chat";
 /// Longest chat title, in characters.
 pub const MAX_TITLE_CHARS: usize = 80;
-/// Error recorded on replies that were streaming when yah stopped.
-pub const INTERRUPTED: &str = "yah stopped before this reply finished";
+/// Error recorded on replies that were streaming when byob stopped.
+pub const INTERRUPTED: &str = "byob stopped before this reply finished";
 /// How long the title request may take before it is abandoned.
 const TITLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Stop reading the title reply after this much text (it should be a few words).
@@ -34,12 +34,12 @@ pub fn summary(chat: &Chat, busy: bool) -> ChatSummary {
     ChatSummary { id: chat.id.clone(), title: chat.title.clone(), updated_at: chat.updated_at, pinned_at: chat.pinned_at, busy }
 }
 
-pub fn store_cursor(c: &yah_protocol::ChatCursor) -> yah_store::ChatCursor {
-    yah_store::ChatCursor { updated_at: c.updated_at, id: c.id.clone() }
+pub fn store_cursor(c: &byob_protocol::ChatCursor) -> byob_store::ChatCursor {
+    byob_store::ChatCursor { updated_at: c.updated_at, id: c.id.clone() }
 }
 
-pub fn protocol_cursor(c: &yah_store::ChatCursor) -> yah_protocol::ChatCursor {
-    yah_protocol::ChatCursor { updated_at: c.updated_at, id: c.id.clone() }
+pub fn protocol_cursor(c: &byob_store::ChatCursor) -> byob_protocol::ChatCursor {
+    byob_protocol::ChatCursor { updated_at: c.updated_at, id: c.id.clone() }
 }
 
 /// A fresh chat id: time-based and readable, unique within this process.
@@ -50,12 +50,12 @@ pub fn new_chat_id() -> String {
 }
 
 /// Entry id for a stored message. Message row ids are positive and monotonic.
-pub fn entry_id(id: yah_store::MessageId) -> u64 {
+pub fn entry_id(id: byob_store::MessageId) -> u64 {
     u64::try_from(id.0).unwrap_or(0)
 }
 
-pub fn message_id(entry: u64) -> yah_store::MessageId {
-    yah_store::MessageId(i64::try_from(entry).unwrap_or(i64::MAX))
+pub fn message_id(entry: u64) -> byob_store::MessageId {
+    byob_store::MessageId(i64::try_from(entry).unwrap_or(i64::MAX))
 }
 
 pub fn to_stats(s: &TurnStats) -> MessageStats {
@@ -63,8 +63,8 @@ pub fn to_stats(s: &TurnStats) -> MessageStats {
 }
 
 /// A stored compaction for clients.
-pub fn compaction(c: &yah_store::Compaction) -> yah_protocol::Compaction {
-    yah_protocol::Compaction {
+pub fn compaction(c: &byob_store::Compaction) -> byob_protocol::Compaction {
+    byob_protocol::Compaction {
         id: u64::try_from(c.id).unwrap_or(0),
         after_entry: entry_id(c.through),
         tokens_before: c.tokens_before,
@@ -106,8 +106,8 @@ pub fn entry(m: StoredMessage, step_ids: &AtomicU64) -> Option<Entry> {
     })
 }
 
-/// A stored step for display. A step without a result was cut off when yah stopped.
-fn step(s: yah_store::Step, step_ids: &AtomicU64) -> Step {
+/// A stored step for display. A step without a result was cut off when byob stopped.
+fn step(s: byob_store::Step, step_ids: &AtomicU64) -> Step {
     let (summary, at) = step_args(&s.args);
     let (status, detail, changes) = match s.result {
         None => (StepStatus::Failed, "interrupted".to_owned(), Vec::new()),
@@ -154,7 +154,7 @@ pub fn attach_runs(entries: &mut [Entry], links: Vec<Option<(u64, usize)>>, runs
     }
 }
 
-/// A stored run as a step's delegation. One that never finished was cut off when yah stopped.
+/// A stored run as a step's delegation. One that never finished was cut off when byob stopped.
 fn delegation(run: AgentRun, step_ids: &AtomicU64) -> Delegation {
     let (state, error) = match (run.done, run.error) {
         (false, _) => (DelegationState::Stopped, Some("interrupted".to_owned())),
@@ -235,7 +235,7 @@ fn from_change(c: &StepChange) -> FileChange {
 
 /// Steps loaded from the store only have their file changes. Rebuild from those what a
 /// live step carried: the charts and images it made, and the artifact versions.
-pub fn restore_step_files(entries: &mut [Entry], artifacts: &[yah_protocol::Artifact]) {
+pub fn restore_step_files(entries: &mut [Entry], artifacts: &[byob_protocol::Artifact]) {
     let same = |a: &str, b: &str| {
         let (a, b) = (a.replace('\\', "/"), b.replace('\\', "/"));
         a == b || a.ends_with(&format!("/{b}"))
@@ -257,7 +257,7 @@ pub fn restore_step_files(entries: &mut [Entry], artifacts: &[yah_protocol::Arti
             if r.kind != MediaKind::File && !step.media.iter().any(|m| m.path == r.path) {
                 step.media.push(r);
             }
-            let found = yah_tools::artifact::parse_version_path(path).or_else(|| {
+            let found = byob_tools::artifact::parse_version_path(path).or_else(|| {
                 artifacts.iter().find_map(|a| a.versions.iter().find(|v| same(path, &v.path)).map(|v| ArtifactRef { id: a.id.clone(), version: v.n }))
             });
             if let Some(r) = found.filter(|r| artifacts.iter().any(|a| a.id == r.id) && !step.artifacts.contains(r)) {
@@ -286,8 +286,8 @@ pub fn clean_title(raw: &str, max: usize) -> String {
 
 /// Ask the model for a short title in the background; the answer arrives as
 /// [`Input::Titled`]. Never streams to clients and gives up quietly.
-pub fn spawn_titler(llm: yah_llm::Client, chat: String, user: String, reply: String, inbox: Sender<Input>) {
-    let spawned = thread::Builder::new().name("yah-title".into()).spawn(move || {
+pub fn spawn_titler(llm: byob_llm::Client, chat: String, user: String, reply: String, inbox: Sender<Input>) {
+    let spawned = thread::Builder::new().name("byob-title".into()).spawn(move || {
         let convo = format!("User: {}\n\nAssistant: {}", prefix(&user, 1500), prefix(&reply, 1500));
         let messages = vec![
             ChatMessage::system(
@@ -356,8 +356,8 @@ mod tests {
             delegation: None,
         };
         let new = new_step(&s);
-        let stored = yah_store::Step {
-            message_id: yah_store::MessageId(3),
+        let stored = byob_store::Step {
+            message_id: byob_store::MessageId(3),
             seq: 1,
             tool: new.tool,
             title: new.title,
@@ -367,7 +367,7 @@ mod tests {
         };
         let back = step(stored.clone(), &AtomicU64::new(7));
         assert_eq!(back, Step { id: 7, ..s });
-        let cut = step(yah_store::Step { result: None, args: Value::String("raw".into()), ..stored }, &AtomicU64::new(0));
+        let cut = step(byob_store::Step { result: None, args: Value::String("raw".into()), ..stored }, &AtomicU64::new(0));
         assert_eq!((cut.status, cut.detail.as_str(), cut.at), (StepStatus::Failed, "interrupted", 0));
     }
 }

@@ -1,5 +1,5 @@
 [package]
-name = "yah-exec"
+name = "byob-exec"
 description = "Tools that run code in the sandbox: run_command, run_python, install_python_packages (L3)"
 version.workspace = true
 edition.workspace = true
@@ -8,8 +8,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-yah-tools.workspace = true
-yah-sandbox.workspace = true
+byob-tools.workspace = true
+byob-sandbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true

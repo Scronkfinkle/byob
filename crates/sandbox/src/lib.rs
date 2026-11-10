@@ -3,18 +3,18 @@
 //!
 //! The workspace forbids `unsafe`, so restrictions can't be applied between `fork` and
 //! `exec` (`pre_exec`). Instead the app binary doubles as a **helper**: run as
-//! `yah __sandbox-exec <policy-json> -- <cmd> <args…>` it confines itself and then becomes
+//! `byob __sandbox-exec <policy-json> -- <cmd> <args…>` it confines itself and then becomes
 //! (or, with a PID namespace, starts and supervises) the command. [`Sandbox`] builds such
 //! command lines; [`dispatch_helper`] goes first in the app's `main`.
 //!
 //! ```no_run
 //! # use std::path::Path;
-//! use yah_sandbox::{Policy, RunOptions, Sandbox};
+//! use byob_sandbox::{Policy, RunOptions, Sandbox};
 //! let sandbox = Sandbox::from_current_exe()?;
-//! let policy = Policy::for_workspace(Path::new("/home/me/project"), Path::new("/tmp/yah-run-1"));
+//! let policy = Policy::for_workspace(Path::new("/home/me/project"), Path::new("/tmp/byob-run-1"));
 //! let mut cmd = sandbox.command(&policy, "sh", ["-c", "ls"]);
-//! yah_sandbox::clean_env(&mut cmd, Path::new("/tmp/yah-run-1"));
-//! let out = yah_sandbox::run(cmd, &RunOptions::default(), &|| false)?;
+//! byob_sandbox::clean_env(&mut cmd, Path::new("/tmp/byob-run-1"));
+//! let out = byob_sandbox::run(cmd, &RunOptions::default(), &|| false)?;
 //! # Ok::<(), String>(())
 //! ```
 //!
@@ -57,9 +57,9 @@ pub use run::{Captured, Outcome, RunOptions, kill_group, run};
 pub use snapshot::{Changes, Snapshot};
 
 /// Set to `off` to run commands without a sandbox (an explicit user opt-in; logged).
-pub const DISABLE_ENV: &str = "YAH_SANDBOX";
+pub const DISABLE_ENV: &str = "BYOB_SANDBOX";
 
-/// The user turned the sandbox off with `YAH_SANDBOX=off` (or `0`, `false`, `no`).
+/// The user turned the sandbox off with `BYOB_SANDBOX=off` (or `0`, `false`, `no`).
 pub fn disabled_by_user() -> bool {
     std::env::var(DISABLE_ENV).is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false" | "no"))
 }
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn argv_shape() {
-        let sb = Sandbox::new("/bin/yah");
+        let sb = Sandbox::new("/bin/byob");
         let p = Policy::default();
         let v = sb.argv(&p, "sh", ["-c", "true"]);
         let parsed = parse_helper_args(&v[1..]).unwrap();
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn temp_dir_is_private_and_removed() {
-        let t = TempDir::new("yah-test-").unwrap();
+        let t = TempDir::new("byob-test-").unwrap();
         let p = t.path().to_path_buf();
         assert!(p.is_dir());
         drop(t);

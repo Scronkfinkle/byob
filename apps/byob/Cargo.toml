@@ -1,6 +1,6 @@
 [package]
-name = "yah"
-description = "yah desktop app; optionally serves the web UI (L5)"
+name = "byob"
+description = "byob desktop app; optionally serves the web UI (L5)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,22 +8,22 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-yah-types.workspace = true
-yah-agent.workspace = true
-yah-tools.workspace = true
-yah-plugins.workspace = true
-yah-sandbox.workspace = true
-yah-exec.workspace = true
-yah-store.workspace = true
-yah-server.workspace = true
-yah-ui-egui.workspace = true
+byob-types.workspace = true
+byob-agent.workspace = true
+byob-tools.workspace = true
+byob-plugins.workspace = true
+byob-sandbox.workspace = true
+byob-exec.workspace = true
+byob-store.workspace = true
+byob-server.workspace = true
+byob-ui-egui.workspace = true
 egui.workspace = true
 eframe = { workspace = true, features = ["persistence"] }
 log.workspace = true
 env_logger.workspace = true
 png.workspace = true
 # Talking to the Servo helper process (host/artifact-host) that renders HTML apps inline.
-yah-artifact-wire.workspace = true
+byob-artifact-wire.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true

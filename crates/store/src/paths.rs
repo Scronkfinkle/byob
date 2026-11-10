@@ -1,7 +1,7 @@
-//! Where yah keeps its files.
+//! Where byob keeps its files.
 //!
-//! By default the platform's config and data directories for the app `yah`
-//! (e.g. `~/.config/yah` and `~/.local/share/yah` on Linux). Setting `YAH_HOME` — or
+//! By default the platform's config and data directories for the app `byob`
+//! (e.g. `~/.config/byob` and `~/.local/share/byob` on Linux). Setting `BYOB_HOME` — or
 //! calling [`Paths::at`] — puts everything under one folder instead, which is what tests,
 //! portable installs and side-by-side profiles use.
 
@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Result, StoreError};
 
-/// Environment variable that overrides every yah directory with one root folder.
-pub const HOME_ENV: &str = "YAH_HOME";
+/// Environment variable that overrides every byob directory with one root folder.
+pub const HOME_ENV: &str = "BYOB_HOME";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -21,7 +21,7 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// `YAH_HOME` if set (and non-empty), otherwise the platform directories.
+    /// `BYOB_HOME` if set (and non-empty), otherwise the platform directories.
     pub fn resolve() -> Result<Self> {
         match std::env::var_os(HOME_ENV) {
             Some(home) if !home.is_empty() => Ok(Self::at(home)),
@@ -29,9 +29,9 @@ impl Paths {
         }
     }
 
-    /// The platform's per-user directories for `yah`, ignoring `YAH_HOME`.
+    /// The platform's per-user directories for `byob`, ignoring `BYOB_HOME`.
     pub fn platform() -> Result<Self> {
-        let dirs = directories::ProjectDirs::from("", "", "yah").ok_or(StoreError::NoHome)?;
+        let dirs = directories::ProjectDirs::from("", "", "byob").ok_or(StoreError::NoHome)?;
         Ok(Self { config_dir: dirs.config_dir().to_owned(), data_dir: dirs.data_dir().to_owned() })
     }
 
@@ -42,7 +42,7 @@ impl Paths {
     }
 
     pub fn db(&self) -> PathBuf {
-        self.data_dir.join("yah.db")
+        self.data_dir.join("byob.db")
     }
 
     pub fn settings(&self) -> PathBuf {
@@ -83,21 +83,21 @@ mod tests {
 
     #[test]
     fn at_puts_everything_under_root() {
-        let p = Paths::at("/tmp/yah-x");
-        assert_eq!(p.db(), Path::new("/tmp/yah-x/yah.db"));
-        assert_eq!(p.settings(), Path::new("/tmp/yah-x/settings.json"));
-        assert_eq!(p.secrets(), Path::new("/tmp/yah-x/secrets.json"));
-        assert_eq!(p.undo_dir(), Path::new("/tmp/yah-x/undo"));
-        assert_eq!(p.chats_folder(), Path::new("/tmp/yah-x/chats-folder"));
-        assert_eq!(p.themes_dir(), Path::new("/tmp/yah-x/themes"));
+        let p = Paths::at("/tmp/byob-x");
+        assert_eq!(p.db(), Path::new("/tmp/byob-x/byob.db"));
+        assert_eq!(p.settings(), Path::new("/tmp/byob-x/settings.json"));
+        assert_eq!(p.secrets(), Path::new("/tmp/byob-x/secrets.json"));
+        assert_eq!(p.undo_dir(), Path::new("/tmp/byob-x/undo"));
+        assert_eq!(p.chats_folder(), Path::new("/tmp/byob-x/chats-folder"));
+        assert_eq!(p.themes_dir(), Path::new("/tmp/byob-x/themes"));
     }
 
     #[test]
     fn platform_dirs_are_named_yah() {
         // CI machines normally have a HOME; skip quietly when they don't.
         if let Ok(p) = Paths::platform() {
-            assert!(p.config_dir.to_string_lossy().contains("yah"));
-            assert!(p.data_dir.to_string_lossy().contains("yah"));
+            assert!(p.config_dir.to_string_lossy().contains("byob"));
+            assert!(p.data_dir.to_string_lossy().contains("byob"));
         }
     }
 }

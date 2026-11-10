@@ -129,7 +129,7 @@ pub fn respond(stream: &mut impl Write, status: u16, content_type: &str, body: &
 pub fn forbidden_page(stream: &mut impl Write, why: &str) -> io::Result<()> {
     let why = why.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     let body = format!(
-        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>yah: access denied</title>\
+        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>byob: access denied</title>\
          <body style=\"font-family:system-ui,sans-serif;background:#16171a;color:#ddd;max-width:36em;margin:4em auto;padding:0 1em\">\
          <h1>Access denied</h1><p>{why}</p></body></html>"
     );
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn choose_static_prefers_fresh_gz() {
-        let dir = std::env::temp_dir().join(format!("yah-static-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("byob-static-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("app.wasm"), b"plain").unwrap();

@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use yah_protocol::{ApprovalAnswer, ClientMsg, Connection, DelegationState, DelegationUpdate, Entry, PROTOCOL_VERSION, ServerMsg, Step, StepStatus};
-use yah_tools::{Access, Registry};
-use yah_types::InferenceConfig;
+use byob_protocol::{ApprovalAnswer, ClientMsg, Connection, DelegationState, DelegationUpdate, Entry, PROTOCOL_VERSION, ServerMsg, Step, StepStatus};
+use byob_tools::{Access, Registry};
+use byob_types::InferenceConfig;
 
 use crate::loop_tests::{Fake, Reply, call, read_request, recv, sse};
 use crate::{EngineConfig, EngineHandle, LocalConnection, SubagentOptions};
@@ -105,7 +105,7 @@ struct Setup {
     runs: Arc<AtomicUsize>,
 }
 
-fn engine(url: String, workspace: &Path, paths: Option<yah_store::Paths>, tool_access: Access, parallel: Option<usize>) -> Setup {
+fn engine(url: String, workspace: &Path, paths: Option<byob_store::Paths>, tool_access: Access, parallel: Option<usize>) -> Setup {
     let runs = Arc::new(AtomicUsize::new(0));
     let mut tools = Registry::default();
     tools.register(Arc::new(Fake { name: "echo", access: Access::Read, runs: Arc::clone(&runs), reply: None, change: false }));
@@ -135,7 +135,7 @@ struct View {
     entries: Vec<Entry>,
     finished: Option<Option<String>>,
     finished_at: Option<Instant>,
-    usage: Option<yah_protocol::ChatUsage>,
+    usage: Option<byob_protocol::ChatUsage>,
 }
 
 impl View {
@@ -217,7 +217,7 @@ fn temp() -> tempfile::TempDir {
 fn delegate_runs_a_child_turn_and_returns_its_report() {
     let ws = temp();
     let data = temp();
-    let paths = yah_store::Paths::at(data.path());
+    let paths = byob_store::Paths::at(data.path());
     let child = |_: &str, round: usize| if round == 0 { call("echo", r#"{"text":"3 lines"}"#) } else { Reply::Text("notes.md has 3 lines.") };
     let (url, seen) = routed(script(&["Count the lines of notes.md"], child, Duration::ZERO));
     let s = engine(url.clone(), ws.path(), Some(paths.clone()), Access::Write, Some(2));
@@ -462,7 +462,7 @@ fn workspace_agent_definitions_pick_prompt_and_tools() {
 #[test]
 fn an_agents_model_role_picks_its_endpoint() {
     let ws = temp();
-    let dir = ws.path().join(".yah").join("agents");
+    let dir = ws.path().join(".byob").join("agents");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("quick.md"), "---\nname: quick\ndescription: Fast lookups\nmodel: fast\n---\nBe quick.").unwrap();
     std::fs::write(dir.join("other.md"), "---\nname: other\ndescription: On another model id\nmodel: tiny-model\n---\nBe small.").unwrap();

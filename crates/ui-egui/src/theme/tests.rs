@@ -129,7 +129,7 @@ fn system_theme_follows_the_os_and_defaults_to_dark() {
     let prefs = Prefs { dark_theme: "nord".into(), light_theme: "gruvbox-light".into(), ..Prefs::default() };
     assert_eq!(Tokens::for_prefs(&prefs, Some(egui::Theme::Dark), &[]).app_bg, rgb(0x2e3440));
     assert_eq!(Tokens::for_prefs(&prefs, Some(egui::Theme::Light), &[]).app_bg, rgb(0xfbf1c7));
-    // An id that no longer exists (deleted theme file) falls back to yah's own.
+    // An id that no longer exists (deleted theme file) falls back to byob's own.
     let gone = Prefs { dark_theme: "user:gone".into(), ..Prefs::default() };
     assert_eq!(Tokens::for_prefs(&gone, None, &[]), Tokens::dark());
 }
@@ -151,7 +151,7 @@ fn hostile_knobs_are_clamped() {
         ..Prefs::default()
     }
     .sanitized();
-    assert_eq!((p.accent, p.dark_theme.as_str()), (Accent::Theme, "yah-dark"));
+    assert_eq!((p.accent, p.dark_theme.as_str()), (Accent::Theme, "byob-dark"));
     assert!(p.overrides.is_empty() && p.imported.is_empty());
 }
 
@@ -180,8 +180,8 @@ fn version_0_prefs_migrate_without_losing_anything() {
     let p = ron::from_str::<Prefs>(v0).unwrap().sanitized();
     assert_eq!((p.version, p.theme, &p.accent), (Prefs::VERSION, ThemeKind::Light, &Accent::Teal));
     assert_eq!((p.knobs.font_scale, p.knobs.high_contrast), (1.3, true));
-    assert_eq!((p.dark_theme.as_str(), p.light_theme.as_str()), ("yah-dark", "yah-light"));
-    // Same colours as before: yah's light theme, the old teal accent.
+    assert_eq!((p.dark_theme.as_str(), p.light_theme.as_str()), ("byob-dark", "byob-light"));
+    // Same colours as before: byob's light theme, the old teal accent.
     assert!(!Tokens::for_prefs(&p, None, &[]).dark);
     let plain = Tokens::for_prefs(&Prefs { knobs: Knobs { high_contrast: false, ..p.knobs }, ..p.clone() }, None, &[]);
     assert_eq!((plain.app_bg, plain.accent), (rgb(0xf6f6f4), rgb(0x0d6b63)));
@@ -203,7 +203,7 @@ fn apply_sets_the_egui_theme_and_sizes() {
     Tokens::light().apply(&ctx);
     assert_eq!(ctx.theme(), egui::Theme::Light);
     assert_eq!(ctx.style_of(egui::Theme::Light).visuals.panel_fill, Tokens::light().panel_bg);
-    let big = Tokens::derive(&presets::YAH_DARK, Color32::BLUE, &Knobs { font_scale: 1.2, code_scale: 1.5, reduce_motion: true, ..Knobs::default() });
+    let big = Tokens::derive(&presets::BYOB_DARK, Color32::BLUE, &Knobs { font_scale: 1.2, code_scale: 1.5, reduce_motion: true, ..Knobs::default() });
     big.apply(&ctx);
     assert_eq!(ctx.theme(), egui::Theme::Dark);
     let style = ctx.style_of(egui::Theme::Dark);
@@ -281,7 +281,7 @@ fn malformed_theme_files_warn_and_fall_back() {
     {
         assert!(w.contains(expect), "missing warning about {expect}:\n{w}");
     }
-    assert_eq!((f.def.name.as_str(), f.def.base.id, f.def.dark), ("Untitled theme", "yah-dark", true));
+    assert_eq!((f.def.name.as_str(), f.def.base.id, f.def.dark), ("Untitled theme", "byob-dark", true));
     assert_eq!(f.def.colors, vec![("app_bg".to_owned(), rgb(0x010203))]);
     // `colors.accent` sets the theme's accent (it drives hover, selection, your bubbles).
     assert_eq!(f.def.accent, Some(rgb(0xff8800)));
@@ -292,9 +292,9 @@ fn malformed_theme_files_warn_and_fall_back() {
     // Missing roles come from the base preset.
     let t = Tokens::build(&f.def, &Prefs::default());
     assert_eq!((t.app_bg, t.text), (rgb(0x010203), Tokens::dark().text));
-    // Light theme with an unknown base falls back to yah's light one.
+    // Light theme with an unknown base falls back to byob's light one.
     let light = file::parse(r#"{"name":"L","base":42,"dark":false}"#, Origin::Imported(0)).unwrap();
-    assert_eq!((light.def.base.id, light.def.dark), ("yah-light", false));
+    assert_eq!((light.def.base.id, light.def.dark), ("byob-light", false));
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn user_themes_are_listed_and_resolved() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn themes_folder_loads_json_files() {
-    let dir = std::env::temp_dir().join(format!("yah-themes-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("byob-themes-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.json"), r#"{"name":"A","base":"nord","colors":{"text":"nope"}}"#).unwrap();

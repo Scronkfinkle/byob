@@ -4,7 +4,7 @@
 //! prompt. Unknown keys (`color`, `permissionMode`, …) are kept in [`AgentDef::meta`] and
 //! otherwise ignored, so files written for Claude Code load unchanged.
 //!
-//! yah looks in `<workspace>/.yah/agents`, `<workspace>/.claude/agents`, `<config>/agents`
+//! byob looks in `<workspace>/.byob/agents`, `<workspace>/.claude/agents`, `<config>/agents`
 //! and each plugin's `agents/` folder (see [`crate::Plugin::agents`]).
 
 use std::collections::BTreeMap;
@@ -39,7 +39,7 @@ pub struct AgentDef {
     pub prompt: String,
     /// The file it came from.
     pub source: PathBuf,
-    /// Frontmatter keys yah doesn't use, as text.
+    /// Frontmatter keys byob doesn't use, as text.
     pub meta: BTreeMap<String, String>,
 }
 
@@ -101,8 +101,8 @@ fn parse_tools(raw: &str) -> Vec<String> {
     out
 }
 
-/// What a Claude Code tool name means in yah. Names yah has (`read_file`) map to
-/// themselves; Claude Code's own tools map to the closest yah tools; tools with no
+/// What a Claude Code tool name means in byob. Names byob has (`read_file`) map to
+/// themselves; Claude Code's own tools map to the closest byob tools; tools with no
 /// counterpart (`WebSearch`, `Task`) map to nothing.
 pub fn tool_aliases(name: &str) -> Vec<&str> {
     match name {

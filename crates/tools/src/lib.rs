@@ -1,6 +1,6 @@
 //! The tool interface. Everything the model can call — built-in file tools, plugin
 //! skills, Python tools, MCP server tools — implements [`Tool`] and is collected in a
-//! [`Registry`]. The agent loop (`yah-agent`) owns calling them, the permission gate, and
+//! [`Registry`]. The agent loop (`byob-agent`) owns calling them, the permission gate, and
 //! approvals; tools only describe themselves and do the work.
 //!
 //! Tools are synchronous and run on the turn's worker thread. Long-running tools should

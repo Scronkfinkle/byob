@@ -6,9 +6,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use yah_protocol::{ChatSummary, ClientMsg, Connection, Entry, NoticeLevel, PROTOCOL_VERSION, ServerMsg};
-use yah_store::{NewMessage, Paths};
-use yah_types::InferenceConfig;
+use byob_protocol::{ChatSummary, ClientMsg, Connection, Entry, NoticeLevel, PROTOCOL_VERSION, ServerMsg};
+use byob_store::{NewMessage, Paths};
+use byob_types::InferenceConfig;
 
 use crate::{EngineConfig, EngineHandle, LocalConnection, chats};
 
@@ -42,7 +42,7 @@ fn drain(conn: &mut LocalConnection) -> Vec<ServerMsg> {
 }
 
 struct Hello {
-    state: yah_protocol::EngineState,
+    state: byob_protocol::EngineState,
     chats: Vec<ChatSummary>,
     chat: Option<ChatSummary>,
     entries: Vec<Entry>,
@@ -192,12 +192,12 @@ fn inference_change_reaches_every_client_and_is_saved() {
     desktop.send(ClientMsg::SetInference { base_url: "http://gpu-box:8000/v1".into(), model: "qwen".into(), api_key: Some("sk-new".into()) });
     let ServerMsg::State(state) = recv(&mut browser) else { panic!("expected state") };
     assert_eq!(state.endpoint.as_deref(), Some("http://gpu-box:8000/v1/chat/completions"));
-    let settings = yah_store::Settings::load(&paths.settings()).value;
+    let settings = byob_store::Settings::load(&paths.settings()).value;
     assert_eq!(settings.inference.base_url.as_deref(), Some("http://gpu-box:8000/v1"));
     assert_eq!(settings.inference.model.as_deref(), Some("qwen"));
     // The key goes to secrets.json only.
     assert!(!std::fs::read_to_string(paths.settings()).unwrap().contains("sk-new"));
-    assert_eq!(yah_store::Secrets::load(&paths.secrets()).value.api_key.as_deref(), Some("sk-new"));
+    assert_eq!(byob_store::Secrets::load(&paths.secrets()).value.api_key.as_deref(), Some("sk-new"));
 }
 
 #[test]

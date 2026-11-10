@@ -439,12 +439,12 @@ fn failed_reply_and_interrupted_recovery(s: &dyn ChatStore) {
     let a = s.append_message("c", &NewMessage::assistant_streaming(None)).unwrap();
     s.finish_message(a, Some("connection reset"), None).unwrap();
     let b = s.append_message("c", &NewMessage::assistant_streaming(None)).unwrap();
-    assert_eq!(s.finish_interrupted("yah stopped").unwrap(), 1);
+    assert_eq!(s.finish_interrupted("byob stopped").unwrap(), 1);
     let ms = s.messages("c").unwrap();
     assert_eq!(ms[0].error.as_deref(), Some("connection reset"));
     assert_eq!(ms[1].id, b);
     assert!(ms[1].done);
-    assert_eq!(ms[1].error.as_deref(), Some("yah stopped"));
+    assert_eq!(ms[1].error.as_deref(), Some("byob stopped"));
     assert_eq!(s.finish_interrupted("again").unwrap(), 0);
 }
 

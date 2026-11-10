@@ -20,7 +20,7 @@ use crate::files::{Loaded, load_json, save_json};
 fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(d: D) -> Result<T, D::Error> {
     let v = Value::deserialize(d)?;
     Ok(serde_json::from_value(v.clone()).unwrap_or_else(|e| {
-        log::warn!("yah-store: ignoring settings value {v}: {e}");
+        log::warn!("byob-store: ignoring settings value {v}: {e}");
         T::default()
     }))
 }
@@ -42,7 +42,7 @@ pub struct InferenceSettings {
     pub base_url: Option<String>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Fields this build doesn't know (written by a newer yah, or by hand); preserved.
+    /// Fields this build doesn't know (written by a newer byob, or by hand); preserved.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -57,7 +57,7 @@ impl InferenceSettings {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageKind {
-    /// One SQLite file, `<data>/yah.db`.
+    /// One SQLite file, `<data>/byob.db`.
     #[default]
     Sqlite,
     /// Plain files: one folder per chat with an append-only `events.jsonl` and a generated
@@ -71,7 +71,7 @@ impl StorageKind {
     }
 }
 
-/// When the engine summarises a conversation to free context (see `yah-agent`).
+/// When the engine summarises a conversation to free context (see `byob-agent`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CompactionSettings {
@@ -188,7 +188,7 @@ impl Settings {
             strip_secrets(&mut role.extra, &format!("models.{name}."), &mut loaded.warnings);
         }
         for w in &loaded.warnings {
-            log::warn!("yah-store: {w}");
+            log::warn!("byob-store: {w}");
         }
         loaded
     }
@@ -260,7 +260,7 @@ impl Secrets {
             }
         }
         for w in &loaded.warnings {
-            log::warn!("yah-store: {w}");
+            log::warn!("byob-store: {w}");
         }
         loaded
     }

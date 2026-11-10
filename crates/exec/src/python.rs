@@ -1,18 +1,18 @@
 //! Which Python runs model code, and the managed environment for data-analysis packages.
 //!
-//! Order: `$YAH_PYTHON`, then the managed venv `<data>/python/venv` (created by
+//! Order: `$BYOB_PYTHON`, then the managed venv `<data>/python/venv` (created by
 //! [`install_python_packages`](crate::InstallPythonPackages) with `uv`), then `python3` /
 //! `python` on `PATH`.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-pub use yah_sandbox::which;
+pub use byob_sandbox::which;
 
 /// Overrides the interpreter.
-pub const PYTHON_ENV: &str = "YAH_PYTHON";
+pub const PYTHON_ENV: &str = "BYOB_PYTHON";
 
-/// The managed environment's folder under the yah data folder.
+/// The managed environment's folder under the byob data folder.
 pub fn managed_root(data_dir: &Path) -> PathBuf {
     data_dir.join("python")
 }
@@ -29,7 +29,7 @@ pub fn venv_python(venv: &Path) -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Python {
     pub path: PathBuf,
-    /// It's yah's managed venv.
+    /// It's byob's managed venv.
     pub managed: bool,
 }
 
@@ -49,13 +49,13 @@ impl Python {
     }
 
     /// Folders the sandbox must let this interpreter read (see
-    /// [`yah_sandbox::interpreter_read_paths`]).
+    /// [`byob_sandbox::interpreter_read_paths`]).
     pub fn read_paths(&self) -> Vec<PathBuf> {
-        yah_sandbox::interpreter_read_paths(self.path.as_os_str())
+        byob_sandbox::interpreter_read_paths(self.path.as_os_str())
     }
 }
 
-/// `python3` (or `python`) on `PATH`, ignoring `$YAH_PYTHON` and the managed venv.
+/// `python3` (or `python`) on `PATH`, ignoring `$BYOB_PYTHON` and the managed venv.
 pub fn system_python() -> Option<PathBuf> {
     which(OsStr::new("python3")).or_else(|| which(OsStr::new("python")))
 }

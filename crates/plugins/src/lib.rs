@@ -1,12 +1,12 @@
 //! Plugins, compatible with hob's: a folder with a `hob-plugin.json` (or
-//! `yah-plugin.json`) that adds any mix of
+//! `byob-plugin.json`) that adds any mix of
 //!
 //! - **skills** (`skills/<name>/SKILL.md`, the Agent Skills format) → [`skills`],
 //!   [`UseSkillTool`], [`skills_prompt`];
 //! - **Python tools** (`tools[].run`) → [`python::PythonTool`];
 //! - **subagents** (`agents/*.md`, Claude Code's format) → [`agents`];
 //! - **connectors** (`mcpServers`, MCP) → [`connectors::ConnectorToolAdapter`] over the
-//!   [`connectors::Connector`] trait, which `yah-mcp`'s client implements.
+//!   [`connectors::Connector`] trait, which `byob-mcp`'s client implements.
 //!
 //! Typical use by the agent:
 //! 1. [`discover`] the plugin folders; show `errors` and each plugin's `problems`.

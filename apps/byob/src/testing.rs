@@ -52,7 +52,7 @@ impl Command {
         })
     }
 
-    fn run(self, app: &mut yah_ui_egui::YahApp) {
+    fn run(self, app: &mut byob_ui_egui::ByobApp) {
         let a = app.artifacts_mut();
         match self {
             Self::OpenAll => a.open_all(),
@@ -83,11 +83,11 @@ impl Runner {
         Self { script, started: Instant::now(), waiting: None, requested: false, then_at: None, next_at: None, done: Arc::default(), result: Arc::default() }
     }
 
-    pub fn frame(&mut self, app: &mut yah_ui_egui::YahApp, ctx: &egui::Context) {
+    pub fn frame(&mut self, app: &mut byob_ui_egui::ByobApp, ctx: &egui::Context) {
         for path in std::mem::take(&mut self.script.attach) {
-            match yah_ui_egui::upload::read_path(&path) {
+            match byob_ui_egui::upload::read_path(&path) {
                 Ok((name, bytes)) => app.attach(&name, &bytes),
-                Err(e) => eprintln!("yah: --attach {}: {e}", path.display()),
+                Err(e) => eprintln!("byob: --attach {}: {e}", path.display()),
             }
         }
         // Messages go out once the attachments have uploaded (so they ride along with the
@@ -112,7 +112,7 @@ impl Runner {
         ctx.request_repaint_after(Duration::from_millis(100));
         if self.done.load(Ordering::Acquire) {
             if let Some(msg) = self.result.lock().unwrap_or_else(PoisonError::into_inner).take() {
-                eprintln!("yah: {msg}");
+                eprintln!("byob: {msg}");
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -125,7 +125,7 @@ impl Runner {
                 return;
             }
             let c = self.script.then.remove(0);
-            eprintln!("yah: {:.1}s: {c:?}", elapsed.as_secs_f64());
+            eprintln!("byob: {:.1}s: {c:?}", elapsed.as_secs_f64());
             c.run(app);
             let now = Instant::now();
             self.next_at = if let Command::Wait(s) = c { Some(now + Duration::from_secs(s)) } else { None };

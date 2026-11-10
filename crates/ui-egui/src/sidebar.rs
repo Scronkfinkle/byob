@@ -2,7 +2,7 @@
 //! pin / delete from each row's context menu (right click, or long press on touch screens).
 //! On narrow screens (a phone over Tailscale) the list replaces the conversation while open.
 
-use yah_protocol::{ChatCursor, ChatSummary, ClientMsg, ServerMsg};
+use byob_protocol::{ChatCursor, ChatSummary, ClientMsg, ServerMsg};
 
 use crate::theme::Tokens;
 

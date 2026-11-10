@@ -1,7 +1,7 @@
 //! Connectors: MCP servers a plugin declares (or the user pastes), adapted into
-//! [`yah_tools::Tool`]s.
+//! [`byob_tools::Tool`]s.
 //!
-//! The MCP client itself lives in `yah-mcp`; this module only needs the small
+//! The MCP client itself lives in `byob-mcp`; this module only needs the small
 //! [`Connector`] trait, so the adapter is testable with a fake and the client can be
 //! swapped. [`ConnectorTool::from_mcp`] and [`ConnectorResult::from_mcp`] turn MCP's
 //! `tools/list` entries and `tools/call` results (raw JSON) into these types.
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use yah_tools::{Access, FileChange, Tool, ToolContext, ToolOutput, ToolSpec};
+use byob_tools::{Access, FileChange, Tool, ToolContext, ToolOutput, ToolSpec};
 
 use crate::PluginRef;
 use crate::manifest::{McpServerConfig, ParseOptions, parse_manifest, parse_server, plugin_id_ok, setting_key_ok};
@@ -27,7 +27,7 @@ pub const MAX_RESULT_CHARS: usize = 100_000;
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_DESCRIPTION_CHARS: usize = 1000;
 
-/// A running MCP server, as far as tools are concerned. Implemented by `yah-mcp`'s client.
+/// A running MCP server, as far as tools are concerned. Implemented by `byob-mcp`'s client.
 pub trait Connector: Send + Sync {
     /// The server's tools (`tools/list`, all pages).
     fn list_tools(&self) -> Result<Vec<ConnectorTool>, String>;
@@ -168,7 +168,7 @@ impl ConnectorResult {
     }
 }
 
-/// One MCP server tool as a yah tool.
+/// One MCP server tool as a byob tool.
 pub struct ConnectorToolAdapter {
     name: String,
     plugin: PluginRef,
@@ -595,7 +595,7 @@ mod tests {
         assert!(tools[0].connector_tool().read_only() && !tools[0].connector_tool().needs_approval(false));
         assert!(tools[1].connector_tool().needs_approval(false));
 
-        let ws = std::env::temp_dir().join(format!("yah-plugins-conn-{}", std::process::id()));
+        let ws = std::env::temp_dir().join(format!("byob-plugins-conn-{}", std::process::id()));
         let _ = fs::remove_dir_all(&ws);
         fs::create_dir_all(&ws).unwrap();
         let cancel = AtomicBool::new(false);

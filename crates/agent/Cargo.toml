@@ -1,5 +1,5 @@
 [package]
-name = "yah-agent"
+name = "byob-agent"
 description = "Headless agent engine: turn loop, tool calling, permissions, undo (L3)"
 version.workspace = true
 edition.workspace = true
@@ -8,12 +8,12 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-yah-types.workspace = true
-yah-llm.workspace = true
-yah-store.workspace = true
-yah-tools.workspace = true
-yah-protocol.workspace = true
-yah-plugins.workspace = true
+byob-types.workspace = true
+byob-llm.workspace = true
+byob-store.workspace = true
+byob-tools.workspace = true
+byob-protocol.workspace = true
+byob-plugins.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

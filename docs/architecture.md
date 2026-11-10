@@ -1,23 +1,23 @@
-# yah architecture
+# byob architecture
 
 Last updated: 2026-11-09
 
 ## Shape
 
-yah is a desktop app whose UI can also be opened in any browser (e.g. over Tailscale).
+byob is a desktop app whose UI can also be opened in any browser (e.g. over Tailscale).
 There is one engine; every window or tab is just a client of it.
 
 ```
  browser tab (wasm egui) ──WebSocket──┐
-                                      ├──►  engine (yah-agent, own thread)
+                                      ├──►  engine (byob-agent, own thread)
  desktop window (egui) ───channels────┘        ├─ turns: stream from inference URL
                                                ├─ tools, files, python (host-side)
                                                └─ transcript / storage
 ```
 
-- Clients speak only `yah-protocol` messages (`ClientMsg` / `ServerMsg`), in-process via
+- Clients speak only `byob-protocol` messages (`ClientMsg` / `ServerMsg`), in-process via
   channels or as JSON text frames over `/ws`. The desktop and web UIs are the same code
-  (`yah-ui-egui`), so they cannot drift.
+  (`byob-ui-egui`), so they cannot drift.
 - All state lives in the engine. A client that connects late gets `State` + `Transcript`,
   then live deltas. Turns keep running when a tab closes.
 - Secrets (API keys) never leave the engine; `EngineState` only says `has_api_key`.
@@ -38,7 +38,7 @@ graph of a shipped target.
 ## Layers
 
 ```
-L6  apps/yah (desktop, --serve, --headless) · apps/yah-web (wasm)
+L6  apps/byob (desktop, --serve, --headless) · apps/byob-web (wasm)
 L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
 L4  agent: engine, turns, tool loop, permissions, approvals
 L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python)
@@ -47,15 +47,15 @@ L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store (SQLite or f
 L0  types
 ```
 
-`cargo xtask layers` enforces: dependencies point down; only `ui-egui`, `yah`, `yah-web`
-may use GUI crates; browser crates (`types`, `protocol`, `ui-egui`, `yah-web`) may only
+`cargo xtask layers` enforces: dependencies point down; only `ui-egui`, `byob`, `byob-web`
+may use GUI crates; browser crates (`types`, `protocol`, `ui-egui`, `byob-web`) may only
 depend on each other; banned async runtimes; no Servo/SpiderMonkey (they live only in the
 separate `host/artifact-host` workspace). `cargo xtask wasm` checks the browser crates
 build for `wasm32-unknown-unknown`.
 
 ## Remote access & security
 
-`yah --serve` binds `127.0.0.1:7470` by default. Expose it with `tailscale serve 7470`,
+`byob --serve` binds `127.0.0.1:7470` by default. Expose it with `tailscale serve 7470`,
 which terminates TLS and restricts access to your tailnet. Never bind a public interface.
 
 What `tailscale serve` forwards (from its source, `ipn/ipnlocal/serve.go`; not observed
@@ -94,7 +94,7 @@ Funnel (public internet) requests get `Tailscale-Funnel-Request: ?1` and no iden
   shows one "reconnecting…" banner rather than a notice per retry.
 - **Artifacts.** `GET /artifact/<chat>/<id>/<version>` serves a version only if it belongs to
   that chat (same auth as page loads). Every response carries its own CSP: `sandbox
-  allow-scripts allow-forms` (opaque origin even as a top-level tab, so no access to yah's
+  allow-scripts allow-forms` (opaque origin even as a top-level tab, so no access to byob's
   storage, and its `Origin: null` fails the `/ws` check), `default-src 'none'`, inline
   script/style only, `connect-src 'none'`, `frame-ancestors 'self'`. HTML gets a helper script
   first (theme variables from the URL hash, error reports to the host page, WebRTC removed).
@@ -106,14 +106,14 @@ Funnel (public internet) requests get `Tailscale-Funnel-Request: ?1` and no iden
 ## Themes
 
 Appearance is per device (`theme::Prefs`, eframe storage: a file natively, `localStorage` in
-the browser) and lives entirely in `yah-ui-egui`. A theme is a `presets::Palette` (the
+the browser) and lives entirely in `byob-ui-egui`. A theme is a `presets::Palette` (the
 schemes' own colours in a dozen slots) plus a theme file's changes (`file::ThemeDef`);
 `Tokens::build` derives every colour role from it, nudges text-like roles to readable
 contrast, then applies the user's accent, knobs, high contrast and per-theme overrides.
 Widgets read only `Tokens` (colours, `round()`/`pad()`/`text_size()` for the radius, density
 and size knobs). Theme files are small JSON (`base` preset + changed roles + knobs);
 desktop lists `<config>/themes/*.json`, the browser keeps imported ones in its prefs. HTML
-artifacts get the theme as `--yah-*` CSS variables (`THEME_VARS`, additive only).
+artifacts get the theme as `--byob-*` CSS variables (`THEME_VARS`, additive only).
 
 ## Artifacts
 
@@ -121,7 +121,7 @@ Files the model makes to keep, beside the conversation, versioned and exportable
 follows the file name: `.md` (rendered, Preview/Source), `.html` (single-file app), `.chart.json`
 (native chart), PNG/JPEG, anything else as text. `create_artifact` / `update_artifact` (find/
 replace edits, each `find` must occur exactly once) / `read_artifact` write only new files
-under `.yah/artifacts/<id>/` in the chat's workspace — `artifact.json` (chat, kind, title, file
+under `.byob/artifacts/<id>/` in the chat's workspace — `artifact.json` (chat, kind, title, file
 name, versions) and `v<n>.<ext>` per version — so they are auto-allowed. Charts and images
 other tools make are adopted (an index pointing at the file where it is). A version an undo
 removed drops out of the list; numbers are never reused.
@@ -133,33 +133,33 @@ id. The pane has tabs (per chat), collapses to a rail of icons with live/paused 
 floating button with a count on phones; Ctrl+Backslash toggles), and any artifact can be
 minimized to a one-line chip in the chat and the pane ("Collapse all" in the header). Pane
 width, open/collapsed, and tabs + minimized artifacts per chat are device prefs
-(`yah-ui-egui::pane`, stored like the appearance prefs). HTML apps render through the
-`AppView` seam in `yah-ui-egui`: an iframe overlay in the
+(`byob-ui-egui::pane`, stored like the appearance prefs). HTML apps render through the
+`AppView` seam in `byob-ui-egui`: an iframe overlay in the
 browser (positioned from Rust each frame, egui popups cut out with a clip-path); on the
 desktop, Servo in a helper process (below), or a summary card with Open/Export when the
 helper isn't installed.
 
 ### Desktop HTML apps: the Servo helper
 
-`apps/yah/src/apphost` implements `AppView` for the desktop. Each live app version runs in
-its own `yah-artifact-host` process (`host/artifact-host/`, a separate Cargo workspace so
-Servo's MPL-2.0 code and tokio never enter yah; see AGENTS.md §3). The helper is found via
-`$YAH_ARTIFACT_HOST` or next to the `yah` executable.
+`apps/byob/src/apphost` implements `AppView` for the desktop. Each live app version runs in
+its own `byob-artifact-host` process (`host/artifact-host/`, a separate Cargo workspace so
+Servo's MPL-2.0 code and tokio never enter byob; see AGENTS.md §3). The helper is found via
+`$BYOB_ARTIFACT_HOST` or next to the `byob` executable.
 
-- **Protocol** (`yah-artifact-wire`, stdin/stdout): frames of `u32` length + tag + fields.
-  yah → helper: `Load{html, theme, viewport}`, `Resize`, `Input` (mouse, wheel, keys, text),
-  `Focus`, `Theme`, `Ping`, `Shutdown`, `Visible(bool)`. Helper → yah: `Ready`, `Features`
+- **Protocol** (`byob-artifact-wire`, stdin/stdout): frames of `u32` length + tag + fields.
+  byob → helper: `Load{html, theme, viewport}`, `Resize`, `Input` (mouse, wheel, keys, text),
+  `Focus`, `Theme`, `Ping`, `Shutdown`, `Visible(bool)`. Helper → byob: `Ready`, `Features`
   (bits, right after `Ready`), `Frame{w,h,rgba}` (only when the pixels changed),
   `ContentHeight`, `Error{message,line}`, `Title`, `Cursor`, `Pong`. Additions are new tags
-  only; yah sends `Visible` only to helpers that announced it in `Features` (an older helper
+  only; byob sends `Visible` only to helpers that announced it in `Features` (an older helper
   would refuse the tag). Bodies are capped at 64 MiB and validated before use.
 - **Rendering**: Servo with a software GL context (Mesa llvmpipe via surfman), `paint()`,
-  `glReadPixels`, compare with the last frame, send. yah uploads the newest frame into an
+  `glReadPixels`, compare with the last frame, send. byob uploads the newest frame into an
   egui texture; a reader thread keeps only the latest frame, a writer thread means a stuck
   helper never blocks the UI.
 - **Document**: the same wrapper the server uses (theme defaults + helper script) as a
   `data:` URL with the theme in the hash; theme changes are applied live by script. Script
-  errors come back as marked `console.error` lines and feed "Send error to yah".
+  errors come back as marked `console.error` lines and feed "Send error to byob".
 - **Sandbox**: `data:` origin is opaque (no storage outlives the process); every
   navigation after the document and every non-`data:`/`blob:` load is refused in
   `load_web_resource`; Servo's HTTP(S) proxy points at a dead port as a second layer;
@@ -170,9 +170,9 @@ Servo's MPL-2.0 code and tokio never enter yah; see AGENTS.md §3). The helper i
   snapshot and the process exits; back in view: a fresh process (page state is lost).
 - **Minimized / background** (a minimized chip, a background tab, the pane collapsed to its
   rail): the process keeps running but gets `Visible(false)` — Servo hides the webview and
-  the helper stops painting, reading back and measuring — and yah uploads nothing. Restore
+  the helper stops painting, reading back and measuring — and byob uploads nothing. Restore
   sends `Visible(true)` and the page carries on where it was. After 60 s in the background
-  (`BACKGROUND_PAUSE_AFTER`, `apps/yah/src/apphost/life.rs`) it is paused like an
+  (`BACKGROUND_PAUSE_AFTER`, `apps/byob/src/apphost/life.rs`) it is paused like an
   out-of-view app: snapshot kept, process gone (~300 MB RSS freed per app in a headless
   run). In the browser the iframe goes `display:none` and is emptied after 60 s unseen.
 - **Liveness**: a ping every 500 ms, answered by evaluating a no-op on the page's script
@@ -233,9 +233,9 @@ list_files · 4.1 s]`), is the tool result, so the parent's context grows only b
   shows as stopped/interrupted), are exported with the chat, and count towards the agents'
   token total.
 - **Agent definitions** are Claude Code's format: Markdown with `name`, `description`,
-  optional `tools` (comma or YAML list; `Read`, `Bash`, … map to yah tools, unknown names are
+  optional `tools` (comma or YAML list; `Read`, `Bash`, … map to byob tools, unknown names are
   ignored) and `model`, unknown keys kept; the body is the prompt. Looked up in
-  `<workspace>/.yah/agents`, `<workspace>/.claude/agents`, `<config>/agents` and plugins'
+  `<workspace>/.byob/agents`, `<workspace>/.claude/agents`, `<config>/agents` and plugins'
   `agents/`, first name wins; descriptions are listed in the main system prompt. Without
   `agent`, a general-purpose worker runs.
 - **Model roles.** `settings.json` `models: { fast: { base_url?, model? } }` (keys in
@@ -246,8 +246,8 @@ list_files · 4.1 s]`), is the tool result, so the parent's context grows only b
 ## Running code (sandbox)
 
 `run_command`, `run_python`, plugin Python tools and stdio MCP servers start through
-`yah-sandbox`. No `unsafe` means no `pre_exec`, so the app binary doubles as a helper:
-`yah __sandbox-exec <policy-json> -- cmd args…` (dispatched first thing in `main`) confines
+`byob-sandbox`. No `unsafe` means no `pre_exec`, so the app binary doubles as a helper:
+`byob __sandbox-exec <policy-json> -- cmd args…` (dispatched first thing in `main`) confines
 itself, then runs the command. On Linux: Landlock filesystem allow-list (system dirs
 read-only; workspace + a private temp dir writable), `no_new_privs`, rlimits, and — where
 unprivileged user namespaces work — an empty network namespace (network off by default)
@@ -256,12 +256,12 @@ with it. Without namespaces: Landlock TCP deny only (UDP open) and process-group
 Commands get a minimal environment (no API keys), `HOME`/`TMPDIR` in the temp dir,
 `MPLBACKEND=Agg`. Parent side: wall-clock timeout, head+tail output caps, Stop, killpg.
 macOS uses a `sandbox-exec` profile (compile-checked only); elsewhere, and where Landlock is
-missing, commands run unsandboxed with a warning. `YAH_SANDBOX=off` turns it off.
+missing, commands run unsandboxed with a warning. `BYOB_SANDBOX=off` turns it off.
 MCP servers get a looser policy (read anything, network on, writes confined).
 
 ## Inference
 
-`InferenceConfig { base_url, model, api_key }`. `yah-llm` posts to
+`InferenceConfig { base_url, model, api_key }`. `byob-llm` posts to
 `{base_url}/chat/completions` with `stream: true`, assembles content, reasoning
 (`reasoning_content`/`reasoning`, or inline `<think>` tags) and streamed `tool_calls`,
 and reports usage. Because there's no grammar-constrained local engine anymore, the agent
@@ -269,7 +269,7 @@ will run the tool-calling rounds itself (cap 30 per turn, as hob did).
 
 ## Storage
 
-The engine holds a `Box<dyn yah_store::ChatStore>` (chats, messages incl. streamed deltas,
+The engine holds a `Box<dyn byob_store::ChatStore>` (chats, messages incl. streamed deltas,
 steps, compactions, grants, undo journal); `open_backend(&Settings, &Paths)` picks the
 implementation from `"storage"` in settings.json (`--storage sqlite|folder` and
 `--chats-folder DIR` override it for a run). Both are `Send`, owned by the engine thread, and
@@ -277,14 +277,14 @@ run the same contract test suite (`crates/store/src/tests/backends.rs`); the eng
 on both too (`test_store::folder_too!`). `export(from, to)` copies everything between them
 (timestamps, flags, steps, stats, compactions by position, grants, undo journals; chats the
 target already has are skipped), so switching backends is a copy, not a migration:
-`yah --export-chats-to folder|sqlite` copies from the storage in use.
+`byob --export-chats-to folder|sqlite` copies from the storage in use.
 
 **Message ids are per run.** The folder backend issues new message ids every time it opens,
 so nothing may persist a message (= transcript entry) id: compactions are stored by message
 number in the folder, undo journals are in memory (to persist them, key by task id), artifact
 metadata and the UI's per-device pane prefs name only chat and artifact ids.
 
-- **`"sqlite"`** (default): `<data>/yah.db`, WAL, versioned schema (`schema.rs`).
+- **`"sqlite"`** (default): `<data>/byob.db`, WAL, versioned schema (`schema.rs`).
 - **`"folder"`**: plain files under `"chats_folder"` (default `<data>/chats-folder`, `~/`
   allowed), meant to be grepped and synced (Syncthing, Dropbox, git):
 
@@ -327,25 +327,25 @@ metadata and the UI's per-device pane prefs name only chat and artifact ids.
   **External changes.** `list_chats` (first page) rescans `chats/` (one `stat` per folder):
   new folders appear, changed ones are replayed, vanished ones disappear. A write that finds
   the file grew behind our back replays it first. No file-watcher thread yet, so an open chat
-  updates on the next listing or write. Not supported: two yah processes writing one root at
+  updates on the next listing or write. Not supported: two byob processes writing one root at
   once (lines would interleave), and true concurrent edits of one chat on two machines (the
   sync tool's conflict copy is ignored as a duplicate). Undo backups stay machine-local.
 
-## hob → yah mapping
+## hob → byob mapping
 
-| hob (TypeScript)                                   | yah                                  |
+| hob (TypeScript)                                   | byob                                  |
 |----------------------------------------------------|--------------------------------------|
-| `shared/*` (agent, types, chart, effort)           | `yah-types`, `yah-protocol`          |
-| `engine/*`, `main/engine.ts`, setup/downloader/catalog/hardware/gguf, `packages/picker`, `catalog/` | **removed** → `yah-llm` (HTTP client to a user-supplied URL) |
+| `shared/*` (agent, types, chart, effort)           | `byob-types`, `byob-protocol`          |
+| `engine/*`, `main/engine.ts`, setup/downloader/catalog/hardware/gguf, `packages/picker`, `catalog/` | **removed** → `byob-llm` (HTTP client to a user-supplied URL) |
 | `main/vision/*` (spawned llama-server)             | **removed** → `image_url` parts to the same endpoint |
-| `main/ipc.ts`, preload, Electron IPC               | `yah-protocol` + `yah-server`        |
-| `main/agent/*`                                     | `yah-agent`                          |
-| `main/tools/*`                                     | `yah-tools`                          |
-| `main/store.ts`, `settings.ts`, `paths.ts`         | `yah-store`                          |
-| `main/plugins/*` (skills, MCP, mcpb)               | future `yah-plugins`, `yah-mcp` (hand-rolled JSON-RPC, no tokio) |
-| `main/python/*`                                    | `yah-sandbox` + `yah-exec`           |
-| `main/accounts/*`                                  | future `yah-accounts`                |
-| renderer (React)                                   | `yah-ui-egui`                        |
+| `main/ipc.ts`, preload, Electron IPC               | `byob-protocol` + `byob-server`        |
+| `main/agent/*`                                     | `byob-agent`                          |
+| `main/tools/*`                                     | `byob-tools`                          |
+| `main/store.ts`, `settings.ts`, `paths.ts`         | `byob-store`                          |
+| `main/plugins/*` (skills, MCP, mcpb)               | future `byob-plugins`, `byob-mcp` (hand-rolled JSON-RPC, no tokio) |
+| `main/python/*`                                    | `byob-sandbox` + `byob-exec`           |
+| `main/accounts/*`                                  | future `byob-accounts`                |
+| renderer (React)                                   | `byob-ui-egui`                        |
 
 ## GUI choice
 

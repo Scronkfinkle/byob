@@ -11,8 +11,8 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use egui::{Stroke, vec2};
-use yah_protocol::media::{self, MAX_ATTACHMENTS, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_BYTES};
-use yah_protocol::{ClientMsg, Connection, MediaRef};
+use byob_protocol::media::{self, MAX_ATTACHMENTS, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_BYTES};
+use byob_protocol::{ClientMsg, Connection, MediaRef};
 
 use crate::theme::Tokens;
 
@@ -165,7 +165,7 @@ pub fn drop_overlay(ctx: &egui::Context, t: &Tokens) {
         return;
     }
     let rect = ctx.content_rect();
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("yah-drop")));
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("byob-drop")));
     painter.rect_filled(rect, 0.0, t.app_bg.gamma_multiply(0.85));
     painter.rect_stroke(rect.shrink(24.0), 12.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
     painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Drop files to attach", egui::FontId::proportional(t.text_size(22.0)), t.text_strong);
@@ -194,7 +194,7 @@ pub fn read_path(path: &std::path::Path) -> Picked {
 fn read_dropped(ctx: &egui::Context, file: egui::DroppedFileHandle, tx: Sender<Picked>) {
     let path = file.path().to_path_buf();
     let ctx = ctx.clone();
-    let _ = std::thread::Builder::new().name("yah-drop".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("byob-drop".into()).spawn(move || {
         let _ = tx.send(read_path(&path));
         ctx.request_repaint();
     });
@@ -218,7 +218,7 @@ fn read_dropped(ctx: &egui::Context, file: egui::DroppedFileHandle, tx: Sender<P
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn pick_files(ctx: &egui::Context, tx: Sender<Picked>) {
     let ctx = ctx.clone();
-    let _ = std::thread::Builder::new().name("yah-picker".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("byob-picker".into()).spawn(move || {
         match native_dialog() {
             Ok(paths) if paths.is_empty() => {
                 // cancelled: an empty error just re-enables the button
@@ -294,7 +294,7 @@ pub(crate) fn pick_files(ctx: &egui::Context, tx: Sender<Picked>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yah_protocol::ServerMsg;
+    use byob_protocol::ServerMsg;
 
     #[derive(Default)]
     struct Recorder(Vec<ClientMsg>);
@@ -319,7 +319,7 @@ mod tests {
         for (i, m) in conn.0.iter().enumerate() {
             let ClientMsg::Upload { upload, size, offset, data, done, .. } = m else { panic!() };
             assert_eq!((*upload, *size, *offset as usize, *done), (1, bytes.len() as u64, joined.len(), i == 2));
-            assert!(m.to_json().len() < yah_protocol::MAX_FRAME_BYTES);
+            assert!(m.to_json().len() < byob_protocol::MAX_FRAME_BYTES);
             joined.extend(media::decode(data).unwrap());
         }
         assert_eq!(joined, bytes);
@@ -351,7 +351,7 @@ mod tests {
         assert!(u.add(&mut conn, "one more", b"x").is_err());
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let d = std::env::temp_dir().join(format!("yah-upload-test-{}", std::process::id()));
+            let d = std::env::temp_dir().join(format!("byob-upload-test-{}", std::process::id()));
             std::fs::create_dir_all(&d).unwrap();
             assert!(read_path(&d).unwrap_err().contains("folder"));
             std::fs::write(d.join("a.csv"), "a,b").unwrap();

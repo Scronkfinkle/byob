@@ -1,12 +1,12 @@
-//! [`Connector`] backed by the `yah-mcp` client: how plugin `mcpServers` become live tools.
+//! [`Connector`] backed by the `byob-mcp` client: how plugin `mcpServers` become live tools.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
-use yah_mcp::{CallResult, Content, HttpConfig, McpClient, McpTool, StdioConfig};
-use yah_sandbox::{Policy, Sandbox};
-use yah_tools::ToolContext;
+use byob_mcp::{CallResult, Content, HttpConfig, McpClient, McpTool, StdioConfig};
+use byob_sandbox::{Policy, Sandbox};
+use byob_tools::ToolContext;
 
 use crate::connectors::{Connector, ConnectorContent, ConnectorResult, ConnectorTool};
 use crate::manifest::McpServerConfig;
@@ -73,10 +73,10 @@ impl McpSandbox {
         let mut p = Policy { read: vec![PathBuf::from("/")], ..Default::default() }
             .network(true)
             .allow_unsandboxed(true)
-            .remove_env("YAH_API_KEY")
+            .remove_env("BYOB_API_KEY")
             .allow_write(&self.workspace)
             .allow_write(std::env::temp_dir());
-        p.write.extend(yah_sandbox::system_write_paths());
+        p.write.extend(byob_sandbox::system_write_paths());
         if let Some(dir) = &cfg.cwd {
             p = p.allow_write(dir);
         }
@@ -154,7 +154,7 @@ fn result_of(r: CallResult) -> ConnectorResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yah_mcp::ToolAnnotations;
+    use byob_mcp::ToolAnnotations;
 
     #[test]
     fn maps_tool_metadata() {
@@ -178,15 +178,15 @@ mod tests {
     #[test]
     fn sandbox_wraps_stdio_servers() {
         let ws = std::env::temp_dir();
-        let sb = McpSandbox { sandbox: Sandbox::new("/opt/yah"), workspace: ws.clone() };
+        let sb = McpSandbox { sandbox: Sandbox::new("/opt/byob"), workspace: ws.clone() };
         let mut cfg = StdioConfig::new("npx").args(["-y", "server", "/"]).cwd("/plugins/x");
         let policy = sb.policy(&cfg);
-        assert!(policy.network && policy.remove_env.contains(&"YAH_API_KEY".to_owned()));
+        assert!(policy.network && policy.remove_env.contains(&"BYOB_API_KEY".to_owned()));
         assert!(policy.write.contains(&ws.canonicalize().unwrap()) && policy.write.contains(&PathBuf::from("/plugins/x")));
         assert!(!policy.write.contains(&PathBuf::from("/")), "an argument of / must not open the whole disk");
         sb.wrap(&mut cfg);
-        assert_eq!(cfg.command, "/opt/yah");
-        assert_eq!(cfg.args[0], yah_sandbox::HELPER_ARG);
+        assert_eq!(cfg.command, "/opt/byob");
+        assert_eq!(cfg.args[0], byob_sandbox::HELPER_ARG);
         assert_eq!(&cfg.args[2..], ["--", "npx", "-y", "server", "/"]);
     }
 

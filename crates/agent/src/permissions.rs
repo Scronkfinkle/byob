@@ -1,7 +1,7 @@
 //! The permission gate: which tool calls run on their own, which ask the user, and which
 //! are refused outright. "Always allow" grants live in the store (per chat or global).
 
-use yah_protocol::ToolAccess;
+use byob_protocol::ToolAccess;
 
 /// What to do with calls of one [`ToolAccess`] level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

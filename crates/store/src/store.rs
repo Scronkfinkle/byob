@@ -15,7 +15,7 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Largest page [`Store::list_chats`] returns.
 pub const MAX_PAGE: usize = 500;
 
-/// yah's database: chats, messages, tool steps, always-allow grants and the undo journal.
+/// byob's database: chats, messages, tool steps, always-allow grants and the undo journal.
 ///
 /// # Threads
 ///
@@ -48,7 +48,7 @@ impl Store {
     /// Open (creating if needed) the database at `path` and migrate it to the latest schema.
     ///
     /// A file that isn't a SQLite database yields [`StoreError::Corrupt`]; one written by a
-    /// newer yah yields [`StoreError::TooNew`]. Neither modifies the file.
+    /// newer byob yields [`StoreError::TooNew`]. Neither modifies the file.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_owned();
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
@@ -76,7 +76,7 @@ impl Store {
         if wal {
             let mode: String = conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0)).map_err(classify)?;
             if !mode.eq_ignore_ascii_case("wal") {
-                log::warn!("yah-store: {} uses journal mode {mode}, not WAL", path.display());
+                log::warn!("byob-store: {} uses journal mode {mode}, not WAL", path.display());
             }
             // Safe with WAL (a crash can lose the last commits, never corrupt) and much cheaper.
             conn.pragma_update(None, "synchronous", "NORMAL").map_err(classify)?;

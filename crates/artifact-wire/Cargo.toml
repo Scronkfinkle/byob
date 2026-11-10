@@ -1,6 +1,6 @@
 [package]
-name = "yah-artifact-wire"
-description = "Wire protocol between yah and the yah-artifact-host helper process (L1, no dependencies)"
+name = "byob-artifact-wire"
+description = "Wire protocol between byob and the byob-artifact-host helper process (L1, no dependencies)"
 # No workspace-inherited fields: the separate host/artifact-host workspace path-depends on
 # this crate, so it must stand on its own.
 version = "0.1.0"

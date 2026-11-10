@@ -11,7 +11,7 @@
 //!
 //! ```no_run
 //! use std::time::Duration;
-//! use yah_mcp::{McpClient, StdioConfig};
+//! use byob_mcp::{McpClient, StdioConfig};
 //!
 //! let client = McpClient::connect_stdio(&StdioConfig::new("npx").args(["-y", "@modelcontextprotocol/server-everything"]))?;
 //! for tool in client.list_tools()? {
@@ -19,7 +19,7 @@
 //! }
 //! let out = client.call_tool("echo", serde_json::json!({ "message": "hi" }), Duration::from_secs(60))?;
 //! println!("{} (error: {})", out.text, out.is_error);
-//! # Ok::<(), yah_mcp::McpError>(())
+//! # Ok::<(), byob_mcp::McpError>(())
 //! ```
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -139,7 +139,7 @@ impl McpClient {
         let params = json!({
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
-            "clientInfo": { "name": "yah", "version": env!("CARGO_PKG_VERSION") },
+            "clientInfo": { "name": "byob", "version": env!("CARGO_PKG_VERSION") },
         });
         // Dropping `client` on error stops the server.
         let result = client.request("initialize", params, init_timeout, None)?;
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn spawn_failure_is_an_error() {
-        let err = McpClient::connect_stdio(&StdioConfig::new("/nonexistent/yah-mcp-server")).unwrap_err();
+        let err = McpClient::connect_stdio(&StdioConfig::new("/nonexistent/byob-mcp-server")).unwrap_err();
         assert!(matches!(err, McpError::Spawn { .. }), "{err:?}");
     }
 

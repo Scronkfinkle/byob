@@ -22,8 +22,8 @@ use std::path::{Component, Path, PathBuf};
 /// Longest path we accept from the model, in bytes.
 pub const MAX_PATH_LEN: usize = 4096;
 
-/// Hidden folder for yah's own bookkeeping (trash, undo). File tools may not touch it.
-pub const RESERVED_DIR: &str = ".yah";
+/// Hidden folder for byob's own bookkeeping (trash, undo). File tools may not touch it.
+pub const RESERVED_DIR: &str = ".byob";
 
 /// A path inside the workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,7 +53,7 @@ impl Resolved {
         self.abs == self.root
     }
 
-    /// True if this is yah's own `.yah` folder or inside it.
+    /// True if this is byob's own `.byob` folder or inside it.
     pub fn is_reserved(&self) -> bool {
         self.abs.strip_prefix(&self.root).ok().and_then(|r| r.components().next()).is_some_and(|c| c.as_os_str() == RESERVED_DIR)
     }
@@ -233,14 +233,14 @@ mod tests {
     #[test]
     fn reserved_dir() {
         let d = ws();
-        assert!(resolve(d.path(), ".yah/trash/x").unwrap().is_reserved());
-        assert!(resolve(d.path(), ".yah").unwrap().is_reserved());
-        assert!(!resolve(d.path(), "a/.yah").unwrap().is_reserved());
+        assert!(resolve(d.path(), ".byob/trash/x").unwrap().is_reserved());
+        assert!(resolve(d.path(), ".byob").unwrap().is_reserved());
+        assert!(!resolve(d.path(), "a/.byob").unwrap().is_reserved());
         assert!(!resolve(d.path(), ".").unwrap().is_reserved());
     }
 
     #[test]
     fn missing_workspace() {
-        assert!(resolve(Path::new("/definitely/not/here/yah"), "x").is_err());
+        assert!(resolve(Path::new("/definitely/not/here/byob"), "x").is_err());
     }
 }

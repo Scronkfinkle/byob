@@ -1,5 +1,5 @@
 [package]
-name = "yah-types"
+name = "byob-types"
 description = "Shared serde types: messages, steps, attachments, settings (L0)"
 version.workspace = true
 edition.workspace = true

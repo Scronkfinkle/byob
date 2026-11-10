@@ -1,10 +1,10 @@
-//! yah desktop entry point.
+//! byob desktop entry point.
 //!
 //! ```text
-//! yah                         desktop window
-//! yah --serve [ADDR]          desktop window + browser access (default 127.0.0.1:7470)
-//! yah --headless [ADDR]       browser access only, no window
-//!     --web-dir DIR           built web bundle to serve (default: $YAH_WEB_DIR, else apps/yah-web/dist)
+//! byob                         desktop window
+//! byob --serve [ADDR]          desktop window + browser access (default 127.0.0.1:7470)
+//! byob --headless [ADDR]       browser access only, no window
+//!     --web-dir DIR           built web bundle to serve (default: $BYOB_WEB_DIR, else apps/byob-web/dist)
 //!     --allow-user LOGIN      only admit this Tailscale login via `tailscale serve` (repeatable)
 //!     --inference-url URL     OpenAI-compatible base URL (default: settings.json)
 //!     --model NAME            (default: settings.json)
@@ -34,9 +34,9 @@
 //!                             settings.json `compaction`, 80% of the window)
 //! ```
 //!
-//! Chats live in `yah.db` (or, with `storage = "folder"`, in plain files); preferences in `settings.json` and the API key in `secrets.json`
-//! (all under `$YAH_HOME` if set, else the platform config/data directories). Flags and
-//! `YAH_API_KEY` override the files for this run; changing the endpoint in the UI saves it.
+//! Chats live in `byob.db` (or, with `storage = "folder"`, in plain files); preferences in `settings.json` and the API key in `secrets.json`
+//! (all under `$BYOB_HOME` if set, else the platform config/data directories). Flags and
+//! `BYOB_API_KEY` override the files for this run; changing the endpoint in the UI saves it.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod apphost;
@@ -49,9 +49,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use yah_agent::{EngineConfig, EngineHandle};
-use yah_store::{Paths, Secrets, Settings, StorageKind, Theme};
-use yah_types::InferenceConfig;
+use byob_agent::{EngineConfig, EngineHandle};
+use byob_store::{Paths, Secrets, Settings, StorageKind, Theme};
+use byob_types::InferenceConfig;
 
 #[derive(Default)]
 struct Args {
@@ -71,7 +71,7 @@ struct Args {
     open_settings: bool,
     settings_section: Option<String>,
     window_size: Option<[f32; 2]>,
-    tool_mode: yah_agent::ToolMode,
+    tool_mode: byob_agent::ToolMode,
     compact_at: Option<usize>,
     storage: Option<StorageKind>,
     chats_folder: Option<PathBuf>,
@@ -94,10 +94,10 @@ fn parse_args() -> Result<Args, String> {
         serve: None,
         headless: false,
         allowed_users: Vec::new(),
-        web_dir: std::env::var_os("YAH_WEB_DIR").map_or_else(|| PathBuf::from("apps/yah-web/dist"), PathBuf::from),
+        web_dir: std::env::var_os("BYOB_WEB_DIR").map_or_else(|| PathBuf::from("apps/byob-web/dist"), PathBuf::from),
         inference_url: None,
         model: None,
-        api_key: std::env::var("YAH_API_KEY").ok().filter(|k| !k.is_empty()),
+        api_key: std::env::var("BYOB_API_KEY").ok().filter(|k| !k.is_empty()),
         workspace: None,
         dev_tools: false,
         auto_approve: false,
@@ -106,7 +106,7 @@ fn parse_args() -> Result<Args, String> {
         open_settings: false,
         settings_section: None,
         window_size: None,
-        tool_mode: yah_agent::ToolMode::Auto,
+        tool_mode: byob_agent::ToolMode::Auto,
         compact_at: None,
         storage: None,
         chats_folder: None,
@@ -155,7 +155,7 @@ fn parse_args() -> Result<Args, String> {
             // Hidden, for testing: force native or prompt-based tool calling.
             "--tool-mode" => {
                 let v = it.next().ok_or("--tool-mode needs auto, native or prompt")?;
-                args.tool_mode = yah_agent::ToolMode::parse(&v).ok_or_else(|| format!("unknown tool mode {v:?} (auto, native, prompt)"))?;
+                args.tool_mode = byob_agent::ToolMode::parse(&v).ok_or_else(|| format!("unknown tool mode {v:?} (auto, native, prompt)"))?;
             }
             // Hidden, for testing: a low compaction threshold in tokens.
             "--compact-at" => {
@@ -177,7 +177,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "-h" | "--help" => {
                 return Err(
-                    "usage: yah [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--storage sqlite|folder] [--chats-folder DIR] [--export-chats-to sqlite|folder] [--plugin DIR]... [--dev-tools] [--theme system|dark|light|THEME]"
+                    "usage: byob [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--storage sqlite|folder] [--chats-folder DIR] [--export-chats-to sqlite|folder] [--plugin DIR]... [--dev-tools] [--theme system|dark|light|THEME]"
                         .into(),
                 );
             }
@@ -188,7 +188,7 @@ fn parse_args() -> Result<Args, String> {
 }
 
 struct App {
-    ui: yah_ui_egui::YahApp,
+    ui: byob_ui_egui::ByobApp,
     script: testing::Runner,
 }
 
@@ -200,21 +200,21 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, yah_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
-        eframe::set_value(storage, yah_ui_egui::pane::PanePrefs::STORAGE_KEY, &self.ui.pane_prefs());
+        eframe::set_value(storage, byob_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
+        eframe::set_value(storage, byob_ui_egui::pane::PanePrefs::STORAGE_KEY, &self.ui.pane_prefs());
     }
 }
 
 fn main() -> ExitCode {
-    // `yah __sandbox-exec …`: the sandbox helper. Must run before anything starts threads.
-    if let Some(code) = yah_sandbox::dispatch_helper() {
+    // `byob __sandbox-exec …`: the sandbox helper. Must run before anything starts threads.
+    if let Some(code) = byob_sandbox::dispatch_helper() {
         return code;
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("yah: {e}");
+            eprintln!("byob: {e}");
             ExitCode::FAILURE
         }
     }
@@ -242,7 +242,7 @@ fn load_saved() -> Saved {
     }
 }
 
-/// Flags (and `YAH_API_KEY`) beat settings.json / secrets.json, which beat built-in defaults.
+/// Flags (and `BYOB_API_KEY`) beat settings.json / secrets.json, which beat built-in defaults.
 fn inference_config(args: &Args, settings: &Settings, secrets: &Secrets) -> InferenceConfig {
     let defaults = InferenceConfig::default();
     let pick = |flag: &Option<String>, saved: &Option<String>, default: String| {
@@ -289,8 +289,8 @@ fn workspace(args: &Args, settings: &Settings) -> Result<Option<PathBuf>, String
     std::fs::canonicalize(&dir).map(Some).map_err(|e| format!("workspace {}: {e}", dir.display()))
 }
 
-fn theme_kind(theme: Theme) -> yah_ui_egui::theme::ThemeKind {
-    use yah_ui_egui::theme::ThemeKind;
+fn theme_kind(theme: Theme) -> byob_ui_egui::theme::ThemeKind {
+    use byob_ui_egui::theme::ThemeKind;
     match theme {
         Theme::System => ThemeKind::System,
         Theme::Light => ThemeKind::Light,
@@ -314,11 +314,11 @@ fn export_chats(to: StorageKind, paths: Option<&Paths>, settings: &Settings) -> 
         return Err(format!("chats are already stored in {to:?} storage; pass --storage to pick the source"));
     }
     paths.ensure().map_err(|e| e.to_string())?;
-    let from = yah_store::open_backend(settings, paths).map_err(|e| format!("opening the chats: {e}"))?;
-    let mut dest = yah_store::open_backend(&Settings { storage: to, ..settings.clone() }, paths).map_err(|e| format!("opening the destination: {e}"))?;
-    let report = yah_store::export(&*from, &mut *dest).map_err(|e| format!("exporting: {e}"))?;
+    let from = byob_store::open_backend(settings, paths).map_err(|e| format!("opening the chats: {e}"))?;
+    let mut dest = byob_store::open_backend(&Settings { storage: to, ..settings.clone() }, paths).map_err(|e| format!("opening the destination: {e}"))?;
+    let report = byob_store::export(&*from, &mut *dest).map_err(|e| format!("exporting: {e}"))?;
     eprintln!(
-        "yah: copied {} chat(s) ({} messages, {} compactions, {} global grants) from {} to {}",
+        "byob: copied {} chat(s) ({} messages, {} compactions, {} global grants) from {} to {}",
         report.chats,
         report.messages,
         report.compactions,
@@ -327,10 +327,10 @@ fn export_chats(to: StorageKind, paths: Option<&Paths>, settings: &Settings) -> 
         dest.path().display()
     );
     if !report.skipped.is_empty() {
-        eprintln!("yah: skipped {} chat(s) the destination already had", report.skipped.len());
+        eprintln!("byob: skipped {} chat(s) the destination already had", report.skipped.len());
     }
     let name = if to == StorageKind::Folder { "folder" } else { "sqlite" };
-    eprintln!("yah: to use it, set \"storage\": \"{name}\" in {} (or run with --storage {name})", paths.settings().display());
+    eprintln!("byob: to use it, set \"storage\": \"{name}\" in {} (or run with --storage {name})", paths.settings().display());
     Ok(())
 }
 
@@ -347,7 +347,7 @@ fn run() -> Result<(), String> {
     config.chats_folder = storage.chats_folder;
     config.adapt.tool_mode = args.tool_mode;
     let c = saved.settings.compaction;
-    config.compaction = yah_agent::CompactOptions {
+    config.compaction = byob_agent::CompactOptions {
         auto: c.auto || args.compact_at.is_some(),
         threshold_percent: c.threshold_percent,
         at_tokens: args.compact_at,
@@ -355,8 +355,8 @@ fn run() -> Result<(), String> {
     };
     if args.auto_approve {
         log::warn!("--auto-approve: every tool call runs without asking");
-        let allow = yah_agent::Rule::Allow;
-        config.policy = yah_agent::Policy { read: allow, write: allow, network: allow, execute: allow };
+        let allow = byob_agent::Rule::Allow;
+        config.policy = byob_agent::Policy { read: allow, write: allow, network: allow, execute: allow };
     }
     if let Some(dir) = workspace(&args, &saved.settings)? {
         config.workspace = dir;
@@ -371,14 +371,14 @@ fn run() -> Result<(), String> {
     config.agents = extra.agents;
     config.models = model_roles(&config.inference, &saved.settings, &saved.secrets);
     let sub = saved.settings.subagents;
-    config.subagents = yah_agent::SubagentOptions {
+    config.subagents = byob_agent::SubagentOptions {
         enabled: sub.enabled,
         max_parallel: sub.max_parallel.map(usize::from),
         max_calls: usize::from(sub.max_tool_calls.max(1)),
         time_limit: std::time::Duration::from_secs(u64::from(sub.time_limit_minutes.max(1)) * 60),
     };
     if args.dev_tools {
-        yah_agent::dev_tools::register(&mut config.tools);
+        byob_agent::dev_tools::register(&mut config.tools);
     }
     log::info!("{} tools available; new chats work in {}", config.tools.len(), config.workspace.display());
     let engine = EngineHandle::spawn_with(config).map_err(|e| format!("starting engine: {e}"))?;
@@ -387,7 +387,7 @@ fn run() -> Result<(), String> {
 
 /// Where "Open in browser" finds artifacts: the `--serve` server if there is one, else a
 /// loopback server on a random port that serves only artifacts, started on first use.
-fn link_base(engine: EngineHandle, serving: Option<SocketAddr>) -> yah_ui_egui::artifact::LinkBase {
+fn link_base(engine: EngineHandle, serving: Option<SocketAddr>) -> byob_ui_egui::artifact::LinkBase {
     let started: std::sync::Mutex<Option<SocketAddr>> = std::sync::Mutex::new(serving.map(|mut a| {
         if a.ip().is_unspecified() {
             a.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
@@ -399,8 +399,8 @@ fn link_base(engine: EngineHandle, serving: Option<SocketAddr>) -> yah_ui_egui::
         let addr = match *slot {
             Some(a) => a,
             None => {
-                let config = yah_server::ServerConfig { addr: SocketAddr::from(([127, 0, 0, 1], 0)), artifacts_only: true, ..Default::default() };
-                let a = yah_server::spawn(engine.clone(), config).map_err(|e| format!("couldn't start the artifact server: {e}"))?;
+                let config = byob_server::ServerConfig { addr: SocketAddr::from(([127, 0, 0, 1], 0)), artifacts_only: true, ..Default::default() };
+                let a = byob_server::spawn(engine.clone(), config).map_err(|e| format!("couldn't start the artifact server: {e}"))?;
                 *slot = Some(a);
                 a
             }
@@ -409,13 +409,13 @@ fn link_base(engine: EngineHandle, serving: Option<SocketAddr>) -> yah_ui_egui::
     })
 }
 
-fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::ThemeKind, themes_dir: Option<PathBuf>) -> Result<(), String> {
-    use yah_ui_egui::theme;
+fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::ThemeKind, themes_dir: Option<PathBuf>) -> Result<(), String> {
+    use byob_ui_egui::theme;
     let mut serving = None;
     if let Some(addr) = args.serve {
-        let config = yah_server::ServerConfig { addr, web_dir: Some(args.web_dir), allowed_users: args.allowed_users, ..Default::default() };
-        let bound = yah_server::spawn(engine.clone(), config).map_err(|e| format!("binding {addr}: {e}"))?;
-        eprintln!("yah: browser UI at http://{bound}  (expose on your tailnet with: tailscale serve {})", bound.port());
+        let config = byob_server::ServerConfig { addr, web_dir: Some(args.web_dir), allowed_users: args.allowed_users, ..Default::default() };
+        let bound = byob_server::spawn(engine.clone(), config).map_err(|e| format!("binding {addr}: {e}"))?;
+        eprintln!("byob: browser UI at http://{bound}  (expose on your tailnet with: tailscale serve {})", bound.port());
         serving = Some(bound);
     }
 
@@ -426,9 +426,9 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::The
     }
 
     // Scripted (screenshot) runs must not read or overwrite the user's saved window/appearance.
-    let scratch_state = args.script.screenshot.as_ref().map(|_| std::env::temp_dir().join(format!("yah-headless-{}.ron", std::process::id())));
+    let scratch_state = args.script.screenshot.as_ref().map(|_| std::env::temp_dir().join(format!("byob-headless-{}.ron", std::process::id())));
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size(args.window_size.unwrap_or([1100.0, 750.0])).with_title("yah"),
+        viewport: egui::ViewportBuilder::default().with_inner_size(args.window_size.unwrap_or([1100.0, 750.0])).with_title("byob"),
         wgpu_options: gpu::options(),
         persistence_path: scratch_state.clone(),
         ..Default::default()
@@ -444,12 +444,12 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::The
     let script = testing::Runner::new(args.script);
     let (theme_arg, open_settings, section) = (args.theme, args.open_settings, args.settings_section);
     let result = eframe::run_native(
-        "yah",
+        "byob",
         options,
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
             let conn = engine.connect(Arc::new(move || ctx.request_repaint()));
-            let mut ui = yah_ui_egui::YahApp::new(Box::new(conn), "desktop");
+            let mut ui = byob_ui_egui::ByobApp::new(Box::new(conn), "desktop");
             ui.set_link_base(link_base(engine.clone(), serving));
             // HTML apps inline, if the Servo helper is installed; else the summary + Open.
             if let Some(view) = apphost::ServoView::new(&cc.egui_ctx) {
@@ -465,7 +465,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: yah_ui_egui::theme::The
                 theme::file::select(&mut prefs, name, ui.user_themes());
             }
             ui.set_prefs(prefs);
-            if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<yah_ui_egui::pane::PanePrefs>(s, yah_ui_egui::pane::PanePrefs::STORAGE_KEY)) {
+            if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::pane::PanePrefs>(s, byob_ui_egui::pane::PanePrefs::STORAGE_KEY)) {
                 ui.artifacts_mut().set_pane_prefs(pane);
             }
             ui.set_settings_open(open_settings);
@@ -498,9 +498,9 @@ mod tests {
     fn model_roles_default_to_the_main_endpoint() {
         let main = InferenceConfig { base_url: "http://main/v1".into(), model: "big".into(), api_key: Some("sk-main".into()) };
         let mut settings = Settings::default();
-        settings.models.insert("fast".into(), yah_store::ModelRole { model: Some("small".into()), ..Default::default() });
-        settings.models.insert("remote".into(), yah_store::ModelRole { base_url: Some("http://other/v1".into()), ..Default::default() });
-        settings.models.insert("keyed".into(), yah_store::ModelRole { base_url: Some("http://third/v1".into()), ..Default::default() });
+        settings.models.insert("fast".into(), byob_store::ModelRole { model: Some("small".into()), ..Default::default() });
+        settings.models.insert("remote".into(), byob_store::ModelRole { base_url: Some("http://other/v1".into()), ..Default::default() });
+        settings.models.insert("keyed".into(), byob_store::ModelRole { base_url: Some("http://third/v1".into()), ..Default::default() });
         let secrets = Secrets { model_keys: [("keyed".to_owned(), "sk-third".to_owned())].into(), ..Default::default() };
         let roles = model_roles(&main, &settings, &secrets);
         assert_eq!(roles["fast"], InferenceConfig { model: "small".into(), ..main.clone() });

@@ -4,9 +4,9 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use egui::{Color32, RichText, Stroke, vec2};
-use yah_protocol::ClientMsg;
+use byob_protocol::ClientMsg;
 
-use crate::YahApp;
+use crate::ByobApp;
 use crate::theme::file::{self, Origin, ThemeDef};
 use crate::theme::{self, Accent, Align, BubbleStyle, ChartPalette, Density, Knobs, MonoFont, Prefs, ROLES, ThemeKind, Tokens, UiFont, contrast, hex};
 use crate::upload::Picked;
@@ -42,7 +42,7 @@ impl Default for AppearanceUi {
     }
 }
 
-impl YahApp {
+impl ByobApp {
     pub(crate) fn settings(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
         ui.add_space(4.0);
@@ -394,7 +394,7 @@ fn card(ui: &mut egui::Ui, t: &Tokens, ct: &Tokens, def: &ThemeDef, size: egui::
     p.rect_filled(rect, r, ct.app_bg);
     let name_h = 20.0f32.min(size.y * 0.3);
     let body = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - name_h));
-    // header strip with the accent as the "yah" mark
+    // header strip with the accent as the "byob" mark
     let header = egui::Rect::from_min_size(body.min, vec2(body.width(), body.height() * 0.16));
     p.rect_filled(header, egui::CornerRadius { nw: r as u8, ne: r as u8, sw: 0, se: 0 }, ct.panel_bg);
     p.circle_filled(egui::pos2(header.min.x + 8.0, header.center().y), (header.height() * 0.28).max(2.0), ct.accent);
@@ -651,8 +651,8 @@ mod tests {
     fn appearance_settings_render_wide_and_narrow() {
         for width in [1000.0, 360.0] {
             let ctx = egui::Context::default();
-            let mut app = crate::YahApp::new(Box::new(NullConn), "test");
-            app.set_prefs(Prefs { overrides: [("yah-dark".to_owned(), [("text".to_owned(), "#ff0000".to_owned())].into())].into(), ..Prefs::default() });
+            let mut app = crate::ByobApp::new(Box::new(NullConn), "test");
+            app.set_prefs(Prefs { overrides: [("byob-dark".to_owned(), [("text".to_owned(), "#ff0000".to_owned())].into())].into(), ..Prefs::default() });
             for _ in 0..2 {
                 let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 800.0))), ..Default::default() };
                 let mut out = ctx.run_ui(input, |ui| {
@@ -666,9 +666,9 @@ mod tests {
     }
 
     struct NullConn;
-    impl yah_protocol::Connection for NullConn {
+    impl byob_protocol::Connection for NullConn {
         fn send(&mut self, _: ClientMsg) {}
-        fn try_recv(&mut self) -> Option<yah_protocol::ServerMsg> {
+        fn try_recv(&mut self) -> Option<byob_protocol::ServerMsg> {
             None
         }
     }

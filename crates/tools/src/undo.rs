@@ -2,11 +2,11 @@
 //!
 //! Tools that change files record an [`UndoOp`] per change through
 //! [`ToolContext::journal`](crate::ToolContext::journal), stashing the previous content of a
-//! file they overwrite in the journal's backup folder (`.yah/undo/<turn>/`) first. [`undo`]
+//! file they overwrite in the journal's backup folder (`.byob/undo/<turn>/`) first. [`undo`]
 //! walks a turn's ops backwards. It first checks the whole plan against the disk and refuses,
 //! changing nothing, if any file changed since; then applies it, re-checking every step.
 //!
-//! [`UndoOp`] has the same JSON shape as `yah_store::UndoOp` (plus optional fingerprints,
+//! [`UndoOp`] has the same JSON shape as `byob_store::UndoOp` (plus optional fingerprints,
 //! which that type ignores), so the journal can be persisted as is.
 
 use std::collections::BTreeMap;
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::sandbox;
 
 /// Where backups go, relative to the workspace.
-pub const UNDO_DIR: &str = ".yah/undo";
+pub const UNDO_DIR: &str = ".byob/undo";
 /// Files larger than this are not backed up (the change is then not undoable).
 pub const MAX_BACKUP_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -123,7 +123,7 @@ pub struct Journal {
 }
 
 impl Journal {
-    /// A journal whose backups go to `<workspace>/.yah/undo/<name>/`. `name` must be a
+    /// A journal whose backups go to `<workspace>/.byob/undo/<name>/`. `name` must be a
     /// single plain path component (e.g. `"12-1731000000000"`).
     pub fn new(workspace: &Path, name: &str) -> Self {
         let name: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')).take(64).collect();
@@ -358,8 +358,8 @@ mod tests {
 
     #[test]
     fn json_shape_matches_the_store() {
-        let op = UndoOp::Deleted { path: "/w/a".into(), backup: Some("/w/.yah/trash/1/a".into()) };
-        assert_eq!(serde_json::to_value(&op).unwrap(), json!({"type": "deleted", "path": "/w/a", "backup": "/w/.yah/trash/1/a"}));
+        let op = UndoOp::Deleted { path: "/w/a".into(), backup: Some("/w/.byob/trash/1/a".into()) };
+        assert_eq!(serde_json::to_value(&op).unwrap(), json!({"type": "deleted", "path": "/w/a", "backup": "/w/.byob/trash/1/a"}));
         let op = UndoOp::Created { path: "/w/a".into(), fingerprint: None };
         assert_eq!(serde_json::to_value(&op).unwrap(), json!({"type": "created", "path": "/w/a"}));
         let back: UndoOp = serde_json::from_value(json!({"type": "replaced", "path": "/w/a", "backup": "/w/b"})).unwrap();
@@ -399,9 +399,9 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "newer");
         let ops = j.take();
         assert_eq!(ops.len(), 2);
-        // backups live under .yah/undo/<turn>/
+        // backups live under .byob/undo/<turn>/
         let UndoOp::Replaced { backup, .. } = &ops[0] else { panic!("{ops:?}") };
-        assert!(backup.starts_with(root.join(".yah/undo/t2")), "{}", backup.display());
+        assert!(backup.starts_with(root.join(".byob/undo/t2")), "{}", backup.display());
         undo(&ops, &root).unwrap();
         assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "old");
     }
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn journal_names_are_sanitized() {
         let j = Journal::new(Path::new("/w"), "../../etc");
-        assert_eq!(j.dir(), Path::new("/w/.yah/undo/etc"));
-        assert_eq!(Journal::new(Path::new("/w"), "").dir(), Path::new("/w/.yah/undo/turn"));
+        assert_eq!(j.dir(), Path::new("/w/.byob/undo/etc"));
+        assert_eq!(Journal::new(Path::new("/w"), "").dir(), Path::new("/w/.byob/undo/turn"));
     }
 }

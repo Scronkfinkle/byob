@@ -10,12 +10,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use yah_plugins::manifest::ToolKind;
-use yah_plugins::python::ScriptRun;
-use yah_plugins::{
+use byob_plugins::manifest::ToolKind;
+use byob_plugins::python::ScriptRun;
+use byob_plugins::{
     Discovery, PluginRef, PluginSources, PythonTool, ToolNames, UseSkillTool, discover, load_plugin, python_tools, run_script_unsandboxed, skills_prompt,
 };
-use yah_tools::{Access, FileChange, Tool, ToolContext};
+use byob_tools::{Access, FileChange, Tool, ToolContext};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -26,7 +26,7 @@ fn found() -> Discovery {
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("yah-plugins-{tag}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("byob-plugins-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&d);
     fs::create_dir_all(&d).unwrap();
     d
@@ -57,7 +57,7 @@ fn hob_builtin_manifests_load_unchanged() {
 fn user_plugins_and_errors() {
     let d = found();
     let ids: Vec<&str> = d.plugins.iter().skip(4).map(|p| p.id()).collect();
-    assert_eq!(ids, ["memory", "missing-script", "recipe-helper", "text-stats", "yah-alias"]);
+    assert_eq!(ids, ["memory", "missing-script", "recipe-helper", "text-stats", "byob-alias"]);
 
     let errors: Vec<String> = d.errors.iter().map(|e| format!("{}: {}", e.path.file_name().unwrap().to_string_lossy(), e.message)).collect();
     assert_eq!(errors.len(), 3, "{errors:?}");
@@ -71,7 +71,7 @@ fn user_plugins_and_errors() {
     let recipe = get("recipe-helper");
     assert_eq!(recipe.skills.len(), 1);
     assert!(recipe.problems[0].contains("broken/SKILL.md: add a description"));
-    let alias = get("yah-alias");
+    let alias = get("byob-alias");
     assert!(!alias.supported_here());
 
     // non-builtin plugins can't turn on native tools
@@ -100,7 +100,7 @@ fn linked_folder_and_use_skill() {
 }
 
 /// A plugin in a temp folder whose tool runs `tools/run.sh` with `sh`.
-fn sh_plugin(tag: &str, script: &str) -> (PathBuf, yah_plugins::Plugin) {
+fn sh_plugin(tag: &str, script: &str) -> (PathBuf, byob_plugins::Plugin) {
     let dir = temp_dir(tag);
     fs::create_dir_all(dir.join("tools")).unwrap();
     fs::write(dir.join("tools/run.sh"), script).unwrap();
@@ -227,7 +227,7 @@ fn real_python_tool_from_docs() {
         return;
     }
     let plugin = load_plugin(&fixtures().join("user/text-stats"), false).unwrap().unwrap();
-    let tools = python_tools(&plugin, &BTreeMap::new(), &yah_plugins::default_python(), &mut ToolNames::default());
+    let tools = python_tools(&plugin, &BTreeMap::new(), &byob_plugins::default_python(), &mut ToolNames::default());
     let ws = temp_dir("py-ws");
     fs::write(ws.join("notes.txt"), "One two three. Four five!").unwrap();
     let cancel = AtomicBool::new(false);

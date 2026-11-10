@@ -24,7 +24,7 @@ fn store_is_send() {
 #[test]
 fn open_creates_wal_db_at_latest_version() {
     let dir = TempDir::new();
-    let path = dir.path().join("nested/yah.db");
+    let path = dir.path().join("nested/byob.db");
     let s = Store::open(&path).unwrap();
     assert!(path.exists());
     assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
@@ -41,7 +41,7 @@ fn open_creates_wal_db_at_latest_version() {
 #[test]
 fn corrupt_file_is_a_clear_error() {
     let dir = TempDir::new();
-    let path = dir.path().join("yah.db");
+    let path = dir.path().join("byob.db");
     std::fs::write(&path, b"this is definitely not a sqlite database, just some text that is long enough").unwrap();
     let err = Store::open(&path).unwrap_err();
     assert!(matches!(err, StoreError::Corrupt { .. }), "{err:?}");
@@ -52,7 +52,7 @@ fn corrupt_file_is_a_clear_error() {
 #[test]
 fn truncated_database_is_an_error_not_a_panic() {
     let dir = TempDir::new();
-    let path = dir.path().join("yah.db");
+    let path = dir.path().join("byob.db");
     {
         let s = Store::open(&path).unwrap();
         chat(&s, "a");
@@ -79,7 +79,7 @@ fn truncated_database_is_an_error_not_a_panic() {
 #[test]
 fn newer_schema_is_refused_without_touching_it() {
     let dir = TempDir::new();
-    let path = dir.path().join("yah.db");
+    let path = dir.path().join("byob.db");
     {
         let c = Connection::open(&path).unwrap();
         c.pragma_update(None, "user_version", 99).unwrap();
@@ -95,7 +95,7 @@ fn newer_schema_is_refused_without_touching_it() {
 #[test]
 fn migrates_v1_to_latest_keeping_data() {
     let dir = TempDir::new();
-    let path = dir.path().join("yah.db");
+    let path = dir.path().join("byob.db");
     {
         let c = Connection::open(&path).unwrap();
         schema::migrate_to(&c, 1).unwrap();
@@ -203,7 +203,7 @@ fn undo_journal() {
 #[test]
 fn two_connections_see_each_other_and_both_write() {
     let dir = TempDir::new();
-    let path = dir.path().join("yah.db");
+    let path = dir.path().join("byob.db");
     let a = Store::open(&path).unwrap();
     let b = Store::open(&path).unwrap();
     chat(&a, "from-a");

@@ -12,31 +12,31 @@
     margin: 0; padding: 18px;
     display: flex; align-items: center; justify-content: center;
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    color: var(--yah-fg, #e9eef3);
-    background: radial-gradient(120% 100% at 20% -10%, #16202a 0%, var(--yah-bg, #0d1117) 62%) fixed;
+    color: var(--byob-fg, #e9eef3);
+    background: radial-gradient(120% 100% at 20% -10%, #16202a 0%, var(--byob-bg, #0d1117) 62%) fixed;
   }
   .app { width: 100%; max-width: 520px; display: flex; flex-direction: column; gap: 13px; }
 
   header { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
   h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
-  h1 .dot { width: 10px; height: 10px; border-radius: 3px; background: var(--yah-accent, #35d07f); box-shadow: 0 0 14px var(--yah-accent, #35d07f); }
-  .hint { margin: 0; font-size: 12px; color: var(--yah-muted, #8b98a5); text-align: right; }
+  h1 .dot { width: 10px; height: 10px; border-radius: 3px; background: var(--byob-accent, #35d07f); box-shadow: 0 0 14px var(--byob-accent, #35d07f); }
+  .hint { margin: 0; font-size: 12px; color: var(--byob-muted, #8b98a5); text-align: right; }
 
   .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
   .stat {
-    background: var(--yah-surface, #151b23); border: 1px solid var(--yah-border, #29313c);
+    background: var(--byob-surface, #151b23); border: 1px solid var(--byob-border, #29313c);
     border-radius: 13px; padding: 8px 6px 9px; text-align: center;
   }
-  .stat .k { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--yah-muted, #8b98a5); }
+  .stat .k { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--byob-muted, #8b98a5); }
   .stat .v { font-size: 21px; font-weight: 680; font-variant-numeric: tabular-nums; margin-top: 1px; }
   .stat .v.flash { animation: pop .28s ease; }
-  @keyframes pop { from { transform: scale(1.28); color: var(--yah-accent, #35d07f); } to { transform: scale(1); } }
+  @keyframes pop { from { transform: scale(1.28); color: var(--byob-accent, #35d07f); } to { transform: scale(1); } }
 
   .stage { position: relative; }
   canvas {
     display: block; width: 100%; aspect-ratio: 1 / 1; touch-action: none;
-    border-radius: 18px; border: 1px solid var(--yah-border, #29313c);
-    background: var(--yah-surface, #10161d);
+    border-radius: 18px; border: 1px solid var(--byob-border, #29313c);
+    background: var(--byob-surface, #10161d);
     box-shadow: inset 0 0 60px rgba(0,0,0,.45), 0 12px 34px rgba(0,0,0,.35);
   }
   .overlay {
@@ -46,47 +46,47 @@
   }
   .overlay[hidden] { display: none; }
   .ov-title { font-size: 27px; font-weight: 720; letter-spacing: -0.02em; }
-  .ov-sub { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--yah-muted, #93a0ad); max-width: 34ch; }
+  .ov-sub { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--byob-muted, #93a0ad); max-width: 34ch; }
   .badge {
     font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
-    color: var(--yah-on-accent, #05130c); background: var(--yah-accent, #35d07f);
+    color: var(--byob-on-accent, #05130c); background: var(--byob-accent, #35d07f);
     padding: 4px 9px; border-radius: 999px;
   }
   .btn {
     font: inherit; font-weight: 620; cursor: pointer; border-radius: 11px;
-    padding: 9px 18px; border: 1px solid var(--yah-border, #29313c);
-    background: var(--yah-surface, #1a212a); color: var(--yah-fg, #e9eef3);
+    padding: 9px 18px; border: 1px solid var(--byob-border, #29313c);
+    background: var(--byob-surface, #1a212a); color: var(--byob-fg, #e9eef3);
     transition: transform .08s ease, filter .15s ease;
   }
   .btn:hover { filter: brightness(1.12); }
   .btn:active { transform: translateY(1px); }
   .btn.primary {
-    background: var(--yah-accent, #35d07f); color: var(--yah-on-accent, #05130c);
+    background: var(--byob-accent, #35d07f); color: var(--byob-on-accent, #05130c);
     border-color: transparent; box-shadow: 0 6px 18px rgba(53, 208, 127, .28);
   }
 
   .bar { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; justify-content: space-between; }
   .group { display: flex; align-items: center; gap: 7px; }
-  .group > span { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--yah-muted, #8b98a5); }
+  .group > span { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--byob-muted, #8b98a5); }
   .seg { display: inline-flex; gap: 3px; padding: 3px; border-radius: 999px;
-         background: var(--yah-surface, #151b23); border: 1px solid var(--yah-border, #29313c); }
+         background: var(--byob-surface, #151b23); border: 1px solid var(--byob-border, #29313c); }
   .seg button {
     font: inherit; font-size: 12.5px; cursor: pointer; border: 0; border-radius: 999px; padding: 5px 11px;
-    background: transparent; color: var(--yah-muted, #8b98a5);
+    background: transparent; color: var(--byob-muted, #8b98a5);
   }
-  .seg button[aria-pressed="true"] { background: var(--yah-accent, #35d07f); color: var(--yah-on-accent, #05130c); font-weight: 680; }
+  .seg button[aria-pressed="true"] { background: var(--byob-accent, #35d07f); color: var(--byob-on-accent, #05130c); font-weight: 680; }
 
   .pad { display: grid; grid-template-columns: repeat(3, 56px); grid-auto-rows: 46px; gap: 7px; justify-content: center; }
   .pad button {
     font: inherit; font-size: 17px; cursor: pointer; border-radius: 12px;
-    background: var(--yah-surface, #151b23); color: var(--yah-fg, #e9eef3);
-    border: 1px solid var(--yah-border, #29313c); user-select: none;
+    background: var(--byob-surface, #151b23); color: var(--byob-fg, #e9eef3);
+    border: 1px solid var(--byob-border, #29313c); user-select: none;
   }
-  .pad button:active { background: var(--yah-accent, #35d07f); color: var(--yah-on-accent, #05130c); }
+  .pad button:active { background: var(--byob-accent, #35d07f); color: var(--byob-on-accent, #05130c); }
   .pad .mid { font-size: 12px; font-weight: 640; letter-spacing: .04em; }
   .pad .u { grid-area: 1 / 2; } .pad .l { grid-area: 2 / 1; } .pad .m { grid-area: 2 / 2; }
   .pad .r { grid-area: 2 / 3; } .pad .d { grid-area: 3 / 2; }
-  footer { font-size: 11px; color: var(--yah-muted, #7c8894); text-align: center; }
+  footer { font-size: 11px; color: var(--byob-muted, #7c8894); text-align: center; }
   @media (max-width: 380px) { .pad { grid-template-columns: repeat(3, 50px); } }
 </style>
 </head>

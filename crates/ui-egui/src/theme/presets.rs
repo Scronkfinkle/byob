@@ -51,16 +51,16 @@ impl Palette {
     }
 }
 
-/// yah's validated categorical palette (colour-vision-deficiency ordered), dark surfaces.
+/// byob's validated categorical palette (colour-vision-deficiency ordered), dark surfaces.
 pub const ACCESSIBLE_CHART_DARK: [u32; 8] = [0x3987e5, 0xd95926, 0x199e70, 0xc98500, 0xd55181, 0x008300, 0x9085e9, 0xe66767];
 /// The same, stepped for light surfaces.
 pub const ACCESSIBLE_CHART_LIGHT: [u32; 8] = [0x2a78d6, 0xeb6834, 0x1baf7a, 0xeda100, 0xe87ba4, 0x008300, 0x6250d6, 0xe34948];
 
-pub const YAH_DARK: Palette = Palette {
-    id: "yah-dark",
-    name: "yah Dark",
+pub const BYOB_DARK: Palette = Palette {
+    id: "byob-dark",
+    name: "byob Dark",
     dark: true,
-    credit: "yah",
+    credit: "byob",
     bg: 0x16171a,
     panel: 0x1c1d21,
     field: 0x121316,
@@ -78,11 +78,11 @@ pub const YAH_DARK: Palette = Palette {
     chart: ACCESSIBLE_CHART_DARK,
 };
 
-pub const YAH_LIGHT: Palette = Palette {
-    id: "yah-light",
-    name: "yah Light",
+pub const BYOB_LIGHT: Palette = Palette {
+    id: "byob-light",
+    name: "byob Light",
     dark: false,
-    credit: "yah",
+    credit: "byob",
     bg: 0xf6f6f4,
     panel: 0xefefec,
     field: 0xffffff,
@@ -439,8 +439,8 @@ pub fn find(id: &str) -> Option<&'static Palette> {
 
 /// Every preset, in gallery order.
 pub const PRESETS: &[&Palette] = &[
-    &YAH_DARK,
-    &YAH_LIGHT,
+    &BYOB_DARK,
+    &BYOB_LIGHT,
     &CATPPUCCIN_MOCHA,
     &CATPPUCCIN_MACCHIATO,
     &CATPPUCCIN_FRAPPE,

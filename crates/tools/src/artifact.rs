@@ -1,18 +1,18 @@
 //! Artifacts: versioned files the model makes beside the conversation (see
-//! [`yah_protocol::artifact`]). `create_artifact`, `update_artifact` and `read_artifact`.
+//! [`byob_protocol::artifact`]). `create_artifact`, `update_artifact` and `read_artifact`.
 //!
 //! Layout, in the chat's workspace:
 //!
 //! ```text
-//! .yah/artifacts/<id>/artifact.json   the index: chat, kind, title, file name, versions
-//! .yah/artifacts/<id>/v1.html         one file per version, never overwritten
+//! .byob/artifacts/<id>/artifact.json   the index: chat, kind, title, file name, versions
+//! .byob/artifacts/<id>/v1.html         one file per version, never overwritten
 //! ```
 //!
 //! Charts and images other tools make (`charts/…chart.json`, a PNG from `run_python`) are
 //! *adopted*: they get an index whose single version points at the file where it is.
 //!
 //! Access: [`Access::Read`], like `make_chart`: these tools only ever create new files
-//! inside `.yah/artifacts/` (exclusively, never through links) and rewrite their own index.
+//! inside `.byob/artifacts/` (exclusively, never through links) and rewrite their own index.
 //! A version a per-turn undo removed simply drops out of the list.
 
 use std::fs::OpenOptions;
@@ -22,13 +22,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use yah_protocol::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion, MediaKind, MediaRef, artifact::valid_id};
+use byob_protocol::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion, MediaKind, MediaRef, artifact::valid_id};
 
 use crate::sandbox;
 use crate::{Access, FileChange, Tool, ToolContext, ToolOutput, ToolSpec, parse_args};
 
-/// Workspace folder artifacts live in (inside yah's reserved `.yah`).
-pub const ARTIFACT_DIR: &str = ".yah/artifacts";
+/// Workspace folder artifacts live in (inside byob's reserved `.byob`).
+pub const ARTIFACT_DIR: &str = ".byob/artifacts";
 const META_FILE: &str = "artifact.json";
 /// Largest artifact content the model may write (per version).
 pub const MAX_CONTENT_BYTES: usize = 1024 * 1024;
@@ -54,8 +54,8 @@ make it an artifact with create_artifact rather than pasting it into the chat; i
 summary/report/notes → .md; interactive tool or app → a single-file .html app; data → .csv or .json; a chart of numbers → make_chart (or .html for a custom visualisation). \
 To change an artifact, call update_artifact with its id and small find/replace edits (read_artifact shows its current text) — never create a new one for a change. \
 HTML apps: one self-contained file with inline <style> and <script>; nothing from the network (no CDNs, web fonts, fetch or images by URL — all blocked); \
-style with the theme's CSS variables var(--yah-bg), var(--yah-surface), var(--yah-fg), var(--yah-muted), var(--yah-accent), var(--yah-on-accent), var(--yah-border), var(--yah-danger), var(--yah-success), var(--yah-warning), var(--yah-link), var(--yah-code-bg), var(--yah-code-fg), var(--yah-radius) \
-and var(--yah-chart-a) … var(--yah-chart-h) for data series (give fallbacks); \
+style with the theme's CSS variables var(--byob-bg), var(--byob-surface), var(--byob-fg), var(--byob-muted), var(--byob-accent), var(--byob-on-accent), var(--byob-border), var(--byob-danger), var(--byob-success), var(--byob-warning), var(--byob-link), var(--byob-code-bg), var(--byob-code-fg), var(--byob-radius) \
+and var(--byob-chart-a) … var(--byob-chart-h) for data series (give fallbacks); \
 fit any container width (fluid layout, no fixed page widths). After making one, say in a sentence or two what it is; don't repeat its content.";
 
 /// The index file: an artifact and the chat it belongs to.
@@ -75,7 +75,7 @@ fn now_ms() -> i64 {
     now.max(prev.saturating_add(1))
 }
 
-/// `.yah/artifacts`, created if needed; refuses links anywhere on the way.
+/// `.byob/artifacts`, created if needed; refuses links anywhere on the way.
 fn root_dir(workspace: &Path) -> Result<(PathBuf, PathBuf), String> {
     let r = sandbox::resolve(workspace, ARTIFACT_DIR)?;
     for dir in [r.root.join(sandbox::RESERVED_DIR), r.abs.clone()] {
@@ -185,7 +185,7 @@ pub fn read_version(workspace: &Path, chat: &str, id: &str, version: u32, max: u
     Ok((meta.artifact, bytes))
 }
 
-/// `[.../].yah/artifacts/<id>/v<n>.<ext>` → the version it is.
+/// `[.../].byob/artifacts/<id>/v<n>.<ext>` → the version it is.
 pub fn parse_version_path(path: &str) -> Option<ArtifactRef> {
     let norm = path.replace('\\', "/");
     let rest = norm.rsplit_once(&format!("{ARTIFACT_DIR}/")).map(|(_, r)| r)?;
@@ -290,7 +290,7 @@ fn check_content(kind: ArtifactKind, content: &str) -> Result<(String, String), 
         }
         ArtifactKind::Chart => {
             let value: Value = serde_json::from_str(content).map_err(|e| format!("a .chart.json artifact must be a chart spec (JSON): {e}"))?;
-            let spec = yah_types::chart::validate(&value)?;
+            let spec = byob_types::chart::validate(&value)?;
             Ok((spec.to_json(), String::new()))
         }
         ArtifactKind::Html => {
@@ -705,7 +705,7 @@ mod tests {
         assert!(out.text.contains(&id));
         let a = &list(ws, "c1")[0];
         assert_eq!((a.kind, a.filename.as_str(), a.versions.len()), (ArtifactKind::Html, "loan.html", 1));
-        assert_eq!(a.versions[0].path, format!(".yah/artifacts/{id}/v1.html"));
+        assert_eq!(a.versions[0].path, format!(".byob/artifacts/{id}/v1.html"));
         assert!(list(ws, "other").is_empty(), "artifacts are per chat");
 
         let out = run_in(&UpdateArtifact, ws, "c1", json!({"id": id, "edits": [{"find": "background:red", "replace": "background:blue"}], "note": "blue"}));
@@ -729,7 +729,7 @@ mod tests {
         assert!(!out.failed, "{}", out.text);
         assert_eq!(load(ws, &id).unwrap().artifact.latest().unwrap().n, 3);
         // an undone version (file removed) drops out; numbers are never reused
-        std::fs::remove_file(ws.join(format!(".yah/artifacts/{id}/v3.html"))).unwrap();
+        std::fs::remove_file(ws.join(format!(".byob/artifacts/{id}/v3.html"))).unwrap();
         assert_eq!(load(ws, &id).unwrap().artifact.latest().unwrap().n, 2);
         let out = run_in(&UpdateArtifact, ws, "c1", json!({"id": id, "content": "<p>again</p>"}));
         assert!(!out.failed, "{}", out.text);
@@ -825,7 +825,7 @@ mod tests {
     fn never_writes_through_a_linked_artifact_folder() {
         let outside = tempfile::tempdir().unwrap();
         let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir(d.path().join(".yah")).unwrap();
+        std::fs::create_dir(d.path().join(".byob")).unwrap();
         std::os::unix::fs::symlink(outside.path(), d.path().join(ARTIFACT_DIR)).unwrap();
         let out = run_in(&CreateArtifact, d.path(), "c", json!({"title": "T", "filename": "a.md", "content": "x"}));
         assert!(out.failed, "{}", out.text);
@@ -846,15 +846,15 @@ mod tests {
         assert_eq!(list.iter().map(|a| (a.kind, a.title.as_str())).collect::<Vec<_>>(), vec![(ArtifactKind::Chart, "Sales"), (ArtifactKind::Image, "plot")]);
         assert_eq!(list[1].versions[0].path, "plot.png");
         // an artifact tool's own version is recognised, not adopted again
-        let p = ws.join(".yah/artifacts/x-1/v3.md");
+        let p = ws.join(".byob/artifacts/x-1/v3.md");
         assert_eq!(for_call(ws, "c", &[FileChange::Created(p)], &media), vec![ArtifactRef { id: "x-1".into(), version: 3 }]);
     }
 
     #[test]
     fn version_paths() {
-        assert_eq!(parse_version_path(".yah/artifacts/a-1/v12.chart.json"), Some(ArtifactRef { id: "a-1".into(), version: 12 }));
-        assert_eq!(parse_version_path("/w/.yah/artifacts/a/v1.html"), Some(ArtifactRef { id: "a".into(), version: 1 }));
-        for bad in [".yah/artifacts/a/artifact.json", ".yah/artifacts/A/v1.md", ".yah/artifacts/a/v0.md", "charts/x.chart.json", ".yah/artifacts/a/b/v1.md"] {
+        assert_eq!(parse_version_path(".byob/artifacts/a-1/v12.chart.json"), Some(ArtifactRef { id: "a-1".into(), version: 12 }));
+        assert_eq!(parse_version_path("/w/.byob/artifacts/a/v1.html"), Some(ArtifactRef { id: "a".into(), version: 1 }));
+        for bad in [".byob/artifacts/a/artifact.json", ".byob/artifacts/A/v1.md", ".byob/artifacts/a/v0.md", "charts/x.chart.json", ".byob/artifacts/a/b/v1.md"] {
             assert_eq!(parse_version_path(bad), None, "{bad}");
         }
     }

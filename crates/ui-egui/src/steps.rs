@@ -7,7 +7,7 @@
 use std::ops::Range;
 
 use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2, pos2, vec2};
-use yah_protocol::{ApprovalAnswer, ClientMsg, Delegation, DelegationState, DiffLine, Entry, FileChange, LineKind, Preview, Step, StepStatus, ToolAccess};
+use byob_protocol::{ApprovalAnswer, ClientMsg, Delegation, DelegationState, DiffLine, Entry, FileChange, LineKind, Preview, Step, StepStatus, ToolAccess};
 
 use crate::markdown;
 use crate::theme::{Tokens, bold_family, mix};
@@ -188,7 +188,7 @@ fn delegation(
                 ui.label(RichText::new(d.status_line()).color(if waiting { t.warning } else { t.text }));
                 let tokens = d.prompt_tokens.saturating_add(d.completion_tokens);
                 if tokens > 0 {
-                    ui.label(RichText::new(format!("{} tokens", yah_protocol::usage::short_tokens(tokens))).small().color(t.text_faint));
+                    ui.label(RichText::new(format!("{} tokens", byob_protocol::usage::short_tokens(tokens))).small().color(t.text_faint));
                 }
             })
             .body(|ui| {
@@ -606,7 +606,7 @@ fn preview(ui: &mut egui::Ui, t: &Tokens, p: &Preview) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yah_protocol::EntryRole;
+    use byob_protocol::EntryRole;
 
     fn entry(steps: Vec<Step>) -> Entry {
         Entry {

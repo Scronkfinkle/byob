@@ -1,11 +1,11 @@
-yah-artifact-host
+byob-artifact-host
 =================
 
-yah-artifact-host renders HTML app artifacts for the yah desktop app. yah runs it as a
-separate process; it is not linked into yah.
+byob-artifact-host renders HTML app artifacts for the byob desktop app. byob runs it as a
+separate process; it is not linked into byob.
 
-Its own source code (host/artifact-host/src and crates/artifact-wire in the yah
-repository) is licensed under MIT OR Apache-2.0, like the rest of yah.
+Its own source code (host/artifact-host/src and crates/artifact-wire in the byob
+repository) is licensed under MIT OR Apache-2.0, like the rest of byob.
 
 The binary includes Servo (https://servo.org, https://github.com/servo/servo) and
 SpiderMonkey via mozjs (https://github.com/servo/mozjs), which are licensed under the

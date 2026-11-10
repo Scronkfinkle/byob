@@ -1,4 +1,4 @@
-//! Charts yah draws itself: `ChartSpec` v1, the same JSON hob saves as `<title>.chart.json`,
+//! Charts byob draws itself: `ChartSpec` v1, the same JSON hob saves as `<title>.chart.json`,
 //! so chart files move between the two apps.
 //!
 //! [`validate`] ports hob's `validateChart` (`app/src/shared/chart.ts`): it coerces

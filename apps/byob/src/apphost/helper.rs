@@ -1,4 +1,4 @@
-//! One `yah-artifact-host` child process: spawn, talk, watch, kill.
+//! One `byob-artifact-host` child process: spawn, talk, watch, kill.
 //!
 //! Requests go through a writer thread (a helper that stops reading must never block the
 //! UI), events come back through a reader thread. The newest frame is kept in a slot of its
@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use yah_artifact_wire::{self as wire, Event, Frame, Request};
+use byob_artifact_wire::{self as wire, Event, Frame, Request};
 
 pub const PING_EVERY: Duration = Duration::from_millis(500);
 /// No pong for this long after the page loaded: it is stuck.
@@ -21,18 +21,18 @@ pub const PONG_TIMEOUT: Duration = Duration::from_secs(3);
 /// Servo start-up plus the first load may take this long before pongs are expected.
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Where the helper binary is: `$YAH_ARTIFACT_HOST`, else next to this executable.
+/// Where the helper binary is: `$BYOB_ARTIFACT_HOST`, else next to this executable.
 pub fn locate() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("YAH_ARTIFACT_HOST").filter(|p| !p.is_empty()) {
+    if let Some(p) = std::env::var_os("BYOB_ARTIFACT_HOST").filter(|p| !p.is_empty()) {
         let p = PathBuf::from(p);
         if p.is_file() {
             return Some(p);
         }
-        log::warn!("YAH_ARTIFACT_HOST={} is not a file; HTML apps open in the browser", p.display());
+        log::warn!("BYOB_ARTIFACT_HOST={} is not a file; HTML apps open in the browser", p.display());
         return None;
     }
     let exe = std::env::current_exe().ok()?;
-    let p = exe.parent()?.join(if cfg!(windows) { "yah-artifact-host.exe" } else { "yah-artifact-host" });
+    let p = exe.parent()?.join(if cfg!(windows) { "byob-artifact-host.exe" } else { "byob-artifact-host" });
     p.is_file().then_some(p)
 }
 
@@ -312,8 +312,8 @@ mod tests {
     #[test]
     fn env_override_must_exist() {
         // Only the lookup logic; the variable is process-wide so keep it to the missing case.
-        if std::env::var_os("YAH_ARTIFACT_HOST").is_none() {
-            assert!(locate().is_none_or(|p| p.ends_with("yah-artifact-host")));
+        if std::env::var_os("BYOB_ARTIFACT_HOST").is_none() {
+            assert!(locate().is_none_or(|p| p.ends_with("byob-artifact-host")));
         }
     }
 }

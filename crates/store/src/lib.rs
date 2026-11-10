@@ -1,10 +1,10 @@
-//! yah's persistence: chats, messages, tool steps, subagent runs, context compactions, always-allow grants
+//! byob's persistence: chats, messages, tool steps, subagent runs, context compactions, always-allow grants
 //! and the undo journal behind the [`ChatStore`] trait, plus `settings.json` and `secrets.json`.
 //!
-//! - [`Paths`] finds the directories (`YAH_HOME` overrides them).
+//! - [`Paths`] finds the directories (`BYOB_HOME` overrides them).
 //! - [`ChatStore`] is what the engine talks to; [`open_backend`] picks the implementation
 //!   from `settings.storage`:
-//!   - [`Store`] (`"sqlite"`, the default): one SQLite file, `yah.db`. A corrupt or too-new
+//!   - [`Store`] (`"sqlite"`, the default): one SQLite file, `byob.db`. A corrupt or too-new
 //!     database is reported, never panicked on.
 //!   - [`FolderStore`] (`"folder"`): one folder per chat with an append-only
 //!     `events.jsonl` (canonical) and a generated `chat.md` — greppable, syncable files.
@@ -17,7 +17,7 @@
 //! types to them, so the on-disk format is independent of the wire format.
 //!
 //! ```
-//! use yah_store::{ChatStore, NewMessage, Store};
+//! use byob_store::{ChatStore, NewMessage, Store};
 //! let store: Box<dyn ChatStore> = Box::new(Store::open_in_memory()?);
 //! let chat = store.create_chat("c1", "New chat", std::path::Path::new("/tmp"))?;
 //! store.append_message(&chat.id, &NewMessage::user("hello"))?;
@@ -25,7 +25,7 @@
 //! store.append_message_text(reply, "Hi", "")?; // batched stream deltas
 //! store.finish_message(reply, None, None)?;
 //! assert_eq!(store.messages("c1")?.len(), 2);
-//! # Ok::<(), yah_store::StoreError>(())
+//! # Ok::<(), byob_store::StoreError>(())
 //! ```
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 

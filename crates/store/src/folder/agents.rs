@@ -101,7 +101,7 @@ pub(crate) fn replay(path: &Path, run_id: &str, chat_id: &str) -> Option<RunRec>
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
-            log::warn!("yah-store: {}: {e}", path.display());
+            log::warn!("byob-store: {}: {e}", path.display());
             return None;
         }
     };
@@ -111,7 +111,7 @@ pub(crate) fn replay(path: &Path, run_id: &str, chat_id: &str) -> Option<RunRec>
     while !rest.is_empty() {
         n += 1;
         let Some(i) = rest.iter().position(|&b| b == b'\n') else {
-            log::warn!("yah-store: {}: ignoring unfinished last line {n}", path.display());
+            log::warn!("byob-store: {}: ignoring unfinished last line {n}", path.display());
             break;
         };
         let raw = rest.get(..i).unwrap_or_default();
@@ -123,7 +123,7 @@ pub(crate) fn replay(path: &Path, run_id: &str, chat_id: &str) -> Option<RunRec>
         let line = match serde_json::from_str::<RunLine>(text.trim()) {
             Ok(l) => l,
             Err(e) => {
-                log::warn!("yah-store: {}: skipping line {n}: {e}", path.display());
+                log::warn!("byob-store: {}: skipping line {n}: {e}", path.display());
                 continue;
             }
         };
@@ -149,7 +149,7 @@ pub(crate) fn replay(path: &Path, run_id: &str, chat_id: &str) -> Option<RunRec>
                     },
                 });
             }
-            (_, None) | (RunEvent::Started { .. }, Some(_)) => log::warn!("yah-store: {}: line {n} is out of place", path.display()),
+            (_, None) | (RunEvent::Started { .. }, Some(_)) => log::warn!("byob-store: {}: line {n} is out of place", path.display()),
             (RunEvent::Delta { content, reasoning }, Some(r)) => {
                 r.run.content.push_str(&content);
                 r.run.reasoning.push_str(&reasoning);

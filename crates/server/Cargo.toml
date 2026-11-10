@@ -1,5 +1,5 @@
 [package]
-name = "yah-server"
+name = "byob-server"
 description = "Serves the web UI and bridges WebSocket clients to the engine. Thread-per-connection, no async runtime (L4)"
 version.workspace = true
 edition.workspace = true
@@ -8,16 +8,16 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-yah-agent.workspace = true
-yah-protocol.workspace = true
+byob-agent.workspace = true
+byob-protocol.workspace = true
 tungstenite.workspace = true
 httparse.workspace = true
 log.workspace = true
 
 [dev-dependencies]
-yah-types.workspace = true
-yah-store.workspace = true
-yah-tools.workspace = true
+byob-types.workspace = true
+byob-store.workspace = true
+byob-tools.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 

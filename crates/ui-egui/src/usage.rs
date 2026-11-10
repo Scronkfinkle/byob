@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use egui::{Color32, RichText, Sense, Stroke};
-use yah_protocol::usage::short_tokens;
-use yah_protocol::{ChatUsage, ClientMsg, Compaction, ServerMsg};
+use byob_protocol::usage::short_tokens;
+use byob_protocol::{ChatUsage, ClientMsg, Compaction, ServerMsg};
 
 use crate::markdown;
 use crate::theme::{Tokens, mix};
@@ -240,7 +240,7 @@ mod tests {
         // Opening another chat resets, but leaves the message to the other handlers.
         assert!(!u.apply(&ServerMsg::ChatOpened { chat: None }));
         assert!(u.usage.is_none() && u.compactions.is_empty());
-        assert!(!u.apply(&ServerMsg::Notice { level: yah_protocol::NoticeLevel::Info, text: String::new() }));
+        assert!(!u.apply(&ServerMsg::Notice { level: byob_protocol::NoticeLevel::Info, text: String::new() }));
     }
 
     #[test]

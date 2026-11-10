@@ -97,7 +97,7 @@ impl Router {
                 json!({ "jsonrpc": "2.0", "id": id, "result": {} })
             } else {
                 log::debug!("mcp: declining server request `{}`", truncate(method, 100));
-                json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": "Method not supported by yah" } })
+                json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": "Method not supported by byob" } })
             };
             return Some(reply);
         }

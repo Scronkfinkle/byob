@@ -8,7 +8,7 @@
 //! delegations in one round run side by side, as many at once as the endpoint has free
 //! slots ([`Slots`]); the rest queue. Children can't delegate (depth 1).
 //!
-//! Agent definitions are Claude Code compatible Markdown files (see [`yah_plugins::agents`]).
+//! Agent definitions are Claude Code compatible Markdown files (see [`byob_plugins::agents`]).
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -20,11 +20,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use yah_llm::{ChatMessage, ToolSpec};
-use yah_plugins::agents::{AgentDef, load_agents_dir, merge_agents, tool_aliases};
-use yah_protocol::{Delegation, DelegationState, Step, StepStatus, ToolAccess};
-use yah_tools::Registry;
-use yah_types::InferenceConfig;
+use byob_llm::{ChatMessage, ToolSpec};
+use byob_plugins::agents::{AgentDef, load_agents_dir, merge_agents, tool_aliases};
+use byob_protocol::{Delegation, DelegationState, Step, StepStatus, ToolAccess};
+use byob_tools::Registry;
+use byob_types::InferenceConfig;
 
 use crate::limits::{DETAIL_CHARS, one_line, prefix};
 use crate::turn::{self, TurnEvent};
@@ -48,7 +48,7 @@ pub const WORKER_PROMPT: &str = "You are a capable general-purpose worker. Compl
 look things up rather than guessing, and keep going until the task is done or clearly blocked.";
 
 /// Added to every subagent's system prompt.
-const SUBAGENT_RULES: &str = "You are running as a subagent inside yah, on behalf of the main assistant. Nobody reads your messages \
+const SUBAGENT_RULES: &str = "You are running as a subagent inside byob, on behalf of the main assistant. Nobody reads your messages \
 as they stream: your final reply is returned to the main assistant as your report. Work only on the task below; don't ask \
 questions (if something blocks you, say so in the report). Finish with a concise report: one or two lines on what you did, then \
 the result, with the specific facts, numbers, file names and quotes the main assistant needs.";
@@ -140,7 +140,7 @@ impl Drop for SlotGuard {
 #[derive(Clone)]
 pub struct Model {
     pub config: InferenceConfig,
-    pub llm: yah_llm::Client,
+    pub llm: byob_llm::Client,
     pub plan: adapt::Plan,
 }
 
@@ -217,7 +217,7 @@ conversation, so say everything it needs (paths, names, what to report back)."
             return self.main.clone();
         }
         let config = InferenceConfig { model: w.to_owned(), ..self.main.config.clone() };
-        match yah_llm::Client::new(config.clone()) {
+        match byob_llm::Client::new(config.clone()) {
             Ok(llm) => Model { config, llm, plan: self.main.plan.clone() },
             Err(e) => {
                 log::warn!("subagent model {w:?}: {e}; using the main model");
@@ -291,11 +291,11 @@ pub fn child_tools(all: &Registry, def: Option<&AgentDef>, asked: Option<&[Strin
     Ok(out)
 }
 
-/// The agents a chat in `workspace` can use: `<workspace>/.yah/agents`, then
+/// The agents a chat in `workspace` can use: `<workspace>/.byob/agents`, then
 /// `<workspace>/.claude/agents`, then `configured` (user folder and plugins), first name wins.
 pub fn agents_for(workspace: &Path, configured: &[AgentDef]) -> Vec<AgentDef> {
     let mut lists = Vec::new();
-    for dir in [workspace.join(".yah").join("agents"), workspace.join(".claude").join("agents")] {
+    for dir in [workspace.join(".byob").join("agents"), workspace.join(".claude").join("agents")] {
         let (found, errors) = load_agents_dir(&dir);
         for e in errors {
             log::warn!("agent {e}");
@@ -348,7 +348,7 @@ pub fn launch(env: &Env, job: Job, l: Launch) -> std::io::Result<Receiver<String
     emit_step(&l, &step);
     let (slots, opts) = (Arc::clone(&env.slots), env.opts);
     let (inbox, entry, mut failed) = (l.inbox.clone(), l.entry, step.clone());
-    let spawned = thread::Builder::new().name("yah-subagent".into()).spawn(move || {
+    let spawned = thread::Builder::new().name("byob-subagent".into()).spawn(move || {
         let ran = catch_unwind(AssertUnwindSafe(|| run(job, &l, &mut step, &slots, opts)));
         let report = ran.unwrap_or_else(|_| {
             set_state(&mut step, DelegationState::Failed, Some("internal error: the subagent crashed".into()));
@@ -402,7 +402,7 @@ fn run(job: Job, l: &Launch, step: &mut Step, slots: &Arc<Slots>, opts: Subagent
     let watchdog = {
         let (cancel, done, timed_out, parent) = (Arc::clone(&cancel), Arc::clone(&done), Arc::clone(&timed_out), Arc::clone(&l.cancel));
         let limit = opts.time_limit;
-        thread::Builder::new().name("yah-subagent-watch".into()).spawn(move || {
+        thread::Builder::new().name("byob-subagent-watch".into()).spawn(move || {
             while !done.load(Ordering::Relaxed) {
                 if parent.load(Ordering::Relaxed) {
                     cancel.store(true, Ordering::Relaxed);
@@ -496,12 +496,12 @@ fn ran_summary(ran: &BTreeMap<String, usize>, calls: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yah_tools::{Access, Tool, ToolContext, ToolOutput};
+    use byob_tools::{Access, Tool, ToolContext, ToolOutput};
 
     struct Named(&'static str);
     impl Tool for Named {
-        fn spec(&self) -> yah_tools::ToolSpec {
-            yah_tools::ToolSpec { name: self.0.into(), description: String::new(), parameters: json!({"type":"object"}) }
+        fn spec(&self) -> byob_tools::ToolSpec {
+            byob_tools::ToolSpec { name: self.0.into(), description: String::new(), parameters: json!({"type":"object"}) }
         }
         fn title(&self, _: &Value) -> String {
             self.0.into()
@@ -542,7 +542,7 @@ mod tests {
     fn tools_follow_the_definition_and_the_call() {
         let all = registry();
         assert_eq!(names(&child_tools(&all, None, None).unwrap()).len(), 4);
-        // Claude Code names map to yah tools; unknown ones are ignored.
+        // Claude Code names map to byob tools; unknown ones are ignored.
         let d = def(Some(&["Read", "Glob", "WebSearch"]));
         assert_eq!(names(&child_tools(&all, Some(&d), None).unwrap()), ["list_files", "read_file"]);
         assert_eq!(names(&child_tools(&all, Some(&d), Some(&["read_file".into()])).unwrap()), ["read_file"]);

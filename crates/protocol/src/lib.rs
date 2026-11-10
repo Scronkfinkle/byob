@@ -1,4 +1,4 @@
-//! The wire protocol between yah clients (desktop window, browser tab) and the engine.
+//! The wire protocol between byob clients (desktop window, browser tab) and the engine.
 //!
 //! Every client, including the in-process desktop window, talks to the engine only through
 //! these messages, so the desktop and web UIs can never drift apart. Messages travel as JSON
@@ -253,7 +253,7 @@ impl Entry {
     }
 }
 
-/// How dangerous a tool call is; drives the permission gate. Mirrors `yah_tools::Access`.
+/// How dangerous a tool call is; drives the permission gate. Mirrors `byob_tools::Access`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolAccess {
@@ -708,7 +708,7 @@ mod tests {
         for m in msgs {
             assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m);
         }
-        let spec = yah_types::chart::validate(&serde_json::json!({"type": "bar", "x": "m", "series": ["v"], "data": [{"m": "a", "v": 1}]})).unwrap();
+        let spec = byob_types::chart::validate(&serde_json::json!({"type": "bar", "x": "m", "series": ["v"], "data": [{"m": "a", "v": 1}]})).unwrap();
         let msgs = vec![
             ServerMsg::Uploaded { upload: 1, attachment: Some(MediaRef::new("uploads/a.csv", 3)), error: None },
             ServerMsg::Media { path: "c.chart.json".into(), content: MediaContent::Chart { spec } },
@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn artifact_messages_round_trip() {
-        let v = ArtifactVersion { n: 2, path: ".yah/artifacts/calc/v2.html".into(), created_at: 1, note: "blue button".into(), size: 10 };
+        let v = ArtifactVersion { n: 2, path: ".byob/artifacts/calc/v2.html".into(), created_at: 1, note: "blue button".into(), size: 10 };
         let a = Artifact { id: "calc".into(), kind: ArtifactKind::Html, title: "Calc".into(), filename: "calc.html".into(), versions: vec![v] };
         let msgs = vec![
             ServerMsg::Artifacts { chat: Some("c1".into()), artifacts: vec![a.clone()] },

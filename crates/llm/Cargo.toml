@@ -1,5 +1,5 @@
 [package]
-name = "yah-llm"
+name = "byob-llm"
 description = "OpenAI-compatible inference client targeting a user-supplied URL (L1)"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-yah-types.workspace = true
+byob-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

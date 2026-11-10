@@ -318,8 +318,8 @@ mod tests {
             ("../x", "a"),
             (".", "x"),
             ("docs", "docs/sub/inner"),
-            ("a.txt", ".yah/x"),
-            (".yah", "y"),
+            ("a.txt", ".byob/x"),
+            (".byob", "y"),
             ("a.txt", "/etc/a.txt"),
         ] {
             let out = run(&MoveFile, d.path(), json!({"from": from, "to": to}));

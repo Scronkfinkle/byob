@@ -1,4 +1,4 @@
-//! A scripted MCP server on stdio for yah-mcp's integration tests. Not shipped.
+//! A scripted MCP server on stdio for byob-mcp's integration tests. Not shipped.
 //!
 //! `FAKE_MCP_MODE` picks misbehaviour: `normal` (default), `garbage` (junk lines before
 //! every reply), `exit-on-init` (dies during the handshake), `silent` (never answers).
@@ -92,7 +92,7 @@ fn main() {
                 let args = msg["params"]["arguments"].clone();
                 match msg["params"]["name"].as_str().unwrap_or_default() {
                     "echo" => {
-                        // Chatter first: a log notification and a request yah must decline.
+                        // Chatter first: a log notification and a request byob must decline.
                         send(&out, &mode, &json!({ "jsonrpc": "2.0", "method": "notifications/message", "params": { "level": "info", "data": "hi" } }));
                         send(&out, &mode, &json!({ "jsonrpc": "2.0", "id": "srv-1", "method": "roots/list" }));
                         send(&out, &mode, &reply(text(&format!("echo: {}", args["text"].as_str().unwrap_or_default()))));

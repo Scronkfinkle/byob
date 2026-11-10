@@ -66,13 +66,13 @@ impl ThemeDef {
 }
 
 /// The theme with this id among the user's themes and the presets; unknown ids fall back
-/// to yah's own dark or light theme.
+/// to byob's own dark or light theme.
 pub fn resolve(id: &str, dark: bool, user: &[ThemeDef]) -> ThemeDef {
     user.iter()
         .find(|d| d.id == id)
         .cloned()
         .or_else(|| presets::find(id).map(ThemeDef::builtin))
-        .unwrap_or_else(|| ThemeDef::builtin(if dark { &presets::YAH_DARK } else { &presets::YAH_LIGHT }))
+        .unwrap_or_else(|| ThemeDef::builtin(if dark { &presets::BYOB_DARK } else { &presets::BYOB_LIGHT }))
 }
 
 /// Use a theme by CLI-style name: `system`/`dark`/`light` set the mode; a preset id
@@ -160,7 +160,7 @@ pub fn parse(text: &str, origin: Origin) -> Result<ThemeFile, String> {
         Some(Value::String(id)) => {
             let found = presets::find(id);
             if found.is_none() {
-                warnings.push(format!("unknown base theme {id:?}; using yah's own"));
+                warnings.push(format!("unknown base theme {id:?}; using byob's own"));
             }
             found
         }
@@ -169,7 +169,7 @@ pub fn parse(text: &str, origin: Origin) -> Result<ThemeFile, String> {
             None
         }
     };
-    let base = base.unwrap_or(if dark_flag == Some(false) { &presets::YAH_LIGHT } else { &presets::YAH_DARK });
+    let base = base.unwrap_or(if dark_flag == Some(false) { &presets::BYOB_LIGHT } else { &presets::BYOB_DARK });
     let mut accent = match obj.get("accent") {
         None => None,
         Some(v) => color_value(v).or_else(|| {

@@ -1,13 +1,13 @@
 //! Step presentation and per-turn undo: bounding tool previews, collecting a call's undo
-//! ops, and reversing a reply's file changes on [`ClientMsg::Undo`](yah_protocol::ClientMsg::Undo).
+//! ops, and reversing a reply's file changes on [`ClientMsg::Undo`](byob_protocol::ClientMsg::Undo).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use yah_protocol::{DiffLine, MAX_PREVIEW_LINES, NoticeLevel, Preview, ServerMsg};
-use yah_tools::preview::clip_line;
-use yah_tools::undo::Fingerprint;
-use yah_tools::{FileChange, UndoOp};
+use byob_protocol::{DiffLine, MAX_PREVIEW_LINES, NoticeLevel, Preview, ServerMsg};
+use byob_tools::preview::clip_line;
+use byob_tools::undo::Fingerprint;
+use byob_tools::{FileChange, UndoOp};
 
 use crate::{ClientId, Engine};
 
@@ -103,7 +103,7 @@ impl TurnJournal {
 }
 
 /// Undo journals by assistant entry id. In memory for now; the ops serialize with the same
-/// JSON shape as `yah_store::UndoOp`, for persisting. Persist them by the message's task id
+/// JSON shape as `byob_store::UndoOp`, for persisting. Persist them by the message's task id
 /// (`ChatStore::add_undo_op`), never by entry id: entry ids are store message ids, and the
 /// folder backend issues new ones every run.
 #[derive(Debug, Default)]
@@ -133,7 +133,7 @@ impl Engine {
     }
 
     /// The chat holding entry `id` (among loaded chats) and the entry.
-    fn locate(&mut self, id: u64) -> Option<(String, &mut yah_protocol::Entry)> {
+    fn locate(&mut self, id: u64) -> Option<(String, &mut byob_protocol::Entry)> {
         self.live.iter_mut().find_map(|(chat, l)| l.entries.iter_mut().rev().find(|e| e.id == id).map(|e| (chat.clone(), e)))
     }
 
@@ -173,7 +173,7 @@ impl Engine {
             return;
         }
         let Some(workspace) = self.live.get(&chat).map(|l| PathBuf::clone(&l.workspace)) else { return };
-        match yah_tools::undo::undo(&j.ops, &workspace) {
+        match byob_tools::undo::undo(&j.ops, &workspace) {
             Ok(report) => {
                 if let Some(j) = self.journals.by_entry.get_mut(&entry) {
                     j.undone = true;
@@ -190,7 +190,7 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use yah_protocol::{LineKind, MAX_PREVIEW_LINE_CHARS};
+    use byob_protocol::{LineKind, MAX_PREVIEW_LINE_CHARS};
 
     use super::*;
 

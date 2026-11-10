@@ -119,7 +119,7 @@ pub enum Content {
         uri: String,
         name: String,
     },
-    /// A content type yah doesn't know.
+    /// A content type byob doesn't know.
     Other {
         kind: String,
     },

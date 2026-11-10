@@ -2,7 +2,7 @@
 //! diffs, and key arguments. Everything is bounded; inputs are untrusted.
 
 use serde_json::Value;
-pub use yah_protocol::{DiffLine, LineKind, MAX_PREVIEW_LINE_CHARS, MAX_PREVIEW_LINES, Preview};
+pub use byob_protocol::{DiffLine, LineKind, MAX_PREVIEW_LINE_CHARS, MAX_PREVIEW_LINES, Preview};
 
 /// Unchanged lines kept around each change in a diff.
 const CONTEXT: usize = 2;

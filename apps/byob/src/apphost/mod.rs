@@ -1,7 +1,7 @@
 //! HTML app artifacts inline on the desktop: [`ServoView`], the desktop [`AppView`].
 //!
-//! Each live app runs in its own `yah-artifact-host` process (Servo, offscreen, software GL;
-//! `host/artifact-host/`), so Servo's MPL/tokio dependencies never enter yah and a runaway
+//! Each live app runs in its own `byob-artifact-host` process (Servo, offscreen, software GL;
+//! `host/artifact-host/`), so Servo's MPL/tokio dependencies never enter byob and a runaway
 //! script can be killed. Frames come back as RGBA and become an egui texture; input goes the
 //! other way while the app has focus (click it; Esc gives focus back).
 //!
@@ -26,9 +26,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use egui::{RichText, Stroke, vec2};
-use yah_artifact_wire::{self as wire, Input, Request, Viewport};
-use yah_ui_egui::appview::{AppDoc, AppStatus, AppView, AppViewResponse};
-use yah_ui_egui::theme::Tokens;
+use byob_artifact_wire::{self as wire, Input, Request, Viewport};
+use byob_ui_egui::appview::{AppDoc, AppStatus, AppView, AppViewResponse};
+use byob_ui_egui::theme::Tokens;
 
 /// On screen this long before a card's app starts.
 const SETTLE: Duration = Duration::from_millis(200);
@@ -75,7 +75,7 @@ struct App {
 
 impl App {
     fn new(source: &str) -> Self {
-        let html = yah_server::artifact::wrap_html(source);
+        let html = byob_server::artifact::wrap_html(source);
         let state = if html.len() > wire::MAX_HTML { State::Stopped("It's too large to run here.".into()) } else { State::Live };
         Self {
             helper: None,
@@ -343,7 +343,7 @@ impl ServoView {
             match h.check(now) {
                 Some(helper::Gone::Unresponsive) => {
                     log::warn!("artifact {}/v{}: no answer for {:?}; renderer killed", key.0, key.1, helper::PONG_TIMEOUT);
-                    app.state = State::Stopped("It stopped responding, so yah stopped it.".into());
+                    app.state = State::Stopped("It stopped responding, so byob stopped it.".into());
                     app.helper = None;
                     app.focused = false;
                 }
@@ -435,7 +435,7 @@ impl AppView for ServoView {
     }
 
     fn set_theme(&mut self, vars: &[(&'static str, String)]) {
-        let dark = vars.iter().find(|(k, _)| *k == "--yah-bg").is_none_or(|(_, v)| luminance(v) < 0.5);
+        let dark = vars.iter().find(|(k, _)| *k == "--byob-bg").is_none_or(|(_, v)| luminance(v) < 0.5);
         self.theme = wire::Theme { vars: vars.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect(), dark };
         for app in self.apps.values() {
             if let Some(h) = &app.helper {

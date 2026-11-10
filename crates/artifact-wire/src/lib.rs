@@ -1,14 +1,14 @@
-//! The wire protocol between yah and `yah-artifact-host`, the helper process that renders
+//! The wire protocol between byob and `byob-artifact-host`, the helper process that renders
 //! one HTML app artifact with Servo (see `host/artifact-host/`).
 //!
-//! yah writes [`Request`]s to the helper's stdin; the helper writes [`Event`]s to its stdout.
+//! byob writes [`Request`]s to the helper's stdin; the helper writes [`Event`]s to its stdout.
 //! Every message is one frame: a little-endian `u32` body length, then the body — a tag byte
 //! and the fields in order (`u32`/`u64`/`f32` little-endian, `bool` as one byte, strings and
 //! byte strings as a `u32` length + bytes, lists as a `u32` count + items). Bodies over
 //! [`MAX_FRAME`] are refused before anything is allocated.
 //!
 //! No dependencies on purpose: both workspaces build it, and the helper's must not pull
-//! anything else of yah's.
+//! anything else of byob's.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 use std::fmt;
@@ -16,7 +16,7 @@ use std::io::{self, Read, Write};
 
 /// Largest frame body either side accepts (a 4K-ish frame of RGBA plus slack).
 pub const MAX_FRAME: usize = 64 << 20;
-/// Largest HTML document yah sends.
+/// Largest HTML document byob sends.
 pub const MAX_HTML: usize = 16 << 20;
 
 /// Size of the rendering surface.
@@ -29,7 +29,7 @@ pub struct Viewport {
     pub scale: f32,
 }
 
-/// The host's theme: `--yah-*` CSS variables and whether it is dark.
+/// The host's theme: `--byob-*` CSS variables and whether it is dark.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Theme {
     pub vars: Vec<(String, String)>,
@@ -39,7 +39,7 @@ pub struct Theme {
 /// Show this document.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Load {
-    /// The whole document (yah has already injected its theme defaults and helper script).
+    /// The whole document (byob has already injected its theme defaults and helper script).
     pub html: String,
     pub theme: Theme,
     pub viewport: Viewport,
@@ -104,7 +104,7 @@ pub enum Input {
     Text(String),
 }
 
-/// yah → helper.
+/// byob → helper.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     Load(Box<Load>),
@@ -165,7 +165,7 @@ impl fmt::Debug for Frame {
     }
 }
 
-/// helper → yah.
+/// helper → byob.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// Servo is up; [`Request::Load`] may follow (the helper queues it otherwise anyway).
@@ -577,7 +577,7 @@ mod tests {
     }
 
     fn theme() -> Theme {
-        Theme { vars: vec![("--yah-bg".into(), "#16171a".into()), ("--yah-fg".into(), "#e4e4e7".into())], dark: true }
+        Theme { vars: vec![("--byob-bg".into(), "#16171a".into()), ("--byob-fg".into(), "#e4e4e7".into())], dark: true }
     }
 
     #[test]

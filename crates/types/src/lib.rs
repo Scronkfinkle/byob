@@ -1,4 +1,4 @@
-//! Shared serde types used across every yah layer.
+//! Shared serde types used across every byob layer.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod chart;

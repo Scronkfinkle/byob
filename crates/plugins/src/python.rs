@@ -1,10 +1,10 @@
 //! A plugin's declared Python tools (`tools[].run`): the model's arguments go to the
 //! script as JSON on stdin; what it prints (plain text, or `{"text": …, "files": […]}`)
 //! goes back. Settings arrive as environment variables, plus `HOB_CHAT_DIR` and
-//! `HOB_PLUGIN_DIR` (and `YAH_*` aliases).
+//! `HOB_PLUGIN_DIR` (and `BYOB_*` aliases).
 //!
 //! Given a [`Sandbox`] ([`PythonTool::with_sandbox`]), scripts run confined by
-//! `yah-sandbox` ([`run_script_sandboxed`]: workspace + temp writable, plugin folder
+//! `byob-sandbox` ([`run_script_sandboxed`]: workspace + temp writable, plugin folder
 //! readable, network only if the plugin declares `permissions.network`). Without one
 //! they're a plain child process ([`run_script_unsandboxed`]). Either way: timeout,
 //! bounded output, process-group kill, and [`Access::Execute`] so the permission gate asks.
@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
-use yah_sandbox::{Limits, Policy, RunOptions, Sandbox, TempDir};
-use yah_tools::{Access, FileChange, Tool, ToolContext, ToolOutput, ToolSpec};
+use byob_sandbox::{Limits, Policy, RunOptions, Sandbox, TempDir};
+use byob_tools::{Access, FileChange, Tool, ToolContext, ToolOutput, ToolSpec};
 
 use crate::PluginRef;
 use crate::discover::Plugin;
@@ -94,7 +94,7 @@ pub fn run_script_sandboxed(
 ) -> Result<ScriptOutcome, String> {
     let Some((program, lead)) = run.program.split_first() else { return Err("no interpreter configured".into()) };
     let cwd = run.cwd.canonicalize().map_err(|e| format!("{}: {e}", run.cwd.display()))?;
-    let tmp = TempDir::new("yah-plugin-")?;
+    let tmp = TempDir::new("byob-plugin-")?;
     let mut policy = Policy::for_workspace(&cwd, tmp.path())
         .network(network)
         .limits(Limits::for_timeout(run.timeout.as_secs()))
@@ -102,7 +102,7 @@ pub fn run_script_sandboxed(
         .allow_path_dirs(std::env::var_os("PATH").as_deref())
         // Where the OS can't confine, run anyway (as before the sandbox existed).
         .allow_unsandboxed(true);
-    for p in yah_sandbox::interpreter_read_paths(program) {
+    for p in byob_sandbox::interpreter_read_paths(program) {
         policy = policy.allow_read(p);
     }
     let mut args: Vec<OsString> = lead.to_vec();
@@ -110,7 +110,7 @@ pub fn run_script_sandboxed(
     args.extend(run.args.iter().cloned());
     let mut cmd = sandbox.command(&policy, program, &args);
     cmd.current_dir(&cwd);
-    yah_sandbox::clean_env(&mut cmd, tmp.path());
+    byob_sandbox::clean_env(&mut cmd, tmp.path());
     cmd.envs(&run.env);
     let out = execute(cmd, run, cancelled)?;
     drop(tmp);
@@ -119,7 +119,7 @@ pub fn run_script_sandboxed(
 
 fn execute(cmd: Command, run: &ScriptRun, cancelled: &dyn Fn() -> bool) -> Result<ScriptOutcome, String> {
     let opts = RunOptions { stdin: run.stdin.clone(), timeout: run.timeout, max_output: run.max_output };
-    let o = yah_sandbox::run(cmd, &opts, cancelled)?;
+    let o = byob_sandbox::run(cmd, &opts, cancelled)?;
     if let Some(e) = o.sandbox_error() {
         return Err(format!("the sandbox couldn't start: {e}"));
     }
@@ -292,7 +292,7 @@ impl Tool for PythonTool {
         let chat = ctx.workspace.to_string_lossy().into_owned();
         let dir = self.plugin.dir.to_string_lossy().into_owned();
         let mut env = self.plugin.env.clone();
-        for (k, v) in [("HOB_CHAT_DIR", &chat), ("YAH_CHAT_DIR", &chat), ("HOB_PLUGIN_DIR", &dir), ("YAH_PLUGIN_DIR", &dir)] {
+        for (k, v) in [("HOB_CHAT_DIR", &chat), ("BYOB_CHAT_DIR", &chat), ("HOB_PLUGIN_DIR", &dir), ("BYOB_PLUGIN_DIR", &dir)] {
             env.insert(k.into(), v.clone());
         }
         let run = ScriptRun {

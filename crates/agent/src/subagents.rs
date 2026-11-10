@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use yah_protocol::{DelegationState, DelegationUpdate, NoticeLevel, ServerMsg, Step};
-use yah_store::{MessageStats, NewAgentRun};
+use byob_protocol::{DelegationState, DelegationUpdate, NoticeLevel, ServerMsg, Step};
+use byob_store::{MessageStats, NewAgentRun};
 
 use crate::{ChildRun, Engine, adapt, chats, delegate, turn};
 
@@ -22,14 +22,14 @@ fn new_run_id() -> String {
 
 impl Engine {
     /// What a turn in `workspace` needs to delegate, if subagents are on and there are tools.
-    pub(crate) fn delegation_env(&self, llm: &yah_llm::Client, plan: &adapt::Plan, workspace: &Path) -> Option<delegate::Env> {
+    pub(crate) fn delegation_env(&self, llm: &byob_llm::Client, plan: &adapt::Plan, workspace: &Path) -> Option<delegate::Env> {
         if !self.subagents.enabled || self.tools.is_empty() {
             return None;
         }
         let main = delegate::Model { config: self.config.clone(), llm: llm.clone(), plan: plan.clone() };
         let mut roles = BTreeMap::new();
         for (name, config) in &self.models {
-            match yah_llm::Client::new(config.clone()) {
+            match byob_llm::Client::new(config.clone()) {
                 Ok(llm) => {
                     roles.insert(name.clone(), delegate::Model { config: config.clone(), llm, plan: self.endpoints.plan(config) });
                 }

@@ -1,7 +1,7 @@
 //! Files in the conversation, engine side:
 //!
-//! - **Uploads**: chunks from [`ClientMsg::Upload`](yah_protocol::ClientMsg::Upload) are
-//!   staged in `.yah/incoming/` and moved to `uploads/<safe, unique name>` in the workspace
+//! - **Uploads**: chunks from [`ClientMsg::Upload`](byob_protocol::ClientMsg::Upload) are
+//!   staged in `.byob/incoming/` and moved to `uploads/<safe, unique name>` in the workspace
 //!   when complete. Only paths that came out of an upload may be attached to a message.
 //! - **Telling the model**: an attached file is named in the user message with its path and
 //!   size; a CSV gets its header and first rows; a PNG/JPEG goes along as an `image_url`
@@ -14,15 +14,15 @@ use std::fs::{File, OpenOptions};
 use std::io::{Cursor, ErrorKind, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
-use yah_llm::ChatMessage;
-use yah_protocol::media::{self, MAX_ATTACHMENTS, MAX_IMAGE_BYTES, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_BYTES};
-use yah_protocol::{Entry, MediaContent, MediaKind, MediaRef, ServerMsg};
-use yah_tools::sandbox;
+use byob_llm::ChatMessage;
+use byob_protocol::media::{self, MAX_ATTACHMENTS, MAX_IMAGE_BYTES, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_BYTES};
+use byob_protocol::{Entry, MediaContent, MediaKind, MediaRef, ServerMsg};
+use byob_tools::sandbox;
 
 /// Workspace folder uploads are saved in.
 pub const UPLOAD_DIR: &str = "uploads";
-/// Staging folder for unfinished uploads (inside yah's reserved `.yah`).
-const INCOMING_DIR: &str = ".yah/incoming";
+/// Staging folder for unfinished uploads (inside byob's reserved `.byob`).
+const INCOMING_DIR: &str = ".byob/incoming";
 /// Unfinished uploads one client may have at a time, and all clients together.
 const MAX_OPEN_PER_CLIENT: usize = 8;
 const MAX_OPEN_TOTAL: usize = 32;
@@ -227,13 +227,13 @@ fn unique_path(dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// Charts and images among a tool call's file changes, for its step.
-pub fn media_for_changes(changes: &[yah_tools::FileChange], workspace: &Path) -> Vec<MediaRef> {
+pub fn media_for_changes(changes: &[byob_tools::FileChange], workspace: &Path) -> Vec<MediaRef> {
     let root = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
     changes
         .iter()
         .filter_map(|c| match c {
-            yah_tools::FileChange::Created(p) | yah_tools::FileChange::Modified(p) | yah_tools::FileChange::Moved { to: p, .. } => Some(p),
-            yah_tools::FileChange::Deleted(_) => None,
+            byob_tools::FileChange::Created(p) | byob_tools::FileChange::Modified(p) | byob_tools::FileChange::Moved { to: p, .. } => Some(p),
+            byob_tools::FileChange::Deleted(_) => None,
         })
         .filter_map(|p| {
             let rel = p.strip_prefix(&root).or_else(|_| p.strip_prefix(workspace)).ok()?;
@@ -257,7 +257,7 @@ pub fn load(workspace: &Path, path: &str) -> MediaContent {
     };
     match MediaKind::for_path(path) {
         MediaKind::Chart => match read_capped(&file, MAX_CHART_FILE) {
-            Ok(bytes) => match yah_protocol::media::ChartSpec::from_json(&String::from_utf8_lossy(&bytes)) {
+            Ok(bytes) => match byob_protocol::media::ChartSpec::from_json(&String::from_utf8_lossy(&bytes)) {
                 Ok(spec) => MediaContent::Chart { spec },
                 Err(e) => error(e),
             },
@@ -279,12 +279,12 @@ pub fn answer(transcript: &[Entry], workspace: &Path, path: &str) -> MediaConten
 /// One artifact version's bytes for a client: as saved, except an image too big for one
 /// message, which is downscaled. Runs off the engine thread.
 pub fn artifact_for_client(workspace: &Path, chat: &str, id: &str, version: u32) -> Result<Vec<u8>, String> {
-    let (artifact, bytes) = yah_tools::artifact::read_version(workspace, chat, id, version, yah_tools::artifact::MAX_FILE_BYTES)?;
-    if bytes.len() <= yah_protocol::artifact::MAX_ARTIFACT_SEND_BYTES {
+    let (artifact, bytes) = byob_tools::artifact::read_version(workspace, chat, id, version, byob_tools::artifact::MAX_FILE_BYTES)?;
+    if bytes.len() <= byob_protocol::artifact::MAX_ARTIFACT_SEND_BYTES {
         return Ok(bytes);
     }
-    if artifact.kind == yah_protocol::ArtifactKind::Image {
-        return fit_image(bytes, CLIENT_IMAGE_SIDE, yah_protocol::artifact::MAX_ARTIFACT_SEND_BYTES).map(|(_, b)| b);
+    if artifact.kind == byob_protocol::ArtifactKind::Image {
+        return fit_image(bytes, CLIENT_IMAGE_SIDE, byob_protocol::artifact::MAX_ARTIFACT_SEND_BYTES).map(|(_, b)| b);
     }
     Err(format!("{} is too big to show here ({}); it's in the workspace", artifact.filename, media::size_label(bytes.len() as u64)))
 }
@@ -527,26 +527,26 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let ws = d.path();
         std::fs::create_dir(ws.join("charts")).unwrap();
-        let spec = yah_types::chart::validate(&serde_json::json!({"type": "bar", "x": "m", "series": ["v"], "data": [{"m": "a", "v": 1}]})).unwrap();
+        let spec = byob_types::chart::validate(&serde_json::json!({"type": "bar", "x": "m", "series": ["v"], "data": [{"m": "a", "v": 1}]})).unwrap();
         std::fs::write(ws.join("charts/c.chart.json"), spec.to_json()).unwrap();
         std::fs::write(ws.join("plot.png"), png(40, 30)).unwrap();
         std::fs::write(ws.join("secret.png"), png(4, 4)).unwrap();
         let changes = vec![
-            yah_tools::FileChange::Created(ws.join("charts/c.chart.json")),
-            yah_tools::FileChange::Modified(ws.join("plot.png")),
-            yah_tools::FileChange::Created(ws.join("notes.md")),
+            byob_tools::FileChange::Created(ws.join("charts/c.chart.json")),
+            byob_tools::FileChange::Modified(ws.join("plot.png")),
+            byob_tools::FileChange::Created(ws.join("notes.md")),
         ];
         let media = media_for_changes(&changes, ws);
         assert_eq!(
             media.iter().map(|m| (m.kind, m.path.as_str())).collect::<Vec<_>>(),
             vec![(MediaKind::Chart, "charts/c.chart.json"), (MediaKind::Image, "plot.png")]
         );
-        let step = yah_protocol::Step {
+        let step = byob_protocol::Step {
             id: 1,
             tool: "t".into(),
             title: "t".into(),
-            access: yah_protocol::ToolAccess::Read,
-            status: yah_protocol::StepStatus::Done,
+            access: byob_protocol::ToolAccess::Read,
+            status: byob_protocol::StepStatus::Done,
             detail: String::new(),
             changes: vec![],
             at: 0,
@@ -557,7 +557,7 @@ mod tests {
         };
         let entry = Entry {
             id: 0,
-            role: yah_protocol::EntryRole::Assistant,
+            role: byob_protocol::EntryRole::Assistant,
             content: String::new(),
             reasoning: String::new(),
             done: true,

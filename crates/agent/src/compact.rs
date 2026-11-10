@@ -8,13 +8,13 @@
 //! - Every compaction is stored with the last message it covers, so after a restart the
 //!   engine builds history from the latest compaction plus later messages ([`history`]).
 //! - A summary that fails (server error, empty reply) never loses the turn: the request goes
-//!   on uncompacted and [`yah_llm::budget::fit_history`] shortens it as before.
+//!   on uncompacted and [`byob_llm::budget::fit_history`] shortens it as before.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use yah_llm::{ChatMessage, StreamEvent, Usage, budget, toolprompt};
-use yah_protocol::{Entry, EntryRole};
+use byob_llm::{ChatMessage, StreamEvent, Usage, budget, toolprompt};
+use byob_protocol::{Entry, EntryRole};
 
 use crate::adapt::Plan;
 
@@ -44,7 +44,7 @@ const ARGS_CHARS: usize = 600;
 /// Tokens left for the summarizer's instructions on top of the conversation.
 const PROMPT_OVERHEAD: usize = 1_024;
 
-pub(crate) const SYSTEM: &str = "You compress conversations between a user and an AI assistant (yah) that uses tools in a desktop harness. \
+pub(crate) const SYSTEM: &str = "You compress conversations between a user and an AI assistant (byob) that uses tools in a desktop harness. \
 You write summaries the assistant will rely on to continue the work without the original messages, so precision matters more than style.";
 
 const INSTRUCTIONS: &str = "Write a dense summary of the conversation above so the assistant can continue it without the original messages. \
@@ -213,7 +213,7 @@ pub enum Failure {
 
 /// Ask the model for a summary of `messages` (the system prompt is left out). Not streamed
 /// to anyone; bounded in size and time. `focus` is what the user wants kept in detail.
-pub fn summarize(llm: &yah_llm::Client, messages: &[ChatMessage], focus: Option<&str>, plan: &Plan, cancel: &AtomicBool) -> Result<Summary, Failure> {
+pub fn summarize(llm: &byob_llm::Client, messages: &[ChatMessage], focus: Option<&str>, plan: &Plan, cancel: &AtomicBool) -> Result<Summary, Failure> {
     let room = plan.context.saturating_sub(plan.reserve).saturating_sub(PROMPT_OVERHEAD).max(256);
     let request = request(messages, focus, room);
     let stop = AtomicBool::new(false);
@@ -372,7 +372,7 @@ pub struct Tally {
 impl Tally {
     /// From what the store remembers: replies' stats and manual compactions (automatic ones
     /// are counted in their reply's stats).
-    pub fn from_store(messages: &[yah_store::StoredMessage], compactions: &[yah_store::Compaction]) -> Self {
+    pub fn from_store(messages: &[byob_store::StoredMessage], compactions: &[byob_store::Compaction]) -> Self {
         let mut t = Self::default();
         for s in messages.iter().filter_map(|m| m.stats.as_ref()) {
             t.prompt_tokens = t.prompt_tokens.saturating_add(s.prompt_tokens);
@@ -393,7 +393,7 @@ impl Tally {
     }
 
     /// Add what stored subagent runs used.
-    pub fn add_runs(&mut self, runs: &[yah_store::AgentRun]) {
+    pub fn add_runs(&mut self, runs: &[byob_store::AgentRun]) {
         for s in runs.iter().filter_map(|r| r.stats.as_ref()) {
             self.agent_prompt = self.agent_prompt.saturating_add(s.prompt_tokens);
             self.agent_completion = self.agent_completion.saturating_add(s.completion_tokens);
@@ -421,7 +421,7 @@ impl Tally {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yah_llm::ToolCall;
+    use byob_llm::ToolCall;
 
     fn plan(context: usize) -> Plan {
         Plan { key: String::new(), prompt_tools: false, fallback: false, context, reserve: budget::default_reply_reserve(context), vision: None }
@@ -551,10 +551,10 @@ mod tests {
 
     #[test]
     fn tally_from_store_counts_manual_compactions_only_once() {
-        let msg = |stats: Option<yah_store::MessageStats>| yah_store::StoredMessage {
-            id: yah_store::MessageId(1),
+        let msg = |stats: Option<byob_store::MessageStats>| byob_store::StoredMessage {
+            id: byob_store::MessageId(1),
             chat_id: "c".into(),
-            role: yah_types::Role::Assistant,
+            role: byob_types::Role::Assistant,
             content: String::new(),
             reasoning: String::new(),
             done: true,
@@ -565,12 +565,12 @@ mod tests {
             created_at: 0,
             steps: vec![],
         };
-        let stats = yah_store::MessageStats { prompt_tokens: 100, completion_tokens: 10, elapsed_ms: 1000, model_calls: 3 };
-        let old = yah_store::MessageStats { model_calls: 0, ..stats };
-        let comp = |manual| yah_store::Compaction {
+        let stats = byob_store::MessageStats { prompt_tokens: 100, completion_tokens: 10, elapsed_ms: 1000, model_calls: 3 };
+        let old = byob_store::MessageStats { model_calls: 0, ..stats };
+        let comp = |manual| byob_store::Compaction {
             id: 1,
             chat_id: "c".into(),
-            through: yah_store::MessageId(1),
+            through: byob_store::MessageId(1),
             summary: String::new(),
             tokens_before: 0,
             tokens_after: 0,

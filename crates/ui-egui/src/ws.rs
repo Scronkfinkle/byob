@@ -1,6 +1,6 @@
 //! [`Connection`] over a WebSocket, via `ewebsock` (browser `WebSocket` on wasm, a
 //! background thread natively). Used by the web build and, later, by the desktop app
-//! when attaching to a remote yah.
+//! when attaching to a remote byob.
 //!
 //! The connection heals itself: when the socket closes or errors (a phone going to sleep,
 //! a Wi-Fi blip, the server restarting) it redials with exponential backoff and replays
@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use web_time::Instant;
-use yah_protocol::{ClientMsg, Connection, ServerMsg};
+use byob_protocol::{ClientMsg, Connection, ServerMsg};
 
 /// First retry delay; doubles per failed attempt up to [`MAX_BACKOFF`].
 const MIN_BACKOFF: Duration = Duration::from_millis(500);

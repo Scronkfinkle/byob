@@ -19,7 +19,7 @@ pub(crate) fn decode_stats(run: &str, s: Option<String>) -> Option<MessageStats>
     s.and_then(|s| match serde_json::from_str::<MessageStats>(&s) {
         Ok(v) => Some(v),
         Err(e) => {
-            log::warn!("yah-store: agent run {run}: ignoring bad stats {s:?}: {e}");
+            log::warn!("byob-store: agent run {run}: ignoring bad stats {s:?}: {e}");
             None
         }
     })

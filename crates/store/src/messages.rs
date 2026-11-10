@@ -66,7 +66,7 @@ impl Raw {
         let stats = self.stats.and_then(|s| match serde_json::from_str::<MessageStats>(&s) {
             Ok(v) => Some(v),
             Err(e) => {
-                log::warn!("yah-store: message {}: ignoring bad stats {s:?}: {e}", self.id);
+                log::warn!("byob-store: message {}: ignoring bad stats {s:?}: {e}", self.id);
                 None
             }
         });
