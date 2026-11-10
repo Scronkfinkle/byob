@@ -267,6 +267,30 @@ MCP servers get a looser policy (read anything, network on, writes confined).
 and reports usage. Because there's no grammar-constrained local engine anymore, the agent
 will run the tool-calling rounds itself (cap 30 per turn, as hob did).
 
+### Connecting (first run)
+
+byob brings no model, so the engine keeps track of whether its endpoint answers
+(`byob-agent::connect`): a quick `GET /models` (5 s) at startup and whenever the endpoint
+is set, and the outcome of every reply, give `EngineState.link` (`checking` / `ok` /
+`failed` with a `Problem`: unreachable, bad key, wrong path, missing model, rate limit,
+server error, each with a headline and advice in `byob-protocol::connect`). The first
+endpoint that works is saved as `settings.json` `inference.last_good`; `onboarded` (that,
+or `--inference-url`) decides whether an empty chat shows the welcome screen. Until then
+the engine also looks for llama-server, Ollama, LM Studio and vLLM on their usual loopback
+ports (800 ms each, in parallel; `ClientMsg::DetectEndpoints` repeats it).
+
+The welcome screen and Settings share one form (`byob-ui-egui::connect`): presets, URL,
+model (a picker once the server lists models), key, **Test connection**
+(`ClientMsg::TestInference` → `ServerMsg::InferenceTested`: models, problem, a short summary
+from a brief probe without generation) and **Connect** (`SetInference`). The engine does
+all requests, so the browser works the same and `127.0.0.1` means the engine's machine. A
+stored key follows a URL change only to the same scheme/host/port (`api_key: ""` removes
+it); lengths are capped. A reply that failed with a connection problem shows a card with
+Connection settings and, if it produced nothing, Retry (`ClientMsg::Retry` deletes the
+failed pair and sends the message again). The header's status chip (dot + model + server)
+opens the connection settings; the header lays out Settings first so it is never pushed
+off screen.
+
 ## Storage
 
 The engine holds a `Box<dyn byob_store::ChatStore>` (chats, messages incl. streamed deltas,

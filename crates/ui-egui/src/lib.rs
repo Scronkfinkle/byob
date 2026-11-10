@@ -5,6 +5,7 @@
 pub mod appview;
 pub mod artifact;
 pub mod chart;
+pub mod connect;
 pub mod export;
 mod highlight;
 pub mod markdown;
@@ -62,9 +63,12 @@ pub struct ByobApp {
     notices: Vec<(NoticeLevel, String)>,
     input: String,
     show_settings: bool,
-    form_url: String,
-    form_model: String,
-    form_key: String,
+    /// Scroll the settings to the connection form on the next frame.
+    reveal_connection: bool,
+    /// The connection form (welcome screen and settings).
+    connect: connect::ConnectForm,
+    /// Where the Settings button was last drawn (tests check it stays on screen).
+    settings_button: egui::Rect,
     /// Charts and images shown in the transcript.
     media: media::Cache,
     /// Files attached in the composer.
@@ -96,9 +100,9 @@ impl ByobApp {
             notices: Vec::new(),
             input: String::new(),
             show_settings: false,
-            form_url: String::new(),
-            form_model: String::new(),
-            form_key: String::new(),
+            reveal_connection: false,
+            connect: connect::ConnectForm::default(),
+            settings_button: egui::Rect::NOTHING,
             media: media::Cache::default(),
             uploads: upload::Uploads::default(),
             artifacts: artifact::Artifacts::default(),
@@ -152,8 +156,7 @@ impl ByobApp {
             }
             match msg {
                 ServerMsg::State(state) => {
-                    self.form_url.clone_from(&state.inference_base_url);
-                    self.form_model.clone_from(&state.inference_model);
+                    self.connect.sync(&state);
                     self.state = Some(state);
                 }
                 ServerMsg::Notice { level, text } => {
@@ -194,7 +197,7 @@ impl ByobApp {
                 ServerMsg::Artifacts { .. } | ServerMsg::ArtifactUpdated(_) | ServerMsg::ArtifactFile { .. } => {}
                 // Handled by the usage meter above.
                 ServerMsg::Usage(_) | ServerMsg::Compactions { .. } | ServerMsg::Compacted(_) => {}
-                ServerMsg::InferenceTested(_) => {}
+                ServerMsg::InferenceTested(test) => self.connect.tested(test),
             }
         }
     }
@@ -268,6 +271,19 @@ impl ByobApp {
     /// Open or close the settings panel (used by scripted screenshot runs).
     pub fn set_settings_open(&mut self, open: bool) {
         self.show_settings = open;
+    }
+
+    /// Open the settings at the connection form.
+    pub fn open_connection(&mut self) {
+        self.show_settings = true;
+        self.reveal_connection = true;
+    }
+
+    /// Scripted runs: put an endpoint in the connection form and test it, as if typed and
+    /// "Test connection" pressed.
+    pub fn test_connection(&mut self, url: &str, model: &str) {
+        self.connect.fill(url, model);
+        self.connect.start_test();
     }
 
     /// Scripted runs: open the settings at an appearance section (`knobs`, `advanced`).
@@ -365,6 +381,8 @@ impl ByobApp {
         self.artifacts.end_frame(ctx);
         let (msgs, notices) = self.artifacts.take_output();
         self.send_all(msgs);
+        let msgs = self.connect.take();
+        self.send_all(msgs);
         for (level, text) in notices {
             self.notice(level, text);
         }
@@ -380,38 +398,66 @@ impl ByobApp {
         let t = self.tokens;
         egui::Panel::top("header").show(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Chats").on_hover_text("Show or hide the chat list").clicked() {
-                    self.sidebar.toggle();
-                }
-                ui.label(egui::RichText::new("byob").strong().size(t.text_size(18.0)).color(t.accent));
-                let title = self.sidebar.current().map_or("New chat", |c| c.title.as_str());
-                let max = if narrow { 18 } else { 48 };
-                let short: String =
-                    if title.chars().count() > max { title.chars().take(max - 1).chain(std::iter::once('…')).collect() } else { title.to_owned() };
-                ui.label(egui::RichText::new(short).color(t.text_strong)).on_hover_text(title);
-                match &self.state {
-                    // The endpoint is detail a phone screen has no room for.
-                    Some(_) if narrow => ui.label(""),
-                    Some(s) => ui.label(egui::RichText::new(format!("{} · {}", s.inference_model, s.inference_base_url)).color(t.text_dim)),
-                    None => ui.label(egui::RichText::new("connecting…").color(t.text_dim)),
-                };
-                if let Some(info) = self.state.as_ref().and_then(|s| s.endpoint_info.as_ref()) {
-                    ui.label(egui::RichText::new(info.summary()).small().color(t.text_dim));
-                }
-                if let Some(msg) = self.usage.meter(ui, &t, narrow) {
-                    self.conn.send(msg);
-                }
-                if steps::awaiting_approval(&self.entries) {
-                    steps::waiting_badge(ui, &t);
-                } else if self.busy() {
-                    theme::spinner(ui, &t, None);
-                }
+                // The right-hand buttons first, so a long title or URL can never push
+                // Settings off screen; the rest shares what is left.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.toggle_value(&mut self.show_settings, "Settings");
+                    let settings = ui.toggle_value(&mut self.show_settings, "Settings").on_hover_text("Connection and appearance");
+                    self.settings_button = settings.rect;
                     self.artifacts.header_buttons(ui, &t);
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| self.header_left(ui, &t, narrow));
                 });
             });
         });
+    }
+
+    /// Chats, name, status, chat title and endpoint details, dropping the optional ones
+    /// (and shortening the rest) when the window is narrow.
+    fn header_left(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, narrow: bool) {
+        if ui.button("Chats").on_hover_text("Show or hide the chat list").clicked() {
+            self.sidebar.toggle();
+        }
+        ui.label(egui::RichText::new("byob").strong().size(t.text_size(18.0)).color(t.accent));
+        if steps::awaiting_approval(&self.entries) {
+            steps::waiting_badge(ui, t);
+        } else if self.busy() {
+            theme::spinner(ui, t, None);
+        }
+        let title = self.sidebar.current().map_or("New chat", |c| c.title.as_str()).to_owned();
+        let room = ui.available_width();
+        ui.scope(|ui| {
+            ui.set_max_width((room * 0.4).max(40.0));
+            ui.add(egui::Label::new(egui::RichText::new(&title).color(t.text_strong)).truncate()).on_hover_text(&title);
+        });
+        // The connection: its status dot, model and server; a click opens its settings.
+        let room = ui.available_width();
+        let clicked = ui
+            .scope(|ui| {
+                ui.set_max_width((room * 0.6).max(40.0));
+                match &self.state {
+                    Some(s) => connect::chip(ui, t, s, narrow),
+                    None => {
+                        ui.label(egui::RichText::new("connecting…").color(t.text_dim));
+                        false
+                    }
+                }
+            })
+            .inner;
+        if clicked {
+            self.open_connection();
+        }
+        let info = self.state.as_ref().filter(|s| s.link.is_ok()).and_then(|s| s.endpoint_info.as_ref()).map(byob_protocol::EndpointInfo::summary);
+        if let Some(info) = info.filter(|_| !narrow && ui.available_width() > 360.0) {
+            let room = ui.available_width() - 160.0;
+            ui.scope(|ui| {
+                ui.set_max_width(room);
+                ui.add(egui::Label::new(egui::RichText::new(&info).small().color(t.text_dim)).truncate());
+            });
+        }
+        if ui.available_width() > 60.0
+            && let Some(msg) = self.usage.meter(ui, t, narrow)
+        {
+            self.conn.send(msg);
+        }
     }
 
     fn composer(&mut self, ui: &mut egui::Ui) {
@@ -457,9 +503,7 @@ impl ByobApp {
     fn transcript(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
         if self.entries.is_empty() {
-            ui.centered_and_justified(|ui| {
-                ui.label(egui::RichText::new("Ask anything to get started.").color(t.text_dim));
-            });
+            self.empty_chat(ui);
             return;
         }
         if self.markdown.len() > self.entries.len() {
@@ -471,25 +515,69 @@ impl ByobApp {
         let artifacts = &mut self.artifacts;
         let usage = &mut self.usage;
         let mut answers = Vec::new();
+        let mut card = None;
+        // Only the last reply, failed before it produced anything, can be run again.
+        let busy = self.state.as_ref().is_some_and(|s| s.busy);
+        let retry_id = self.entries.last().filter(|e| retryable(e) && !busy).map(|e| e.id);
         egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
             readable_column(ui, &t, |ui| {
                 ui.add_space(t.pad(8.0));
                 usage.dividers(ui, &t, 0);
                 for entry in &self.entries {
-                    answers.extend(entry_view(ui, &t, entry, markdown, media, artifacts));
+                    answers.extend(entry_view(ui, &t, entry, markdown, media, artifacts, retry_id == Some(entry.id), &mut card));
                     ui.add_space(t.pad(8.0));
                     usage.dividers(ui, &t, entry.id);
                 }
             });
         });
         answers.extend(self.media.take_requests());
+        match card {
+            Some(connect::CardAction::Retry) => answers.push(ClientMsg::Retry),
+            Some(connect::CardAction::OpenSettings) => self.open_connection(),
+            None => {}
+        }
         for msg in answers {
             self.conn.send(msg);
         }
     }
+
+    /// No messages yet: the welcome screen until something has worked, what's wrong if the
+    /// endpoint stopped answering, else an invitation.
+    fn empty_chat(&mut self, ui: &mut egui::Ui) {
+        let t = self.tokens;
+        let view = connect::empty_view(self.state.as_ref());
+        let Some(state) = self.state.as_ref() else {
+            ui.centered_and_justified(|ui| theme::spinner(ui, &t, None));
+            return;
+        };
+        match view {
+            connect::EmptyView::Welcome => self.connect.welcome(ui, &t, state),
+            connect::EmptyView::Trouble => match connect::trouble(ui, &t, state) {
+                // Check again: set the same endpoint, which checks it.
+                Some(connect::CardAction::Retry) => {
+                    let msg = ClientMsg::SetInference { base_url: state.inference_base_url.clone(), model: state.inference_model.clone(), api_key: None };
+                    self.conn.send(msg);
+                }
+                Some(connect::CardAction::OpenSettings) => self.open_connection(),
+                None => {}
+            },
+            connect::EmptyView::Ready | connect::EmptyView::Waiting => {
+                ui.centered_and_justified(|ui| {
+                    ui.label(egui::RichText::new("Ask anything to get started.").color(t.text_dim));
+                });
+            }
+        }
+    }
 }
 
-/// Draws one entry; returns a message to send if the user answered an approval card.
+/// A reply that failed before it produced anything (see [`ClientMsg::Retry`]).
+fn retryable(e: &Entry) -> bool {
+    e.role == EntryRole::Assistant && e.done && e.error.is_some() && e.content.is_empty() && e.steps.is_empty()
+}
+
+/// Draws one entry; returns a message to send if the user answered an approval card. A
+/// connection error is a card (with Retry if `retry`) whose button lands in `card`.
+#[allow(clippy::too_many_arguments)] // the transcript's per-entry caches
 fn entry_view(
     ui: &mut egui::Ui,
     t: &theme::Tokens,
@@ -497,6 +585,8 @@ fn entry_view(
     markdown: &mut markdown::Cache,
     media: &mut media::Cache,
     artifacts: &mut artifact::Artifacts,
+    retry: bool,
+    card: &mut Option<connect::CardAction>,
 ) -> Option<ClientMsg> {
     let mut answer = None;
     let user = entry.role == EntryRole::User;
@@ -554,8 +644,10 @@ fn entry_view(
                     EntryRole::User => {}
                 }
                 media.show_entry(ui, t, entry);
-                if let Some(err) = &entry.error {
-                    ui.label(egui::RichText::new(err).color(t.danger));
+                if let Some(err) = &entry.error
+                    && let Some(action) = connect::error_card(ui, t, err, retry)
+                {
+                    *card = Some(action);
                 }
                 if let Some(s) = entry.stats.filter(|_| entry.role == EntryRole::Assistant) {
                     #[allow(clippy::cast_precision_loss)] // display only
@@ -596,5 +688,101 @@ mod thinking_tests {
     fn sizes_read_naturally() {
         assert_eq!(size_label(840), "840 chars");
         assert_eq!(size_label(12_400), "12.4k chars");
+    }
+}
+
+#[cfg(test)]
+mod app_tests {
+    use std::sync::{Arc, Mutex};
+
+    use byob_protocol::{ChatSummary, EngineState, Link};
+
+    use super::*;
+
+    /// A connection that delivers queued messages and records what the app sends.
+    #[derive(Clone, Default)]
+    struct Fake {
+        inbox: Arc<Mutex<Vec<ServerMsg>>>,
+        sent: Arc<Mutex<Vec<ClientMsg>>>,
+    }
+
+    impl Connection for Fake {
+        fn send(&mut self, msg: ClientMsg) {
+            self.sent.lock().unwrap().push(msg);
+        }
+        fn try_recv(&mut self) -> Option<ServerMsg> {
+            let mut q = self.inbox.lock().unwrap();
+            (!q.is_empty()).then(|| q.remove(0))
+        }
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut ByobApp, width: f32) {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+        out.textures_delta.clear();
+    }
+
+    fn state(link: Link, onboarded: bool) -> EngineState {
+        EngineState {
+            inference_base_url: "https://a-very-long-hostname.inference.example.com/some/deep/path/v1".into(),
+            inference_model: "an-extremely-long-model-name-that-goes-on-and-on-q4_k_m".into(),
+            link,
+            onboarded,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn settings_stays_on_screen_however_crowded_the_header() {
+        for width in [320.0, 480.0, 720.0, 1000.0, 1600.0] {
+            let fake = Fake::default();
+            let title = "A chat with a remarkably long title that would never fit in any header at all, really".to_owned();
+            fake.inbox.lock().unwrap().extend([
+                ServerMsg::State(state(Link::Ok, true)),
+                ServerMsg::ChatOpened { chat: Some(ChatSummary { id: "c".into(), title, updated_at: 1, pinned_at: None, busy: false }) },
+            ]);
+            let ctx = egui::Context::default();
+            let mut app = ByobApp::new(Box::new(fake), "test");
+            for _ in 0..3 {
+                frame(&ctx, &mut app, width);
+            }
+            let r = app.settings_button;
+            assert!(r.is_positive() && r.min.x >= 0.0 && r.max.x <= width + 0.5, "width {width}: Settings at {r:?}");
+        }
+    }
+
+    #[test]
+    fn first_run_shows_the_welcome_and_a_failed_reply_offers_settings() {
+        let fake = Fake::default();
+        fake.inbox.lock().unwrap().push(ServerMsg::State(state(Link::failed("could not reach x: refused"), false)));
+        let ctx = egui::Context::default();
+        let mut app = ByobApp::new(Box::new(fake.clone()), "test");
+        frame(&ctx, &mut app, 1000.0);
+        assert_eq!(connect::empty_view(app.state.as_ref()), connect::EmptyView::Welcome);
+        // A scripted test from the form goes to the engine.
+        app.test_connection("http://127.0.0.1:11434/v1", "qwen3");
+        frame(&ctx, &mut app, 1000.0);
+        assert!(fake.sent.lock().unwrap().iter().any(|m| matches!(m, ClientMsg::TestInference { model, .. } if model == "qwen3")));
+        // A reply that couldn't reach the server: a card, retryable while it is the last one.
+        let failed = Entry {
+            id: 2,
+            role: EntryRole::Assistant,
+            content: String::new(),
+            reasoning: String::new(),
+            done: true,
+            error: Some("could not reach http://x/v1/chat/completions: refused".into()),
+            stats: None,
+            steps: vec![],
+            undoable: false,
+            undone: false,
+            attachments: vec![],
+        };
+        assert!(retryable(&failed));
+        assert!(!retryable(&Entry { content: "partial".into(), ..failed.clone() }));
+        fake.inbox.lock().unwrap().push(ServerMsg::Transcript { entries: vec![failed] });
+        frame(&ctx, &mut app, 1000.0);
+        app.open_connection();
+        frame(&ctx, &mut app, 1000.0);
+        assert!(app.show_settings && !app.reveal_connection);
     }
 }

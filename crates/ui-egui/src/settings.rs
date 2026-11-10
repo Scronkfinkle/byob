@@ -3,7 +3,6 @@
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use byob_protocol::ClientMsg;
 use egui::{Color32, RichText, Stroke, vec2};
 
 use crate::ByobApp;
@@ -46,38 +45,21 @@ impl ByobApp {
     pub(crate) fn settings(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
         ui.add_space(4.0);
-        ui.label(RichText::new("Inference").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
-        self.inference_settings(ui);
-        ui.add_space(6.0);
+        if std::mem::take(&mut self.reveal_connection) {
+            ui.scroll_to_cursor(Some(egui::Align::Min));
+        }
+        ui.label(RichText::new("Connection").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong))
+            .on_hover_text("The model server byob talks to; saved for every window and browser tab");
+        match &self.state {
+            Some(state) => self.connect.form(ui, &t, state, "settings"),
+            None => {
+                ui.label(RichText::new("connecting…").color(t.text_dim));
+            }
+        }
+        ui.add_space(10.0);
         ui.label(RichText::new("Appearance").family(theme::bold_or_regular(ui.ctx())).color(t.text_strong)).on_hover_text("Saved on this device only");
         self.appearance_settings(ui);
         ui.add_space(6.0);
-    }
-
-    fn inference_settings(&mut self, ui: &mut egui::Ui) {
-        let t = self.tokens;
-        let has_key = self.state.as_ref().is_some_and(|s| s.has_api_key);
-        let w = (ui.available_width() - 110.0).clamp(120.0, 360.0);
-        egui::Grid::new("inference").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            ui.label("Inference URL");
-            ui.add(egui::TextEdit::singleline(&mut self.form_url).desired_width(w));
-            ui.end_row();
-            ui.label("Model");
-            ui.add(egui::TextEdit::singleline(&mut self.form_model).desired_width(w));
-            ui.end_row();
-            ui.label("API key");
-            let hint = if has_key { "(set — leave blank to keep)" } else { "(optional)" };
-            ui.add(egui::TextEdit::singleline(&mut self.form_key).password(true).hint_text(hint).desired_width(w));
-            ui.end_row();
-        });
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Apply").clicked() {
-                let api_key = Some(std::mem::take(&mut self.form_key)).filter(|k| !k.is_empty());
-                self.conn.send(ClientMsg::SetInference { base_url: self.form_url.clone(), model: self.form_model.clone(), api_key });
-            }
-            let endpoint = self.state.as_ref().and_then(|s| s.endpoint.clone()).unwrap_or_else(|| "(invalid URL)".into());
-            ui.label(RichText::new(endpoint).color(t.text_dim));
-        });
     }
 
     /// Imports that finished picking, and export outcomes (every frame).
@@ -667,7 +649,7 @@ mod tests {
 
     struct NullConn;
     impl byob_protocol::Connection for NullConn {
-        fn send(&mut self, _: ClientMsg) {}
+        fn send(&mut self, _: byob_protocol::ClientMsg) {}
         fn try_recv(&mut self) -> Option<byob_protocol::ServerMsg> {
             None
         }
