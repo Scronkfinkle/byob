@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use byob_protocol::{ApprovalAnswer, ClientMsg, Connection, Entry, FileChange, PROTOCOL_VERSION, ServerMsg, Step, StepStatus, ToolAccess};
+use byob_protocol::{ApprovalAnswer, ClientMsg, Connection, Entry, FileChange, ServerMsg, Step, StepStatus, ToolAccess};
 use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
 use byob_types::InferenceConfig;
 use serde_json::{Value, json};
@@ -174,6 +174,7 @@ fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Opt
         detect_local: false,
         envs: None,
         plugins: None,
+        channels: Default::default(),
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests, runs }
 }
@@ -191,7 +192,7 @@ pub(crate) fn recv(conn: &mut LocalConnection) -> ServerMsg {
 
 fn client(h: &Harness) -> (LocalConnection, Vec<Entry>) {
     let mut c = h.engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
     // Hello is answered with the chat list, State, ChatOpened and the Transcript.
     loop {
         if let ServerMsg::Transcript { entries } = recv(&mut c) {
@@ -511,6 +512,7 @@ fn approval_card_then_undo_the_turn() {
         detect_local: false,
         envs: None,
         plugins: None,
+        channels: Default::default(),
     };
     let h = Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests: Arc::default(), runs: Arc::default() };
     let (mut c, _) = client(&h);
@@ -623,6 +625,7 @@ fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: byob_
         detect_local: false,
         envs: None,
         plugins: None,
+        channels: Default::default(),
     };
     (EngineHandle::spawn_with(config).unwrap(), requests)
 }
@@ -658,7 +661,7 @@ fn artifacts_are_created_versioned_served_and_restored() {
     let html = r#"{"title":"Calc","filename":"calc.html","content":"<button style=\"color:red\">Go</button>"}"#;
     let (engine, _) = artifact_engine(vec![call("create_artifact", html), Reply::Text("Made it")], ws.path(), paths.clone());
     let mut c = engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
     while !matches!(recv(&mut c), ServerMsg::Artifacts { .. }) {}
     // Auto-allowed: no approval card.
     let (view, updated) = artifact_turn(&mut c, "make a calculator");
@@ -682,7 +685,7 @@ fn artifacts_are_created_versioned_served_and_restored() {
     let edit = format!(r#"{{"id":"{}","edits":[{{"find":"color:red","replace":"color:blue"}}],"note":"blue"}}"#, a.id);
     let (engine, requests) = artifact_engine(vec![Reply::Calls(vec![("update_artifact".into(), edit)]), Reply::Text("Done")], ws.path(), paths);
     let mut c = engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
     let mut entries = Vec::new();
     let listed = loop {
         match recv(&mut c) {
@@ -775,7 +778,7 @@ fn question_engine(script: Vec<Reply>, policy: Policy) -> (EngineHandle, Request
 
 fn hello(engine: &EngineHandle) -> LocalConnection {
     let mut c = engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
     while !matches!(recv(&mut c), ServerMsg::Transcript { .. }) {}
     c
 }
@@ -889,7 +892,7 @@ fn deleting_a_chat_deletes_its_artifacts() {
     let md = r##"{"title":"Notes","filename":"notes.md","content":"# hi"}"##;
     let (engine, _) = artifact_engine(vec![call("create_artifact", md), Reply::Text("Made it")], ws.path(), paths);
     let mut c = engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
     while !matches!(recv(&mut c), ServerMsg::Artifacts { .. }) {}
     let (_, updated) = artifact_turn(&mut c, "write notes");
     let folder = ws.path().join(byob_tools::artifact::ARTIFACT_DIR).join(&updated[0].id);

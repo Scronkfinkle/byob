@@ -245,7 +245,6 @@ fn websocket(stream: TcpStream, leftover: Vec<u8>, engine: &EngineHandle, config
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byob_protocol::PROTOCOL_VERSION;
     use std::io::{Read, Write};
 
     fn start_with(config: ServerConfig) -> SocketAddr {
@@ -293,11 +292,11 @@ mod tests {
     fn websocket_round_trip() {
         let addr = start();
         let (mut ws, _) = tungstenite::connect(format!("ws://{addr}/ws")).unwrap();
-        let hello = ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() };
+        let hello = ClientMsg::hello("test");
         ws.send(Message::text(hello.to_json())).unwrap();
-        let reply = ws.read().unwrap();
-        let msg = ServerMsg::from_json(reply.to_text().unwrap()).unwrap();
-        assert!(matches!(msg, ServerMsg::State(_)));
+        let mut next = || ServerMsg::from_json(ws.read().unwrap().to_text().unwrap()).unwrap();
+        assert!(matches!(next(), ServerMsg::Welcome(w) if w == byob_protocol::Welcome::current()));
+        assert!(matches!(next(), ServerMsg::State(_)));
     }
 
     #[test]
@@ -496,7 +495,7 @@ mod tests {
         let page = get(addr, "/", "");
         assert!(page.starts_with("HTTP/1.1 503") && page.contains("protocol 7") && page.contains("cargo xtask web") && !page.contains("old ui"), "{page}");
 
-        let current = format!("<meta name=\"byob-protocol\" content=\"{}\"><p>new ui</p>", byob_protocol::PROTOCOL_VERSION);
+        let current = format!("<meta name=\"byob-protocol\" content=\"{}\"><p>new ui</p>", byob_protocol::PROTOCOL_MAJOR);
         std::fs::write(dir.path().join("index.html"), current).unwrap();
         let addr = start_with(ServerConfig { web_dir: Some(dir.path().to_path_buf()), ..Default::default() });
         assert!(get(addr, "/", "").contains("new ui"));

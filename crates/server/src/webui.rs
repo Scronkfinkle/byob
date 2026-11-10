@@ -1,19 +1,20 @@
 //! Is the browser UI we'd serve built for this engine's protocol? `cargo xtask web` stamps
-//! `<meta name="byob-protocol" content="N">` into its `index.html`; a UI from an older build
-//! would only ever say "protocol mismatch … reload the page", which reloading can't fix.
+//! `<meta name="byob-protocol" content="N">` (the protocol major) into its `index.html`; a UI
+//! built for another major would only ever say "protocol mismatch … reload the page", which
+//! reloading can't fix. Another minor is fine (see `byob_protocol::version`).
 
 use std::path::Path;
 
-use byob_protocol::PROTOCOL_VERSION;
+use byob_protocol::PROTOCOL_MAJOR;
 
 /// What the stamp in the UI's `index.html` says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiCheck {
-    /// Built for this protocol (or there's no UI to check).
+    /// Built for this protocol major (or there's no UI to check).
     Fine,
     /// Built before UIs were stamped: maybe fine, maybe stale.
     Unstamped,
-    /// Built for another protocol: it can't talk to this engine.
+    /// Built for another protocol major: it can't talk to this engine.
     Stale { built_for: u32 },
 }
 
@@ -30,7 +31,7 @@ impl UiCheck {
     pub fn of_html(html: &str) -> Self {
         match stamped_protocol(html) {
             None => Self::Unstamped,
-            Some(v) if v == PROTOCOL_VERSION => Self::Fine,
+            Some(v) if v == PROTOCOL_MAJOR => Self::Fine,
             Some(built_for) => Self::Stale { built_for },
         }
     }
@@ -44,13 +45,13 @@ impl UiCheck {
                     .into(),
             ),
             Self::Stale { built_for } => Some(format!(
-                "the browser UI was built for protocol {built_for}, but this engine speaks {PROTOCOL_VERSION}; it won't be served. Run `cargo xtask web` and rebuild (or point --web-dir at a current build)"
+                "the browser UI was built for protocol {built_for}, but this engine speaks {PROTOCOL_MAJOR}; it won't be served. Run `cargo xtask web` and rebuild (or point --web-dir at a current build)"
             )),
         }
     }
 }
 
-/// The protocol version in `<meta name="byob-protocol" content="N">`, if any.
+/// The protocol major in `<meta name="byob-protocol" content="N">`, if any.
 pub fn stamped_protocol(html: &str) -> Option<u32> {
     let at = html.find("name=\"byob-protocol\"")?;
     let tag_end = html.get(at..)?.find('>')?;
@@ -77,7 +78,7 @@ mod tests {
     fn the_stamp_decides() {
         let page = |v: u32| format!("<head><meta charset=\"utf-8\" />\n<meta name=\"byob-protocol\" content=\"{v}\" /></head>");
         assert_eq!(stamped_protocol(&page(7)), Some(7));
-        assert_eq!(UiCheck::of_html(&page(PROTOCOL_VERSION)), UiCheck::Fine);
+        assert_eq!(UiCheck::of_html(&page(PROTOCOL_MAJOR)), UiCheck::Fine);
         assert_eq!(UiCheck::of_html(&page(7)), UiCheck::Stale { built_for: 7 });
         assert!(UiCheck::of_html(&page(7)).warning().is_some_and(|w| w.contains("protocol 7") && w.contains("cargo xtask web")));
         assert_eq!(UiCheck::of_html("<head><title>byob</title></head>"), UiCheck::Unstamped);

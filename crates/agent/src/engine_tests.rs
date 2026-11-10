@@ -6,7 +6,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use byob_protocol::{ChatSummary, ClientMsg, Connection, Entry, NoticeLevel, PROTOCOL_VERSION, ServerMsg};
+use byob_protocol::{ChatSummary, ClientMsg, Connection, Entry, NoticeLevel, PROTOCOL_MAJOR, PROTOCOL_MINOR, ServerMsg};
 use byob_store::{NewMessage, Paths};
 use byob_types::InferenceConfig;
 
@@ -50,7 +50,7 @@ struct Hello {
 
 /// Say hello and collect the answer: chat list, State, ChatOpened, Transcript, Artifacts.
 fn hello(conn: &mut LocalConnection) -> Hello {
-    conn.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    conn.send(ClientMsg::hello("test"));
     let (mut state, mut chats, mut chat, mut transcript) = (None, Vec::new(), None, None);
     loop {
         match recv(conn) {
@@ -232,9 +232,39 @@ fn bad_url_only_errors_the_sender() {
 #[test]
 fn protocol_mismatch_is_reported() {
     let engine = EngineHandle::spawn(InferenceConfig::default()).unwrap();
+    // A tab from before negotiation (protocol 12 sent only its version) is told why, and
+    // gets nothing else.
     let mut c = engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION + 1, client: "old tab".into() });
+    c.send(ClientMsg::from_json(r#"{"type":"hello","protocol":12,"client":"old tab"}"#).unwrap());
+    match recv(&mut c) {
+        ServerMsg::Notice { level: NoticeLevel::Error, text } => assert!(text.contains("protocol mismatch: client 12, engine 13"), "{text}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(drain(&mut c).is_empty(), "nothing else: no Welcome, State or transcript");
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::Hello { protocol: PROTOCOL_MAJOR + 1, minor: 0, client: "future tab".into(), caps: vec![] });
     assert!(matches!(recv(&mut c), ServerMsg::Notice { level: NoticeLevel::Error, .. }));
+}
+
+/// Same major, another minor, caps the engine doesn't know: welcome, with the engine's caps.
+#[test]
+fn a_newer_minor_with_unknown_caps_is_welcomed() {
+    let engine = EngineHandle::spawn(InferenceConfig::default()).unwrap();
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::Hello { protocol: PROTOCOL_MAJOR, minor: PROTOCOL_MINOR + 7, client: "newer tab".into(), caps: vec!["teleport".into()] });
+    match recv(&mut c) {
+        ServerMsg::Welcome(w) => assert_eq!(w, byob_protocol::Welcome::current()),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(recv(&mut c), ServerMsg::State(_)));
+    // A request it doesn't know is answered with a notice; the connection goes on.
+    c.send(ClientMsg::from_json(r#"{"type":"teleport","to":"mars"}"#).unwrap());
+    let text = loop {
+        if let ServerMsg::Notice { text, .. } = recv(&mut c) {
+            break text;
+        }
+    };
+    assert!(text.contains("doesn't know that request"), "{text}");
 }
 
 #[test]
@@ -451,3 +481,49 @@ crate::test_store::folder_too!(
     running_chats_cannot_be_deleted_and_other_chats_run_in_parallel,
     first_reply_names_the_chat,
 );
+
+/// A plugin's engine-side handler for the channel tests: echoes, and tells everyone.
+struct Echo;
+
+impl crate::PluginHandler for Echo {
+    fn handle(&self, client: u64, msg: serde_json::Value) -> Vec<crate::PluginOut> {
+        vec![crate::PluginOut::Reply(serde_json::json!({ "echo": msg })), crate::PluginOut::Broadcast(serde_json::json!({ "from": client }))]
+    }
+}
+
+#[test]
+fn plugin_messages_reach_their_handler_and_answers_only_clients_that_take_them() {
+    let mut config = EngineConfig::new(InferenceConfig::default());
+    config.channels.register("echo", Arc::new(Echo)).unwrap();
+    assert!(config.channels.register("Not An Id", Arc::new(Echo)).is_err());
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let mut a = engine.connect(Arc::new(|| {}));
+    hello(&mut a);
+    // A client without the cap: attached, but no plugin messages.
+    let mut b = engine.connect(Arc::new(|| {}));
+    b.send(ClientMsg::Hello { protocol: PROTOCOL_MAJOR, minor: 0, client: "plain".into(), caps: vec![] });
+    recv_until(&mut b, |m| matches!(m, ServerMsg::Artifacts { .. }));
+    drain(&mut a);
+
+    let plugin = |m: &ServerMsg| match m {
+        ServerMsg::Plugin { plugin, msg } => Some((plugin.clone(), msg.clone())),
+        _ => None,
+    };
+    a.send(ClientMsg::Plugin { plugin: "echo".into(), msg: serde_json::json!({"ping": 1}) });
+    let got: Vec<_> = drain(&mut a).iter().filter_map(plugin).collect();
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[0], ("echo".to_owned(), serde_json::json!({"echo": {"ping": 1}})));
+    assert!(got[1].1.get("from").is_some());
+    assert!(drain(&mut b).iter().all(|m| plugin(m).is_none()), "b didn't list the cap");
+
+    // No such plugin, or a message that's too big: a notice, and the connection goes on.
+    a.send(ClientMsg::Plugin { plugin: "nobody".into(), msg: serde_json::Value::Null });
+    let (m, _) = recv_until(&mut a, |m| matches!(m, ServerMsg::Notice { .. }));
+    assert!(matches!(&m, ServerMsg::Notice { text, .. } if text.contains("no plugin \"nobody\"")), "{m:?}");
+    let big = serde_json::Value::String("x".repeat(byob_protocol::version::MAX_PLUGIN_MSG_BYTES));
+    a.send(ClientMsg::Plugin { plugin: "echo".into(), msg: big });
+    let (m, _) = recv_until(&mut a, |m| matches!(m, ServerMsg::Notice { .. }));
+    assert!(matches!(&m, ServerMsg::Notice { text, .. } if text.contains("too large")), "{m:?}");
+    a.send(ClientMsg::Plugin { plugin: "echo".into(), msg: serde_json::json!(2) });
+    assert!(drain(&mut a).iter().any(|m| plugin(m).is_some_and(|(_, msg)| msg == serde_json::json!({"echo": 2}))));
+}

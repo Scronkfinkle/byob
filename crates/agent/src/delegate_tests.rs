@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use byob_protocol::{ApprovalAnswer, ClientMsg, Connection, DelegationState, DelegationUpdate, Entry, PROTOCOL_VERSION, ServerMsg, Step, StepStatus};
+use byob_protocol::{ApprovalAnswer, ClientMsg, Connection, DelegationState, DelegationUpdate, Entry, ServerMsg, Step, StepStatus};
 use byob_tools::{Access, Registry};
 use byob_types::InferenceConfig;
 use serde_json::{Value, json};
@@ -121,7 +121,7 @@ fn engine(url: String, workspace: &Path, paths: Option<byob_store::Paths>, tool_
 
 fn hello(engine: &EngineHandle) -> (LocalConnection, Vec<Entry>) {
     let mut c = engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
     loop {
         if let ServerMsg::Transcript { entries } = recv(&mut c) {
             return (c, entries);

@@ -13,6 +13,8 @@ pub mod media;
 pub mod plugins;
 pub mod queue;
 pub mod usage;
+pub mod version;
+pub mod view;
 pub mod workspace;
 
 use serde::{Deserialize, Serialize};
@@ -28,10 +30,9 @@ pub use plugins::{
 };
 pub use queue::{ChatQueue, QueuePause, QueuedMessage};
 pub use usage::{ChatUsage, Compaction};
+pub use version::{PROTOCOL_MAJOR, PROTOCOL_MINOR, Welcome};
+pub use view::{View, ViewData};
 pub use workspace::{ChatEndpoint, ConfigScope, ConfigView, FolderList, NewFolder, WorkspaceSummary};
-
-/// Bumped on any incompatible change to [`ClientMsg`] / [`ServerMsg`].
-pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Hard cap on a single incoming frame, so a hostile peer can't make us allocate unboundedly.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -40,10 +41,16 @@ pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
-    /// First message on every connection.
+    /// First message on every connection: the client's [`PROTOCOL_MAJOR`] (`protocol`),
+    /// minor and caps (see [`version`]). Answered with [`ServerMsg::Welcome`], or an error
+    /// notice if the major differs.
     Hello {
         protocol: u32,
+        #[serde(default)]
+        minor: u32,
         client: String,
+        #[serde(default)]
+        caps: Vec<String>,
     },
     /// Point the engine at a different inference endpoint (saved, then checked). `api_key`:
     /// `None` keeps the stored key if the server (scheme, host, port) is unchanged and drops
@@ -261,12 +268,23 @@ pub enum ClientMsg {
         plugins: Vec<String>,
         trust: bool,
     },
+    /// A message for plugin `plugin`'s handler in the engine (the plugin channel; only when
+    /// the engine lists [`version::CAP_PLUGIN_CHANNEL`]). Its meaning is the plugin's.
+    Plugin {
+        plugin: String,
+        msg: serde_json::Value,
+    },
+    /// A message from a newer client this engine doesn't know (answered with a notice).
+    #[serde(other)]
+    Unknown,
 }
 
 /// Engine -> client(s).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
+    /// The answer to [`ClientMsg::Hello`], first: the engine's version and caps.
+    Welcome(Welcome),
     /// Full engine state; sent on connect and whenever it changes.
     State(EngineState),
     /// A human-readable message for the user (errors, warnings).
@@ -340,6 +358,12 @@ pub enum ServerMsg {
     /// The plugins of the chat in view; sent after [`ServerMsg::ChatOpened`], on
     /// [`ClientMsg::GetExtensions`], and whenever they change.
     Extensions(Box<Extensions>),
+    /// A message from plugin `plugin` in the engine (the plugin channel; only to clients
+    /// that list [`version::CAP_PLUGIN_CHANNEL`]).
+    Plugin { plugin: String, msg: serde_json::Value },
+    /// A message from a newer engine this client doesn't know: skip it.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A chat as shown in the sidebar.
@@ -483,16 +507,31 @@ pub enum ApprovalAnswer {
     Deny,
     /// Allow, and stop asking about this tool in every chat.
     AlwaysEverywhere,
+    /// An answer from a newer client this engine doesn't know: treated as Deny.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A file-system effect of a tool call. Paths are for display (workspace-relative when possible).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FileChange {
-    Created { path: String },
-    Modified { path: String },
-    Deleted { path: String },
-    Moved { from: String, to: String },
+    Created {
+        path: String,
+    },
+    Modified {
+        path: String,
+    },
+    Deleted {
+        path: String,
+    },
+    Moved {
+        from: String,
+        to: String,
+    },
+    /// A change a newer engine reports that this client doesn't know (not shown).
+    #[serde(other)]
+    Other,
 }
 
 /// One tool call inside an assistant reply.
@@ -530,10 +569,18 @@ pub struct Step {
     /// and Deny.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask: Option<Box<Ask>>,
-    /// The step made, changed, kept or removed a plugin: show a plugin card. Set on the
-    /// finished step, and stored with it (a transcript loaded from storage has it too).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plugin: Option<Box<PluginCard>>,
+    /// Cards shown under the step ([`View`]s, e.g. a `byob.plugin_card` when it made,
+    /// changed, kept or removed a plugin). Set on the finished step, and stored with it (a
+    /// transcript loaded from storage has them too).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<View>,
+}
+
+impl Step {
+    /// The step's first view of type `T` this build can read.
+    pub fn view<T: ViewData>(&self) -> Option<T> {
+        self.views.iter().find_map(View::get)
+    }
 }
 
 /// The special part of an approval card (see [`Step::ask`]).
@@ -587,6 +634,9 @@ pub enum Preview {
         #[serde(default)]
         more: usize,
     },
+    /// A preview a newer engine sends that this client doesn't know (not shown).
+    #[serde(other)]
+    Other,
 }
 
 /// One line of a preview's content or diff.
@@ -620,8 +670,10 @@ pub struct TurnStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NoticeLevel {
-    Info,
     Error,
+    /// Also any level a newer engine sends that this client doesn't know.
+    #[serde(other)]
+    Info,
 }
 
 /// What clients may know about the engine. Secrets (API keys) never leave the engine.
@@ -718,6 +770,11 @@ impl EndpointInfo {
 }
 
 impl ClientMsg {
+    /// This build's [`ClientMsg::Hello`].
+    pub fn hello(client: &str) -> Self {
+        Self::Hello { protocol: PROTOCOL_MAJOR, minor: PROTOCOL_MINOR, client: client.to_owned(), caps: version::client_caps() }
+    }
+
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
@@ -758,7 +815,7 @@ mod tests {
 
     #[test]
     fn client_msg_round_trips() {
-        let m = ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() };
+        let m = ClientMsg::hello("test");
         assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m);
     }
 
@@ -796,7 +853,7 @@ mod tests {
             artifacts: vec![],
             delegation: None,
             ask: None,
-            plugin: None,
+            views: vec![],
         }
     }
 
@@ -1029,6 +1086,95 @@ mod tests {
         let old = r#"{"version":"0","inference_base_url":"u","inference_model":"m","has_api_key":false,"endpoint":null,"busy":false}"#;
         let s = serde_json::from_str::<EngineState>(old).unwrap();
         assert_eq!((s.link, s.onboarded, s.detected.len()), (Link::Unknown, false, 0));
+    }
+
+    #[test]
+    fn hello_negotiates_and_old_hellos_still_parse() {
+        let m = ClientMsg::hello("desktop");
+        let ClientMsg::Hello { protocol, minor, caps, .. } = &m else { panic!() };
+        assert_eq!((*protocol, *minor), (PROTOCOL_MAJOR, PROTOCOL_MINOR));
+        assert!(caps.iter().any(|c| c == version::CAP_PLUGIN_CHANNEL));
+        assert!(m.check_sizes().is_ok());
+        // A protocol-12 client says only its version: it parses, so the engine can tell it why not.
+        let old = ClientMsg::from_json(r#"{"type":"hello","protocol":12,"client":"old tab"}"#).unwrap();
+        assert_eq!(old, ClientMsg::Hello { protocol: 12, minor: 0, client: "old tab".into(), caps: vec![] });
+        let bad = ClientMsg::Hello { protocol: PROTOCOL_MAJOR, minor: 0, client: "x".into(), caps: vec!["NOT A CAP".into()] };
+        assert!(bad.check_sizes().is_err());
+        let w = ServerMsg::Welcome(Welcome::current());
+        assert_eq!(ServerMsg::from_json(&w.to_json()).unwrap(), w);
+        assert!(w.to_json().starts_with(r#"{"type":"welcome","protocol":13"#), "{}", w.to_json());
+    }
+
+    #[test]
+    fn plugin_channel_round_trips_and_is_capped() {
+        let c = ClientMsg::Plugin { plugin: "sheets".into(), msg: serde_json::json!({"op": "get", "cell": "A1"}) };
+        assert_eq!(c.to_json(), r#"{"type":"plugin","plugin":"sheets","msg":{"cell":"A1","op":"get"}}"#);
+        assert_eq!(ClientMsg::from_json(&c.to_json()).unwrap(), c);
+        assert!(c.check_sizes().is_ok());
+        let s = ServerMsg::Plugin { plugin: "sheets".into(), msg: serde_json::json!([1, 2]) };
+        assert_eq!(ServerMsg::from_json(&s.to_json()).unwrap(), s);
+        for bad in [
+            ClientMsg::Plugin { plugin: "Not/an id".into(), msg: serde_json::Value::Null },
+            ClientMsg::Plugin { plugin: "sheets".into(), msg: serde_json::Value::String("x".repeat(version::MAX_PLUGIN_MSG_BYTES)) },
+        ] {
+            assert!(bad.check_sizes().is_err());
+        }
+    }
+
+    /// A newer peer's additions decode into fallbacks instead of failing the whole frame.
+    #[test]
+    fn unknown_messages_and_enum_values_decode_to_fallbacks() {
+        assert_eq!(ServerMsg::from_json(r#"{"type":"hologram","x":1,"y":{"z":[]}}"#).unwrap(), ServerMsg::Unknown);
+        assert_eq!(ClientMsg::from_json(r#"{"type":"teleport","to":"mars"}"#).unwrap(), ClientMsg::Unknown);
+        // Malformed known messages are still errors.
+        assert!(ServerMsg::from_json(r#"{"type":"notice","level":"info"}"#).is_err());
+        let n = ServerMsg::from_json(r#"{"type":"notice","level":"debug","text":"t"}"#).unwrap();
+        assert_eq!(n, ServerMsg::Notice { level: NoticeLevel::Info, text: "t".into() });
+        let a = ClientMsg::from_json(r#"{"type":"approve","step":1,"answer":"maybe_later"}"#).unwrap();
+        assert_eq!(a, ClientMsg::Approve { step: 1, answer: ApprovalAnswer::Unknown });
+        // A step with a preview, a change, media, an artifact and a view this build doesn't know.
+        let json = r#"{"id":1,"tool":"t","title":"T","access":"read","status":"done","detail":"",
+            "changes":[{"kind":"chmod","path":"a","mode":"755"}],
+            "preview":{"kind":"hexdump","bytes":"00"},
+            "media":[{"kind":"video","path":"a.mp4"}],
+            "views":[{"kind":"sheets.grid","v":4,"data":{"rows":[]},"fallback":"a *grid*"}]}"#;
+        let s: Step = serde_json::from_str(json).unwrap();
+        assert_eq!((s.changes.clone(), s.preview.clone()), (vec![FileChange::Other], Some(Preview::Other)));
+        assert_eq!(s.media[0].kind, MediaKind::File);
+        assert_eq!((s.views[0].kind.as_str(), s.views[0].fallback.as_str()), ("sheets.grid", "a *grid*"));
+        assert!(s.view::<PluginCard>().is_none());
+        let art: Artifact = serde_json::from_str(r#"{"id":"a","kind":"spreadsheet","title":"A","filename":"a.xlsx","versions":[]}"#).unwrap();
+        assert_eq!(art.kind, ArtifactKind::Text);
+        assert_eq!(serde_json::from_str::<SlashKind>(r#""macro""#).unwrap(), SlashKind::Other);
+        assert_eq!(serde_json::from_str::<PluginAction>(r#""forked""#).unwrap(), PluginAction::Other);
+        let env = ClientMsg::from_json(r#"{"type":"workspace_env","action":{"kind":"rebuild","fast":true}}"#).unwrap();
+        assert_eq!(env, ClientMsg::WorkspaceEnv { action: Some(EnvAction::Unsupported), workspace: None });
+        let d = ServerMsg::from_json(r#"{"type":"delegation","entry":1,"step":2,"update":{"kind":"progress","pct":5}}"#).unwrap();
+        assert_eq!(d, ServerMsg::Delegation { entry: 1, step: 2, update: DelegationUpdate::Other });
+    }
+
+    #[test]
+    fn plugin_cards_travel_as_views() {
+        let card = PluginCard {
+            plugin: "scratch".into(),
+            scope: PluginScope::Chat,
+            action: PluginAction::Made,
+            tools: vec!["shout".into()],
+            added: vec!["shout".into()],
+            removed: vec![],
+            test: Some(plugins::PluginTest { ok: true, output: "HI".into() }),
+            problems: vec![],
+            missing_settings: vec![],
+        };
+        let mut s = step(1, StepStatus::Done);
+        s.views.push(View::of(&card));
+        let json = ServerMsg::StepUpdated { entry: 1, step: s }.to_json();
+        assert!(json.contains(r#""views":[{"kind":"byob.plugin_card","v":1,"data":{"action":"made""#), "{json}");
+        let ServerMsg::StepUpdated { step: back, .. } = ServerMsg::from_json(&json).unwrap() else { panic!() };
+        assert_eq!(back.view::<PluginCard>(), Some(card));
+        assert!(back.views[0].fallback.contains("**Plugin scratch** (this chat) · tool made") && back.views[0].fallback.contains("shout"));
+        // No views: nothing on the wire.
+        assert!(!ServerMsg::StepUpdated { entry: 1, step: step(2, StepStatus::Done) }.to_json().contains("views"));
     }
 
     #[test]

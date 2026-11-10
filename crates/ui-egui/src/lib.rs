@@ -23,10 +23,11 @@ pub mod steps;
 pub mod theme;
 pub mod upload;
 pub mod usage;
+pub mod views;
 pub mod workspace;
 pub mod ws;
 
-use byob_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, ServerMsg, StepStatus};
+use byob_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, ServerMsg, StepStatus, Welcome};
 
 /// Tallest an expanded thinking block gets before it scrolls.
 const THINKING_MAX_HEIGHT: f32 = 240.0;
@@ -95,11 +96,17 @@ pub struct ByobApp {
     slash: slash::SlashMenu,
     /// Put the keyboard focus in the composer on the next frame (scripted drafts).
     focus_composer: bool,
+    /// How step views are drawn, by kind.
+    views: views::ViewRegistry,
+    /// The engine's version and caps, once it said.
+    engine: Option<Welcome>,
+    /// Messages skipped so far, logged once each (unknown types, plugins without a handler here).
+    skipped: std::collections::BTreeSet<String>,
 }
 
 impl ByobApp {
     pub fn new(mut conn: Box<dyn Connection>, client: &str) -> Self {
-        conn.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: client.into() });
+        conn.send(ClientMsg::hello(client));
         Self {
             conn,
             tokens: theme::Tokens::dark(),
@@ -130,6 +137,35 @@ impl ByobApp {
             plugins: plugins::PluginsUi::default(),
             slash: slash::SlashMenu::default(),
             focus_composer: false,
+            views: views::ViewRegistry::default(),
+            engine: None,
+            skipped: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Register renderers for more view kinds.
+    pub fn views_mut(&mut self) -> &mut views::ViewRegistry {
+        &mut self.views
+    }
+
+    /// The engine lists `cap` (see `byob_protocol::version`); `false` until it said.
+    pub fn engine_has(&self, cap: &str) -> bool {
+        self.engine.as_ref().is_some_and(|w| byob_protocol::version::shared(&byob_protocol::version::client_caps(), &w.caps, cap))
+    }
+
+    /// Send plugin `plugin` a message through the plugin channel, if the engine takes them.
+    pub fn send_plugin(&mut self, plugin: &str, msg: serde_json::Value) -> bool {
+        if !self.engine_has(byob_protocol::version::CAP_PLUGIN_CHANNEL) {
+            return false;
+        }
+        self.conn.send(ClientMsg::Plugin { plugin: plugin.to_owned(), msg });
+        true
+    }
+
+    /// Log a skipped message once per `what`.
+    fn skip(&mut self, what: String) {
+        if self.skipped.insert(what.clone()) {
+            log::info!("skipping {what} (newer engine or plugin?)");
         }
     }
 
@@ -187,6 +223,13 @@ impl ByobApp {
                 continue;
             }
             match msg {
+                ServerMsg::Welcome(w) => {
+                    log::info!("engine speaks protocol {}.{} with caps {:?}", w.protocol, w.minor, w.caps);
+                    self.engine = Some(w);
+                }
+                // No client-side plugin handlers yet.
+                ServerMsg::Plugin { plugin, .. } => self.skip(format!("messages from plugin {plugin:?}")),
+                ServerMsg::Unknown => self.skip("messages of a type this client doesn't know".into()),
                 ServerMsg::State(state) => {
                     self.connect.sync(&state);
                     self.state = Some(state);
@@ -712,9 +755,9 @@ impl ByobApp {
         let artifacts = &mut self.artifacts;
         let usage = &mut self.usage;
         let plugins = &mut self.plugins;
-        // Each plugin's latest card is the one that offers its settings and Keep.
-        let latest_cards: std::collections::BTreeMap<&str, u64> =
-            self.entries.iter().flat_map(|e| &e.steps).filter_map(|s| s.plugin.as_deref().map(|c| (c.plugin.as_str(), s.id))).collect();
+        // E.g. each plugin's latest card is the one that offers its settings and Keep.
+        let latest = self.views.latest(&self.entries);
+        let views = &mut self.views;
         let mut answers = Vec::new();
         let mut card = None;
         // Only the last reply, failed before it produced anything, can be run again.
@@ -725,7 +768,7 @@ impl ByobApp {
                 ui.add_space(t.pad(8.0));
                 usage.dividers(ui, &t, 0);
                 for entry in &self.entries {
-                    answers.extend(entry_view(ui, &t, entry, markdown, media, artifacts, (plugins, &latest_cards), retry_id == Some(entry.id), &mut card));
+                    answers.extend(entry_view(ui, &t, entry, markdown, media, artifacts, (plugins, views, &latest), retry_id == Some(entry.id), &mut card));
                     ui.add_space(t.pad(8.0));
                     usage.dividers(ui, &t, entry.id);
                 }
@@ -786,7 +829,7 @@ fn entry_view(
     markdown: &mut markdown::Cache,
     media: &mut media::Cache,
     artifacts: &mut artifact::Artifacts,
-    (plugins, latest_cards): (&mut plugins::PluginsUi, &std::collections::BTreeMap<&str, u64>),
+    (plugins, views, latest): (&mut plugins::PluginsUi, &mut views::ViewRegistry, &std::collections::BTreeMap<(String, String), u64>),
     retry: bool,
     card: &mut Option<connect::CardAction>,
 ) -> Option<ClientMsg> {
@@ -842,10 +885,7 @@ fn entry_view(
                     EntryRole::Assistant => {
                         answer = steps::body(ui, t, entry, markdown, &mut |ui, step| {
                             artifacts.cards(ui, t, &step.artifacts);
-                            if let Some(card) = &step.plugin {
-                                let latest = latest_cards.get(card.plugin.as_str()) == Some(&step.id);
-                                plugins.card(ui, t, step.id, card, latest);
-                            }
+                            views.show_step(ui, t, step, latest, plugins);
                         });
                     }
                     EntryRole::User if !entry.content.is_empty() => {
@@ -1256,5 +1296,30 @@ mod app_tests {
         app.open_connection();
         frame(&ctx, &mut app, 1000.0);
         assert!(app.show_settings && !app.reveal_connection);
+    }
+
+    /// A newer engine's messages are skipped, not fatal; plugin messages go out only when the
+    /// engine takes them.
+    #[test]
+    fn unknown_messages_are_skipped_and_the_plugin_channel_waits_for_the_engines_cap() {
+        let fake = Fake::default();
+        let mut app = ByobApp::new(Box::new(fake.clone()), "test");
+        assert!(matches!(&fake.sent.lock().unwrap()[0], ClientMsg::Hello { protocol: byob_protocol::PROTOCOL_MAJOR, caps, .. } if !caps.is_empty()));
+        assert!(!app.send_plugin("sheets", serde_json::json!(1)), "the engine hasn't said it takes them");
+        let unknown = ServerMsg::from_json(r#"{"type":"hologram","x":1}"#).unwrap();
+        fake.inbox.lock().unwrap().extend([
+            ServerMsg::Welcome(Welcome { protocol: byob_protocol::PROTOCOL_MAJOR, minor: 9, caps: vec!["plugin_channel".into(), "teleport".into()] }),
+            unknown.clone(),
+            unknown,
+            ServerMsg::Plugin { plugin: "sheets".into(), msg: serde_json::json!({"cell": "A1"}) },
+            ServerMsg::State(state(Link::Ok, true)),
+        ]);
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut app, 1000.0);
+        assert!(app.state.is_some(), "messages after the unknown ones still arrive");
+        assert_eq!(app.skipped.len(), 2, "{:?}", app.skipped);
+        assert!(app.engine_has("plugin_channel") && !app.engine_has("teleport"));
+        assert!(app.send_plugin("sheets", serde_json::json!({"get": "A1"})));
+        assert_eq!(fake.sent.lock().unwrap().last(), Some(&ClientMsg::Plugin { plugin: "sheets".into(), msg: serde_json::json!({"get": "A1"}) }));
     }
 }

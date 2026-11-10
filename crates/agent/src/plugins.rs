@@ -273,10 +273,14 @@ impl Engine {
         }
         let Some(run) = self.turns.get(&entry) else { return };
         let chat = run.chat.clone();
-        if self.cards.get(&chat).is_some_and(|(tool, _)| *tool == step.tool)
-            && let Some((_, card)) = self.cards.remove(&chat)
+        if self.step_views.get(&chat).is_some_and(|(tool, _)| *tool == step.tool)
+            && let Some((_, view)) = self.step_views.remove(&chat)
         {
-            step.plugin = Some(Box::new(card));
+            match view.check() {
+                Ok(()) if step.views.len() < byob_protocol::view::MAX_STEP_VIEWS => step.views.push(view),
+                Ok(()) => log::warn!("step {}: too many views; {} dropped", step.id, view.kind),
+                Err(e) => log::warn!("step {}: view {} dropped: {e}", step.id, view.kind),
+            }
         }
         if let Some(owner) = run.owners.get(&step.tool).cloned()
             && let Some(ext) = self.ext.as_mut()
@@ -299,6 +303,7 @@ impl Engine {
                     vec![path.clone()]
                 }
                 byob_protocol::FileChange::Moved { from, to } => vec![from.clone(), to.clone()],
+                byob_protocol::FileChange::Other => vec![],
             })
             .filter(|p| p.starts_with(".byob/plugins/") || p.starts_with(".byob/skills/"))
             .collect();

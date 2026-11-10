@@ -92,6 +92,7 @@ impl Delegation {
                 self.completion_tokens = *completion_tokens;
                 self.error.clone_from(error);
             }
+            DelegationUpdate::Other => {}
         }
     }
 }
@@ -112,4 +113,7 @@ pub enum DelegationUpdate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// An update a newer engine sends that this client doesn't know (ignored).
+    #[serde(other)]
+    Other,
 }

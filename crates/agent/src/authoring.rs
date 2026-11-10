@@ -54,7 +54,7 @@ impl AuthorEnv {
 
     fn card(&self, ctx: &ToolContext<'_>, tool: &str, card: PluginCard) {
         if let Some(chat) = ctx.chat() {
-            let _ = self.inbox.send(Input::PluginCard { chat: chat.to_owned(), tool: tool.to_owned(), card });
+            let _ = self.inbox.send(Input::StepView { chat: chat.to_owned(), tool: tool.to_owned(), view: byob_protocol::View::of(&card) });
         }
     }
 }

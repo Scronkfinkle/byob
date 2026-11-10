@@ -761,6 +761,7 @@ impl EnvControl for Envs {
             }
             EnvAction::StopContainer => self.containers.as_ref().ok_or("Neither Docker nor Podman is installed.")?.stop(&ws),
             EnvAction::RemoveContainer => self.containers.as_ref().ok_or("Neither Docker nor Podman is installed.")?.remove(&ws),
+            EnvAction::Unsupported => Err("This version of byob doesn't know that environment action.".into()),
         }
     }
 }

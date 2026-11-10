@@ -579,7 +579,7 @@ pub(crate) fn expand_slash(text: &str, composed: &Composed) -> Option<String> {
     let (name, args) = byob_plugins::split_slash(text)?;
     let item = composed.slash.iter().find(|i| i.name == name)?;
     match item.kind {
-        SlashKind::Builtin => None,
+        SlashKind::Builtin | SlashKind::Other => None,
         SlashKind::Command => composed.commands.iter().find(|c| c.name == name).map(|c| c.expand(args)),
         SlashKind::Skill => {
             let task =

@@ -54,6 +54,7 @@ pub(crate) fn bound_preview(p: Preview) -> Preview {
             });
             Preview::Args { fields: fields.into_iter().take(MAX_PREVIEW_LINES).map(clip_pair).collect(), code, more }
         }
+        Preview::Other => Preview::Other,
     }
 }
 

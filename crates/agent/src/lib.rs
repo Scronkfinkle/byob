@@ -19,6 +19,7 @@ mod adapt;
 mod adapt_tests;
 pub mod attachments;
 mod authoring;
+mod channel;
 mod chats;
 mod compact;
 #[cfg(test)]
@@ -65,13 +66,14 @@ pub use adapt::{AdaptOptions, ToolMode};
 pub use byob_plugins::AgentDef;
 use byob_protocol::{
     ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, DelegationState, EngineState, Entry, EntryRole, Link, MediaRef,
-    NoticeLevel, PROTOCOL_VERSION, ServerMsg, Step, StepStatus,
+    NoticeLevel, PROTOCOL_MAJOR, PROTOCOL_MINOR, ServerMsg, Step, StepStatus, View, Welcome,
 };
 use byob_store::{ChatStore, GrantScope, NewMessage, Paths, Role, Secrets, Settings, StorageKind, Store, StoreError};
 use byob_tools::Registry;
 pub use byob_tools::artifact;
 use byob_types::InferenceConfig;
 pub use byob_types::config::Layer;
+pub use channel::{PluginChannels, PluginHandler, PluginOut};
 pub use compact::CompactOptions;
 pub use delegate::SubagentOptions;
 pub use extensions::PluginsConfig;
@@ -137,6 +139,8 @@ pub struct EngineConfig {
     pub envs: Option<Arc<dyn byob_tools::EnvControl>>,
     /// Plugins (and the model's authoring tools). `None`: none at all (most unit tests).
     pub plugins: Option<PluginsConfig>,
+    /// Engine-side handlers of the plugin channel ([`ClientMsg::Plugin`]), by plugin id.
+    pub channels: PluginChannels,
 }
 
 impl EngineConfig {
@@ -166,6 +170,7 @@ impl EngineConfig {
             detect_local: !cfg!(test),
             envs: None,
             plugins: None,
+            channels: PluginChannels::default(),
         }
     }
 }
@@ -225,11 +230,11 @@ enum Input {
         op: plugins::PluginOp,
         reply: Sender<plugins::PluginReply>,
     },
-    /// The plugin card for the next finished step of `tool` in `chat`.
-    PluginCard {
+    /// A view (e.g. a plugin card) for the next finished step of `tool` in `chat`.
+    StepView {
         chat: String,
         tool: String,
-        card: byob_protocol::PluginCard,
+        view: View,
     },
     /// An MCP server connected (or failed) on a worker thread.
     Connected {
@@ -344,6 +349,8 @@ struct Client {
     chat: Option<String>,
     /// Said `Hello`: gets broadcasts (before that it has no transcript to apply them to).
     attached: bool,
+    /// The caps its `Hello` listed (see `byob_protocol::version`).
+    caps: Vec<String>,
     /// The new chat this client is about to start (`chat: None`): its workspace (else the
     /// default one), and the settings and key given to it before its first message.
     new_in: Option<String>,
@@ -353,7 +360,7 @@ struct Client {
 
 impl Client {
     fn new(tx: Sender<ServerMsg>, wake: Waker) -> Self {
-        Self { tx, wake, chat: None, attached: false, new_in: None, new_layer: Layer::default(), new_key: None }
+        Self { tx, wake, chat: None, attached: false, caps: Vec::new(), new_in: None, new_layer: Layer::default(), new_key: None }
     }
 }
 
@@ -489,8 +496,10 @@ struct Engine {
     ext: Option<extensions::Extensions>,
     /// Plugin settings by plugin id, then key (secret ones included; never sent to clients).
     plugin_values: BTreeMap<String, BTreeMap<String, String>>,
-    /// Plugin cards waiting for their step to finish, by chat: (tool, card).
-    cards: BTreeMap<String, (String, byob_protocol::PluginCard)>,
+    /// Views (plugin cards) waiting for their step to finish, by chat: (tool, view).
+    step_views: BTreeMap<String, (String, View)>,
+    /// Engine-side handlers of the plugin channel.
+    channels: PluginChannels,
     /// Each chat's plugin prompt part at its last turn (for usage and compaction estimates).
     ext_prompts: BTreeMap<String, String>,
 }
@@ -546,7 +555,8 @@ impl Engine {
         let mut engine = Self {
             ext: config.plugins.map(extensions::Extensions::new),
             plugin_values,
-            cards: BTreeMap::new(),
+            step_views: BTreeMap::new(),
+            channels: config.channels,
             ext_prompts: BTreeMap::new(),
             forced_policy: config.policy,
             defaults: config.defaults,
@@ -819,7 +829,7 @@ impl Engine {
         self.queues.remove(chat);
         self.provisional.remove(chat);
         self.ext_prompts.remove(chat);
-        self.cards.remove(chat);
+        self.step_views.remove(chat);
         if let Some(ext) = self.ext.as_mut() {
             ext.forget_chat(chat);
         }
@@ -941,8 +951,8 @@ impl Engine {
             Input::Env { client, env } => self.send_to(client, ServerMsg::WorkspaceEnv(env)),
             Input::Reply { client, msg } => self.send_to(client, *msg),
             Input::Plugins { chat, op, reply } => self.plugin_op(&chat, op, &reply),
-            Input::PluginCard { chat, tool, card } => {
-                self.cards.insert(chat, (tool, card));
+            Input::StepView { chat, tool, view } => {
+                self.step_views.insert(chat, (tool, view));
             }
             Input::Connected { key, result } => self.server_connected(&key, result),
         }
@@ -954,16 +964,19 @@ impl Engine {
             return;
         }
         match msg {
-            ClientMsg::Hello { protocol, client } => {
-                if protocol != PROTOCOL_VERSION {
-                    let text = format!("protocol mismatch: client {protocol}, engine {PROTOCOL_VERSION}; reload the page");
+            ClientMsg::Hello { protocol, minor, client, caps } => {
+                // Only the major must match; a different minor still talks (see byob_protocol::version).
+                if protocol != PROTOCOL_MAJOR {
+                    let text = format!("protocol mismatch: client {protocol}, engine {PROTOCOL_MAJOR}; reload the page");
                     self.send_to(id, ServerMsg::Notice { level: NoticeLevel::Error, text });
                     return;
                 }
-                log::info!("client {id} attached: {client}");
+                log::info!("client {id} attached: {client} (protocol {protocol}.{minor}, engine {PROTOCOL_MAJOR}.{PROTOCOL_MINOR}; caps {caps:?})");
                 if let Some(c) = self.clients.get_mut(&id) {
                     c.attached = true;
+                    c.caps = caps;
                 }
+                self.send_to(id, ServerMsg::Welcome(Welcome::current()));
                 let mut chat = self.client_chat(id).or_else(|| self.most_recent_chat());
                 if let Some(c) = chat.clone()
                     && let Err(e) = self.live(&c)
@@ -974,7 +987,7 @@ impl Engine {
                 if let Some(c) = self.clients.get_mut(&id) {
                     c.chat.clone_from(&chat);
                 }
-                // State first: it is the documented answer to Hello.
+                // State next: it is the documented answer to Hello (after the Welcome).
                 self.send_to(id, ServerMsg::State(self.client_state(id)));
                 self.send_to(id, self.workspaces_msg());
                 self.send_chats(id, None, FIRST_PAGE);
@@ -1028,6 +1041,8 @@ impl Engine {
             ClientMsg::RemovePlugin { plugin, scope } => self.remove_plugin_msg(id, &plugin, scope),
             ClientMsg::ReloadPlugins => self.reload_plugins(id),
             ClientMsg::TrustPlugins { workspace, plugins, trust } => self.trust_plugins(id, &workspace, plugins, trust),
+            ClientMsg::Plugin { plugin, msg } => self.plugin_message(id, &plugin, msg),
+            ClientMsg::Unknown => self.notice(id, "this engine doesn't know that request (is the client newer than the engine?)".into()),
         }
     }
 
@@ -1234,14 +1249,15 @@ impl Engine {
             _ if step.ask.is_some() => None,
             ApprovalAnswer::Always => chat.map(GrantScope::Chat),
             ApprovalAnswer::AlwaysEverywhere => Some(GrantScope::Global),
-            ApprovalAnswer::Allow | ApprovalAnswer::Deny => None,
+            ApprovalAnswer::Allow | ApprovalAnswer::Deny | ApprovalAnswer::Unknown => None,
         };
         if let Some(scope) = scope
             && let Err(e) = self.store.grant(&scope, &step.tool)
         {
             log::error!("saving the grant for {}: {e}", step.tool);
         }
-        let verdict = turn::Verdict::Answered(answer != ApprovalAnswer::Deny);
+        // An answer this engine doesn't know is a no.
+        let verdict = turn::Verdict::Answered(!matches!(answer, ApprovalAnswer::Deny | ApprovalAnswer::Unknown));
         let denied = verdict.denied();
         step.status = if denied.is_none() { StepStatus::Running } else { StepStatus::Denied };
         if let Some(reason) = denied {
@@ -1871,6 +1887,36 @@ impl Engine {
         let gone = self.clients.get(&id).is_some_and(|c| deliver(c, msg).is_err());
         if gone {
             self.clients.remove(&id);
+        }
+    }
+
+    // ---- the plugin channel -------------------------------------------------------------
+
+    /// Client `id` sent plugin `plugin` a message: hand it to the plugin's handler.
+    fn plugin_message(&mut self, id: ClientId, plugin: &str, msg: serde_json::Value) {
+        let Some(handler) = self.channels.get(plugin) else {
+            self.notice(id, format!("no plugin {plugin:?} takes messages in this engine"));
+            return;
+        };
+        for out in handler.handle(id, msg) {
+            match out {
+                PluginOut::Reply(msg) => self.send_plugin(Some(id), plugin, msg),
+                PluginOut::Broadcast(msg) => self.send_plugin(None, plugin, msg),
+            }
+        }
+    }
+
+    /// Send a plugin message to client `to` (`None`: every attached client) if it takes them.
+    pub(crate) fn send_plugin(&mut self, to: Option<ClientId>, plugin: &str, msg: serde_json::Value) {
+        if let Err(e) = byob_protocol::version::check_plugin_msg(plugin, &msg) {
+            log::warn!("plugin {plugin}: not sent: {e}");
+            return;
+        }
+        let msg = ServerMsg::Plugin { plugin: plugin.to_owned(), msg };
+        let takes = |c: &Client| c.attached && c.caps.iter().any(|c| c == byob_protocol::version::CAP_PLUGIN_CHANNEL);
+        let ids: Vec<ClientId> = self.clients.iter().filter(|(i, c)| to.is_none_or(|t| t == **i) && takes(c)).map(|(i, _)| *i).collect();
+        for i in ids {
+            self.send_to(i, msg.clone());
         }
     }
 

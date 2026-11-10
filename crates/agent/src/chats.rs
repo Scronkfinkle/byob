@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use byob_llm::{ChatMessage, StreamEvent};
 use byob_protocol::{
     ArtifactRef, ChatSummary, Delegation, DelegationState, Entry, EntryRole, FileChange, MediaKind, MediaRef, PluginCard, Step, StepStatus, ToolAccess,
-    TurnStats,
+    TurnStats, View,
 };
 use byob_store::{AgentRun, Chat, MessageStats, NewStep, Role, StepAccess, StepChange, StepResult, StoredMessage};
 use serde_json::{Value, json};
@@ -110,13 +110,11 @@ pub fn entry(m: StoredMessage, step_ids: &AtomicU64) -> Option<Entry> {
 /// A stored step for display. A step without a result was cut off when byob stopped.
 fn step(s: byob_store::Step, step_ids: &AtomicU64) -> Step {
     let (summary, at) = step_args(&s.args);
-    let (status, detail, changes, plugin) = match s.result {
-        None => (StepStatus::Failed, "interrupted".to_owned(), Vec::new(), None),
+    let (status, detail, changes, views) = match s.result {
+        None => (StepStatus::Failed, "interrupted".to_owned(), Vec::new(), Vec::new()),
         Some(r) => {
             let status = if r.failed { StepStatus::Failed } else { StepStatus::Done };
-            // The plugin card it showed (stored since protocol 12; older rows have none).
-            let plugin = r.card.and_then(|c| serde_json::from_value::<PluginCard>(c).ok()).map(Box::new);
-            (status, one_line(&r.output, DETAIL_CHARS), r.changes.iter().map(from_change).collect(), plugin)
+            (status, one_line(&r.output, DETAIL_CHARS), r.changes.iter().map(from_change).collect(), stored_views(r.card))
         }
     };
     let detail = if detail.is_empty() { summary } else { detail };
@@ -134,7 +132,23 @@ fn step(s: byob_store::Step, step_ids: &AtomicU64) -> Step {
         artifacts: Vec::new(),
         delegation: None,
         ask: None,
-        plugin,
+        views,
+    }
+}
+
+/// The views a step showed, from its stored card: an array of views (since protocol 13), or
+/// a bare plugin card (protocol 12 rows; older ones have none). What doesn't parse or is
+/// too big is left out: it was only decoration.
+fn stored_views(card: Option<Value>) -> Vec<View> {
+    match card {
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<View>(v).ok())
+            .filter(|v| v.check().is_ok())
+            .take(byob_protocol::view::MAX_STEP_VIEWS)
+            .collect(),
+        Some(old @ Value::Object(_)) => serde_json::from_value::<PluginCard>(old).ok().map(|c| View::of(&c)).into_iter().collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -201,8 +215,8 @@ pub fn step_result(step: &Step) -> StepResult {
     StepResult {
         output: step.detail.clone(),
         failed: step.status != StepStatus::Done,
-        changes: step.changes.iter().map(to_change).collect(),
-        card: step.plugin.as_ref().and_then(|c| serde_json::to_value(c).ok()),
+        changes: step.changes.iter().filter_map(to_change).collect(),
+        card: if step.views.is_empty() { None } else { serde_json::to_value(&step.views).ok() },
     }
 }
 
@@ -224,13 +238,14 @@ fn from_access(a: StepAccess) -> ToolAccess {
     }
 }
 
-fn to_change(c: &FileChange) -> StepChange {
-    match c {
+fn to_change(c: &FileChange) -> Option<StepChange> {
+    Some(match c {
         FileChange::Created { path } => StepChange::Created { path: path.into() },
         FileChange::Modified { path } => StepChange::Modified { path: path.into() },
         FileChange::Deleted { path } => StepChange::Deleted { path: path.into() },
         FileChange::Moved { from, to } => StepChange::Moved { from: from.into(), to: to.into() },
-    }
+        FileChange::Other => return None,
+    })
 }
 
 fn from_change(c: &StepChange) -> FileChange {
@@ -259,7 +274,7 @@ pub fn restore_step_files(entries: &mut [Entry], artifacts: &[byob_protocol::Art
             .iter()
             .filter_map(|c| match c {
                 FileChange::Created { path } | FileChange::Modified { path } | FileChange::Moved { to: path, .. } => Some(path.as_str()),
-                FileChange::Deleted { .. } => None,
+                FileChange::Deleted { .. } | FileChange::Other => None,
             })
             .collect();
         for path in made {
@@ -342,7 +357,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_plugin_card_is_stored_with_its_step() {
+    fn a_steps_views_are_stored_with_it_and_old_plugin_cards_still_read() {
         let card = byob_protocol::PluginCard {
             plugin: "scratch".into(),
             scope: byob_protocol::PluginScope::Chat,
@@ -368,7 +383,11 @@ mod tests {
             artifacts: vec![],
             delegation: None,
             ask: None,
-            plugin: Some(Box::new(card.clone())),
+            views: vec![
+                View::of(&card),
+                // A plugin's view this build has no renderer for: kept as it is.
+                View { kind: "sheets.grid".into(), v: 3, data: json!({"rows": [[1, 2]]}), fallback: "a grid".into() },
+            ],
         };
         let new = new_step(&live);
         let stored = byob_store::Step {
@@ -380,15 +399,27 @@ mod tests {
             args: new.args,
             result: Some(step_result(&live)),
         };
+        assert!(stored.result.as_ref().unwrap().card.as_ref().is_some_and(Value::is_array));
         let back = step(stored.clone(), &AtomicU64::new(1));
-        assert_eq!(back.plugin.as_deref(), Some(&card));
+        assert_eq!(back.views, live.views);
+        assert_eq!(back.view::<byob_protocol::PluginCard>(), Some(card.clone()));
         assert_eq!((back.at, back.detail.as_str()), (3, "made c2f"));
-        // Rows from before cards were stored, or a card that doesn't parse: the plain step.
-        let mut old = stored;
-        if let Some(r) = old.result.as_mut() {
-            r.card = Some(json!({"plugin": 5}));
-        }
-        assert_eq!(step(old, &AtomicU64::new(1)).plugin, None);
+        let with_card = |c: Option<Value>| {
+            let mut s = stored.clone();
+            if let Some(r) = s.result.as_mut() {
+                r.card = c;
+            }
+            step(s, &AtomicU64::new(1)).views
+        };
+        // A protocol-12 row: the bare plugin card, read as its view.
+        assert_eq!(with_card(Some(serde_json::to_value(&card).unwrap())), vec![View::of(&card)]);
+        // Rows from before cards were stored, a card that doesn't parse, views that are bad.
+        assert!(with_card(None).is_empty());
+        assert!(with_card(Some(json!({"plugin": 5}))).is_empty());
+        let bad = with_card(Some(json!([{"kind": "NOT OK"}, {"nokind": 1}, {"kind": "x.y", "fallback": "ok"}])));
+        assert_eq!(bad.iter().map(|v| v.kind.as_str()).collect::<Vec<_>>(), ["x.y"]);
+        // No views: no card.
+        assert_eq!(step_result(&Step { views: vec![], ..live }).card, None);
     }
 
     #[test]
@@ -416,7 +447,7 @@ mod tests {
             artifacts: vec![],
             delegation: None,
             ask: None,
-            plugin: None,
+            views: vec![],
         };
         let new = new_step(&s);
         let stored = byob_store::Step {

@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use byob_protocol::workspace::{Approvals, EnvKind, Layer, Level};
-use byob_protocol::{ClientMsg, ConfigScope, Connection, Entry, NewFolder, PROTOCOL_VERSION, ServerMsg, StepStatus, WorkspaceSummary};
+use byob_protocol::{ClientMsg, ConfigScope, Connection, Entry, NewFolder, ServerMsg, StepStatus, WorkspaceSummary};
 use byob_store::Paths;
 use byob_tools::{Access, Registry};
 use byob_types::InferenceConfig;
@@ -36,7 +36,7 @@ fn wait<T>(conn: &mut LocalConnection, f: impl Fn(ServerMsg) -> Option<T>) -> T 
 
 fn hello(engine: &EngineHandle) -> (LocalConnection, Vec<WorkspaceSummary>) {
     let mut c = engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
     let items = wait(&mut c, |m| if let ServerMsg::Workspaces { items, .. } = m { Some(items) } else { None });
     wait(&mut c, |m| matches!(m, ServerMsg::Artifacts { .. }).then_some(()));
     (c, items)

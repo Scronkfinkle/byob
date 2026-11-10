@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use byob_protocol::{ClientMsg, Connection, EngineState, EntryRole, InferenceTest, Link, PROTOCOL_VERSION, Problem, ServerMsg};
+use byob_protocol::{ClientMsg, Connection, EngineState, EntryRole, InferenceTest, Link, Problem, ServerMsg};
 use byob_store::{Paths, Secrets, Settings};
 use byob_types::InferenceConfig;
 
@@ -103,7 +103,7 @@ fn recv(conn: &mut LocalConnection) -> ServerMsg {
 
 fn connect(engine: &EngineHandle) -> LocalConnection {
     let mut c = engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
     c
 }
 

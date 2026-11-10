@@ -164,8 +164,9 @@ pub struct StepResult {
     pub output: String,
     pub failed: bool,
     pub changes: Vec<StepChange>,
-    /// A card the step showed (e.g. a plugin card), as the client protocol's JSON; the store
-    /// keeps it without looking inside. Steps of subagent runs don't keep one.
+    /// What the step showed beside it, as the client protocol's JSON: an array of views
+    /// (protocol 13 on), or a bare plugin card (rows written by protocol 12). The store keeps
+    /// it without looking inside. Steps of subagent runs don't keep one.
     pub card: Option<Value>,
 }
 

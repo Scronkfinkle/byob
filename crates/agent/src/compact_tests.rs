@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use byob_protocol::{ChatUsage, ClientMsg, Compaction, Connection, Entry, NoticeLevel, PROTOCOL_VERSION, ServerMsg};
+use byob_protocol::{ChatUsage, ClientMsg, Compaction, Connection, Entry, NoticeLevel, ServerMsg};
 use byob_store::Paths;
 use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
 use byob_types::InferenceConfig;
@@ -145,6 +145,7 @@ fn engine(url: String, compaction: CompactOptions, tools: bool, paths: Option<Pa
         detect_local: false,
         envs: None,
         plugins: None,
+        channels: Default::default(),
     };
     EngineHandle::spawn_with(config).unwrap()
 }
@@ -199,7 +200,7 @@ impl View {
 
 fn connect(engine: &EngineHandle) -> (LocalConnection, View) {
     let mut c = engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
     let mut v = View::default();
     loop {
         let m = recv(&mut c);

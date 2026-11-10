@@ -141,6 +141,11 @@ impl ClientMsg {
             Self::SetPluginEnabled { .. } | Self::SetPluginSetting { .. } | Self::KeepPlugin { .. } | Self::RemovePlugin { .. } | Self::TrustPlugins { .. } => {
                 crate::plugins::check_sizes(self)
             }
+            Self::Hello { client, caps, .. } => {
+                name(client)?;
+                crate::version::check_caps(caps)
+            }
+            Self::Plugin { plugin, msg } => crate::version::check_plugin_msg(plugin, msg),
             _ => crate::queue::check_sizes(self),
         }
     }

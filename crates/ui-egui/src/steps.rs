@@ -119,7 +119,7 @@ fn transcript(ui: &mut egui::Ui, t: &Tokens, th: Thread<'_>, cache: &mut markdow
                         msg = msg.or(delegation(ui, t, step, d, cache, cards));
                     } else {
                         row(ui, t, step);
-                        if !step.artifacts.is_empty() || step.plugin.is_some() {
+                        if !step.artifacts.is_empty() || !step.views.is_empty() {
                             cards(ui, step);
                         }
                     }
@@ -399,6 +399,7 @@ fn change_text(c: &FileChange) -> String {
         FileChange::Modified { path } => format!("~ changed {path}"),
         FileChange::Deleted { path } => format!("- deleted {path}"),
         FileChange::Moved { from, to } => format!("→ moved {from} to {to}"),
+        FileChange::Other => "· another change".into(),
     }
 }
 
@@ -547,7 +548,7 @@ pub fn preview_summary(p: &Preview) -> String {
             if n == 1 { "1 item".into() } else { format!("{n} items") }
         }
         Preview::Delete { what, .. } => format!("{what} · goes to the trash, so it can be restored"),
-        Preview::Args { .. } => String::new(),
+        Preview::Args { .. } | Preview::Other => String::new(),
     }
 }
 
@@ -621,6 +622,7 @@ fn preview(ui: &mut egui::Ui, t: &Tokens, p: &Preview) {
             }
             more_line(ui, t, *more, "arguments");
         }
+        Preview::Other => {}
     }
 }
 
@@ -660,7 +662,7 @@ mod tests {
             artifacts: vec![],
             delegation: None,
             ask: None,
-            plugin: None,
+            views: vec![],
         }
     }
 

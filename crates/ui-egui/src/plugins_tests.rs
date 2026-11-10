@@ -1,7 +1,7 @@
 //! Headless tests of the plugin card, the Plugins panel and the first-open card: what they
 //! draw and what clicking them sends.
 
-use byob_protocol::{PluginLoadError, PluginTest, ServerInfo, Step};
+use byob_protocol::{PluginLoadError, PluginTest, ServerInfo, Step, View};
 use egui::{Event, Pos2, Rect, Shape};
 
 use super::*;
@@ -238,7 +238,7 @@ fn the_first_open_card_asks_once_and_not_beside_the_approval_card() {
         artifacts: vec![],
         delegation: None,
         ask: None,
-        plugin: None,
+        views: vec![],
     };
     entries.push(Entry {
         id: 2,
@@ -264,4 +264,86 @@ fn the_first_open_card_asks_once_and_not_beside_the_approval_card() {
     p.apply(&ext(vec![decided, declined]));
     let gone = frame(&ctx, vec![], &mut |ui| p.trust_card(ui, &t, &entries));
     assert!(!has(&gone, "This workspace brings") && p.undecided().is_empty());
+}
+
+fn step_with(id: u64, views: Vec<View>) -> Step {
+    Step {
+        id,
+        tool: "make_tool".into(),
+        title: "Made the tool".into(),
+        access: byob_protocol::ToolAccess::Execute,
+        status: StepStatus::Done,
+        detail: String::new(),
+        changes: vec![],
+        at: 0,
+        media: vec![],
+        preview: None,
+        artifacts: vec![],
+        delegation: None,
+        ask: None,
+        views,
+    }
+}
+
+fn entry_of(steps: Vec<Step>) -> Entry {
+    Entry {
+        id: 1,
+        role: byob_protocol::EntryRole::Assistant,
+        content: String::new(),
+        reasoning: String::new(),
+        done: true,
+        error: None,
+        stats: None,
+        steps,
+        undoable: false,
+        undone: false,
+        attachments: vec![],
+    }
+}
+
+/// The plugin card drawn through the view registry is the card drawn directly; only the
+/// latest card of a plugin offers actions; other kinds show their fallback.
+#[test]
+fn views_draw_plugin_cards_as_before_and_unknown_kinds_as_their_fallback() {
+    use crate::views::{Renderer, ViewRegistry};
+    let ctx = egui::Context::default();
+    let t = Tokens::dark();
+    let mut p = PluginsUi::default();
+    p.apply(&ext(vec![weather(false)]));
+    let c = card();
+    frame(&ctx, vec![], &mut |ui| p.card(ui, &t, 9, &c, true));
+    let direct = frame(&ctx, vec![], &mut |ui| p.card(ui, &t, 9, &c, true));
+
+    let mut reg = ViewRegistry::default();
+    let entries = vec![entry_of(vec![step_with(8, vec![View::of(&c)]), step_with(9, vec![View::of(&c)])])];
+    let latest = reg.latest(&entries);
+    let newest = &entries[0].steps[1];
+    frame(&ctx, vec![], &mut |ui| reg.show_step(ui, &t, newest, &latest, &mut p));
+    let via = frame(&ctx, vec![], &mut |ui| reg.show_step(ui, &t, newest, &latest, &mut p));
+    let fmt = |x: &Texts| x.iter().map(|(s, r)| format!("{s} @ {r:?}")).collect::<Vec<_>>();
+    assert_eq!(fmt(&via), fmt(&direct), "the same card, in the same place");
+    let older = frame(&ctx, vec![], &mut |ui| reg.show_step(ui, &t, &entries[0].steps[0], &latest, &mut p));
+    assert!(has(&older, "Test run failed") && !has(&older, "Keep everywhere"), "an earlier card is only a record");
+
+    // A kind nobody registered, and a plugin card from a newer schema: their fallbacks.
+    let grid = View { kind: "sheets.grid".into(), v: 1, data: serde_json::json!({"rows": 3}), fallback: "A **grid** of 3 rows".into() };
+    let newer = View { v: 99, ..View::of(&c) };
+    let s = step_with(10, vec![grid.clone(), newer]);
+    let texts = frame(&ctx, vec![], &mut |ui| reg.show_step(ui, &t, &s, &latest, &mut p));
+    assert!(has(&texts, "grid") && has(&texts, "of 3 rows"), "{texts:?}");
+    assert!(has(&texts, "Plugin scratch") && !has(&texts, "Keep everywhere"), "{texts:?}");
+    // An empty fallback still says something.
+    let bare = step_with(11, vec![View { kind: "x.y".into(), v: 0, data: serde_json::Value::Null, fallback: String::new() }]);
+    assert!(has(&frame(&ctx, vec![], &mut |ui| reg.show_step(ui, &t, &bare, &latest, &mut p)), "can't show"));
+
+    // Registering a renderer draws the kind natively instead.
+    fn grid_renderer(ui: &mut egui::Ui, _: &mut crate::views::ViewCx<'_>, v: &View) -> bool {
+        ui.label(format!("native grid {}", v.data["rows"]));
+        true
+    }
+    assert!(!reg.has("sheets.grid"));
+    reg.register("sheets.grid", Renderer { draw: grid_renderer, key: None });
+    let s = step_with(12, vec![grid]);
+    let texts = frame(&ctx, vec![], &mut |ui| reg.show_step(ui, &t, &s, &latest, &mut p));
+    assert!(has(&texts, "native grid 3") && !has(&texts, "of 3 rows"), "{texts:?}");
 }

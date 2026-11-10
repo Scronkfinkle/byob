@@ -17,6 +17,10 @@ pub enum EnvAction {
     StopContainer,
     /// Remove the workspace's container (packages installed in it are lost).
     RemoveContainer,
+    /// An action from a newer client this engine doesn't know (answered with a message,
+    /// changing nothing).
+    #[serde(other)]
+    Unsupported,
 }
 
 /// One workspace's environment settings and state.

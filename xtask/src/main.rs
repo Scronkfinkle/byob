@@ -184,9 +184,9 @@ fn web() -> Result<(), String> {
     if tool("wasm-opt", &["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "-o", &wasm, &wasm]).is_err() {
         eprintln!("xtask: wasm-opt failed or missing; shipping unoptimized wasm");
     }
-    // Stamp the protocol it speaks, so byob can refuse a UI from an older build (byob-server's webui.rs).
+    // Stamp the protocol major it speaks, so byob can refuse a UI it can't talk to (byob-server's webui.rs).
     let index = std::fs::read_to_string("apps/byob-web/index.html").map_err(|e| format!("read index.html: {e}"))?;
-    let stamp = format!("<meta charset=\"utf-8\" />\n    <meta name=\"byob-protocol\" content=\"{}\" />", protocol_version()?);
+    let stamp = format!("<meta charset=\"utf-8\" />\n    <meta name=\"byob-protocol\" content=\"{}\" />", protocol_major()?);
     if !index.contains("<meta charset=\"utf-8\" />") {
         return Err("apps/byob-web/index.html lost its `<meta charset=\"utf-8\" />`, where the protocol stamp goes".into());
     }
@@ -235,11 +235,12 @@ fn ci() -> Result<(), String> {
     wasm()
 }
 
-/// `byob_protocol::PROTOCOL_VERSION`, read from its source (xtask doesn't build the crate).
-fn protocol_version() -> Result<u32, String> {
-    let src = std::fs::read_to_string("crates/protocol/src/lib.rs").map_err(|e| format!("read crates/protocol/src/lib.rs: {e}"))?;
+/// `byob_protocol::PROTOCOL_MAJOR`, read from its source (xtask doesn't build the crate).
+fn protocol_major() -> Result<u32, String> {
+    let file = "crates/protocol/src/version.rs";
+    let src = std::fs::read_to_string(file).map_err(|e| format!("read {file}: {e}"))?;
     src.lines()
-        .find_map(|l| l.trim().strip_prefix("pub const PROTOCOL_VERSION: u32 = "))
+        .find_map(|l| l.trim().strip_prefix("pub const PROTOCOL_MAJOR: u32 = "))
         .and_then(|v| v.trim_end_matches(';').trim().parse().ok())
-        .ok_or_else(|| "couldn't find `pub const PROTOCOL_VERSION: u32 = N;` in crates/protocol/src/lib.rs".into())
+        .ok_or_else(|| format!("couldn't find `pub const PROTOCOL_MAJOR: u32 = N;` in {file}"))
 }

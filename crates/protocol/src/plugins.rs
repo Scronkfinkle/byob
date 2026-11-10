@@ -197,6 +197,9 @@ pub enum SlashKind {
     Command,
     /// A skill: the model is told to use it, the arguments are the task.
     Skill,
+    /// A kind a newer engine sends that this client doesn't know (offered like a command).
+    #[serde(other)]
+    Other,
 }
 
 /// One entry of the `/` menu.
@@ -230,6 +233,9 @@ pub enum PluginAction {
     Kept,
     /// `remove_plugin`.
     Removed,
+    /// An action a newer engine reports that this client doesn't know ("changed").
+    #[serde(other)]
+    Other,
 }
 
 /// The result of running a tool once with test arguments (`make_tool`'s `try_args`).
@@ -262,6 +268,32 @@ pub struct PluginCard {
     /// Labels of required settings without a value (show the settings field).
     #[serde(default)]
     pub missing_settings: Vec<String>,
+}
+
+impl crate::ViewData for PluginCard {
+    const KIND: &'static str = "byob.plugin_card";
+    const V: u32 = 1;
+
+    fn fallback(&self) -> String {
+        let action = match self.action {
+            PluginAction::Made => "tool made",
+            PluginAction::Edited => "edited",
+            PluginAction::Kept => "kept",
+            PluginAction::Removed => "removed",
+            PluginAction::Other => "changed",
+        };
+        let mut out = format!("**Plugin {}** ({}) · {action}", self.plugin, self.scope.label());
+        if !self.tools.is_empty() {
+            out.push_str(&format!("\n\nTools: {}", self.tools.join(", ")));
+        }
+        if let Some(t) = &self.test {
+            out.push_str(if t.ok { "\n\nTest run passed" } else { "\n\nTest run failed" });
+        }
+        for p in &self.problems {
+            out.push_str(&format!("\n\n⚠ {p}"));
+        }
+        out
+    }
 }
 
 /// The plugin messages' size checks (see [`crate::ClientMsg::check_sizes`]).

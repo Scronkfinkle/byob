@@ -115,7 +115,7 @@ CREATE TABLE agent_steps (
 );
 ";
 
-/// v5: a step's card (a plugin card), as JSON.
+/// v5: a step's card, as JSON (a plugin card; since protocol 13 an array of views).
 const V5: &str = "
 ALTER TABLE steps ADD COLUMN card TEXT;
 ";

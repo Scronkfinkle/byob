@@ -8,8 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use byob_protocol::{
-    ApprovalAnswer, ClientMsg, ConfigScope, Connection, Entry, Extensions, PROTOCOL_VERSION, PluginAction, PluginOrigin, PluginScope, ServerMsg, ServerState,
-    Step, StepStatus,
+    ApprovalAnswer, ClientMsg, ConfigScope, Connection, Entry, Extensions, PluginAction, PluginOrigin, PluginScope, ServerMsg, ServerState, Step, StepStatus,
 };
 use byob_store::Paths;
 use byob_types::InferenceConfig;
@@ -70,7 +69,7 @@ fn recv(c: &mut LocalConnection) -> ServerMsg {
 /// Connect; returns the connection and the first plugin list.
 fn hello(h: &H) -> (LocalConnection, Extensions) {
     let mut c = h.engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
     let mut ext = None;
     loop {
         match recv(&mut c) {
@@ -163,7 +162,7 @@ fn a_made_tool_is_callable_in_the_next_round_of_the_same_turn() {
     let (reply, seen) = turn(&mut c, "make an adder and use it", |_, _| {});
     let made = step(&reply, "make_tool");
     assert_eq!(made.status, StepStatus::Done, "{}", made.detail);
-    let card = made.plugin.as_deref().expect("a plugin card");
+    let card = made.view::<byob_protocol::PluginCard>().expect("a plugin card");
     assert_eq!((card.plugin.as_str(), card.scope, card.action), ("scratch", PluginScope::Chat, PluginAction::Made));
     assert_eq!(card.added, ["add"]);
     let test = card.test.as_ref().unwrap();
@@ -205,7 +204,7 @@ fn a_failed_test_shows_the_traceback_and_edit_plugin_fixes_it() {
     let (reply, _) = turn(&mut c, "go", |_, _| {});
     let made = step(&reply, "make_tool");
     assert_eq!(made.status, StepStatus::Failed);
-    let test = made.plugin.as_deref().and_then(|c| c.test.clone()).unwrap();
+    let test = made.view::<byob_protocol::PluginCard>().and_then(|c| c.test).unwrap();
     assert!(!test.ok && test.output.contains("ZeroDivisionError"), "{}", test.output);
     assert!(test.output.lines().count() <= 40);
     let reqs = h.requests.lock().unwrap().clone();
@@ -415,7 +414,7 @@ fn keeping_a_plugin_asks_and_everywhere_needs_a_person() {
     let (r, _) = turn(&mut c, "make and keep", |s, _| panic!("asked under allow-all: {}", s.title));
     let kept = step(&r, "keep_plugin");
     assert_eq!(kept.status, StepStatus::Done, "{}", kept.detail);
-    assert_eq!(kept.plugin.as_deref().map(|c| (c.action, c.scope)), Some((PluginAction::Kept, PluginScope::Workspace)));
+    assert_eq!(kept.view::<byob_protocol::PluginCard>().map(|c| (c.action, c.scope)), Some((PluginAction::Kept, PluginScope::Workspace)));
     let dir = h.ws.join(".byob/plugins/shouting");
     assert!(dir.join("tools/shout.py").is_file());
     let m: Value = serde_json::from_str(&fs::read_to_string(dir.join("byob-plugin.json")).unwrap()).unwrap();

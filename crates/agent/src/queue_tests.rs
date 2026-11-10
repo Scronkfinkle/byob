@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use byob_protocol::queue::{MAX_QUEUED, MAX_QUEUED_TEXT_BYTES};
-use byob_protocol::{ChatQueue, ClientMsg, Connection, Entry, EntryRole, NoticeLevel, PROTOCOL_VERSION, QueuePause, ServerMsg};
+use byob_protocol::{ChatQueue, ClientMsg, Connection, Entry, EntryRole, NoticeLevel, QueuePause, ServerMsg};
 use byob_types::InferenceConfig;
 use serde_json::{Value, json};
 
@@ -157,7 +157,7 @@ impl View {
 
 fn connect(engine: &EngineHandle) -> (LocalConnection, View) {
     let mut c = engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
     let mut v = View::default();
     pump_until(&mut c, &mut v, |_| false, true);
     (c, v)

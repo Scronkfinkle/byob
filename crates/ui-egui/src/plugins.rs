@@ -704,6 +704,7 @@ fn action_text(a: PluginAction) -> &'static str {
         PluginAction::Edited => "edited",
         PluginAction::Kept => "kept",
         PluginAction::Removed => "removed",
+        PluginAction::Other => "changed",
     }
 }
 

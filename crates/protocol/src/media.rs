@@ -27,7 +27,8 @@ pub enum MediaKind {
     Chart,
     /// A PNG or JPEG shown inline.
     Image,
-    /// Anything else (shown as a file chip).
+    /// Anything else (shown as a file chip), including kinds this client doesn't know.
+    #[serde(other)]
     File,
 }
 

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use byob_llm::ChatMessage;
-use byob_protocol::{ClientMsg, Connection, EngineState, Entry, PROTOCOL_VERSION, ServerMsg, StepStatus, ToolsMode};
+use byob_protocol::{ClientMsg, Connection, EngineState, Entry, ServerMsg, StepStatus, ToolsMode};
 use byob_tools::{Access, Registry, Tool, ToolContext, ToolOutput, ToolSpec};
 use byob_types::InferenceConfig;
 use serde_json::{Value, json};
@@ -196,6 +196,7 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
         detect_local: false,
         envs: None,
         plugins: None,
+        channels: Default::default(),
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), seen, runs }
 }
@@ -212,12 +213,39 @@ fn recv(conn: &mut LocalConnection) -> ServerMsg {
 }
 
 fn connect(h: &Harness) -> (LocalConnection, EngineState) {
+    let (c, mut states) = connect_states(h);
+    (c, states.swap_remove(0))
+}
+
+/// Say hello; every State until the Transcript (the answer's first, then any broadcast
+/// that came in between, e.g. a finished probe).
+fn connect_states(h: &Harness) -> (LocalConnection, Vec<EngineState>) {
     let mut c = h.engine.connect(Arc::new(|| {}));
-    c.send(ClientMsg::Hello { protocol: PROTOCOL_VERSION, client: "test".into() });
+    c.send(ClientMsg::hello("test"));
+    assert!(matches!(recv(&mut c), ServerMsg::Welcome(_)), "Welcome comes first");
     let ServerMsg::State(state) = recv(&mut c) else { panic!("expected state") };
+    let mut states = vec![state];
     // Then Chats, ChatOpened, and finally the Transcript.
-    while !matches!(recv(&mut c), ServerMsg::Transcript { .. }) {}
-    (c, state)
+    loop {
+        match recv(&mut c) {
+            ServerMsg::Transcript { .. } => return (c, states),
+            ServerMsg::State(s) => states.push(s),
+            _ => {}
+        }
+    }
+}
+
+/// Connect and wait until the endpoint probe is done (it may finish during the hello).
+fn connect_probed(h: &Harness) -> (LocalConnection, EngineState) {
+    let probed = |s: &EngineState| s.endpoint_info.as_ref().is_some_and(|i| !i.probing);
+    let (mut c, mut states) = connect_states(h);
+    match states.pop().filter(probed) {
+        Some(s) => (c, s),
+        None => {
+            let s = wait_state(&mut c, probed);
+            (c, s)
+        }
+    }
 }
 
 /// Wait for a State broadcast matching `want`.
@@ -363,8 +391,7 @@ fn long_tool_loop_stays_within_probed_context() {
     let server = Server { models: Some(models), tool_test: Some(tool_test), script, ..Default::default() };
     // Each result is ~9k characters (~2.6k estimated tokens): two don't fit together.
     let h = harness(server, AdaptOptions { tool_mode: ToolMode::Auto, probe: true }, 9_000);
-    let (mut c, _) = connect(&h);
-    let state = wait_state(&mut c, |s| s.endpoint_info.as_ref().is_some_and(|i| !i.probing));
+    let (mut c, state) = connect_probed(&h);
     let info = state.endpoint_info.unwrap();
     assert_eq!((info.context_tokens, info.tools, info.server.as_str()), (Some(4096), ToolsMode::Native, "llama.cpp"));
 
@@ -422,8 +449,7 @@ fn probe_results_only_reach_clients_that_said_hello() {
     let models = json!({"data": [{"id": "m", "owned_by": "llamacpp", "meta": {"n_ctx": 8192}}]});
     let h = harness(Server { models: Some(models), ..Default::default() }, AdaptOptions { tool_mode: ToolMode::Auto, probe: true }, 0);
     let mut quiet = h.engine.connect(Arc::new(|| {}));
-    let (mut c, _) = connect(&h);
-    wait_state(&mut c, |s| s.endpoint_info.as_ref().is_some_and(|i| !i.probing));
+    let (_c, _) = connect_probed(&h);
     assert!(quiet.try_recv().is_none(), "a client must say Hello before it gets broadcasts");
 }
 

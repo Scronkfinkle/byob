@@ -735,7 +735,7 @@ impl Turn {
             ask: catch_unwind(AssertUnwindSafe(|| tool.always_ask(args)))
                 .unwrap_or_else(|_| Some("this tool must be confirmed".into()))
                 .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true })),
-            plugin: None,
+            views: vec![],
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step: step.clone() });
         if let Some(reason) = self.gate(&step).denied() {
@@ -809,7 +809,7 @@ impl Turn {
             artifacts: Vec::new(),
             delegation: None,
             ask: None,
-            plugin: None,
+            views: vec![],
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step });
     }
@@ -851,7 +851,7 @@ impl Asker for TurnAsker {
                 warning: q.warning.as_deref().map(|w| prefix(w, MAX_ASK_TEXT).to_owned()),
                 always: q.always_ask,
             })),
-            plugin: None,
+            views: vec![],
         };
         emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step: step.clone() });
         let (reply, answer) = channel();

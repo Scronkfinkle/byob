@@ -412,7 +412,7 @@ mod tests {
 
         let mut conn = WsConnection::connect(&format!("ws://{addr}/ws"), egui::Context::default());
         let status = conn.status_handle();
-        conn.send(ClientMsg::Hello { protocol: 1, client: "test".into() });
+        conn.send(ClientMsg::hello("test"));
         let deadline = Instant::now() + secs(10.0);
         let mut seen = Vec::new();
         let mut queued = false;

@@ -27,7 +27,9 @@ pub enum ArtifactKind {
     Chart,
     /// PNG or JPEG.
     Image,
-    /// Any other text file (csv, json, py, svg source…), shown as source.
+    /// Any other text file (csv, json, py, svg source…), shown as source. Also any kind a
+    /// newer engine sends that this client doesn't know.
+    #[serde(other)]
     Text,
 }
 

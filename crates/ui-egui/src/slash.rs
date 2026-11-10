@@ -142,6 +142,7 @@ fn origin(item: &SlashItem) -> String {
         SlashKind::Builtin => return "built in".into(),
         SlashKind::Command => "command",
         SlashKind::Skill => "skill",
+        SlashKind::Other => "other",
     };
     match item.scope {
         Some(scope) => format!("{kind}, {}", scope.label()),
