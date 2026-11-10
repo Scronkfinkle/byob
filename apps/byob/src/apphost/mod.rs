@@ -542,14 +542,10 @@ fn input(ui: &egui::Ui, app: &mut App, rect: egui::Rect, resp: &egui::Response, 
                 Input::MouseButton { button, down: pressed, x, y }
             }
             egui::Event::MouseWheel { unit, delta, .. } if wheel_to_app => {
-                let d = match unit {
-                    egui::MouseWheelUnit::Point => delta * ppp,
-                    egui::MouseWheelUnit::Line => delta * 40.0 * ppp,
-                    egui::MouseWheelUnit::Page => delta * rect.height() * ppp,
-                };
+                let d = wheel_pixels(unit, delta, ppp, rect.height());
                 let (x, y) = at(ui.input(|i| i.pointer.hover_pos()).unwrap_or(rect.center()));
                 scrolled = true;
-                Input::Wheel { dx: -d.x, dy: -d.y, x, y }
+                Input::Wheel { dx: d.x, dy: d.y, x, y }
             }
             egui::Event::Text(text) if focused => Input::Text(text),
             egui::Event::Paste(text) if focused => Input::Text(text),
@@ -573,9 +569,29 @@ fn input(ui: &egui::Ui, app: &mut App, rect: egui::Rect, resp: &egui::Response, 
     }
 }
 
+/// An egui wheel delta in device pixels. egui and Servo agree on the sign (positive: the
+/// view scrolls up / left), so it passes through unflipped.
+fn wheel_pixels(unit: egui::MouseWheelUnit, delta: egui::Vec2, ppp: f32, height: f32) -> egui::Vec2 {
+    match unit {
+        egui::MouseWheelUnit::Point => delta * ppp,
+        egui::MouseWheelUnit::Line => delta * 40.0 * ppp,
+        egui::MouseWheelUnit::Page => delta * height * ppp,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the wheel was negated on the way to Servo, so apps scrolled backwards.
+    #[test]
+    fn wheel_down_scrolls_the_app_down() {
+        // Wheel down / swipe up: egui reports a negative y, which Servo reads as scrolling down.
+        let d = wheel_pixels(egui::MouseWheelUnit::Line, egui::vec2(0.0, -1.0), 2.0, 300.0);
+        assert!(d.y < 0.0, "got {d:?}");
+        assert_eq!(wheel_pixels(egui::MouseWheelUnit::Point, egui::vec2(3.0, 5.0), 2.0, 300.0), egui::vec2(6.0, 10.0));
+        assert_eq!(wheel_pixels(egui::MouseWheelUnit::Page, egui::vec2(0.0, 1.0), 1.0, 300.0), egui::vec2(0.0, 300.0));
+    }
 
     #[test]
     fn dark_follows_the_background() {

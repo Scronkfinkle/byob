@@ -91,7 +91,8 @@ pub enum Input {
         x: f32,
         y: f32,
     },
-    /// Device pixels to scroll (positive: content moves up / left).
+    /// Device pixels to scroll, in Servo's (and egui's) sign: positive scrolls the view
+    /// up / left, revealing content above / to the left.
     Wheel {
         dx: f32,
         dy: f32,
