@@ -106,7 +106,14 @@ impl Spec {
     pub fn describe(&self, ws: &Path) -> String {
         match &self.image {
             Image::Pull(i) => i.clone(),
-            Image::Build { dockerfile, .. } => format!("built from {}", dockerfile.strip_prefix(ws).unwrap_or(dockerfile).display()),
+            // Inside the workspace, written the way devcontainer.json writes paths (`/`).
+            Image::Build { dockerfile, .. } => match dockerfile.strip_prefix(ws) {
+                Ok(rel) => {
+                    let parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect();
+                    format!("built from {}", parts.join("/"))
+                }
+                Err(_) => format!("built from {}", dockerfile.display()),
+            },
         }
     }
 }

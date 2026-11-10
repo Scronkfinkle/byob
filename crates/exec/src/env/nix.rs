@@ -371,8 +371,9 @@ pub fn hook_changes(dump: &[u8], before: &[(String, String)], had_path: &[PathBu
         let entry = String::from_utf8_lossy(entry);
         let Some((k, v)) = entry.split_once('=') else { continue };
         if k == "PATH" {
-            for p in std::env::split_paths(v) {
-                if !host_path.contains(&p) && !had_path.contains(&p) && !l.path.contains(&p) && p.is_absolute() {
+            // The hook ran in Nix's bash: a Unix PATH whatever the host's rules.
+            for p in v.split(':').filter(|p| p.starts_with('/')).map(PathBuf::from) {
+                if !host_path.contains(&p) && !had_path.contains(&p) && !l.path.contains(&p) {
                     l.path.push(p);
                 }
             }
