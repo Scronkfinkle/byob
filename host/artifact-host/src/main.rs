@@ -157,8 +157,35 @@ impl WebViewDelegate for Page {
     }
 }
 
+/// Works around a Servo (0.8) bug: a *collapsed* selection (a caret) whose container is a
+/// replaced element — `<canvas>`, `<img>`, `<video>`, … — marks that element as selected, so it
+/// is painted with the selection tint, as if the whole thing were highlighted. A plain click
+/// on a `<canvas>` does exactly that: Servo's mousedown default action, finding no text under
+/// the pointer, puts the caret at offset 0 *inside* the clicked node (`Document::
+/// handle_mousedown_event` → `RootedSelectionBoundary::start_of`), and the visible-selection
+/// update then flags that node (`VisibleSelectionFlagUpdate`, `Inside(canvas)`). Browsers never
+/// paint a caret as a highlight. So: when the caret lands in such an element, move it to just
+/// before the element, which Servo doesn't flag. Real (non-collapsed) selections, and carets
+/// anywhere else, are left alone, so text selection in apps works as before.
+const SELECTION_FIX: &str = "<script>document.addEventListener('selectionchange',()=>{\
+    const s=getSelection(),n=s&&s.isCollapsed&&s.anchorNode;if(!n)return;\
+    const e=(n.nodeType===1?n:n.parentElement)?.closest('canvas,img,video,audio,iframe,embed,object,svg'),p=e&&e.parentNode;\
+    if(p)s.collapse(p,Array.prototype.indexOf.call(p.childNodes,e))})</script>";
+
+/// The document with [`SELECTION_FIX`] first (after the doctype, so standards mode stays).
+fn with_fixes(html: &str) -> String {
+    let start = html.trim_start();
+    if start.get(..9).is_some_and(|s| s.eq_ignore_ascii_case("<!doctype")) {
+        let end = start.find('>').map_or(start.len(), |i| i.saturating_add(1));
+        format!("{}{SELECTION_FIX}{}", start.get(..end).unwrap_or_default(), start.get(end..).unwrap_or_default())
+    } else {
+        format!("{SELECTION_FIX}{html}")
+    }
+}
+
 /// `data:` URL for the document, theme in the hash for the shim to apply before first paint.
 fn data_url(html: &str, theme: &wire::Theme) -> Option<url::Url> {
+    let html = with_fixes(html);
     let body: String = url::form_urlencoded::byte_serialize(html.as_bytes()).collect();
     let hash: Vec<String> = safe_vars(theme).map(|(k, v)| format!("{k}={}", v.replace('#', "%23").replace(' ', "%20"))).collect();
     // form_urlencoded writes spaces as '+'; data: URLs need %20.
@@ -569,7 +596,17 @@ mod tests {
         assert!(!js.contains("alert") && !js.contains("'color'"), "{js}");
         let url = data_url("<p>a b+c#d</p>", &theme).unwrap();
         let s = url.as_str();
-        assert!(s.starts_with("data:text/html;charset=utf-8,%3Cp%3Ea%20b%2Bc%23d%3C%2Fp%3E#--byob-bg=%2316171a&--byob-fg=rgb(1,%202,%203)"), "{s}");
+        assert!(s.starts_with("data:text/html;charset=utf-8,%3Cscript%3E"), "{s}");
+        assert!(s.ends_with("%3Cp%3Ea%20b%2Bc%23d%3C%2Fp%3E#--byob-bg=%2316171a&--byob-fg=rgb(1,%202,%203)"), "{s}");
+    }
+
+    #[test]
+    fn the_selection_fix_goes_first() {
+        assert!(with_fixes("<p>hi</p>").starts_with(SELECTION_FIX));
+        let doc = with_fixes("  <!DOCTYPE html><html><p>hi</p>");
+        assert!(doc.starts_with("<!DOCTYPE html><script>"), "{doc}");
+        assert!(doc.ends_with("</script><html><p>hi</p>"), "{doc}");
+        assert_eq!(with_fixes("<!doctype"), format!("<!doctype{SELECTION_FIX}"));
     }
 
     #[test]

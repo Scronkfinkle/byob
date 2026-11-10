@@ -656,6 +656,99 @@ mod tests {
         assert!(!reqs.iter().any(|r| matches!(r, Request::Visible(_))), "old helpers only get what they know: {reqs:?}");
     }
 
+    /// The real helper, if one is built: `$BYOB_ARTIFACT_HOST`, else the helper workspace's
+    /// release build.
+    fn built_helper() -> Option<PathBuf> {
+        helper::locate().or_else(|| {
+            let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../host/artifact-host/target/release/byob-artifact-host");
+            p.is_file().then_some(p)
+        })
+    }
+
+    /// Run `html` (plus [`REPORT_JS`]) in the real helper at 400x300, send `inputs`, then
+    /// press F9. Returns what the page reported and the newest frame.
+    fn drive(path: &std::path::Path, html: &str, inputs: &[Input]) -> (Vec<String>, wire::Frame) {
+        let mut h = helper::Helper::spawn(path, || {}).unwrap();
+        h.send(Request::Load(Box::new(wire::Load {
+            html: byob_server::artifact::wrap_html(&format!("{html}{REPORT_JS}")),
+            theme: wire::Theme::default(),
+            viewport: Viewport { width: 400, height: 300, scale: 1.0 },
+        })));
+        h.send(Request::Focus(true));
+        let mut out = Vec::new();
+        let mut frame = None;
+        let mut pump_until = |h: &mut helper::Helper, out: &mut Vec<String>, what: &str| {
+            let start = Instant::now();
+            while !out.iter().any(|m: &String| m.starts_with(what)) && start.elapsed() < Duration::from_secs(30) {
+                for e in h.poll() {
+                    if let wire::Event::Error { message, .. } = e {
+                        out.push(message);
+                    }
+                }
+                if let Some(f) = h.take_frame() {
+                    frame = Some(f);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(out.iter().any(|m| m.starts_with(what)), "no {what:?} from the page: {out:?}");
+        };
+        pump_until(&mut h, &mut out, "ready");
+        for i in inputs {
+            h.send(Request::Input(i.clone()));
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        h.send(Request::Input(Input::Key(wire::KeyEvent { down: true, key: "F9".into(), code: "F9".into(), mods: wire::Mods(0), repeat: false })));
+        pump_until(&mut h, &mut out, "selection ");
+        // Whatever the click changed has been painted by now; keep the newest frame.
+        std::thread::sleep(Duration::from_millis(300));
+        if let Some(f) = h.take_frame() {
+            frame = Some(f);
+        }
+        h.kill();
+        (out, frame.unwrap())
+    }
+
+    /// The page says when it has loaded and, on F9, what is selected.
+    const REPORT_JS: &str = "<script>function report(m){console.log('\\u0001byob-error 0 '+m)}\
+        addEventListener('load',()=>setTimeout(()=>report('ready'),200));\
+        addEventListener('keydown',e=>{if(e.key!=='F9')return;report('selection '+JSON.stringify(String(getSelection())));report('caret in '+getSelection().anchorNode?.nodeName)},true);</script>";
+
+    /// RGBA at (x, y).
+    fn pixel(f: &wire::Frame, x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * f.width + x) * 4) as usize;
+        [f.rgba[i], f.rgba[i + 1], f.rgba[i + 2], f.rgba[i + 3]]
+    }
+
+    /// Regression: clicking a `<canvas>` (the bead-loom app's grid) painted the whole canvas
+    /// with the selection tint. Servo put the caret inside the canvas and painted the
+    /// "selected" canvas (only once something is drawn in it); the helper now moves such a
+    /// caret out (`SELECTION_FIX` in host/artifact-host). Text selection must keep working.
+    /// Needs a built helper; skipped without one.
+    #[test]
+    fn clicking_a_canvas_does_not_highlight_it() {
+        let Some(path) = built_helper() else {
+            eprintln!("skipped: no byob-artifact-host built");
+            return;
+        };
+        let page = "<body style='margin:0;background:#fff'><canvas id=c width=400 height=150 style='display:block;touch-action:none'></canvas>\
+            <p style='margin:20px 0;font:20px sans-serif;color:#000'>pick some words</p>\
+            <script>const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,400,150);c.addEventListener('pointerdown',e=>c.setPointerCapture(e.pointerId))</script>";
+        let primary = |down, x, y| Input::MouseButton { button: wire::Button::Primary, down, x, y };
+        let click = |x, y| [Input::MouseMove { x, y }, primary(true, x, y), primary(false, x, y)];
+
+        let (out, frame) = drive(&path, page, &click(100.0, 75.0));
+        assert!(out.contains(&"selection \"\"".to_owned()), "{out:?}");
+        for (x, y) in [(100, 75), (10, 10), (390, 140)] {
+            assert_eq!(pixel(&frame, x, y), [255, 255, 255, 255], "canvas at ({x}, {y}) after a click on it");
+        }
+
+        // A double click on a word still selects it.
+        let (x, y) = (20.0, 180.0);
+        let (out, _) = drive(&path, page, &[click(x, y).as_slice(), &click(x, y)[1..]].concat());
+        assert!(out.contains(&"selection \"pick\"".to_owned()), "{out:?}");
+    }
+
     /// Without a helper on disk the view isn't offered (the placeholder stays).
     #[test]
     fn no_helper_no_view() {

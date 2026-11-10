@@ -159,7 +159,11 @@ Servo's MPL-2.0 code and tokio never enter byob; see AGENTS.md §3). The helper 
   helper never blocks the UI.
 - **Document**: the same wrapper the server uses (theme defaults + helper script) as a
   `data:` URL with the theme in the hash; theme changes are applied live by script. Script
-  errors come back as marked `console.error` lines and feed "Send error to byob".
+  errors come back as marked `console.error` lines and feed "Send error to byob". The helper
+  puts one Servo workaround first in the document (`SELECTION_FIX`): Servo 0.8 paints a
+  replaced element (canvas, img, …) with the selection tint when a collapsed caret sits
+  inside it — which a plain click on a `<canvas>` causes — so a caret landing there is moved
+  to just before the element.
 - **Sandbox**: `data:` origin is opaque (no storage outlives the process); every
   navigation after the document and every non-`data:`/`blob:` load is refused in
   `load_web_resource`; Servo's HTTP(S) proxy points at a dead port as a second layer;
