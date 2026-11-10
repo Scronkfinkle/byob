@@ -182,6 +182,16 @@ fn parse_args() -> Result<Args, String> {
                 args.compact_at = Some(v.parse().map_err(|e| format!("bad token count {v:?}: {e}"))?);
             }
             "--send" => args.script.send.push(it.next().ok_or("--send needs text")?),
+            // Hidden, for testing: send TEXT while the first reply runs, so it queues.
+            "--queue" => args.script.queue.push(it.next().ok_or("--queue needs text")?),
+            // Hidden, for testing: press Stop SECS after the queued messages went out.
+            "--stop-after" => {
+                let v = it.next().ok_or("--stop-after needs seconds")?;
+                let secs: f64 = v.parse().map_err(|e| format!("bad seconds {v:?}: {e}"))?;
+                args.script.stop_after = Some(std::time::Duration::try_from_secs_f64(secs).map_err(|e| format!("bad seconds {v:?}: {e}"))?);
+            }
+            // Hidden, for testing: screenshot as soon as the queued messages show.
+            "--shoot-queued" => args.script.shoot_queued = true,
             // Hidden, for testing: fill the connection form with URL and MODEL and test it.
             "--test-connection" => {
                 let url = it.next().ok_or("--test-connection needs a URL and a model")?;
