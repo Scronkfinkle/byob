@@ -17,7 +17,9 @@ nix build github:Scronkfinkle/byob          # or .#byob-slim
 ```
 
 Release archives for Linux, macOS and Windows come in the same two flavours
-(`byob-…` and `byob-slim-…`) on the GitHub releases page.
+(`byob-…` and `byob-slim-…`) on the GitHub releases page. On Linux they need no GUI
+toolkit: file dialogs go through the XDG desktop portal (or zenity); without either, drop
+files onto the window.
 
 ## Use
 

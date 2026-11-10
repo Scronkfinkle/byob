@@ -6,7 +6,7 @@
 //! - Browser: a file `<input>` and egui's dropped-file futures, driven by
 //!   `wasm_bindgen_futures::spawn_local` (the browser's own event loop; no runtime).
 //! - Desktop: dropped files are read from their path; the picker is `rfd`'s native dialog
-//!   (GTK3 on Linux), on a thread.
+//!   (the XDG desktop portal on Linux), on a thread.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -239,11 +239,11 @@ pub(crate) fn pick_files(ctx: &egui::Context, tx: Sender<Picked>) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_dialog() -> Result<Vec<std::path::PathBuf>, String> {
-    if !crate::export::dialogs_available() {
-        return Err("No file dialog is available here (GTK can't find its settings schemas); drop files onto the window instead".into());
+    if let Some(why) = crate::export::dialog_unavailable_reason() {
+        return Err(format!("No file dialog is available here ({why}); drop files onto the window instead"));
     }
-    // rfd's async dialog runs GTK on its own thread (Linux) and the panel on the main thread
-    // (macOS); we're on a background thread, so blocking on it here is fine.
+    // rfd's async dialog talks to the desktop portal (or zenity) on Linux and the panel
+    // on the main thread on macOS; we're on a background thread, so blocking here is fine.
     let picked = pollster::block_on(rfd::AsyncFileDialog::new().set_title("Attach files").pick_files());
     Ok(picked.map(|files| files.into_iter().map(|f| f.path().to_path_buf()).collect()).unwrap_or_default())
 }

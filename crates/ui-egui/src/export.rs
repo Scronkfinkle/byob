@@ -1,6 +1,6 @@
 //! Exporting an artifact (saving its file) and opening one in the system browser.
 //!
-//! - Desktop: `rfd`'s native save dialog (GTK3 on Linux) on a thread. Opening runs
+//! - Desktop: `rfd`'s native save dialog (the XDG desktop portal on Linux) on a thread. Opening runs
 //!   `xdg-open`/`open`/`start` with the artifact's URL.
 //! - Browser: a `Blob` and a clicked `<a download>`; opening is `window.open` in a new tab.
 //!
@@ -53,8 +53,8 @@ fn save_file(ctx: &egui::Context, tx: Sender<Outcome>, filename: &str, _mime: &s
     let ctx = ctx.clone();
     let name = safe_filename(filename);
     let _ = std::thread::Builder::new().name("byob-export".into()).spawn(move || {
-        if !dialogs_available() {
-            let _ = tx.send(Err("No file dialog is available here (GTK can't find its settings schemas)".into()));
+        if let Some(why) = dialog_unavailable_reason() {
+            let _ = tx.send(Err(format!("No file dialog is available here ({why})")));
             ctx.request_repaint();
             return;
         }
@@ -70,21 +70,18 @@ fn save_file(ctx: &egui::Context, tx: Sender<Outcome>, filename: &str, _mime: &s
     });
 }
 
-/// Whether a native file dialog can open without taking the app down. On Linux, GTK
-/// aborts the whole process when it finds no GSettings schemas (e.g. a bare `nix develop`
-/// shell), so look for them first: `GSETTINGS_SCHEMA_DIR`, or
-/// `glib-2.0/schemas/gschemas.compiled` under an `XDG_DATA_DIRS` entry.
+/// Why no native file dialog can open here, for the "drop files instead" message. `None`:
+/// it can. On Linux rfd asks the XDG desktop portal over the D-Bus session bus, then falls
+/// back to zenity.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn dialogs_available() -> bool {
+pub(crate) fn dialog_unavailable_reason() -> Option<&'static str> {
     if !cfg!(target_os = "linux") {
-        return true;
+        return None;
     }
-    let compiled = |dir: &std::path::Path| dir.join("gschemas.compiled").is_file();
-    if std::env::var_os("GSETTINGS_SCHEMA_DIR").is_some_and(|d| compiled(std::path::Path::new(&d))) {
-        return true;
-    }
-    let dirs = std::env::var("XDG_DATA_DIRS").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
-    dirs.split(':').any(|d| compiled(&std::path::Path::new(d).join("glib-2.0/schemas")))
+    let env = |k: &str| std::env::var_os(k);
+    let on_path = |name: &str| env("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()));
+    let bus = env("DBUS_SESSION_BUS_ADDRESS").is_some() || env("XDG_RUNTIME_DIR").is_some_and(|d| std::path::Path::new(&d).join("bus").exists());
+    (!bus && !on_path("zenity")).then_some("no D-Bus session for the desktop portal, and no zenity")
 }
 
 /// Ask where to save (`rfd`'s native dialog). `None`: cancelled.

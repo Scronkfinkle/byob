@@ -34,11 +34,9 @@
           rustc = rustToolchain;
         };
 
-        # Linked at build time (rfd -> gtk3 / dbus file dialogs).
-        buildInputs = lib.optionals isLinux [
-          pkgs.gtk3
-          pkgs.dbus
-        ];
+        # File dialogs (rfd) go through the XDG desktop portal over D-Bus, in pure Rust; zenity
+        # is the fallback where no portal runs (some tiling WMs), so the package and shell carry it.
+        dialogFallback = lib.optionals isLinux [ pkgs.zenity ];
 
         # dlopen'ed at runtime by winit / wgpu, so they must be on LD_LIBRARY_PATH.
         runtimeLibs = lib.optionals isLinux [
@@ -54,9 +52,6 @@
 
         hasWorkspace = builtins.pathExists ./Cargo.lock;
 
-        # GTK (rfd's file dialogs) aborts with "No GSettings schemas are installed" unless
-        # it can find GTK3's compiled schemas.
-        gsettingsSchemaDir = "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}/glib-2.0/schemas";
         cargoToml = lib.importTOML ./Cargo.toml;
 
         # The browser UI: byob-web compiled to wasm + wasm-bindgen glue + index.html.
@@ -180,7 +175,9 @@
 
         # The desktop app. `slim`: without the browser UI compiled in (`--no-default-features`).
         mkByob =
-          { slim ? false }:
+          {
+            slim ? false,
+          }:
           rustPlatform.buildRustPackage {
             pname = if slim then "byob-slim" else "byob";
             version = cargoToml.workspace.package.version;
@@ -201,10 +198,10 @@
             nativeBuildInputs = [ pkgs.pkg-config ] ++ lib.optionals isLinux [ pkgs.makeWrapper ];
             # nixpkgs' cargo hooks point libsqlite3-sys at the system SQLite (overriding
             # rusqlite's `bundled`), so it has to be an input here.
-            buildInputs = buildInputs ++ [ pkgs.sqlite ];
+            buildInputs = [ pkgs.sqlite ];
             postFixup = lib.optionalString isLinux ''
               wrapProgram $out/bin/byob --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs} \
-                --set-default GSETTINGS_SCHEMA_DIR ${gsettingsSchemaDir} ${lib.optionalString hasHost "--set-default BYOB_ARTIFACT_HOST ${byob-artifact-host}/bin/byob-artifact-host"}
+                --suffix PATH : ${lib.makeBinPath dialogFallback} ${lib.optionalString hasHost "--set-default BYOB_ARTIFACT_HOST ${byob-artifact-host}/bin/byob-artifact-host"}
             '';
             meta = {
               description = "Native Rust AI agent harness" + lib.optionalString slim " (without the browser UI)";
@@ -231,7 +228,7 @@
             rustToolchain
             pkgs.pkg-config
           ];
-          buildInputs = buildInputs ++ runtimeLibs;
+          buildInputs = runtimeLibs;
           packages = [
             pkgs.cargo-nextest
             pkgs.cargo-deny
@@ -241,10 +238,10 @@
             pkgs.binaryen # wasm-opt for release web builds
             pkgs.xvfb # scripts/headless.sh: run the desktop app on a virtual display
             pkgs.nixfmt
-          ];
+          ]
+          ++ dialogFallback;
           LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
-          GSETTINGS_SCHEMA_DIR = lib.optionalString isLinux gsettingsSchemaDir;
         };
 
         formatter = pkgs.nixfmt;
