@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-09
+Last updated: 2026-11-10
 
 ## Shape
 
@@ -41,7 +41,7 @@ graph of a shipped target.
 L6  apps/byob (desktop, --serve, --headless) · apps/byob-web (wasm)
 L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
 L4  agent: engine, turns, tool loop, permissions, approvals
-L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python)
+L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python, install_packages, workspace environments)
 L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
 L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store (SQLite or folder) · artifact-wire (helper protocol)
 L0  types
@@ -258,6 +258,36 @@ Commands get a minimal environment (no API keys), `HOME`/`TMPDIR` in the temp di
 macOS uses a `sandbox-exec` profile (compile-checked only); elsewhere, and where Landlock is
 missing, commands run unsandboxed with a warning. `BYOB_SANDBOX=off` turns it off.
 MCP servers get a looser policy (read anything, network on, writes confined).
+
+### Workspace environments (getting tools)
+
+`byob_exec::env::Envs` prepares every `run_command` / `run_python` call by stacking layers
+(`PATH` entries, variables, sandbox access) onto that clean environment, first match winning:
+
+1. **Installed packages** from `install_packages` (registered when Nix is present; it then
+   replaces `install_python_packages`): per workspace under `<data>/envs/<name>-<hash>/`, one
+   Nix `buildEnv` (programs, plus one `python3.withPackages` for Python libraries) behind a
+   GC-root out-link, nixpkgs pinned in `<data>/nix/nixpkgs.json`. Names are checked first
+   (`nix eval`; unknown ones get similar names back), pip-style and import names are mapped
+   (`sklearn` → `scikit-learn`, `convert` → `imagemagick`).
+2. **A workspace `.venv` / `venv`** (any OS).
+3. **Project environments**, loaded once (sandboxed, with network, may write the workspace,
+   e.g. `flake.lock`) and cached in the workspace's state folder until their files change:
+   `flake.nix` / `shell.nix` (`nix print-dev-env --profile`, so GC-rooted; the `shellHook` runs
+   once and its variable changes are kept), `pixi.toml` (`pixi shell-hook --json`), mise
+   (`mise env --json`). A failure is reported once in the tool output; commands still run.
+   `BYOB_WORKSPACE_ENV=off` skips this step.
+4. **Support for the `nix` CLI** in every run: `/nix/var/nix` and `/etc/nix` readable, the
+   daemon socket reachable (Seatbelt needs an explicit rule; Linux allows it), a shared
+   `NIX_CACHE_HOME`, and `NIX_CONFIG` with flakes on, `substitute = true` (the client turns
+   substitution off when it sees no network, but the daemon downloads), and `flake-registry`
+   pointing at byob's registry pinning nixpkgs (seeded from `/etc/nix/registry.json`), since
+   the client fetches the global registry itself. So `nix shell nixpkgs#foo --command …` works
+   in a run without network.
+
+Failed runs get a one-line hint naming the call to make (`jq: not found`,
+`ModuleNotFoundError`, `pip install`/`apt`/`sudo` attempts). Plan for other OSes:
+`docs/environments.md`.
 
 ## Inference
 

@@ -27,12 +27,17 @@ pub fn profile(policy: &Policy, home: Option<&Path>) -> (String, Vec<(String, St
     let reads = add("R", &policy.read);
     let writes = add("W", &policy.write);
     let above = add("A", &folders_above(policy.write.iter().chain(&policy.read)));
+    let sockets = add("S", &policy.unix_sockets);
     let home_param = home.map(|h| add("HOME", &[h.to_path_buf()]));
 
     let sub = |names: &[String]| names.iter().map(|n| format!(" (subpath (param \"{n}\"))")).collect::<String>();
     let mut s = String::from("(version 1)\n(allow default)\n");
     if !policy.network {
         s.push_str("(deny network*)\n");
+        if !sockets.is_empty() {
+            let lits = sockets.iter().map(|n| format!(" (remote unix-socket (path-literal (param \"{n}\")))")).collect::<String>();
+            s.push_str(&format!("(allow network-outbound{lits})\n"));
+        }
     }
     s.push_str("(deny appleevent-send)\n");
     s.push_str("(deny mach-lookup (global-name \"com.apple.coreservices.launchservicesd\") (global-name \"com.apple.lsd.mapdb\") (global-name \"com.apple.lsd.modifydb\") (global-name \"com.apple.coreservices.quarantine-resolver\"))\n");
@@ -76,7 +81,12 @@ mod tests {
         assert!(params.contains(&("A0".into(), "/Users".into())) && params.contains(&("A1".into(), "/Users/me".into())));
         // paths never enter the profile text
         assert!(!s.contains("/Users/me"));
-        let (s, _) = profile(&Policy { network: true, ..p }, None);
+        let (s, _) = profile(&Policy { network: true, ..p.clone() }, None);
         assert!(!s.contains("(deny network*)"));
+        // the Nix daemon's socket stays reachable without network
+        let p = Policy { unix_sockets: vec!["/nix/var/nix/daemon-socket/socket".into()], ..p };
+        let (s, params) = profile(&p, None);
+        assert!(s.contains("(allow network-outbound (remote unix-socket (path-literal (param \"S0\"))))"), "{s}");
+        assert!(params.contains(&("S0".into(), "/nix/var/nix/daemon-socket/socket".into())));
     }
 }

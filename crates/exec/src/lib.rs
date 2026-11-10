@@ -1,6 +1,11 @@
 //! Tools that run code: [`RunCommand`] (`run_command`, a shell command), [`RunPython`]
-//! (`run_python`, Python code or a script) and [`InstallPythonPackages`]
-//! (`install_python_packages`, into byob's managed venv with `uv`).
+//! (`run_python`, Python code or a script), [`InstallPackages`] (`install_packages`,
+//! programs and Python libraries for the workspace, with Nix) and
+//! [`InstallPythonPackages`] (`install_python_packages`, into byob's managed venv with
+//! `uv`, where there is no package manager for `install_packages`).
+//!
+//! Every run is prepared by [`env::Envs`]: installed packages, the workspace's `.venv`
+//! and its Nix dev shell go on `PATH`, and the `nix` CLI works inside the sandbox.
 //!
 //! Everything runs through [`byob_sandbox`]: read the system, read+write the workspace and
 //! a private temp folder, no network unless the call asks (and the user approves), a
@@ -10,6 +15,7 @@
 //! `BYOB_SANDBOX=off` turns the sandbox off explicitly ([`Mode::Unsandboxed`]).
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod env;
 pub mod python;
 
 use std::ffi::OsString;
@@ -17,6 +23,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
+
+use env::{Envs, Layer, Runner, hints};
 
 use byob_sandbox::{Limits, Outcome, Policy, RunOptions, Sandbox, Snapshot, TempDir};
 use byob_tools::{Access, FileChange, Registry, Tool, ToolContext, ToolOutput, ToolSpec, parse_args};
@@ -80,36 +88,95 @@ impl Mode {
 #[derive(Debug, Clone)]
 pub struct Exec {
     pub mode: Mode,
-    /// byob's data folder (holds the managed Python venv); `None` disables it.
+    /// byob's data folder (holds the managed Python venv and installed packages); `None`
+    /// disables them.
     pub data_dir: Option<PathBuf>,
+    /// Package managers and workspace environments ([`Envs::none`] for neither).
+    pub envs: Arc<Envs>,
 }
 
-/// Register `run_command`, `run_python`, and — when `uv` is installed and there's a data
-/// folder — `install_python_packages`.
+impl Exec {
+    /// Detects the package managers on this machine.
+    pub fn new(mode: Mode, data_dir: Option<PathBuf>) -> Self {
+        let envs = Arc::new(Envs::detect(data_dir.as_deref()));
+        Self { mode, data_dir, envs }
+    }
+
+    /// What the system prompt should say about getting software, if anything.
+    pub fn prompt(&self) -> Option<String> {
+        self.envs.prompt()
+    }
+
+    fn fix(&self) -> hints::Fix {
+        if self.envs.installer().is_some() {
+            hints::Fix::Packages
+        } else if self.data_dir.is_some() && python::which("uv".as_ref()).is_some() {
+            hints::Fix::PythonOnly
+        } else {
+            hints::Fix::None
+        }
+    }
+}
+
+/// Register `run_command`, `run_python`, and — when there's a data folder — either
+/// `install_packages` (a package manager like Nix is installed) or, failing that,
+/// `install_python_packages` (`uv` is installed).
 pub fn register(reg: &mut Registry, exec: Exec) {
     let exec = Arc::new(exec);
     reg.register(Arc::new(RunCommand(Arc::clone(&exec))));
     reg.register(Arc::new(RunPython(Arc::clone(&exec))));
-    if exec.data_dir.is_some() && python::which("uv".as_ref()).is_some() {
-        reg.register(Arc::new(InstallPythonPackages(exec)));
+    match exec.fix() {
+        hints::Fix::Packages => reg.register(Arc::new(InstallPackages(exec))),
+        hints::Fix::PythonOnly => reg.register(Arc::new(InstallPythonPackages(exec))),
+        hints::Fix::None => {}
     }
 }
 
 /// One sandboxed invocation.
-struct Job {
-    program: OsString,
-    args: Vec<OsString>,
-    network: bool,
-    timeout: Duration,
-    read: Vec<PathBuf>,
-    write: Vec<PathBuf>,
-    env: Vec<(String, OsString)>,
+pub(crate) struct Job {
+    pub program: OsString,
+    pub args: Vec<OsString>,
+    pub network: bool,
+    pub timeout: Duration,
+    /// `PATH` entries, variables and sandbox access on top of the clean environment.
+    pub layer: Layer,
+    /// Variables set last (after the layer's).
+    pub env: Vec<(String, OsString)>,
+}
+
+impl Job {
+    pub fn new(program: OsString, args: Vec<OsString>, timeout: Duration) -> Self {
+        Self { program, args, network: false, timeout, layer: Layer::default(), env: Vec::new() }
+    }
+}
+
+/// The variables [`byob_sandbox::clean_env`] sets for a run with temp folder `tmp`.
+pub(crate) fn clean_env_vars(tmp: &Path) -> Vec<(String, String)> {
+    let mut cmd = Command::new("true");
+    byob_sandbox::clean_env(&mut cmd, tmp);
+    cmd.get_envs().filter_map(|(k, v)| Some((k.to_str()?.to_owned(), v?.to_str()?.to_owned()))).collect()
+}
+
+/// Runs provider jobs (dev shell loading, installs) in the tool call's sandbox.
+struct CallRunner<'a> {
+    exec: &'a Exec,
+    ctx: &'a ToolContext<'a>,
+}
+
+impl Runner for CallRunner<'_> {
+    fn run(&self, job: Job, cwd: &Path, tmp: &Path) -> Result<Outcome, String> {
+        self.exec.run(job, cwd, tmp, self.ctx)
+    }
 }
 
 impl Exec {
     /// Run `job` with `tmp` as its private temp folder.
     fn run(&self, job: Job, cwd: &Path, tmp: &Path, ctx: &ToolContext<'_>) -> Result<Outcome, String> {
         let secs = job.timeout.as_secs().max(1);
+        let mut layer = job.layer;
+        layer.stack(&self.envs.support());
+        let host_path = std::env::var_os("PATH");
+        let path = (!layer.path.is_empty()).then(|| env::join_path(&layer.path, host_path.as_deref()));
         let mut cmd = match &self.mode {
             Mode::Sandboxed(sb) => {
                 let mut policy = Policy::for_workspace(cwd, tmp)
@@ -117,12 +184,15 @@ impl Exec {
                     .limits(Limits::for_timeout(secs))
                     // Where the OS can't confine, run anyway (warned at startup and in the output).
                     .allow_unsandboxed(true)
-                    .allow_path_dirs(std::env::var_os("PATH").as_deref());
-                for p in job.read {
+                    .allow_path_dirs(path.as_deref().or(host_path.as_deref()));
+                for p in &layer.read {
                     policy = policy.allow_read(p);
                 }
-                for p in job.write {
+                for p in &layer.write {
                     policy = policy.allow_write(p);
+                }
+                for p in &layer.sockets {
+                    policy = policy.allow_unix_socket(p);
                 }
                 sb.command(&policy, &job.program, &job.args)
             }
@@ -134,6 +204,14 @@ impl Exec {
         };
         cmd.current_dir(cwd);
         byob_sandbox::clean_env(&mut cmd, tmp);
+        if let Some(p) = path {
+            cmd.env("PATH", p);
+        }
+        for (k, v) in &layer.vars {
+            if !env::keep_var(k) {
+                cmd.env(k, v);
+            }
+        }
         cmd.envs(job.env);
         let opts = RunOptions { timeout: job.timeout, max_output: MAX_OUTPUT, ..Default::default() };
         let out = byob_sandbox::run(cmd, &opts, &|| ctx.cancelled())?;
@@ -147,7 +225,15 @@ impl Exec {
     }
 
     /// Run in the workspace and describe the result (output + changed files) for the model.
-    fn run_in_workspace(&self, mut job: Job, prepare: impl FnOnce(&Path) -> Result<Vec<OsString>, String>, ctx: &ToolContext<'_>) -> ToolOutput {
+    /// `build` makes the job from the workspace environment's layer; `prepare` adds
+    /// arguments once the run's temp folder exists.
+    fn run_in_workspace(
+        &self,
+        build: impl FnOnce(&Layer) -> Result<Job, String>,
+        prepare: impl FnOnce(&Path) -> Result<Vec<OsString>, String>,
+        command: Option<&str>,
+        ctx: &ToolContext<'_>,
+    ) -> ToolOutput {
         if ctx.cancelled() {
             return ToolOutput::err("Stopped by the user.");
         }
@@ -155,6 +241,15 @@ impl Exec {
             Ok(r) => r,
             Err(e) => return ToolOutput::err(e),
         };
+        let prepared = self.envs.prepare(&root, &CallRunner { exec: self, ctx });
+        if ctx.cancelled() {
+            return ToolOutput::err("Stopped by the user.");
+        }
+        let mut job = match build(&prepared.layer) {
+            Ok(j) => j,
+            Err(e) => return with_notes(ToolOutput::err(e), &prepared.notes),
+        };
+        job.layer.stack(&prepared.layer);
         let tmp = match TempDir::new("byob-run-") {
             Ok(t) => t,
             Err(e) => return ToolOutput::err(e),
@@ -170,8 +265,22 @@ impl Exec {
             Err(e) => return ToolOutput::err(e),
         };
         let changes = before.changes(&Snapshot::take(&root));
-        describe(&out, &changes, &root, timeout, self.mode.unconfined_note())
+        let mut res = describe(&out, &changes, &root, timeout, self.mode.unconfined_note());
+        if res.failed
+            && let Some(h) = hints::hint(&out.stdout.text(), &out.stderr.text(), command, self.fix())
+        {
+            res.text.push_str(&format!("\n\n{h}"));
+        }
+        with_notes(res, &prepared.notes)
     }
+}
+
+/// Put the environment's one-time notes in front of a tool's output.
+fn with_notes(mut out: ToolOutput, notes: &[String]) -> ToolOutput {
+    if !notes.is_empty() {
+        out.text = format!("({})\n\n{}", notes.join(")\n("), out.text);
+    }
+    out
 }
 
 fn describe(out: &Outcome, changes: &byob_sandbox::Changes, root: &Path, timeout: Duration, unconfined: Option<String>) -> ToolOutput {
@@ -189,6 +298,8 @@ fn describe(out: &Outcome, changes: &byob_sandbox::Changes, root: &Path, timeout
     }
     for (name, cap) in [("stdout", &out.stdout), ("stderr", &out.stderr)] {
         let t = cap.text();
+        // Nix's warning in a run without network is misleading: the daemon still downloads.
+        let t = if name == "stderr" { t.replace(env::nix::OFFLINE_WARNING, "").trim_start_matches('\n').to_owned() } else { t };
         if !t.trim().is_empty() {
             text.push_str(&format!("\n{name}:\n{}\n", t.trim_end()));
         }
@@ -204,7 +315,7 @@ fn describe(out: &Outcome, changes: &byob_sandbox::Changes, root: &Path, timeout
         }
         text.push_str(&format!("\n{label}: {}\n", names.join(", ")));
     }
-    if out.stdout.text().trim().is_empty() && out.stderr.text().trim().is_empty() && changes.is_empty() && out.success() {
+    if !text.contains("\nstdout:\n") && !text.contains("\nstderr:\n") && changes.is_empty() && out.success() {
         text.push_str("(no output)\n");
     }
     if let Some(note) = unconfined {
@@ -254,10 +365,16 @@ impl Tool for RunCommand {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "run_command".into(),
-            description: "Run a shell command (`sh -c`) in the workspace folder and get its exit code, output and the files it created or changed. \
+            description: format!(
+                "Run a shell command (`sh -c`) in the workspace folder and get its exit code, output and the files it created or changed. \
                 Sandboxed: it can read system files and read/write only the workspace (plus a private temp folder); no network unless `network` is true. \
-                Use it to inspect, search, convert or process files (e.g. `wc -l data.csv`, `head -5 data.csv`, `ls -R`). No interactive programs."
-                .into(),
+                Use it to inspect, search, convert or process files (e.g. `wc -l data.csv`, `head -5 data.csv`, `ls -R`). No interactive programs.{}",
+                self.0.envs.installer().map_or(String::new(), |_| {
+                    " Packages from install_packages are on PATH, and a workspace flake.nix / shell.nix dev shell is loaded automatically. \
+                    If a program is missing, call install_packages instead of pip, apt or sudo."
+                        .into()
+                })
+            ),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -291,16 +408,13 @@ impl Tool for RunCommand {
         if a.command.trim().is_empty() || a.command.len() > MAX_COMMAND_LEN || a.command.contains('\0') {
             return ToolOutput::err(format!("the command must be non-empty text of at most {MAX_COMMAND_LEN} bytes"));
         }
-        let job = Job {
-            program: "sh".into(),
-            args: vec!["-c".into(), a.command.into()],
-            network: a.network,
-            timeout: timeout_of(a.timeout_s),
-            read: Vec::new(),
-            write: Vec::new(),
-            env: Vec::new(),
+        let command = a.command.clone();
+        let build = |_: &Layer| {
+            let mut job = Job::new("sh".into(), vec!["-c".into(), a.command.into()], timeout_of(a.timeout_s));
+            job.network = a.network;
+            Ok(job)
         };
-        self.0.run_in_workspace(job, |_| Ok(Vec::new()), ctx)
+        self.0.run_in_workspace(build, |_| Ok(Vec::new()), Some(&command), ctx)
     }
 }
 
@@ -369,9 +483,6 @@ impl Tool for RunPython {
         if a.args.len() > MAX_ARGS || a.args.iter().any(|s| s.contains('\0') || s.len() > 4096) {
             return ToolOutput::err(format!("at most {MAX_ARGS} arguments, each under 4096 bytes"));
         }
-        let Some(py) = Python::resolve(self.0.data_dir.as_deref()) else {
-            return ToolOutput::err(format!("No Python found: install python3 (or set {}).", python::PYTHON_ENV));
-        };
         let script = match (a.code, a.script) {
             (Some(code), None) if code.len() <= MAX_CODE_LEN && !code.contains('\0') => Source::Code(code),
             (Some(_), None) => return ToolOutput::err(format!("code must be text of at most {MAX_CODE_LEN} bytes")),
@@ -383,17 +494,22 @@ impl Tool for RunPython {
             _ => return ToolOutput::err("give exactly one of `code` or `script`"),
         };
         let user_args: Vec<OsString> = a.args.into_iter().map(OsString::from).collect();
-        let job = Job {
-            program: py.path.clone().into_os_string(),
-            args: Vec::new(),
-            network: a.network,
-            timeout: timeout_of(a.timeout_s),
-            read: py.read_paths(),
-            write: Vec::new(),
-            env: Vec::new(),
+        let data_dir = self.0.data_dir.clone();
+        let fix = self.0.fix();
+        let build = move |layer: &Layer| {
+            let Some(py) = Python::resolve_in(data_dir.as_deref(), &layer.path) else {
+                return Err(match fix {
+                    hints::Fix::Packages => "No Python found. Call install_packages with {\"packages\": [\"python3\"]} (add the libraries you need, e.g. \"matplotlib\"), then try again.".to_owned(),
+                    _ => format!("No Python found: install python3 (or set {}).", python::PYTHON_ENV),
+                });
+            };
+            let mut job = Job::new(py.path.clone().into_os_string(), Vec::new(), timeout_of(a.timeout_s));
+            job.network = a.network;
+            job.layer.read = py.read_paths();
+            Ok(job)
         };
         self.0.run_in_workspace(
-            job,
+            build,
             move |tmp| {
                 let path = match script {
                     Source::Script(p) => p,
@@ -407,6 +523,7 @@ impl Tool for RunPython {
                 v.extend(user_args);
                 Ok(v)
             },
+            None,
             ctx,
         )
     }
@@ -476,6 +593,65 @@ impl Tool for InstallPythonPackages {
     }
 }
 
+/// `install_packages`: programs and Python libraries for this workspace, from the machine's
+/// package manager (Nix). They stay installed (per workspace) and are on `PATH` for every
+/// later `run_command` / `run_python`.
+pub struct InstallPackages(Arc<Exec>);
+
+impl Tool for InstallPackages {
+    fn spec(&self) -> ToolSpec {
+        let by = self.0.envs.installer().unwrap_or("the package manager");
+        ToolSpec {
+            name: "install_packages".into(),
+            description: format!(
+                "Install programs and Python libraries for this workspace with {by}, so run_command and run_python can use them. \
+                 Use it whenever a command is \"not found\" or Python says ModuleNotFoundError — not pip install, apt, brew or sudo, which don't work here. \
+                 Give package names: programs like \"jq\", \"ffmpeg\", \"imagemagick\", \"ripgrep\", \"nodejs\", \"pandoc\"; Python libraries by their pip name, \
+                 like \"matplotlib\", \"pandas\", \"scikit-learn\" (they go into run_python's python3). Packages stay installed for this workspace. \
+                 Needs internet; the user is asked."
+            ),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "packages": {"type": "array", "items": {"type": "string"}, "description": "Package names, e.g. [\"jq\", \"matplotlib\"]."}
+                },
+                "required": ["packages"]
+            }),
+        }
+    }
+
+    fn title(&self, args: &Value) -> String {
+        let names: Vec<&str> = args.get("packages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).take(6).collect()).unwrap_or_default();
+        format!("Install packages: {}", short(&names.join(", "), 80))
+    }
+
+    fn pending_title(&self, args: &Value) -> String {
+        self.title(args)
+    }
+
+    fn access(&self, _args: &Value) -> Access {
+        Access::Network
+    }
+
+    fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
+        let a: InstallArgs = match parse_args(args) {
+            Ok(a) => a,
+            Err(e) => return ToolOutput::err(e),
+        };
+        if a.packages.is_empty() || a.packages.len() > MAX_PACKAGES {
+            return ToolOutput::err(format!("give 1 to {MAX_PACKAGES} packages"));
+        }
+        let root = match byob_tools::sandbox::root(ctx.workspace) {
+            Ok(r) => r,
+            Err(e) => return ToolOutput::err(e),
+        };
+        match self.0.envs.install(&root, &a.packages, &CallRunner { exec: &self.0, ctx }) {
+            Ok(done) => ToolOutput { text: done.text, failed: done.failed, changes: Vec::new() },
+            Err(e) => ToolOutput::err(e),
+        }
+    }
+}
+
 /// Create the managed venv if needed and install `packages` into it. Usable by the app
 /// directly (e.g. a "set up Python for data analysis" button). Runs in the sandbox with
 /// network on, writing only under `<data>/python`.
@@ -496,14 +672,13 @@ pub fn install(exec: &Exec, data_dir: &Path, packages: &[String], ctx: &ToolCont
         ("UV_PYTHON_INSTALL_DIR".to_owned(), root.join("interpreters").into_os_string()),
         ("UV_NO_CONFIG".to_owned(), "1".into()),
     ];
-    let job = |args: Vec<OsString>| Job {
-        program: uv.clone().into_os_string(),
-        args,
-        network: true,
-        timeout: INSTALL_TIMEOUT,
-        read: read.clone(),
-        write: vec![root.clone()],
-        env: env.clone(),
+    let job = |args: Vec<OsString>| {
+        let mut j = Job::new(uv.clone().into_os_string(), args, INSTALL_TIMEOUT);
+        j.network = true;
+        j.layer.read = read.clone();
+        j.layer.write = vec![root.clone()];
+        j.env = env.clone();
+        j
     };
     let mut log = String::new();
     let python_bin = python::venv_python(&venv);
@@ -538,7 +713,7 @@ mod tests {
     use super::*;
 
     fn exec() -> Arc<Exec> {
-        Arc::new(Exec { mode: Mode::Unsandboxed, data_dir: None })
+        Arc::new(Exec { mode: Mode::Unsandboxed, data_dir: None, envs: Arc::new(Envs::none()) })
     }
 
     #[test]
@@ -592,7 +767,7 @@ mod tests {
     #[test]
     fn specs_are_valid() {
         let mut reg = Registry::default();
-        register(&mut reg, Exec { mode: Mode::Unsandboxed, data_dir: None });
+        register(&mut reg, Exec { mode: Mode::Unsandboxed, data_dir: None, envs: Arc::new(Envs::none()) });
         assert!(reg.get("run_command").is_some() && reg.get("run_python").is_some());
         assert!(reg.get("install_python_packages").is_none(), "no data dir, no installer");
         for s in reg.specs() {

@@ -26,6 +26,12 @@ pub struct Policy {
     /// Allow network access. Denied by default.
     #[serde(default)]
     pub network: bool,
+    /// Unix sockets (by path) that may be connected to even when `network` is denied, e.g.
+    /// the Nix daemon's. Linux allows connecting to any socket the filesystem rules can
+    /// reach anyway (Landlock doesn't control `connect`, and a network namespace doesn't
+    /// hide path-named sockets); macOS's Seatbelt counts them as network and needs this.
+    #[serde(default)]
+    pub unix_sockets: Vec<PathBuf>,
     #[serde(default)]
     pub limits: Limits,
     /// Environment variables removed before the command starts (e.g. API keys the
@@ -132,6 +138,12 @@ impl Policy {
         self
     }
 
+    /// Allow connecting to the unix socket at `path` (see [`Policy::unix_sockets`]).
+    pub fn allow_unix_socket(mut self, path: impl AsRef<Path>) -> Self {
+        self.unix_sockets.push(path.as_ref().to_path_buf());
+        self
+    }
+
     pub fn remove_env(mut self, name: impl Into<String>) -> Self {
         self.remove_env.push(name.into());
         self
@@ -152,10 +164,10 @@ impl Policy {
             return Err(format!("policy is too long ({} bytes)", s.len()));
         }
         let p: Self = serde_json::from_str(s).map_err(|e| format!("bad policy: {e}"))?;
-        if p.read.len() > MAX_PATHS || p.write.len() > MAX_PATHS || p.remove_env.len() > MAX_PATHS {
+        if p.read.len() > MAX_PATHS || p.write.len() > MAX_PATHS || p.remove_env.len() > MAX_PATHS || p.unix_sockets.len() > MAX_PATHS {
             return Err("policy lists too many paths".into());
         }
-        if let Some(bad) = p.read.iter().chain(&p.write).find(|p| !p.is_absolute()) {
+        if let Some(bad) = p.read.iter().chain(&p.write).chain(&p.unix_sockets).find(|p| !p.is_absolute()) {
             return Err(format!("policy path {} is not absolute", bad.display()));
         }
         Ok(p)

@@ -1,6 +1,6 @@
 [package]
 name = "byob-exec"
-description = "Tools that run code in the sandbox: run_command, run_python, install_python_packages (L3)"
+description = "Tools that run code in the sandbox: run_command, run_python, install_packages (Nix), install_python_packages (L3)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -21,6 +21,10 @@ tempfile.workspace = true
 # The integration tests double as the sandbox helper, so they need a custom `main`.
 [[test]]
 name = "tools"
+harness = false
+
+[[test]]
+name = "envs"
 harness = false
 
 [lints]
