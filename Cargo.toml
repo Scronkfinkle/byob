@@ -6,7 +6,7 @@ default-members = ["crates/*", "apps/*", "xtask"]
 exclude = ["host/artifact-host"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -17,20 +17,20 @@ categories = ["gui", "development-tools"]
 
 [workspace.dependencies]
 # Internal crates (see docs/architecture.md for layering).
-byob-types = { path = "crates/types", version = "0.1.0" }
-byob-web-assets = { path = "crates/web-assets", version = "0.1.0" }
-byob-protocol = { path = "crates/protocol", version = "0.1.0" }
-byob-server = { path = "crates/server", version = "0.1.0" }
-byob-llm = { path = "crates/llm", version = "0.1.0" }
-byob-store = { path = "crates/store", version = "0.1.0" }
-byob-tools = { path = "crates/tools", version = "0.1.0" }
-byob-mcp = { path = "crates/mcp", version = "0.1.0" }
-byob-plugins = { path = "crates/plugins", version = "0.1.0" }
-byob-sandbox = { path = "crates/sandbox", version = "0.1.0" }
-byob-exec = { path = "crates/exec", version = "0.1.0" }
-byob-agent = { path = "crates/agent", version = "0.1.0" }
-byob-ui-egui = { path = "crates/ui-egui", version = "0.1.0" }
-byob-artifact-wire = { path = "crates/artifact-wire", version = "0.1.0" }
+byob-types = { path = "crates/types", version = "0.2.0" }
+byob-web-assets = { path = "crates/web-assets", version = "0.2.0" }
+byob-protocol = { path = "crates/protocol", version = "0.2.0" }
+byob-server = { path = "crates/server", version = "0.2.0" }
+byob-llm = { path = "crates/llm", version = "0.2.0" }
+byob-store = { path = "crates/store", version = "0.2.0" }
+byob-tools = { path = "crates/tools", version = "0.2.0" }
+byob-mcp = { path = "crates/mcp", version = "0.2.0" }
+byob-plugins = { path = "crates/plugins", version = "0.2.0" }
+byob-sandbox = { path = "crates/sandbox", version = "0.2.0" }
+byob-exec = { path = "crates/exec", version = "0.2.0" }
+byob-agent = { path = "crates/agent", version = "0.2.0" }
+byob-ui-egui = { path = "crates/ui-egui", version = "0.2.0" }
+byob-artifact-wire = { path = "crates/artifact-wire", version = "0.2.0" }
 
 # Foundation.
 thiserror = "2"

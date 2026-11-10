@@ -3,7 +3,7 @@ name = "byob-artifact-wire"
 description = "Wire protocol between byob and the byob-artifact-host helper process (L1, no dependencies)"
 # No workspace-inherited fields: the separate host/artifact-host workspace path-depends on
 # this crate, so it must stand on its own.
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
