@@ -8,3 +8,8 @@ plan/
 .claude/worktrees/
 /host/artifact-host/target
 CLAUDE.local.md
+# byob workspace data (artifacts, trash, undo) when the repo itself is the workspace
+.byob/
+.yah/
+# Local sample data for trying the app
+/examples/data/
