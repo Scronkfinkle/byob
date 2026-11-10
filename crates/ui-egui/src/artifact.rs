@@ -536,7 +536,9 @@ impl Artifacts {
         };
         let version = a.version(r.version).map_or(r.version, |v| v.n);
         let selected = self.is_open() && self.pane.active() == Some(a.id.as_str());
-        if self.pane.is_minimized(&a.id) {
+        // While it's shown beside the chat, every version's card collapses to a chip: one
+        // place to look at it (and a live app runs in the pane, not mirrored in here).
+        if selected || self.pane.is_minimized(&a.id) {
             self.chip(ui, t, &a, version, selected, true);
             return;
         }
@@ -607,10 +609,12 @@ impl Artifacts {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Restore").on_hover_text("Show it in full again").clicked() {
+                        if in_chat && selected {
+                            ui.label(RichText::new("Shown beside the chat").small().color(t.text_dim));
+                        } else if ui.small_button("Restore").on_hover_text("Show it in full again").clicked() {
                             self.actions.push(Action::Minimize { id: a.id.clone(), minimized: false });
                         }
-                        if in_chat && ui.small_button("Show").on_hover_text("Show it beside the chat").clicked() {
+                        if in_chat && !selected && ui.small_button("Show").on_hover_text("Show it beside the chat").clicked() {
                             self.actions.push(Action::Select { id: a.id.clone(), version: Some(version) });
                         }
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -1095,6 +1099,13 @@ mod tests {
             self.log.borrow_mut().push(format!("show {}", doc.id));
             appview::AppViewResponse::default()
         }
+        fn card(&mut self, _ui: &mut egui::Ui, _t: &Tokens, doc: &AppDoc<'_>) -> Option<appview::AppViewResponse> {
+            self.log.borrow_mut().push(format!("card {}/{}", doc.id, doc.version));
+            Some(appview::AppViewResponse::default())
+        }
+        fn live_cards(&self) -> bool {
+            true
+        }
         fn runs_inline(&self) -> bool {
             true
         }
@@ -1182,6 +1193,45 @@ mod tests {
         fresh.apply(&ServerMsg::Artifacts { chat: Some("d".into()), artifacts: s.list.clone() });
         fresh.handle(&ctx, Action::Toggle);
         assert_eq!(fresh.pane.active(), Some("notes"));
+    }
+
+    /// Regression: a card mirrored the pane's (narrower) app frame scaled up to the card,
+    /// so the app looked zoomed in. Shown beside the chat, every version's card is a chip.
+    #[test]
+    fn showing_an_artifact_beside_the_chat_collapses_its_cards() {
+        let mut s = Artifacts::default();
+        let rec = Recorder::default();
+        let log = std::rc::Rc::clone(&rec.log);
+        s.set_app_view(Box::new(rec));
+        s.apply(&ServerMsg::Artifacts { chat: Some("c".into()), artifacts: vec![artifact("app", ArtifactKind::Html, "app.html", &[1, 2])] });
+        let ctx = egui::Context::default();
+        let t = Tokens::dark();
+        let refs = [ArtifactRef { id: "app".into(), version: 1 }, ArtifactRef { id: "app".into(), version: 2 }];
+        let run = |s: &mut Artifacts| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                s.begin_frame(ui.ctx(), &t, false);
+                s.side_panel(ui, &t);
+                egui::CentralPanel::default().show(ui, |ui| s.cards(ui, &t, &refs));
+            });
+            out.textures_delta.clear();
+            s.end_frame(&ctx);
+        };
+        run(&mut s);
+        for v in [1, 2] {
+            s.apply(&ServerMsg::ArtifactFile { id: "app".into(), version: v, data: Some(media::encode(b"<p>hi</p>")), error: None });
+        }
+        drain(&log);
+        run(&mut s);
+        assert_eq!(drain(&log), ["card app/1", "card app/2"]);
+        // Shown beside the chat: drawn there only; both versions' cards are chips.
+        s.handle(&ctx, Action::Select { id: "app".into(), version: Some(2) });
+        run(&mut s);
+        let l = drain(&log);
+        assert!(l.contains(&"show app".to_owned()) && !l.iter().any(|e| e.starts_with("card")), "{l:?}");
+        // Closed again: the cards come back.
+        s.handle(&ctx, Action::CloseTab("app".into()));
+        run(&mut s);
+        assert_eq!(drain(&log), ["card app/1", "card app/2"]);
     }
 
     #[test]
