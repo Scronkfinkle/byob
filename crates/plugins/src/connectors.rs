@@ -315,10 +315,22 @@ pub fn connector_tools(
     names: &mut ToolNames,
 ) -> Result<Vec<Arc<ConnectorToolAdapter>>, String> {
     let listed = connector.list_tools()?;
+    Ok(connector_tools_from(plugin, local, connector, listed, names))
+}
+
+/// [`connector_tools`] from a tool list fetched earlier (e.g. on a background thread right
+/// after connecting), so building the adapters does no I/O.
+pub fn connector_tools_from(
+    plugin: &PluginRef,
+    local: bool,
+    connector: Arc<dyn Connector>,
+    listed: Vec<ConnectorTool>,
+    names: &mut ToolNames,
+) -> Vec<Arc<ConnectorToolAdapter>> {
     if listed.len() > MAX_TOOLS_PER_SERVER {
         log::warn!("plugin {}: server offers {} tools; using the first {MAX_TOOLS_PER_SERVER}", plugin.id, listed.len());
     }
-    Ok(listed
+    listed
         .into_iter()
         .take(MAX_TOOLS_PER_SERVER)
         .map(|t| {
@@ -326,7 +338,7 @@ pub fn connector_tools(
             let name = names.claim(&preferred, &preferred);
             Arc::new(ConnectorToolAdapter::new(name, plugin.clone(), local, t, Arc::clone(&connector)))
         })
-        .collect())
+        .collect()
 }
 
 /// A connector the user added by pasting a link, a command line, or a Claude / Cursor /

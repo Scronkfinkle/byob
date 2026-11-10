@@ -218,6 +218,12 @@ impl PythonTool {
         &self.plugin
     }
 
+    /// The tool as the manifest declares it (its `name` may differ from the name the model
+    /// sees when that one was taken).
+    pub fn declared(&self) -> &ManifestTool {
+        &self.decl
+    }
+
     fn finish(&self, r: &ScriptOutcome, workspace: &Path, before: &BTreeMap<PathBuf, Option<SystemTime>>) -> ToolOutput {
         let name = &self.plugin.name;
         if r.stopped {

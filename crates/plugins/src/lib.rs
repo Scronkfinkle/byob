@@ -16,6 +16,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod agents;
+pub mod authoring;
 pub mod connectors;
 pub mod discover;
 pub mod manifest;
@@ -29,7 +30,9 @@ use std::fmt;
 use std::path::PathBuf;
 
 pub use agents::{AgentDef, load_agents_dir, merge_agents, parse_agent};
-pub use connectors::{Connector, ConnectorContent, ConnectorDraft, ConnectorResult, ConnectorTool, ConnectorToolAdapter, connector_tools, parse_connector};
+pub use connectors::{
+    Connector, ConnectorContent, ConnectorDraft, ConnectorResult, ConnectorTool, ConnectorToolAdapter, connector_tools, connector_tools_from, parse_connector,
+};
 pub use discover::{Discovery, Plugin, PluginSources, discover, load_plugin};
 pub use manifest::{MANIFEST, Manifest, ManifestError, McpServerConfig, OLD_MANIFEST, parse_manifest};
 pub use names::ToolNames;
