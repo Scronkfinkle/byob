@@ -22,7 +22,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Installed, Layer, Runner, fnv64, keep_var, write_atomic};
+use super::{Installed, Layer, Project, Runner, keep_var, write_atomic};
 use crate::Job;
 
 pub const DAEMON_SOCKET: &str = "/nix/var/nix/daemon-socket/socket";
@@ -266,48 +266,9 @@ impl Nix {
         Job::new(self.bin.clone().into_os_string(), args, timeout)
     }
 
-    // ---- the workspace's own dev shell -------------------------------------------------
-
-    /// The dev shell of `ws`'s `flake.nix` (or `shell.nix`), from the cache in `dir` when
-    /// those files haven't changed, else loaded now. `None` if the workspace has neither.
-    pub(crate) fn project_shell(&self, ws: &Path, dir: &Path, run: &dyn Runner) -> Option<Shell> {
-        let kind = ShellKind::find(ws)?;
-        let file = kind.file();
-        let stamp = stamp(ws, kind);
-        let cache_file = dir.join("devshell.json");
-        if let Some(c) = std::fs::read_to_string(&cache_file).ok().and_then(|s| serde_json::from_str::<ShellCache>(&s).ok())
-            && c.stamp == stamp
-        {
-            let result = match (c.layer, c.error) {
-                (Some(l), _) if l.path.iter().all(|p| p.exists()) => Ok(l),
-                (_, Some(e)) => Err(e),
-                _ => return Some(self.load_shell(ws, dir, kind, run)),
-            };
-            return Some(Shell { file, result, fresh: false });
-        }
-        Some(self.load_shell(ws, dir, kind, run))
-    }
-
-    fn load_shell(&self, ws: &Path, dir: &Path, kind: ShellKind, run: &dyn Runner) -> Shell {
-        let file = kind.file();
-        let result = std::fs::create_dir_all(dir)
-            .map_err(|e| format!("can't create {}: {e}", dir.display()))
-            .and_then(|()| dir.canonicalize().map_err(|e| e.to_string()))
-            .and_then(|dir| self.load_shell_now(ws, &dir, kind, run));
-        // Stamp after loading: Nix may just have written flake.lock.
-        let cache = match &result {
-            Ok(l) => ShellCache { stamp: stamp(ws, kind), layer: Some(l.clone()), error: None },
-            Err(e) => ShellCache { stamp: stamp(ws, kind), layer: None, error: Some(e.clone()) },
-        };
-        if result.as_ref().err().is_none_or(|e| e != "Stopped by the user.")
-            && let Err(e) = write_atomic(&dir.join("devshell.json"), serde_json::to_string(&cache).unwrap_or_default().as_bytes())
-        {
-            log::warn!("nix: {e}");
-        }
-        Shell { file, result, fresh: true }
-    }
-
-    fn load_shell_now(&self, ws: &Path, dir: &Path, kind: ShellKind, run: &dyn Runner) -> Result<Layer, String> {
+    /// Load the dev shell of `ws`'s `flake.nix` / `shell.nix` with `nix print-dev-env`
+    /// (GC-rooted by a profile in `dir`), then run its `shellHook` once.
+    fn load_shell(&self, ws: &Path, dir: &Path, kind: ShellKind, run: &dyn Runner) -> Result<Layer, String> {
         let profile = dir.join("devshell-profile");
         let mut args: Vec<std::ffi::OsString> = vec!["print-dev-env".into(), "--profile".into(), profile.clone().into_os_string(), "--json".into()];
         match kind {
@@ -346,6 +307,33 @@ impl Nix {
                 Ok(layer)
             }
         }
+    }
+}
+
+/// The workspace's `flake.nix` / `shell.nix` dev shell as a `Project`.
+#[derive(Debug)]
+pub struct NixShell(pub Nix);
+
+impl Project for NixShell {
+    fn id(&self) -> &'static str {
+        "devshell"
+    }
+
+    fn label(&self) -> &'static str {
+        "Nix dev shell"
+    }
+
+    fn file(&self, ws: &Path) -> Option<&'static str> {
+        ShellKind::find(ws).map(ShellKind::file)
+    }
+
+    fn inputs(&self) -> &'static [&'static str] {
+        &["flake.nix", "flake.lock", "shell.nix", "default.nix"]
+    }
+
+    fn load(&self, ws: &Path, dir: &Path, run: &dyn Runner) -> Result<Layer, String> {
+        let kind = ShellKind::find(ws).ok_or("no flake.nix or shell.nix")?;
+        self.0.load_shell(ws, dir, kind, run)
     }
 }
 
@@ -450,40 +438,6 @@ impl ShellKind {
             Self::ShellNix => "shell.nix",
         }
     }
-}
-
-/// Cache key for a workspace's dev shell: the files that define it.
-fn stamp(ws: &Path, kind: ShellKind) -> String {
-    let mut bytes = format!("{kind:?}\0").into_bytes();
-    let files: &[&str] = match kind {
-        ShellKind::Flake => &["flake.nix", "flake.lock"],
-        ShellKind::ShellNix => &["shell.nix", "default.nix"],
-    };
-    for f in files {
-        bytes.extend_from_slice(f.as_bytes());
-        bytes.push(0);
-        bytes.extend(std::fs::read(ws.join(f)).unwrap_or_default());
-        bytes.push(0);
-    }
-    format!("{:016x}", fnv64(&bytes))
-}
-
-/// The result of [`Nix::project_shell`].
-#[derive(Debug)]
-pub struct Shell {
-    pub file: &'static str,
-    pub result: Result<Layer, String>,
-    /// Loaded just now (else from the cache).
-    pub fresh: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ShellCache {
-    stamp: String,
-    #[serde(default)]
-    layer: Option<Layer>,
-    #[serde(default)]
-    error: Option<String>,
 }
 
 /// What a workspace has installed (`packages.json`).
@@ -822,18 +776,13 @@ mod tests {
     }
 
     #[test]
-    fn project_files_and_stamps() {
+    fn project_files() {
         let d = tempfile::tempdir().unwrap();
         assert_eq!(ShellKind::find(d.path()), None);
         std::fs::write(d.path().join("shell.nix"), "{}").unwrap();
         assert_eq!(ShellKind::find(d.path()), Some(ShellKind::ShellNix));
         std::fs::write(d.path().join("flake.nix"), "{}").unwrap();
         assert_eq!(ShellKind::find(d.path()), Some(ShellKind::Flake));
-        let a = stamp(d.path(), ShellKind::Flake);
-        std::fs::write(d.path().join("flake.lock"), "{}").unwrap();
-        let b = stamp(d.path(), ShellKind::Flake);
-        assert_ne!(a, b, "a new lock file changes the stamp");
-        assert_eq!(b, stamp(d.path(), ShellKind::Flake));
     }
 
     #[test]

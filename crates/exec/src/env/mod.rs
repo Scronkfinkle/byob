@@ -8,18 +8,21 @@
 //! 1. **Installed**: packages the model asked for with `install_packages`, kept per
 //!    workspace under `<data>/envs/` (Nix: one `buildEnv`, a GC root, nixpkgs pinned).
 //! 2. **Project venv**: a `.venv` / `venv` in the workspace (any OS).
-//! 3. **Project dev shell**: the workspace's own `flake.nix` or `shell.nix` (Nix), loaded with
-//!    `nix print-dev-env` once and cached until those files change.
+//! 3. **Project environments** (`Project`): what the workspace declares itself, loaded
+//!    once (sandboxed, with network) and cached until its files change — a `flake.nix` /
+//!    `shell.nix` dev shell (`nix print-dev-env`, shellHook included), a pixi project
+//!    (`pixi shell-hook --json`), mise tools (`mise env --json`).
 //! 4. **Support**: what a package manager's own CLI needs inside the sandbox, so the model
 //!    can also run `nix shell nixpkgs#foo --command …` itself (store, daemon socket,
 //!    config, a persistent eval cache).
 //!
-//! A [`Provider`] is one package manager (today: Nix; the plan for others is in
-//! `docs/environments.md`). Failed output gets a [`hints`] line that names the one tool to
-//! call, because small models follow an explicit next step far better than prose.
+//! Installing on request is Nix-only for now (the plan for macOS, Windows and other Linux
+//! is in `docs/environments.md`). Failed output gets a [`hints`] line that names the one
+//! tool to call, because small models follow an explicit next step far better than prose.
 
 pub mod hints;
 pub mod nix;
+pub mod project;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -146,10 +149,92 @@ pub struct Installed {
 /// workspace's own dev shell (installed packages and the Nix CLI still work).
 pub const WORKSPACE_ENV: &str = "BYOB_WORKSPACE_ENV";
 
+/// An environment a workspace declares in a project file (`flake.nix`, `pixi.toml`,
+/// `mise.toml`, …): loaded once (slow, may download), then cached until its files change.
+pub(crate) trait Project: Send + Sync + std::fmt::Debug {
+    /// Names the cache file.
+    fn id(&self) -> &'static str;
+    /// For messages: "Nix dev shell".
+    fn label(&self) -> &'static str;
+    /// The file in `ws` that declares it, if any.
+    fn file(&self, ws: &Path) -> Option<&'static str>;
+    /// Files whose contents key the cache (lock files included).
+    fn inputs(&self) -> &'static [&'static str];
+    /// Load it now: a sandboxed run with network that may write the workspace and `dir`.
+    fn load(&self, ws: &Path, dir: &Path, run: &dyn Runner) -> Result<Layer, String>;
+}
+
+/// The result of [`load_project`].
+#[derive(Debug)]
+pub(crate) struct ProjectEnv {
+    pub file: &'static str,
+    pub result: Result<Layer, String>,
+    /// Loaded just now (else from the cache).
+    pub fresh: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ProjectCache {
+    stamp: String,
+    #[serde(default)]
+    layer: Option<Layer>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// Cache key: the project's input files' contents.
+fn stamp(ws: &Path, p: &dyn Project) -> String {
+    let mut bytes = format!("{}\0", p.id()).into_bytes();
+    for f in p.inputs() {
+        bytes.extend_from_slice(f.as_bytes());
+        bytes.push(0);
+        bytes.extend(std::fs::read(ws.join(f)).unwrap_or_default());
+        bytes.push(0);
+    }
+    format!("{:016x}", fnv64(&bytes))
+}
+
+/// `p`'s environment for `ws`, from `<dir>/<id>.json` while its files are unchanged (and the
+/// folders it put on `PATH` still exist), else loaded now. Failures are cached too, so a
+/// broken project file is reported once rather than retried before every command.
+pub(crate) fn load_project(p: &dyn Project, ws: &Path, dir: &Path, run: &dyn Runner) -> Option<ProjectEnv> {
+    let file = p.file(ws)?;
+    let cache_file = dir.join(format!("{}.json", p.id()));
+    let now = stamp(ws, p);
+    if let Some(c) = std::fs::read_to_string(&cache_file).ok().and_then(|s| serde_json::from_str::<ProjectCache>(&s).ok())
+        && c.stamp == now
+    {
+        match (c.layer, c.error) {
+            (Some(l), _) if l.path.iter().all(|p| p.exists()) => return Some(ProjectEnv { file, result: Ok(l), fresh: false }),
+            (_, Some(e)) => return Some(ProjectEnv { file, result: Err(e), fresh: false }),
+            _ => {}
+        }
+    }
+    let result = std::fs::create_dir_all(dir)
+        .map_err(|e| format!("can't create {}: {e}", dir.display()))
+        .and_then(|()| dir.canonicalize().map_err(|e| e.to_string()))
+        .and_then(|dir| p.load(ws, &dir, run));
+    // Stamp after loading: the tool may just have written its lock file.
+    let cache = match &result {
+        Ok(l) => ProjectCache { stamp: stamp(ws, p), layer: Some(l.clone()), error: None },
+        Err(e) => ProjectCache { stamp: stamp(ws, p), layer: None, error: Some(e.clone()) },
+    };
+    if result.as_ref().err().is_none_or(|e| e != STOPPED)
+        && let Err(e) = write_atomic(&cache_file, serde_json::to_string(&cache).unwrap_or_default().as_bytes())
+    {
+        log::warn!("environments: {e}");
+    }
+    Some(ProjectEnv { file, result, fresh: true })
+}
+
+pub(crate) const STOPPED: &str = "Stopped by the user.";
+
 /// The package managers found on this machine, and the per-workspace state they keep.
 #[derive(Debug, Default)]
 pub struct Envs {
     nix: Option<nix::Nix>,
+    /// Project environments, in order of precedence.
+    projects: Vec<Box<dyn Project>>,
     /// `<data>/envs`, holding one folder per workspace.
     state: Option<PathBuf>,
     load_project_shells: bool,
@@ -166,7 +251,15 @@ impl Envs {
             log::info!("environments: Nix {} ({})", n.binary().display(), if n.daemon() { "daemon" } else { "single-user" });
         }
         let off = std::env::var(WORKSPACE_ENV).is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false" | "no"));
-        Self { nix, state: data_dir.map(|d| d.join("envs")), load_project_shells: !off, busy: Mutex::new(()) }
+        let mut projects: Vec<Box<dyn Project>> = Vec::new();
+        if let Some(n) = &nix {
+            projects.push(Box::new(nix::NixShell(n.clone())));
+        }
+        for p in project::detect(data_dir) {
+            log::info!("environments: {} ({})", p.label(), p.program().display());
+            projects.push(Box::new(p));
+        }
+        Self { nix, projects, state: data_dir.map(|d| d.join("envs")), load_project_shells: !off, busy: Mutex::new(()) }
     }
 
     /// No package managers (tests, or a machine without any).
@@ -218,19 +311,17 @@ impl Envs {
         if let Some(l) = venv_layer(ws) {
             out.layer.stack(&l);
         }
-        if self.load_project_shells
-            && let (Some(nix), Some(dir)) = (&self.nix, &dir)
-            && let Some(shell) = nix.project_shell(ws, dir, run)
-        {
-            match shell.result {
+        let Some(dir) = dir.filter(|_| self.load_project_shells) else { return out };
+        for p in &self.projects {
+            let Some(env) = load_project(p.as_ref(), ws, &dir, run) else { continue };
+            match env.result {
                 Ok(l) => {
                     out.layer.stack(&l);
-                    if shell.fresh {
-                        out.notes
-                            .push(format!("Loaded the workspace's Nix dev shell from {} (its programs are on PATH; cached until it changes).", shell.file));
+                    if env.fresh {
+                        out.notes.push(format!("Loaded the workspace's {} from {} (its programs are on PATH; cached until it changes).", p.label(), env.file));
                     }
                 }
-                Err(e) if shell.fresh => out.notes.push(format!("The workspace's {} dev shell failed to load, so this ran without it:\n{e}", shell.file)),
+                Err(e) if env.fresh => out.notes.push(format!("The workspace's {} ({}) failed to load, so this ran without it:\n{e}", p.label(), env.file)),
                 Err(_) => {}
             }
         }
@@ -331,6 +422,58 @@ mod tests {
         let l = venv_layer(d.path()).unwrap();
         assert_eq!(l.path, vec![d.path().join(".venv").join(bin)]);
         assert!(l.var("VIRTUAL_ENV").is_some());
+    }
+
+    /// Loads by counting; fails while `bad` exists in the workspace.
+    #[derive(Debug, Default)]
+    struct Fake(std::sync::atomic::AtomicUsize);
+
+    impl Project for Fake {
+        fn id(&self) -> &'static str {
+            "fake"
+        }
+        fn label(&self) -> &'static str {
+            "fake env"
+        }
+        fn file(&self, ws: &Path) -> Option<&'static str> {
+            ws.join("fake.toml").is_file().then_some("fake.toml")
+        }
+        fn inputs(&self) -> &'static [&'static str] {
+            &["fake.toml", "fake.lock"]
+        }
+        fn load(&self, ws: &Path, _dir: &Path, _run: &dyn Runner) -> Result<Layer, String> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Like `nix` writing flake.lock on first load.
+            std::fs::write(ws.join("fake.lock"), "locked").map_err(|e| e.to_string())?;
+            if ws.join("bad").exists() { Err("broken".into()) } else { Ok(Layer { vars: vec![("A".into(), "1".into())], ..Default::default() }) }
+        }
+    }
+
+    struct NoRun;
+    impl Runner for NoRun {
+        fn run(&self, _job: Job, _cwd: &Path, _tmp: &Path) -> Result<Outcome, String> {
+            Err("not in this test".into())
+        }
+    }
+
+    #[test]
+    fn project_envs_are_cached_until_their_files_change() {
+        let ws = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let p = Fake::default();
+        let loads = || p.0.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(load_project(&p, ws.path(), dir.path(), &NoRun).is_none(), "no project file");
+        std::fs::write(ws.path().join("fake.toml"), "v1").unwrap();
+        let first = load_project(&p, ws.path(), dir.path(), &NoRun).unwrap();
+        assert!(first.fresh && first.result.unwrap().var("A") == Some("1") && loads() == 1);
+        let second = load_project(&p, ws.path(), dir.path(), &NoRun).unwrap();
+        assert!(!second.fresh && second.result.is_ok() && loads() == 1, "cached, though the load wrote the lock file");
+        std::fs::write(ws.path().join("fake.toml"), "v2").unwrap();
+        std::fs::write(ws.path().join("bad"), "").unwrap();
+        let broken = load_project(&p, ws.path(), dir.path(), &NoRun).unwrap();
+        assert!(broken.fresh && broken.result.is_err() && loads() == 2);
+        let again = load_project(&p, ws.path(), dir.path(), &NoRun).unwrap();
+        assert!(!again.fresh && again.result.is_err() && loads() == 2, "a failure is cached too");
     }
 
     #[test]

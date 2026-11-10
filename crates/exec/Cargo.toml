@@ -24,7 +24,7 @@ name = "tools"
 harness = false
 
 [[test]]
-name = "nix"
+name = "envs"
 harness = false
 
 [lints]
