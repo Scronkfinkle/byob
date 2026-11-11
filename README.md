@@ -11,7 +11,7 @@ documents and small apps beside the chat.
 
 byob is desktop software, not a web page in a window: one program for Linux, macOS and Windows
 that draws its own interface on the GPU, with no Electron, webview or browser engine inside.
-(HTML apps the model writes are the one exception: they run in an optional, separate helper.)
+(The one exception is optional: to draw the HTML apps the model writes inline, the desktop can use a separate Servo helper process.)
 
 ![byob building a two-sheet budget workbook: the spreadsheet fills in beside the chat as the model writes it](docs/media/hero.gif)
 
@@ -42,7 +42,7 @@ that draws its own interface on the GPU, with no Electron, webview or browser en
 <table>
   <tr>
     <td width="50%"><img src="docs/media/self-plugin.gif" alt="Asking byob for a counter plugin: it writes the plugin and the pane appears beside the chat"><br><sub>“Make me a plugin with a counter pane”: byob writes it, reads its own load errors, fixes them, and the pane appears.</sub></td>
-    <td width="50%"><img src="docs/media/html-app.png" alt="A tip calculator HTML app rendered inline in the chat"><br><sub>HTML apps run inline: in the browser UI, and on the desktop with the Servo helper (in the Nix package; otherwise Open in browser).</sub></td>
+    <td width="50%"><img src="docs/media/html-app.png" alt="A tip calculator HTML app rendered inline in the chat"><br><sub>HTML apps work in every build: inline in the browser UI, inline on the desktop with the optional Servo helper (in the Nix package), otherwise one click opens them in your browser.</sub></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/media/sheets.png" alt="sales.csv open as a spreadsheet with a new growth column"><br><sub>Open a CSV as a spreadsheet; every write recalculates and reports errors back to the model.</sub></td>
