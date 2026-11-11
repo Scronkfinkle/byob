@@ -343,6 +343,15 @@ impl Engine {
             Some(k) if !k.is_empty() => k.chars().take(byob_protocol::sites::MAX_VIEW_KEY_CHARS).collect(),
             _ => format!("{tool}-{}", SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos())),
         };
+        let web = self.ext.as_ref().and_then(|e| e.backends.get(dir)).is_some_and(|e| e.web_views.contains(&view));
+        if web {
+            // A web card: the page gets the card's data (`byob/card`); no tree.
+            let data = msg.get("tree").cloned().unwrap_or(Value::Null);
+            let text = msg.get("text").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let card = byob_protocol::web::WebCard { plugin: plugin.to_owned(), view, key, data, text };
+            self.step_views.insert(chat.to_owned(), (tool.to_owned(), View::of(&card)));
+            return;
+        }
         let (tree, faults) = tree::decode(msg.get("tree").cloned().unwrap_or(Value::Null));
         let mut view_data = View::of(&tree);
         view_data.owner = Some(ViewRef::new(plugin, &view, &key));

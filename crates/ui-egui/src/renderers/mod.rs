@@ -135,7 +135,10 @@ impl ArtifactRenderers {
         }
         for p in plugins.iter().filter(|p| p.enabled && p.shadowed_by.is_none()) {
             for d in &p.renderers {
-                let renderer = if let Some(view) = d.renderer.strip_prefix("view:") {
+                let renderer = if let Some(file) = d.renderer.strip_prefix("web:").map(str::trim).filter(|f| !f.is_empty()) {
+                    // `web:<file>`: the plugin's own page draws it, on a web surface.
+                    Some(Rc::new(crate::web::WebArtifact { plugin: p.id.clone(), file: file.to_owned() }) as Rc<dyn ArtifactRenderer>)
+                } else if let Some(view) = d.renderer.strip_prefix("view:") {
                     // The plugin's own live view, labelled with the view's title.
                     let title = p.views.iter().find(|v| v.id == view).map(|v| v.title.to_lowercase()).filter(|t| !t.is_empty());
                     let label = title.unwrap_or_else(|| p.name.to_lowercase());
@@ -283,7 +286,7 @@ pub struct ArtifactCx<'a> {
     pub id: egui::Id,
     pub(crate) files: &'a mut Files,
     pub(crate) outbox: &'a mut Vec<ClientMsg>,
-    pub(crate) web: &'a mut dyn AppView,
+    pub(crate) web: &'a mut crate::web::Web,
     pub(crate) views: &'a mut view::ArtifactViews,
     pub(crate) requests: &'a mut Vec<Request>,
     pub(crate) links: Links<'a>,
@@ -325,6 +328,11 @@ impl ArtifactCx<'_> {
 
     /// The web surface: where HTML runs (Servo helper, iframe, or a placeholder).
     pub fn web(&mut self) -> &mut dyn AppView {
+        &mut *self.web.view
+    }
+
+    /// Web surfaces with the bridge (a plugin's `web:<file>` renderer).
+    pub fn bridge(&mut self) -> &mut crate::web::Web {
         &mut *self.web
     }
 
@@ -447,6 +455,9 @@ mod tests {
         r.apply_plugins(&[plugin("odd", true, &[("text/csv", "native:spreadsheet"), ("text/x-notes", "native:markdown")])]);
         assert_eq!(r.get("text/csv").caps().label, "file");
         assert_eq!(r.get("text/x-notes").caps().label, "document");
+        // `web:<file>`: the plugin's own page draws the type on a web surface.
+        r.apply_plugins(&[plugin("notes", true, &[("text/x-notes", "web:ui/notes.html")])]);
+        assert_eq!(r.get("text/x-notes").caps().label, "view");
         // No declarations at all (an older engine): byob's own registrations.
         r.apply_plugins(&[]);
         assert_eq!(r.get(TYPE_CHART).caps().label, "chart");

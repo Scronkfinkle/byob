@@ -45,7 +45,7 @@ pub use http::{HttpConfig, MAX_BODY, TokenProvider};
 use rpc::Router;
 use stdio::StdioTransport;
 pub use stdio::{MAX_LINE, StdioConfig};
-pub use types::{CallResult, Content, MAX_RESULT_TEXT, McpTool, ServerInfo, ToolAnnotations};
+pub use types::{CallResult, Content, MAX_RESULT_TEXT, McpTool, ServerInfo, ToolAnnotations, ToolUi};
 
 /// The MCP revision we speak.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -138,7 +138,8 @@ impl McpClient {
         let client = Self { inner: Arc::new(Inner { transport, router, next_id: AtomicU64::new(1), server: OnceLock::new(), request_timeout }) };
         let params = json!({
             "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {},
+            // MCP Apps (SEP-1724 extensions): byob renders tools' `ui://` HTML resources.
+            "capabilities": { "extensions": { "io.modelcontextprotocol/ui": { "mimeTypes": ["text/html;profile=mcp-app"] } } },
             "clientInfo": { "name": "byob", "version": env!("CARGO_PKG_VERSION") },
         });
         // Dropping `client` on error stops the server.
@@ -226,6 +227,15 @@ impl McpClient {
         let params = json!({ "name": name, "arguments": types::arguments(args) });
         let result = self.request("tools/call", params, timeout, Some(cancel))?;
         Ok(CallResult::from_value(&result))
+    }
+
+    /// Read one resource (`resources/read`): the result as sent (`{contents: [...]}`).
+    pub fn read_resource(&self, uri: &str, timeout: Duration) -> Result<Value, McpError> {
+        let result = self.request("resources/read", json!({ "uri": uri }), timeout, Some(&AtomicBool::new(false)))?;
+        if result.get("contents").and_then(Value::as_array).is_none() {
+            return Err(McpError::Protocol("resources/read result has no contents array".into()));
+        }
+        Ok(result)
     }
 
     /// Stop the server (stdio) or end the session (HTTP). Pending and later calls fail

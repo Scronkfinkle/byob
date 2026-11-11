@@ -1,6 +1,6 @@
 ---
 name: plugin-authoring
-description: How to extend byob with plugins - Python tools (make_tool), backends, views (a pane, a header chip, a settings section, step cards), skills, MCP servers, subagents, hooks (approve or deny tool calls, add prompt lines), workspace environments, settings and API keys, and keeping a plugin for later chats.
+description: How to extend byob with plugins - Python tools (make_tool), backends, views (a pane, a header chip, a settings section, step cards; trees or HTML pages), skills, MCP servers, subagents, hooks (approve or deny tool calls, add prompt lines), workspace environments, settings and API keys, and keeping a plugin for later chats.
 ---
 # Writing byob plugins
 
@@ -247,6 +247,50 @@ How it works:
 - Mistakes in a tree don't break anything: byob draws what it can and `plugin_status`
   lists what it had to fix (`backend fault: view list: …`) and any traceback. Fix the file
   with `edit_plugin`; the backend restarts with the new code and the views redraw.
+
+### Web views (HTML instead of a tree)
+
+When a tree isn't enough (a drawing, a custom widget), a pane or card view can be an HTML
+page: give it `"html": "ui/index.html"` (a file in the plugin). It runs sandboxed: no network,
+nothing loaded from URLs (inline your CSS and JS), no backend needed unless it calls one.
+byob puts a small `window.byob` API in it (wait for `byob.ready` first):
+
+```html
+<p id="out">…</p>
+<script>
+byob.ready.then(async ctx => {                          // ctx.theme: "dark" / "light"
+  const r = await byob.tool("add", {a: 2, b: 3});       // one of this plugin's "run": "backend" tools
+  document.getElementById("out").textContent = r.content[0].text;
+  const answer = await byob.ask({list: true});          // your @byob.on_web handler's return value
+  byob.send({add: "milk"});                             // to @byob.on_web, no answer
+  byob.context("The user is looking at 3 items");       // goes to the model with the next message
+  // byob.message("Plan my week")                       // posts a user message in the chat
+});
+byob.on((params, method) => {                           // "byob/message": byob.web_send(...);
+  if (method === "byob/message") render(params);        // "byob/card": a card's data
+});
+</script>
+```
+
+Style it with byob's colours: `var(--byob-bg)`, `--byob-fg`, `--byob-surface`, `--byob-muted`,
+`--byob-accent`, `--byob-on-accent`, `--byob-border`, `--byob-radius` (they follow the
+theme). In `backend.py`:
+
+```python
+@byob.on_web("notes")                  # messages from web view "notes" (or @byob.on_web for all)
+def notes_page(msg, event):            # event: view, key, client, chat
+    if msg.get("add"):
+        items.append(msg["add"])
+        byob.web_send("notes", {"items": items})   # the page gets it in byob.on(...)
+        return None
+    return {"items": items}            # the answer to byob.ask(...)
+```
+
+A web card: declare `{"site": "card", "id": "chart", "html": "ui/chart.html"}` and end the
+tool with `return {"text": "…", "card": {"values": [1, 2, 3]}, "card_view": "chart"}`; the
+page gets `{"data": {...}}` as `byob/card`. An artifact type can be drawn by a page too:
+`"renderers": [{"type": "text/csv", "renderer": "web:ui/csv.html"}]`; the page gets
+`byob/artifact` with `id`, `version`, `title`, `content_type` and `text`.
 
 ## 6. Skills and subagents
 

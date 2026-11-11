@@ -35,6 +35,8 @@ pub(crate) struct Entry {
     fp: u64,
     /// The views it declares: (id, site).
     pub views: Vec<(String, byob_protocol::Site)>,
+    /// Those that are web views (`html`).
+    pub web_views: Vec<String>,
 }
 
 /// Backends by plugin folder.
@@ -79,6 +81,7 @@ impl Backends {
                 workspace: (m.scope == PluginScope::Workspace).then(|| m.workspace.to_path_buf()),
                 fp: m.fp,
                 views: m.plugin.manifest.views.iter().filter_map(|v| Some((v.id.clone(), byob_protocol::Site::parse(&v.site)?))).collect(),
+                web_views: m.plugin.manifest.views.iter().filter(|v| !v.html.is_empty()).map(|v| v.id.clone()).collect(),
             },
         );
         backend
@@ -227,6 +230,7 @@ impl Engine {
                 match msg.get("type").and_then(Value::as_str).unwrap_or_default() {
                     "view" => self.backend_view(dir, &msg),
                     byob_plugins::backend::CARD_MSG => self.backend_card(dir, plugin, &msg),
+                    "web" => self.backend_web(plugin, chat.as_deref(), &msg),
                     "notify" => {
                         let inner = msg.get("msg").cloned().unwrap_or(Value::Null);
                         self.backend_send(to, chat.as_deref(), plugin, inner);

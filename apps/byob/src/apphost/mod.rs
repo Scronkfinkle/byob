@@ -74,8 +74,10 @@ struct App {
 }
 
 impl App {
-    fn new(source: &str) -> Self {
-        let html = byob_tools::artifact_types::html_app::wrap_html(source);
+    /// `web`: a web surface's document, run as it is (it carries its own bridge script);
+    /// else an HTML app artifact, wrapped with the theme defaults and helper script.
+    fn new(source: &str, web: bool) -> Self {
+        let html = if web { source.to_owned() } else { byob_tools::artifact_types::html_app::wrap_html(source) };
         let state = if html.len() > wire::MAX_HTML { State::Stopped("It's too large to run here.".into()) } else { State::Live };
         Self {
             helper: None,
@@ -116,6 +118,8 @@ pub struct ServoView {
     /// Drawn on screen by their owner / held in the background, this frame.
     drawn_now: HashSet<Key>,
     held_now: HashSet<Key>,
+    /// Bridge messages pages posted, not taken yet.
+    inbox: Vec<(String, u32, String)>,
 }
 
 impl ServoView {
@@ -137,6 +141,7 @@ impl ServoView {
             cards_now: HashSet::new(),
             drawn_now: HashSet::new(),
             held_now: HashSet::new(),
+            inbox: Vec::new(),
         }
     }
 
@@ -174,7 +179,7 @@ impl ServoView {
                 ui.put(rect, egui::Spinner::new());
                 return rect;
             };
-            self.apps.insert(key.clone(), App::new(source));
+            self.apps.insert(key.clone(), App::new(source, doc.web));
         }
         let (rect, resp) = ui.allocate_exact_size(size, if owner { egui::Sense::click_and_drag() } else { egui::Sense::click() });
         let ppp = ui.ctx().pixels_per_point();
@@ -300,6 +305,12 @@ impl ServoView {
                     }
                     wire::Event::ContentHeight(height) => app.content_height = Some(height),
                     wire::Event::Cursor(c) => app.cursor = c,
+                    wire::Event::Message(m) => {
+                        // Bounded like everything else from the helper; a flood is dropped.
+                        if self.inbox.len() < 1024 {
+                            self.inbox.push((key.0.clone(), key.1, m));
+                        }
+                    }
                     wire::Event::Title(_) | wire::Event::Ready | wire::Event::Pong(_) | wire::Event::Frame(_) | wire::Event::Features(_) => {}
                 }
             }
@@ -392,7 +403,8 @@ impl AppView for ServoView {
     fn card(&mut self, ui: &mut egui::Ui, t: &Tokens, doc: &AppDoc<'_>) -> Option<AppViewResponse> {
         let key: Key = (doc.id.to_owned(), doc.version);
         let mirrored = self.pane.as_ref() == Some(&key) || self.cards_now.contains(&key);
-        let height = self.apps.get(&key).and_then(|a| a.content_height).map_or(CARD_DEFAULT, |h| h.clamp(CARD_MIN, CARD_MAX));
+        // A web surface's page says its height over the bridge; else it is measured.
+        let height = doc.height.or_else(|| self.apps.get(&key).and_then(|a| a.content_height)).map_or(CARD_DEFAULT, |h| h.clamp(CARD_MIN, CARD_MAX));
         self.surface(ui, t, doc, Surface::Card, vec2(ui.available_width(), height));
         Some(self.controls(ui, t, doc, mirrored))
     }
@@ -434,6 +446,31 @@ impl AppView for ServoView {
         }
     }
 
+    fn post(&mut self, id: &str, version: u32, msg: &str) {
+        let Some(h) = self.apps.get(&(id.to_owned(), version)).and_then(|a| a.helper.as_ref()) else { return };
+        if h.supports(wire::Features::BRIDGE) && msg.len() <= wire::MAX_MESSAGE {
+            h.send(Request::Message(msg.to_owned()));
+        }
+    }
+
+    fn take_messages(&mut self) -> Vec<(String, u32, String)> {
+        std::mem::take(&mut self.inbox)
+    }
+
+    fn bridged(&self, id: &str, version: u32) -> Option<bool> {
+        let h = self.apps.get(&(id.to_owned(), version))?.helper.as_ref()?;
+        h.ready().then(|| h.supports(wire::Features::BRIDGE))
+    }
+
+    fn close(&mut self, id: &str, version: u32) {
+        if let Some(mut app) = self.apps.remove(&(id.to_owned(), version))
+            && let Some(mut h) = app.helper.take()
+        {
+            h.send(Request::Shutdown);
+            h.kill();
+        }
+    }
+
     fn set_theme(&mut self, vars: &[(&'static str, String)]) {
         let dark = vars.iter().find(|(k, _)| *k == "--byob-bg").is_none_or(|(_, v)| luminance(v) < 0.5);
         self.theme = wire::Theme { vars: vars.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect(), dark };
@@ -445,12 +482,7 @@ impl AppView for ServoView {
     }
 }
 
-/// 0..1 for `#rrggbb` (0.5 when it isn't one).
-fn luminance(hex: &str) -> f32 {
-    let Some(h) = hex.strip_prefix('#').filter(|h| h.len() == 6) else { return 0.5 };
-    let c = |i: usize| h.get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok()).map_or(0.5, |v| f32::from(v) / 255.0);
-    0.2126 * c(0) + 0.7152 * c(2) + 0.0722 * c(4)
-}
+use byob_ui_egui::appview::luminance;
 
 fn cursor_icon(c: wire::Cursor) -> egui::CursorIcon {
     match c {
@@ -626,7 +658,7 @@ mod tests {
             let ctx = egui::Context::default();
             let mut v = ServoView::with_helper(&ctx, path);
             let key: Key = ("app".into(), 1);
-            v.apps.insert(key.clone(), App::new("<p>hi</p>"));
+            v.apps.insert(key.clone(), App::new("<p>hi</p>", false));
             v.launch(&key, Viewport { width: 10, height: 10, scale: 1.0 });
             let mut statuses = vec![v.status("app", 1)];
             // On screen until the helper has said hello.
@@ -648,6 +680,9 @@ mod tests {
                 statuses.push(v.status("app", 1));
                 assert_eq!(v.apps[&key].hidden, !drawn);
             }
+            // Neither stand-in announced the bridge: bridge messages aren't sent to them.
+            v.post("app", 1, r#"{"jsonrpc":"2.0","method":"x"}"#);
+            assert_eq!(v.bridged("app", 1), Some(false));
             if let Some(mut h) = v.apps.get_mut(&key).and_then(|a| a.helper.take()) {
                 h.send(Request::Shutdown);
                 std::thread::sleep(Duration::from_millis(100));
@@ -668,8 +703,9 @@ mod tests {
         assert_eq!(vis, [&Request::Visible(false), &Request::Visible(true)], "{reqs:?}");
         assert!(matches!(reqs.first(), Some(Request::Load(_))), "{reqs:?}");
         assert!(statuses.iter().all(|s| *s == AppStatus::Running), "minimized still runs: {statuses:?}");
+        assert!(!reqs.iter().any(|r| matches!(r, Request::Message(_))), "{reqs:?}");
         let (reqs, _) = run(false);
-        assert!(!reqs.iter().any(|r| matches!(r, Request::Visible(_))), "old helpers only get what they know: {reqs:?}");
+        assert!(!reqs.iter().any(|r| matches!(r, Request::Visible(_) | Request::Message(_))), "old helpers only get what they know: {reqs:?}");
     }
 
     /// The real helper, if one is built: `$BYOB_ARTIFACT_HOST`, else the helper workspace's
@@ -763,6 +799,44 @@ mod tests {
         let (x, y) = (20.0, 180.0);
         let (out, _) = drive(&path, page, &[click(x, y).as_slice(), &click(x, y)[1..]].concat());
         assert!(out.contains(&"selection \"pick\"".to_owned()), "{out:?}");
+    }
+
+    /// The bridge through the real helper: the page's posts come back as `Event::Message`,
+    /// byob's `Request::Message`s reach the page as message events (an echo page answers
+    /// each). Also times the round trip at the wire (no UI frames). Needs a built helper.
+    #[test]
+    fn the_bridge_carries_messages_both_ways() {
+        let Some(path) = built_helper() else {
+            eprintln!("skipped: no byob-artifact-host built");
+            return;
+        };
+        let page = "<script>addEventListener('message',e=>{if(e.data&&e.data.echo!==undefined)parent.postMessage({jsonrpc:'2.0',id:e.data.echo,result:{back:e.data.echo}},'*')});\
+            addEventListener('load',()=>parent.postMessage({jsonrpc:'2.0',method:'hello',params:{n:1}},'*'))</script><p>echo</p>";
+        let html = byob_ui_egui::web::document(page, byob_ui_egui::web::Kind::McpApp, &[]);
+        let mut h = helper::Helper::spawn(&path, || {}).unwrap();
+        h.send(Request::Load(Box::new(wire::Load { html, theme: wire::Theme::default(), viewport: Viewport { width: 200, height: 100, scale: 1.0 } })));
+        let next = |h: &mut helper::Helper| {
+            let start = Instant::now();
+            loop {
+                if let Some(m) = h.poll().into_iter().find_map(|e| if let wire::Event::Message(m) = e { Some(m) } else { None }) {
+                    return m;
+                }
+                assert!(start.elapsed() < Duration::from_secs(30), "no message from the page");
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        };
+        let hello: serde_json::Value = serde_json::from_str(&next(&mut h)).unwrap();
+        assert_eq!(hello["method"], "hello");
+        assert!(h.supports(wire::Features::BRIDGE));
+        let n = 50u32;
+        let start = Instant::now();
+        for i in 0..n {
+            h.send(Request::Message(format!("{{\"echo\":{i}}}")));
+            let back: serde_json::Value = serde_json::from_str(&next(&mut h)).unwrap();
+            assert_eq!(back["result"]["back"], i);
+        }
+        eprintln!("helper bridge round trip: {:?} (wire, {n} messages)", start.elapsed() / n);
+        h.kill();
     }
 
     /// Without a helper on disk the view isn't offered (the placeholder stays).

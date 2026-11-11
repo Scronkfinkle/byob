@@ -130,6 +130,8 @@ pub struct PromptInputs {
     pub delegation: Option<String>,
     /// The chat's artifacts by id.
     pub artifacts: String,
+    /// What the chat's web surfaces said with `ui/update-model-context` (a section, or empty).
+    pub app_context: String,
 }
 
 /// What a `before_request` hook sees (natives get the turn's internals).
@@ -656,6 +658,7 @@ pub(crate) fn prompt_parts() -> Vec<(&'static str, i64, fn(&PromptInputs) -> Vec
         ("instructions", 400, |i| if i.instructions.is_empty() { vec![] } else { vec![format!("The user's instructions for this chat:\n{}", i.instructions)] }),
         ("subagents", 500, |i| i.delegation.clone().into_iter().collect()),
         ("artifact_list", 600, |i| vec![i.artifacts.clone()]),
+        ("app_context", 650, |i| if i.app_context.is_empty() { vec![] } else { vec![i.app_context.clone()] }),
     ]
 }
 

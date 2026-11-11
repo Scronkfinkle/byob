@@ -60,6 +60,40 @@ pub struct McpTool {
     /// JSON Schema of the arguments; `{"type":"object"}` if missing or not an object.
     pub input_schema: Value,
     pub annotations: ToolAnnotations,
+    /// MCP Apps: `_meta.ui` (or the deprecated `_meta["ui/resourceUri"]`), if the tool has a UI.
+    pub ui: Option<ToolUi>,
+    /// The tool's entry as listed (for an MCP App's `hostContext.toolInfo`), capped.
+    pub raw: Value,
+}
+
+/// An MCP Apps tool's UI (`_meta.ui`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolUi {
+    /// The `ui://` resource that renders its results; `None` for app-only helpers without one.
+    pub resource_uri: Option<String>,
+    /// The model may see and call it (`visibility` has `"model"`; the default).
+    pub model: bool,
+    /// Its server's apps may call it (`visibility` has `"app"`; the default).
+    pub app: bool,
+}
+
+impl ToolUi {
+    fn from_meta(meta: Option<&Value>) -> Option<Self> {
+        let meta = meta?;
+        let ui = meta.get("ui");
+        let uri = ui
+            .and_then(|u| u.get("resourceUri"))
+            .or_else(|| meta.get("ui/resourceUri"))
+            .and_then(Value::as_str)
+            .filter(|u| u.starts_with("ui://") && u.len() <= 2048)
+            .map(str::to_owned);
+        let visibility = ui.and_then(|u| u.get("visibility")).and_then(Value::as_array);
+        if uri.is_none() && visibility.is_none() {
+            return None;
+        }
+        let has = |w: &str| visibility.is_none_or(|v| v.iter().any(|x| x.as_str() == Some(w)));
+        Some(Self { resource_uri: uri, model: has("model"), app: has("app") })
+    }
 }
 
 impl McpTool {
@@ -79,7 +113,10 @@ impl McpTool {
         };
         let a = v.get("annotations").filter(|a| a.is_object()).cloned().unwrap_or_else(|| json!({}));
         let flag = |k: &str| a.get(k).and_then(Value::as_bool);
+        let raw = if v.to_string().len() <= 64 * 1024 { v.clone() } else { json!({"name": name}) };
         Some(Self {
+            ui: ToolUi::from_meta(v.get("_meta")),
+            raw,
             name: name.to_owned(),
             title: text(v, "title"),
             description: text(v, "description").unwrap_or_default(),
@@ -169,6 +206,8 @@ pub struct CallResult {
     pub content: Vec<Content>,
     /// `structuredContent`, if any.
     pub structured: Option<Value>,
+    /// The result as the server sent it (for MCP Apps' `ui/notifications/tool-result`).
+    pub raw: Value,
 }
 
 impl CallResult {
@@ -208,7 +247,7 @@ impl CallResult {
             text = "(no result)".into();
         }
         let is_error = v.get("isError").and_then(Value::as_bool).unwrap_or(false);
-        Self { text, is_error, content, structured }
+        Self { text, is_error, content, structured, raw: if v.is_object() { v.clone() } else { json!({}) } }
     }
 }
 
@@ -238,6 +277,19 @@ mod tests {
         assert!(McpTool::from_value(&json!({"name": ""})).is_none());
         assert!(McpTool::from_value(&json!({"name": 5})).is_none());
         assert_eq!(McpTool::from_value(&json!({"name": "x", "inputSchema": "bad"})).unwrap().input_schema, json!({"type":"object"}));
+    }
+
+    #[test]
+    fn apps_ui_metadata() {
+        let t = McpTool::from_value(&json!({"name": "show", "_meta": {"ui": {"resourceUri": "ui://w/dash"}}})).unwrap();
+        assert_eq!(t.ui, Some(ToolUi { resource_uri: Some("ui://w/dash".into()), model: true, app: true }));
+        let old = McpTool::from_value(&json!({"name": "show", "_meta": {"ui/resourceUri": "ui://w/old"}})).unwrap();
+        assert_eq!(old.ui.unwrap().resource_uri.as_deref(), Some("ui://w/old"));
+        let app_only = McpTool::from_value(&json!({"name": "refresh", "_meta": {"ui": {"visibility": ["app"]}}})).unwrap();
+        assert_eq!(app_only.ui, Some(ToolUi { resource_uri: None, model: false, app: true }));
+        assert_eq!(McpTool::from_value(&json!({"name": "x", "_meta": {"ui": {"resourceUri": "https://evil"}}})).unwrap().ui, None);
+        assert_eq!(McpTool::from_value(&json!({"name": "x"})).unwrap().ui, None);
+        assert_eq!(t.raw["_meta"]["ui"]["resourceUri"], "ui://w/dash");
     }
 
     #[test]

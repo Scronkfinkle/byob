@@ -14,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use byob_llm::{ChatMessage, LlmError, StreamEvent, ToolCall, ToolCallFilter, Usage, toolprompt};
-use byob_protocol::{Ask, FileChange, Step, StepStatus, ToolAccess, TurnStats};
+use byob_protocol::{Ask, FileChange, Step, StepStatus, ToolAccess, TurnStats, View};
 use byob_tools::{Access, Answer, Asker, Journal, Question, Registry, Tool, ToolContext, ToolOutput, UndoOp};
 use serde_json::Value;
 
@@ -329,7 +329,7 @@ struct Opened {
 /// A concurrent call running on its own thread.
 struct Started {
     opened: Opened,
-    done: Receiver<(ToolOutput, Vec<UndoOp>, bool)>,
+    done: Receiver<(ToolOutput, Vec<UndoOp>, bool, Vec<View>)>,
 }
 
 /// What a running tool can reach of its turn ([`ToolContext::host`]): enough to start a
@@ -600,8 +600,10 @@ impl Turn {
         }
         for (i, started) in running {
             // The call's thread always answers; a closed channel means it crashed.
-            let (output, ops, owned) = started.done.recv().unwrap_or_else(|_| (ToolOutput::err("the tool crashed"), Vec::new(), false));
-            results[i] = Some(self.close(started.opened, output, ops, owned));
+            let (output, ops, owned, views) = started.done.recv().unwrap_or_else(|_| (ToolOutput::err("the tool crashed"), Vec::new(), false, Vec::new()));
+            let mut opened = started.opened;
+            attach_views(&mut opened.step, views);
+            results[i] = Some(self.close(opened, output, ops, owned));
         }
         results.into_iter().map(Option::unwrap_or_default).collect()
     }
@@ -624,21 +626,24 @@ impl Turn {
 
     /// Run one call and return what the model sees.
     fn call(&mut self, call: &ToolCall) -> String {
-        let opened = match self.open(call) {
+        let mut opened = match self.open(call) {
             Ok(o) => o,
             Err(text) => return text,
         };
         let host = self.host(&opened.step);
         let asker = self.asker(&opened.name);
+        let views = Mutex::new(Vec::new());
         let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel)
             .with_journal(&self.journal)
             .with_chat(&self.s.chat)
             .with_asker(&asker)
             .with_env(&self.s.env)
-            .with_host(&host);
+            .with_host(&host)
+            .with_views(&views);
         let output = catch_unwind(AssertUnwindSafe(|| opened.tool.run(&opened.args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
         let ops = self.journal.take();
         let owned = host.owns_step.load(Ordering::Relaxed);
+        attach_views(&mut opened.step, views.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner));
         self.close(opened, output, ops, owned)
     }
 
@@ -652,9 +657,17 @@ impl Turn {
         let (tx, rx) = channel();
         let spawned = thread::Builder::new().name("byob-tool".into()).spawn(move || {
             let journal = Journal::new(workspace.as_path(), &tag);
-            let ctx = ToolContext::new(workspace.as_path(), &cancel).with_journal(&journal).with_chat(&chat).with_asker(&asker).with_env(&env).with_host(&host);
+            let views = Mutex::new(Vec::new());
+            let ctx = ToolContext::new(workspace.as_path(), &cancel)
+                .with_journal(&journal)
+                .with_chat(&chat)
+                .with_asker(&asker)
+                .with_env(&env)
+                .with_host(&host)
+                .with_views(&views);
             let output = catch_unwind(AssertUnwindSafe(|| tool.run(&args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
-            let _ = tx.send((output, journal.take(), host.owns_step.load(Ordering::Relaxed)));
+            let views = views.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = tx.send((output, journal.take(), host.owns_step.load(Ordering::Relaxed), views));
         });
         match spawned {
             Ok(_) => Ok(Started { opened, done: rx }),
@@ -856,10 +869,22 @@ impl Turn {
 }
 
 /// A receiver that already holds a failed output.
-fn failed_now(text: String) -> Receiver<(ToolOutput, Vec<UndoOp>, bool)> {
+fn failed_now(text: String) -> Receiver<(ToolOutput, Vec<UndoOp>, bool, Vec<View>)> {
     let (tx, rx) = channel();
-    let _ = tx.send((ToolOutput::err(text), Vec::new(), false));
+    let _ = tx.send((ToolOutput::err(text), Vec::new(), false, Vec::new()));
     rx
+}
+
+/// Views a tool attached while running ([`ToolContext::attach_view`], e.g. an MCP App),
+/// checked, onto its step.
+fn attach_views(step: &mut Step, views: Vec<View>) {
+    for view in views {
+        match view.check() {
+            Ok(()) if step.views.len() < byob_protocol::view::MAX_STEP_VIEWS => step.views.push(view),
+            Ok(()) => log::warn!("step {}: too many views; {} dropped", step.id, view.kind),
+            Err(e) => log::warn!("step {}: view {} dropped: {e}", step.id, view.kind),
+        }
+    }
 }
 
 /// Most characters of a question's text or warning on an approval card.

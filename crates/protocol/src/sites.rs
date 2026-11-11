@@ -88,6 +88,10 @@ pub struct ViewDecl {
     /// A lucide icon name (may be empty).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub icon: String,
+    /// A web view (13.5+): the HTML file (in the plugin folder) shown on a web surface
+    /// instead of a view tree (see [`crate::web`]). Empty for tree views.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub html: String,
 }
 
 /// Names one live view: the plugin, its declared view id and an instance key.

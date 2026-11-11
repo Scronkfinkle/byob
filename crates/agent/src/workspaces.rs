@@ -655,6 +655,7 @@ pub(crate) fn prompt_inputs(
         instructions: e.instructions_text(),
         delegation: cp.delegation.clone(),
         artifacts: crate::artifact::prompt_list(types, &live.artifacts),
+        app_context: crate::web::context_section(&live.app_context),
     }
 }
 

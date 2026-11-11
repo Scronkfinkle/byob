@@ -292,7 +292,13 @@ mod tests {
     fn plugins_name_their_view_as_the_renderer() {
         let mut r = super::super::ArtifactRenderers::default();
         let mut p = crate::plugins::tests::info("sheets", byob_protocol::PluginScope::Bundled, byob_protocol::PluginOrigin::Bundled);
-        p.views = vec![byob_protocol::ViewDecl { id: "sheet".into(), site: byob_protocol::Site::Artifact, title: "Spreadsheet".into(), icon: String::new() }];
+        p.views = vec![byob_protocol::ViewDecl {
+            id: "sheet".into(),
+            site: byob_protocol::Site::Artifact,
+            title: "Spreadsheet".into(),
+            icon: String::new(),
+            html: String::new(),
+        }];
         p.renderers = vec![byob_protocol::RendererDecl { content_type: "text/csv".into(), renderer: "view:sheet".into() }];
         r.apply_plugins(&[p]);
         let caps = r.get("text/csv").caps();

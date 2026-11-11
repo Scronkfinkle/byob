@@ -175,6 +175,9 @@ pub struct ManifestView {
     /// The plugin's name when left out.
     pub title: String,
     pub icon: String,
+    /// A web view: its HTML file in the plugin folder (`"html": "ui/index.html"`), shown on
+    /// a web surface instead of a tree the backend draws. Empty for tree views.
+    pub html: String,
 }
 
 /// Most `python.requirements` entries.
@@ -507,8 +510,8 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
     let hooks = parse_hooks(r.get("hooks"), backend.is_some())?;
     let name = req_str(r.get("name"), "name")?;
     let views = parse_views(r.get("views"), &name)?;
-    if backend.is_none() && !views.is_empty() {
-        return Err("views are drawn by the plugin's backend: add \"backend\": \"backend.py\"".into());
+    if backend.is_none() && views.iter().any(|v| v.html.is_empty()) {
+        return Err("views are drawn by the plugin's backend: add \"backend\": \"backend.py\" (or give the view an \"html\" file)".into());
     }
     let renderers = parse_renderers(r.get("renderers"))?;
     for (i, d) in renderers.iter().enumerate() {
@@ -735,11 +738,13 @@ fn parse_renderers(v: Option<&Value>) -> R<Vec<ManifestRenderer>> {
                 return Err(format!("{f}.type must be a content type like \"text/csv\" (or \"image/*\")"));
             }
             let renderer = req_str(o.get("renderer"), &format!("{f}.renderer"))?;
+            let web_file = renderer.strip_prefix("web:").map(str::trim);
             let ok = matches!(renderer.as_str(), "web" | "text")
                 || renderer.strip_prefix("native:").is_some_and(native_id_ok)
-                || renderer.strip_prefix("view:").is_some_and(byob_view_id_ok);
+                || renderer.strip_prefix("view:").is_some_and(byob_view_id_ok)
+                || web_file.is_some_and(|p| !p.is_empty() && path_inside(p));
             if !ok {
-                return Err(format!("{f}.renderer must be \"web\", \"text\", \"native:<id>\" or \"view:<view id>\""));
+                return Err(format!("{f}.renderer must be \"web\", \"web:<html file in the plugin>\", \"text\", \"native:<id>\" or \"view:<view id>\""));
             }
             Ok(ManifestRenderer { content_type, renderer })
         })
@@ -799,7 +804,14 @@ fn parse_views(v: Option<&Value>, plugin_name: &str) -> R<Vec<ManifestView>> {
         }
         let title = truncate_chars(&opt_str(o.get("title"), &format!("{f}.title"))?.filter(|t| !t.is_empty()).unwrap_or_else(|| plugin_name.to_owned()), 80);
         let icon = opt_str(o.get("icon"), &format!("{f}.icon"))?.unwrap_or_default();
-        out.push(ManifestView { id, site, title, icon });
+        let html = opt_str(o.get("html"), &format!("{f}.html"))?.map(|h| h.trim().to_owned()).unwrap_or_default();
+        if !html.is_empty() && !path_inside(&html) {
+            return Err(format!("{f}.html must be a file inside the plugin folder, like \"ui/index.html\""));
+        }
+        if !html.is_empty() && !matches!(site.as_str(), "pane" | "card") {
+            return Err(format!("{f}: a web view (\"html\") goes in the pane or on a card"));
+        }
+        out.push(ManifestView { id, site, title, icon, html });
     }
     Ok(out)
 }
@@ -1045,7 +1057,7 @@ mod tests {
             ),
             (
                 json!({"id": "a", "name": "x", "renderers": [{"type": "text/csv", "renderer": "wasm"}]}),
-                "byob-plugin.json: renderers[0].renderer must be \"web\", \"text\", \"native:<id>\" or \"view:<view id>\"",
+                "byob-plugin.json: renderers[0].renderer must be \"web\", \"web:<html file in the plugin>\", \"text\", \"native:<id>\" or \"view:<view id>\"",
             ),
             (
                 json!({"id": "a", "name": "x", "system_prompt": "../p.md"}),
@@ -1135,12 +1147,20 @@ mod tests {
         let m = parse_user(json!({"id": "a", "name": "Todo", "backend": "b.py",
             "views": [{"site": "pane", "id": "list", "title": "To do", "icon": "list"}, {"site": "status"}]}))
         .unwrap();
-        assert_eq!(m.views[0], ManifestView { id: "list".into(), site: "pane".into(), title: "To do".into(), icon: "list".into() });
+        assert_eq!(m.views[0], ManifestView { id: "list".into(), site: "pane".into(), title: "To do".into(), icon: "list".into(), html: String::new() });
         assert_eq!((m.views[1].id.as_str(), m.views[1].title.as_str()), ("status", "Todo"), "id defaults to the site, title to the name");
         let cases = [
             (
                 json!({"id": "a", "name": "x", "views": [{"site": "pane"}]}),
-                "byob-plugin.json: views are drawn by the plugin's backend: add \"backend\": \"backend.py\"",
+                "byob-plugin.json: views are drawn by the plugin's backend: add \"backend\": \"backend.py\" (or give the view an \"html\" file)",
+            ),
+            (
+                json!({"id": "a", "name": "x", "views": [{"site": "status", "html": "ui/x.html"}]}),
+                "byob-plugin.json: views[0]: a web view (\"html\") goes in the pane or on a card",
+            ),
+            (
+                json!({"id": "a", "name": "x", "views": [{"site": "pane", "html": "../x.html"}]}),
+                "byob-plugin.json: views[0].html must be a file inside the plugin folder, like \"ui/index.html\"",
             ),
             (
                 json!({"id": "a", "name": "x", "backend": "b.py", "views": [{"site": "sidebar"}]}),
@@ -1158,6 +1178,12 @@ mod tests {
         for (raw, want) in cases {
             assert_eq!(parse_user(raw.clone()).unwrap_err(), want, "for {raw}");
         }
+        // A web view needs no backend; `web:<file>` renderers name a page of the plugin.
+        let m = parse_user(json!({"id": "a", "name": "x", "views": [{"site": "pane", "id": "p", "html": "ui/index.html"}],
+            "renderers": [{"type": "text/csv", "renderer": "web:ui/csv.html"}]}))
+        .unwrap();
+        assert_eq!((m.views[0].html.as_str(), m.renderers[0].renderer.as_str()), ("ui/index.html", "web:ui/csv.html"));
+        assert!(parse_user(json!({"id": "a", "name": "x", "renderers": [{"type": "text/csv", "renderer": "web:/etc/x.html"}]})).is_err());
     }
 
     #[test]

@@ -64,6 +64,7 @@ pub struct ToolContext<'a> {
     asker: Option<&'a dyn Asker>,
     env: Option<&'a EnvPlan>,
     host: Option<&'a (dyn std::any::Any + Sync)>,
+    views: Option<&'a std::sync::Mutex<Vec<byob_protocol::View>>>,
 }
 
 /// Where a chat's commands run, as its workspace and chat settings decide (the engine
@@ -113,7 +114,21 @@ pub struct CommandEnv {
 
 impl<'a> ToolContext<'a> {
     pub fn new(workspace: &'a Path, cancel: &'a AtomicBool) -> Self {
-        Self { workspace, cancel, journal: None, chat: None, asker: None, env: None, host: None }
+        Self { workspace, cancel, journal: None, chat: None, asker: None, env: None, host: None, views: None }
+    }
+
+    /// Where [`ToolContext::attach_view`] puts views (the engine's turn: on the call's step).
+    #[must_use]
+    pub fn with_views(mut self, views: &'a std::sync::Mutex<Vec<byob_protocol::View>>) -> Self {
+        self.views = Some(views);
+        self
+    }
+
+    /// Show `view` on this call's step (e.g. an MCP App). `false` if nobody takes views.
+    pub fn attach_view(&self, view: byob_protocol::View) -> bool {
+        let Some(v) = self.views else { return false };
+        v.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(view);
+        true
     }
 
     /// What the program running the tool offers beyond this context (the engine's turn

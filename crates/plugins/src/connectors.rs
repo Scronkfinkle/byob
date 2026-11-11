@@ -35,10 +35,14 @@ pub trait Connector: Send + Sync {
     /// `Err` is a transport/protocol failure; a tool-level failure is
     /// `Ok(ConnectorResult { is_error: true, .. })`.
     fn call_tool(&self, name: &str, args: &Value, ctx: &ToolContext<'_>) -> Result<ConnectorResult, String>;
+    /// Read one resource (`resources/read`): the result as sent (`{contents: [...]}`).
+    fn read_resource(&self, _uri: &str) -> Result<Value, String> {
+        Err("this server can't read resources".into())
+    }
 }
 
 /// One tool of an MCP server.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConnectorTool {
     pub name: String,
     /// `annotations.title`, else `title`.
@@ -48,6 +52,14 @@ pub struct ConnectorTool {
     pub input_schema: Value,
     pub read_only_hint: Option<bool>,
     pub destructive_hint: Option<bool>,
+    /// MCP Apps: the `ui://` resource that shows its results (`_meta.ui.resourceUri`).
+    pub resource_uri: Option<String>,
+    /// MCP Apps visibility: hidden from the model (`visibility` without `"model"`).
+    pub app_only: bool,
+    /// Not callable from the server's apps (`visibility` without `"app"`).
+    pub model_only: bool,
+    /// The entry as the server listed it (null if unknown).
+    pub raw: Value,
 }
 
 impl ConnectorTool {
@@ -66,6 +78,15 @@ impl ConnectorTool {
             input_schema: v.get("inputSchema").cloned().unwrap_or(Value::Null),
             read_only_hint: ann.and_then(|a| a.get("readOnlyHint")).and_then(Value::as_bool),
             destructive_hint: ann.and_then(|a| a.get("destructiveHint")).and_then(Value::as_bool),
+            resource_uri: v
+                .pointer("/_meta/ui/resourceUri")
+                .or_else(|| v.get("_meta").and_then(|m| m.get("ui/resourceUri")))
+                .and_then(Value::as_str)
+                .filter(|u| u.starts_with("ui://"))
+                .map(str::to_owned),
+            app_only: v.pointer("/_meta/ui/visibility").and_then(Value::as_array).is_some_and(|a| !a.iter().any(|x| x == "model")),
+            model_only: v.pointer("/_meta/ui/visibility").and_then(Value::as_array).is_some_and(|a| !a.iter().any(|x| x == "app")),
+            raw: v.clone(),
         })
     }
 
@@ -134,11 +155,13 @@ pub enum ConnectorContent {
 pub struct ConnectorResult {
     pub content: Vec<ConnectorContent>,
     pub is_error: bool,
+    /// The `CallToolResult` as sent (null if unknown), for MCP Apps.
+    pub raw: Value,
 }
 
 impl ConnectorResult {
     pub fn text(text: impl Into<String>) -> Self {
-        Self { content: vec![ConnectorContent::Text(text.into())], is_error: false }
+        Self { content: vec![ConnectorContent::Text(text.into())], is_error: false, raw: Value::Null }
     }
 
     /// From an MCP `CallToolResult` JSON object. Unknown shapes are tolerated.
@@ -164,14 +187,58 @@ impl ConnectorResult {
                     .collect()
             })
             .unwrap_or_default();
-        Self { content, is_error: v.get("isError").and_then(Value::as_bool).unwrap_or(false) }
+        Self { content, is_error: v.get("isError").and_then(Value::as_bool).unwrap_or(false), raw: v.clone() }
+    }
+
+    /// The `CallToolResult` for an MCP App (the raw result, else one made of the content),
+    /// at most about `max` bytes of JSON: a larger one keeps only its text parts (cut) and
+    /// `structuredContent` if that fits.
+    pub fn for_app(&self, max: usize) -> Value {
+        let full = if self.raw.is_object() {
+            self.raw.clone()
+        } else {
+            let content: Vec<Value> = self
+                .content
+                .iter()
+                .filter_map(|c| match c {
+                    ConnectorContent::Text(t) => Some(json!({"type": "text", "text": t})),
+                    ConnectorContent::Image { data, mime_type } => Some(json!({"type": "image", "data": data, "mimeType": mime_type})),
+                    ConnectorContent::Resource { uri, text } => Some(json!({"type": "resource", "resource": {"uri": uri, "text": text}})),
+                    ConnectorContent::Other(_) => None,
+                })
+                .collect();
+            json!({"content": content, "isError": self.is_error})
+        };
+        if full.to_string().len() <= max {
+            return full;
+        }
+        let texts: Vec<Value> = full
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| p.get("text").and_then(Value::as_str))
+                    .map(|t| json!({"type": "text", "text": t.chars().take(max / 4).collect::<String>()}))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut out = json!({"content": texts, "isError": self.is_error});
+        if let Some(s) = full.get("structuredContent").filter(|s| s.to_string().len() <= max / 2) {
+            out["structuredContent"] = s.clone();
+        }
+        out
     }
 }
+
+/// Largest `CallToolResult` kept on an MCP App's step view.
+const MAX_APP_RESULT: usize = 160 * 1024;
 
 /// One MCP server tool as a byob tool.
 pub struct ConnectorToolAdapter {
     name: String,
     plugin: PluginRef,
+    /// The server's key in the plugin's `mcpServers`.
+    server: String,
     /// The server is a local program (stdio), not a URL.
     local: bool,
     tool: ConnectorTool,
@@ -180,7 +247,44 @@ pub struct ConnectorToolAdapter {
 
 impl ConnectorToolAdapter {
     pub fn new(name: String, plugin: PluginRef, local: bool, tool: ConnectorTool, connector: Arc<dyn Connector>) -> Self {
-        Self { name, plugin, local, tool, connector }
+        Self { name, plugin, server: String::new(), local, tool, connector }
+    }
+
+    /// The server's key in the plugin's `mcpServers` (named on MCP App views).
+    #[must_use]
+    pub fn on_server(mut self, server: &str) -> Self {
+        server.clone_into(&mut self.server);
+        self
+    }
+
+    pub fn server(&self) -> &str {
+        &self.server
+    }
+
+    /// A local program (stdio) rather than a URL.
+    pub fn local(&self) -> bool {
+        self.local
+    }
+
+    pub fn connector(&self) -> &Arc<dyn Connector> {
+        &self.connector
+    }
+
+    /// The MCP App view for a call's result, when the tool has a UI.
+    fn app_view(&self, args: &Value, r: &ConnectorResult) -> Option<byob_protocol::View> {
+        let uri = self.tool.resource_uri.clone()?;
+        let raw = if self.tool.raw.to_string().len() <= 32 * 1024 { self.tool.raw.clone() } else { Value::Null };
+        let app = byob_protocol::web::McpApp {
+            plugin: self.plugin.id.clone(),
+            server: self.server.clone(),
+            tool: self.tool.name.clone(),
+            uri,
+            title: self.tool.label().to_owned(),
+            input: if args.to_string().len() <= 32 * 1024 { args.clone() } else { json!({}) },
+            result: r.for_app(MAX_APP_RESULT),
+            tool_def: raw,
+        };
+        Some(byob_protocol::View::of(&app))
     }
 
     /// The MCP tool behind this one (hints for the approval gate: [`ConnectorTool::needs_approval`]).
@@ -219,7 +323,12 @@ impl Tool for ConnectorToolAdapter {
         }
         let args = if args.is_object() { args.clone() } else { Value::Object(Map::new()) };
         match self.connector.call_tool(&self.tool.name, &args, ctx) {
-            Ok(r) => output(&r, ctx.workspace, &slug(&self.plugin.id)),
+            Ok(r) => {
+                if let Some(view) = self.app_view(&args, &r) {
+                    ctx.attach_view(view);
+                }
+                output(&r, ctx.workspace, &slug(&self.plugin.id))
+            }
             Err(e) => ToolOutput::err(format!("{} couldn't do that: {e}", self.plugin.name)),
         }
     }
@@ -280,7 +389,7 @@ fn save_image(dir: &Path, label: &str, n: usize, data: &str, mime: &str) -> Resu
 }
 
 /// Standard or URL-safe base64, padding and whitespace optional.
-pub(crate) fn base64_decode(s: &str) -> Option<Vec<u8>> {
+pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len() / 4 * 3);
     let mut buf = 0u32;
     let mut bits = 0u32;
@@ -320,7 +429,22 @@ pub fn connector_tools(
 
 /// [`connector_tools`] from a tool list fetched earlier (e.g. on a background thread right
 /// after connecting), so building the adapters does no I/O.
+///
+/// Tools only the server's apps may call (MCP Apps `visibility: ["app"]`) are left out: the
+/// model never sees them (the engine finds them in the server's tool list for app calls).
 pub fn connector_tools_from(
+    plugin: &PluginRef,
+    local: bool,
+    connector: Arc<dyn Connector>,
+    listed: Vec<ConnectorTool>,
+    names: &mut ToolNames,
+) -> Vec<Arc<ConnectorToolAdapter>> {
+    connector_tools_on("", plugin, local, connector, listed, names)
+}
+
+/// [`connector_tools_from`] for server `server` of the plugin (its `mcpServers` key).
+pub fn connector_tools_on(
+    server: &str,
     plugin: &PluginRef,
     local: bool,
     connector: Arc<dyn Connector>,
@@ -333,10 +457,11 @@ pub fn connector_tools_from(
     listed
         .into_iter()
         .take(MAX_TOOLS_PER_SERVER)
+        .filter(|t| !t.app_only)
         .map(|t| {
             let preferred = namespaced(&plugin.id, &t.name);
             let name = names.claim(&preferred, &preferred);
-            Arc::new(ConnectorToolAdapter::new(name, plugin.clone(), local, t, Arc::clone(&connector)))
+            Arc::new(ConnectorToolAdapter::new(name, plugin.clone(), local, t, Arc::clone(&connector)).on_server(server))
         })
         .collect()
 }

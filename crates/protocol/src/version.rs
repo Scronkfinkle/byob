@@ -22,12 +22,14 @@ use serde_json::Value;
 /// Bumped on a change an older peer can't survive (see the module docs).
 pub const PROTOCOL_MAJOR: u32 = 13;
 /// Bumped on additive changes; peers with the same major but another minor still talk.
-pub const PROTOCOL_MINOR: u32 = 5;
+pub const PROTOCOL_MINOR: u32 = 6;
 // Minors: 1 — `Artifact::content_type` (open artifact types; `kind` stays for 13.0 clients);
 // 2 — `PluginInfo::backend` (plugin backend processes); 3 — render sites: `PluginInfo::views`,
 // `View::owner`, `OpenView`/`CloseView`/`ViewEvent`, `LiveView` (cap `view_sites`); 4 — bundled
 // plugins: `PluginScope::Bundled` (cap `bundled_scope`), `PluginInfo::{locked, renderers, starters}`;
-// 5 — `Site::Artifact` and `view:<id>` renderers (an artifact's body is a plugin's live view),
+// 5 — web surfaces: `WebCall`/`WebReply`/`WebPush`, `ViewDecl::html`, step views `byob.mcp_app`
+// and `byob.web` (cap `web_bridge`).
+// 6 — `Site::Artifact` and `view:<id>` renderers (an artifact's body is a plugin's live view),
 // the `grid` tree node and `Event::grid`.
 
 /// Cap: the peer handles [`crate::ClientMsg::Plugin`] / [`crate::ServerMsg::Plugin`].
@@ -48,12 +50,24 @@ pub const MAX_CAP_CHARS: usize = 64;
 
 /// The caps this build's clients announce.
 pub fn client_caps() -> Vec<String> {
-    vec![CAP_VIEWS.to_owned(), CAP_PLUGIN_CHANNEL.to_owned(), crate::sites::CAP_VIEW_SITES.to_owned(), CAP_BUNDLED_SCOPE.to_owned()]
+    vec![
+        CAP_VIEWS.to_owned(),
+        CAP_PLUGIN_CHANNEL.to_owned(),
+        crate::sites::CAP_VIEW_SITES.to_owned(),
+        CAP_BUNDLED_SCOPE.to_owned(),
+        crate::web::CAP_WEB_BRIDGE.to_owned(),
+    ]
 }
 
 /// The caps this build's engine announces.
 pub fn engine_caps() -> Vec<String> {
-    vec![CAP_VIEWS.to_owned(), CAP_PLUGIN_CHANNEL.to_owned(), crate::sites::CAP_VIEW_SITES.to_owned(), CAP_BUNDLED_SCOPE.to_owned()]
+    vec![
+        CAP_VIEWS.to_owned(),
+        CAP_PLUGIN_CHANNEL.to_owned(),
+        crate::sites::CAP_VIEW_SITES.to_owned(),
+        CAP_BUNDLED_SCOPE.to_owned(),
+        crate::web::CAP_WEB_BRIDGE.to_owned(),
+    ]
 }
 
 /// Both sides list `cap`.

@@ -29,6 +29,8 @@ pub struct ViewCx<'a> {
     pub index: usize,
     /// View trees on steps, decoded, with their client state.
     pub trees: &'a mut StepTrees,
+    /// Web surfaces (MCP Apps, plugins' web cards).
+    pub web: &'a mut crate::web::Web,
 }
 
 /// Draws one view kind.
@@ -57,6 +59,8 @@ impl Default for ViewRegistry {
         let mut r = Self::empty();
         r.register(<PluginCard as byob_protocol::ViewData>::KIND, Renderer { draw: plugin_card, key: Some(plugin_card_key) });
         r.register(byob_protocol::tree::KIND, Renderer { draw: tree_view, key: None });
+        r.register(<byob_protocol::web::McpApp as byob_protocol::ViewData>::KIND, Renderer { draw: mcp_app, key: None });
+        r.register(<byob_protocol::web::WebCard as byob_protocol::ViewData>::KIND, Renderer { draw: web_card, key: None });
         r
     }
 }
@@ -102,13 +106,27 @@ impl ViewRegistry {
 
     /// Draw a step's views, in order.
     pub fn show_step(&mut self, ui: &mut egui::Ui, t: &Tokens, step: &Step, latest: &BTreeMap<(String, String), u64>, plugins: &mut PluginsUi) {
+        // No web runtime here: web views show what they can without one.
+        self.show_step_with(ui, t, step, latest, plugins, &mut crate::web::Web::new(Box::new(crate::appview::Placeholder)));
+    }
+
+    /// [`Self::show_step`] with the client's web surfaces (MCP Apps, plugins' web cards).
+    pub fn show_step_with(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Tokens,
+        step: &Step,
+        latest: &BTreeMap<(String, String), u64>,
+        plugins: &mut PluginsUi,
+        web: &mut crate::web::Web,
+    ) {
         for (i, view) in step.views.iter().enumerate() {
             let renderer = self.renderers.get(&view.kind).copied();
             let is_latest = match renderer.and_then(|r| r.key).and_then(|k| k(view)) {
                 Some(key) => latest.get(&(view.kind.clone(), key)) == Some(&step.id),
                 None => true,
             };
-            let mut cx = ViewCx { t, step: step.id, latest: is_latest, plugins: &mut *plugins, index: i, trees: &mut self.trees };
+            let mut cx = ViewCx { t, step: step.id, latest: is_latest, plugins: &mut *plugins, index: i, trees: &mut self.trees, web: &mut *web };
             let drawn = renderer.is_some_and(|r| (r.draw)(ui, &mut cx, view));
             if !drawn {
                 if self.logged.insert(view.kind.clone()) {
@@ -146,6 +164,14 @@ fn tree_view(ui: &mut egui::Ui, cx: &mut ViewCx<'_>, view: &View) -> bool {
         return cx.plugins.sites.card(ui, cx.t, view);
     }
     cx.trees.show(ui, cx.t, cx.step, cx.index, view)
+}
+
+fn mcp_app(ui: &mut egui::Ui, cx: &mut ViewCx<'_>, view: &View) -> bool {
+    crate::web::mcp_app_view(ui, cx.t, cx.web, cx.step, cx.index, view)
+}
+
+fn web_card(ui: &mut egui::Ui, cx: &mut ViewCx<'_>, view: &View) -> bool {
+    crate::web::web_card_view(ui, cx.t, cx.web, cx.step, cx.index, view)
 }
 
 fn plugin_card_key(view: &View) -> Option<String> {

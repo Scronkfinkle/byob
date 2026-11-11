@@ -297,6 +297,8 @@ pub(crate) struct Composed {
     pub turn_tools_off: BTreeSet<String>,
     /// Workspace environment providers: byob's own that are off, the plugins' commands.
     pub env_providers: byob_tools::EnvProviders,
+    /// The switched-on plugins' MCP servers that are up (for MCP Apps' calls).
+    pub apps: Vec<crate::web::AppServer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -646,12 +648,20 @@ impl Extensions {
                             Conn::Connecting => servers.push(ServerInfo { name: server.clone(), state: ServerState::Connecting, tools: 0, error: None }),
                             Conn::Failed(e) => servers.push(ServerInfo { name: server.clone(), state: ServerState::Failed, tools: 0, error: Some(e.clone()) }),
                             Conn::Ready { connector, tools } => {
-                                let list = byob_plugins::connector_tools_from(&plugin_ref, local, Arc::clone(connector), tools.clone(), &mut names);
+                                let list = byob_plugins::connector_tools_on(server, &plugin_ref, local, Arc::clone(connector), tools.clone(), &mut names);
                                 servers.push(ServerInfo {
                                     name: server.clone(),
                                     state: ServerState::Ready,
                                     tools: u32::try_from(list.len()).unwrap_or(u32::MAX),
                                     error: None,
+                                });
+                                out.apps.push(crate::web::AppServer {
+                                    plugin: id.clone(),
+                                    server: server.clone(),
+                                    local,
+                                    connector: Arc::clone(connector),
+                                    tools: tools.clone(),
+                                    names: list.iter().map(|t| (t.connector_tool().name.clone(), t.spec().name)).collect(),
                                 });
                                 for t in list {
                                     let name = t.spec().name;
@@ -1110,7 +1120,7 @@ fn info(plugin: &Plugin, scope: PluginScope, input: &ComposeIn<'_>, tools: &[Str
                 .iter()
                 .filter_map(|v| {
                     let site = byob_protocol::Site::parse(&v.site)?;
-                    Some(byob_protocol::ViewDecl { id: v.id.clone(), site, title: v.title.clone(), icon: v.icon.clone() })
+                    Some(byob_protocol::ViewDecl { id: v.id.clone(), site, title: v.title.clone(), icon: v.icon.clone(), html: v.html.clone() })
                 })
                 .collect(),
             settings: m

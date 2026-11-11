@@ -181,6 +181,11 @@ impl Helper {
         self.features.has(bit)
     }
 
+    /// It said `Ready` (and so, if it does, which features it has: they come right after).
+    pub fn ready(&self) -> bool {
+        self.ready_at.is_some()
+    }
+
     /// The newest frame, if one arrived since the last call.
     pub fn take_frame(&mut self) -> Option<Frame> {
         let f = self.frame.lock().unwrap_or_else(PoisonError::into_inner).take();

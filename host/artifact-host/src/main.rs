@@ -39,6 +39,9 @@ const MIN_FRAME_GAP: Duration = Duration::from_millis(16);
 const HIDDEN_WAIT: Duration = Duration::from_millis(500);
 /// What the page's error reports start with (see byob-server's artifact shim).
 const ERROR_MARK: &str = "\u{1}byob-error ";
+/// What bridge messages the page posts to its parent start with (the page is top-level
+/// here, so byob's bridge script turns `parent.postMessage(m)` into a marked console line).
+const MESSAGE_MARK: &str = "\u{1}byob-msg ";
 
 fn log(msg: impl AsRef<str>) {
     eprintln!("[byob-artifact-host {}] {}", std::process::id(), msg.as_ref());
@@ -118,6 +121,13 @@ impl WebViewDelegate for Page {
         }
     }
     fn show_console_message(&self, _: WebView, level: servo::ConsoleLogLevel, message: String) {
+        if let Some(m) = message.strip_prefix(MESSAGE_MARK) {
+            match bridge_message(m) {
+                Some(e) => self.push(e),
+                None => log(format!("dropped a bridge message of {} bytes (over {})", m.len(), wire::MAX_MESSAGE)),
+            }
+            return;
+        }
         match parse_error(&message) {
             Some(e) => self.push(e),
             None if std::env::var_os("BYOB_ARTIFACT_HOST_CONSOLE").is_some() => log(format!("console {level:?}: {message}")),
@@ -155,6 +165,41 @@ impl WebViewDelegate for Page {
     fn notify_crashed(&self, _: WebView, reason: String, _: Option<String>) {
         self.push(Event::Error { message: format!("The app crashed: {reason}"), line: 0 });
     }
+}
+
+/// A message the page posted (the JSON text after [`MESSAGE_MARK`]); `None` over the cap.
+fn bridge_message(text: &str) -> Option<Event> {
+    (text.len() <= wire::MAX_MESSAGE).then(|| Event::Message(text.to_owned()))
+}
+
+/// `s` as a JavaScript string literal.
+fn js_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len().saturating_add(2));
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Script that delivers a bridge message to the page as a `message` event from its
+/// "parent" (itself: the page is top-level here), the way an iframe gets its host's posts.
+fn deliver_js(msg: &str) -> String {
+    format!(
+        "(()=>{{let d;try{{d=JSON.parse({})}}catch(e){{return}}let v;try{{v=new MessageEvent('message',{{data:d,origin:'null',source:window}})}}\
+         catch(e){{v=new MessageEvent('message',{{data:d,origin:'null'}})}}dispatchEvent(v)}})()",
+        js_string(msg)
+    )
 }
 
 /// Works around a Servo (0.8) bug: a *collapsed* selection (a caret) whose container is a
@@ -341,6 +386,11 @@ impl Host {
             },
             Request::Shutdown => self.quit = true,
             Request::Visible(visible) => self.set_visible(visible),
+            Request::Message(msg) => {
+                if let Some(v) = &self.view {
+                    v.webview.evaluate_javascript(deliver_js(&msg), |_| {});
+                }
+            }
         }
     }
 
@@ -598,6 +648,16 @@ mod tests {
         let s = url.as_str();
         assert!(s.starts_with("data:text/html;charset=utf-8,%3Cscript%3E"), "{s}");
         assert!(s.ends_with("%3Cp%3Ea%20b%2Bc%23d%3C%2Fp%3E#--byob-bg=%2316171a&--byob-fg=rgb(1,%202,%203)"), "{s}");
+    }
+
+    #[test]
+    fn bridge_messages() {
+        let m = format!("{MESSAGE_MARK}{{\"jsonrpc\":\"2.0\",\"id\":1}}");
+        assert_eq!(bridge_message(m.strip_prefix(MESSAGE_MARK).unwrap()), Some(Event::Message("{\"jsonrpc\":\"2.0\",\"id\":1}".into())));
+        assert_eq!(bridge_message(&"x".repeat(wire::MAX_MESSAGE + 1)), None);
+        assert_eq!(js_string("a\"b\\c\nd\u{2028}\u{1}"), "\"a\\\"b\\\\c\\nd\\u2028\\u0001\"");
+        let js = deliver_js("{\"x\":\"</script>\"}");
+        assert!(js.contains("JSON.parse(\"{\\\"x\\\":\\\"</script>\\\"}\")") && js.contains("dispatchEvent"), "{js}");
     }
 
     #[test]

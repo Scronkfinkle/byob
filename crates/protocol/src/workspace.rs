@@ -147,6 +147,7 @@ impl ClientMsg {
             }
             Self::Plugin { plugin, msg } => crate::version::check_plugin_msg(plugin, msg),
             Self::OpenView { .. } | Self::CloseView { .. } | Self::ViewEvent { .. } => crate::sites::check_sizes(self),
+            Self::WebCall { owner, method, params, .. } => crate::web::check_call(owner, method, params),
             _ => crate::queue::check_sizes(self),
         }
     }
