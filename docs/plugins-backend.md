@@ -76,7 +76,7 @@ unknown fields are ignored by both sides, so either can be newer.
 |---|---|---|
 | `init` | `v` (1), `plugin`, `name`, `version`, `byob` (app version), `caps` (message types the engine handles), `events` (the engine events there are), `settings` (non-secret values; secret ones only as environment variables), `dir`, `scope` (`chat`/`workspace`/`global`), `chat`, `workspace`, `views` (the declared views: `{id, site, title}`), `restart` (0 on the first start) | always the first line of every process |
 | `event` | `event`, plus its fields | `client`: a UI message — `client` (the client's id), `chat` (the chat it looks at), `msg` (any JSON ≤ 256 KiB). `view`: the user did something in one of its views — `view` (id), `site`, `key`, `client`, `chat`, `action`, `values`, `edit`? (see `docs/views.md`); answer with a `view` message. Engine events (only those subscribed), all with `chat`: `chat_opened` {`client`}, `turn_started` {`entry`}, `turn_finished` {`entry`, `error`, `stopped`}, `step_done` {`entry`, `step`, `tool`, `status`, `title`}, `artifact_updated` {`artifact`, `title`, `content_type`, `version`} |
-| `request` | `id` (number), `method`, `params` | answer with a `reply` of the same `id`. `tool`: `params` {`name` (as declared), `args` (the model's arguments), `workspace`, `chat`}; the result is text, `{"text", "files"}` (files relative to the workspace), `{"text", "card": <tree>, "card_view"?, "card_key"?}` (a live card on the tool's step, see below) or any JSON (shown as JSON). `view`: {`site`, `view` (id), `key`, `client`, `chat`}: a client opened the view and the engine has no tree for it; the result is the tree (or `{"view": tree}`) |
+| `request` | `id` (number), `method`, `params` | answer with a `reply` of the same `id`. `tool`: `params` {`name` (as declared), `args` (the model's arguments), `workspace`, `chat`}; the result is text, `{"text", "files"}` (files relative to the workspace), `{"text", "card": <tree>, "card_view"?, "card_key"?}` (a live card on the tool's step, see below) or any JSON (shown as JSON). `view`: {`site`, `view` (id), `key`, `client`, `chat`}: a client opened the view and the engine has no tree for it; the result is the tree (or `{"view": tree}`). `hook`: a declared hook point (see Hooks) |
 | `cancel` | `id` | the caller gave up (stopped by the user, or 60 s passed); a late reply is dropped |
 | `shutdown` | | exit now (stdin closes next) |
 
@@ -132,6 +132,45 @@ A backend tool shows a card on its step by returning `{"text": …, "card": <tre
 a fresh key when `card_key` is). The step keeps the tree it had then; clients show the live
 one, and the user's clicks on it are `view` events with that key.
 
+## Hooks
+
+A backend can sit in the turn pipeline (`docs/architecture.md`, Hooks). Declare each hook
+point it answers:
+
+```json
+"hooks": [
+  {"event": "before_tool_call", "tools": ["delete_file"], "fail": "closed", "timeout_ms": 2000},
+  {"event": "before_prompt", "priority": 700}
+]
+```
+
+`event`: `before_prompt`, `before_request`, `before_tool_call`, `after_tool_call`,
+`on_turn_end`. `priority` (default 100; lower runs first; byob's prompt sections sit at 0–600,
+compaction at 100). `timeout_ms` (default 2000, ≤ 60000). `fail`: `open` (default: a fault or
+timeout counts as continue) or `closed` (it stops the stage: a tool call is denied, a request
+not made). `tools` limits the tool events to those tools. A hook without `native` needs a
+`backend`; it runs while the plugin is on and trusted, on the turn's thread, so it delays
+that turn only.
+
+Each one is a `request` with `method: "hook"` and `params` `{event, …}`:
+
+| event | params | reply `modify` fields |
+|---|---|---|
+| `before_prompt` | `chat`, `workspace`, `sections` [{`id`, `text`}] so far | `add` (texts or {`id`, `text`}, appended), `sections` (the whole new list) |
+| `before_request` | `entry`, `round`, `child`, `messages` (OpenAI format; `null` over 512 KiB), `tools` (names), `estimated_tokens`, `context_window` | `messages` (the whole list; images are dropped), `tools` (names to keep) |
+| `before_tool_call` | `chat`, `workspace`, `tool`, `args`, `access` (read/write/network/execute), `child` | `args` (an object) |
+| `after_tool_call` | `chat`, `workspace`, `tool`, `args`, `result`, `failed`, `child` | `result` (text), `card` (a view tree shown on the step) |
+| `on_turn_end` | `entry`, `chat`, `workspace`, `answer`, `error`, `stopped` | (ignored) |
+
+The `result`: `null`, `{}` or `{"action": "continue"}` carries on; `{"action": "modify", …}`
+(or an object with fields and no `action`) changes things; `{"action": "stop", "reason"}`
+ends the chain (`before_request`: the turn ends with the reason). `before_tool_call` also
+takes `{"action": "allow"}` (run without the permission gate; calls that must always be
+confirmed still ask), `{"action": "deny", "message"}` (not run; the model gets "Not run:
+<message>") and `{"action": "ask", "message"?}` (an approval card a person answers, even with
+`--auto-approve`). An `error` reply, a timeout or an unknown action is a fault in the
+plugin's status and fails open or closed as declared.
+
 ## The Python helper (`byob_plugin`)
 
 ```python
@@ -145,6 +184,9 @@ def bump(by: int = 1): ...
 @byob.on_message              # plugin-channel messages: fn(msg, client)
 @byob.on("turn_finished")     # engine events: fn(event); subscribed for you
 @byob.on_start                # fn(init), after every (re)start
+@byob.hook("before_tool_call")  # a declared hook: fn(params) -> None (continue) or a reply:
+                              # byob.allow(), byob.deny(msg), byob.ask(msg), byob.stop(reason),
+                              # byob.modify(add=[...], args={...}, result=..., card=tree, ...)
 
 byob.card(text, "item", key)  # a tool result with a card (drawn by @view("item"))
 byob.refresh(view_id=None)    # draw views again and send them (after changing state elsewhere)

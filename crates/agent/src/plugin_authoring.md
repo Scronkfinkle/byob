@@ -1,13 +1,13 @@
 ---
 name: plugin-authoring
-description: How to extend byob with plugins - Python tools (make_tool), backends, views (a pane, a header chip, a settings section, step cards), skills, MCP servers, subagents, settings and API keys, and keeping a plugin for later chats.
+description: How to extend byob with plugins - Python tools (make_tool), backends, views (a pane, a header chip, a settings section, step cards), skills, MCP servers, subagents, hooks (approve or deny tool calls, add prompt lines), workspace environments, settings and API keys, and keeping a plugin for later chats.
 ---
 # Writing byob plugins
 
 A plugin is a folder with a `byob-plugin.json` manifest plus files. It can add tools (Python
 scripts or MCP servers), UI (views: a side pane, a header chip, a settings section, cards on
-steps), skills, subagents and one system-prompt line. Plugins live in three
-places; the same id resolves chat > workspace > global:
+steps), skills, subagents, hooks into how turns run (section 9) and one system-prompt line.
+Plugins live in three places; the same id resolves chat > workspace > global:
 
 - this chat's scratch plugins: what you make with `make_tool` (no approval needed);
 - the workspace: `.byob/plugins/<id>/` in the workspace folder (shared with the repo);
@@ -274,8 +274,10 @@ byob's own features are plugins too, built into the app (scope "built in", the l
 specific: any copy with the same id wins): `artifacts` (create/update/read_artifact and the
 prompt part on artifacts), `html-apps` (HTML apps: `guidance.md` is the prompt's rules for
 writing them), `charts` (make_chart, chart artifacts), `markdown`, `images`, `core-tools`
-(file tools, run_command, run_python). `artifacts` and `core-tools` are always on; the
-others can be switched off. `plugin_status(plugin="html-apps", file="guidance.md")` shows a
+(file tools, run_command, run_python), `prompt` (the system prompt's base parts),
+`workspace-instructions` (AGENTS.md), `compaction`, `subagents` (`delegate`) and
+`environments` (Nix, pixi, mise, dev containers). `artifacts`, `core-tools` and `prompt` are
+always on; the others can be switched off. `plugin_status(plugin="html-apps", file="guidance.md")` shows a
 built-in plugin's files.
 
 To change one (e.g. the HTML app rules), fork it: `keep_plugin(plugin="html-apps",
@@ -290,3 +292,45 @@ byob doesn't have shows up as a problem. A plugin of your own may use the same f
 type `{"type": "text/csv", "suffixes": [".csv"], "label": "table", "pick": "a table → .csv"}`
 drawn by an existing renderer (`"renderer": "native:markdown"`, `"text"`). Removing the fork
 (`remove_plugin`) brings the built-in one back.
+
+## 9. Hooks: changing how turns run
+
+A plugin with a backend can sit in the turn pipeline. Declare the hook points in the manifest
+and answer them with `@byob.hook`:
+
+```json
+"backend": "backend.py",
+"hooks": [
+  {"event": "before_tool_call", "tools": ["delete_file"]},
+  {"event": "before_prompt", "priority": 700}
+]
+```
+
+```python
+import byob_plugin as byob
+
+@byob.hook("before_tool_call")      # call: tool, args, access, chat, workspace
+def guard(call):
+    if call["args"].get("path", "").startswith("data/"):
+        return byob.deny("data/ is read-only; write to out/ instead.")
+    # None: carry on (the user's approval settings decide)
+
+@byob.hook("before_prompt")         # p: sections [{id, text}] so far
+def prompt(p):
+    return byob.modify(add=["Reply in British English."])
+
+byob.run()
+```
+
+- Events: `before_prompt` (add prompt lines), `before_request` (`modify(tools=[...])` to cut
+  the tools offered, `stop(reason)` to end the turn), `before_tool_call` (`allow()`,
+  `deny(message)`, `ask(message)`, `modify(args={...})`), `after_tool_call` (`modify(result=
+  "...")`, or `card=` a view tree), `on_turn_end` (just observe).
+- Lower `priority` runs first (default 100). `"fail": "closed"` makes a crash or a slow hook
+  (over `timeout_ms`, default 2000) block the call instead of letting it through.
+- Changes apply from the next message. A hook that raises shows up in `plugin_status` as a
+  fault with the traceback; fix it with `edit_plugin`.
+- A plugin can also add a workspace environment: `"environments": [{"id": "conda", "label":
+  "conda environment", "detect": ["environment.yml"], "command": "python3", "args":
+  ["env.py"]}]`, where `env.py` prints `{"VAR": "value", "PATH": "..."}` as JSON. The user
+  is asked once per workspace before it loads.

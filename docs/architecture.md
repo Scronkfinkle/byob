@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10 (bundled plugins: built-in features as plugins with native bindings; fork to edit)
+Last updated: 2026-11-10 (hooks: the turn pipeline as plugin middleware; prompt, compaction, subagents and environments as bundled plugins)
 
 ## Shape
 
@@ -381,7 +381,10 @@ summary, last message covered) and the next
 request (also after a restart) is built from the latest one plus later messages; the transcript
 keeps every message and clients draw a divider. `ClientMsg::Compact` / `/compact [focus]`
 compacts on demand. A failed or longer-than-before summary changes nothing and
-`fit_history` stays the safety net. `ServerMsg::Usage` feeds the header meter: context in use
+`fit_history` stays the safety net. Compaction is the bundled `compaction` plugin: a native
+`before_request` hook (`compact::CompactionHook`, per-turn state in the hook's slot) plus
+`/compact`; switched off, chats are never compacted, `/compact` goes to the model as text and
+the meter shows no threshold. `ServerMsg::Usage` feeds the header meter: context in use
 (the server's last prompt + completion, else an estimate), window, threshold, chat totals.
 
 ## Message queue
@@ -425,9 +428,18 @@ definition's `tools` and the call's `tools`, at most 25 tool calls and 15 minute
 bounded (12 KB) and headed with what it did (`[subagent explorer · 3 tool calls: read_file ×2,
 list_files · 4.1 s]`), is the tool result, so the parent's context grows only by the report.
 
-- **Parallel.** The tool loop runs calls in order, except `delegate`: every delegation of a
-  round starts on its own thread first, the other calls run meanwhile, then results go into
-  the transcript in call order. One engine-wide counting semaphore (`Slots`) caps running
+- **An ordinary tool.** `delegate` is `delegate::DelegateTool`, made per turn (it holds the
+  turn's agents and models) and offered while the bundled `subagents` plugin is on (manifest
+  `tools: [{native: "delegate"}]`, a `Natives::turn_tools` name; its `before_prompt` hook adds
+  the agents section). It starts the child through the turn's `TurnHost`, a `ToolContext`
+  capability (`ctx.host::<TurnHost>()`: entry, the call's step, inbox, stop flag, tools,
+  hooks); the step becomes the delegation card and the tool marks it as its own
+  (`owns_step`), so the loop doesn't finish it. Children get no host and so can't delegate.
+- **Parallel.** The tool loop runs calls in order, except calls of concurrent tools
+  (`Tool::concurrent`, i.e. `delegate`): they pass the checks, hooks and gate first, then run
+  on threads of their own (each with its own undo journal), the other calls run meanwhile,
+  then results go into the transcript in call order. Concurrent tools are listed last in a
+  request's tools. One engine-wide counting semaphore (`Slots`) caps running
   children at the endpoint's slots minus one for the main thread (llama.cpp `/props`
   `total_slots`, 2 assumed when unknown, at least 1; `subagents.max_parallel` overrides).
   Extra delegations wait in "queued".
@@ -493,8 +505,11 @@ the `web` renderer with Open), `charts` (make_chart, the chart type, `native:cha
 `markdown`, `images` and `core-tools` (file tools, run_command/run_python/install_*,
 the code-running section). `artifacts` and `core-tools` are `locked` (always on: their switch
 is refused with a notice and the UI shows "always on"; a fork with the same id stays locked);
-the others switch like any plugin. Authoring tools (make_tool & co.), `use_skill` and
-`delegate` stay kernel, never plugins.
+the others switch like any plugin. Since the hooks phase they also include `prompt` (locked:
+the base prompt, plugins' prompt parts, the user's instructions), `workspace-instructions`
+(AGENTS.md), `compaction`, `subagents` (`delegate`) and `environments` (nix, pixi, mise,
+containers); see Hooks below. Authoring tools (make_tool & co.) and `use_skill` stay kernel,
+never plugins.
 
 **Native bindings** (`crates/agent/src/natives.rs`). Manifest fields name in-tree Rust by id;
 no code is loaded at run time (no dlopen: `unsafe` is forbidden):
@@ -529,8 +544,59 @@ file)` reads bundled files from memory. Removing the fork brings the built-in ba
 an empty chat lists the switched-on plugins' starters (up to 6), and a click puts the prompt
 in the composer.
 
-Deferred to later phases: delegation/subagents and workspace environment providers as
-bundled plugins (they stay engine code), hooks (P4), plugins replacing render sites.
+Deferred to later phases: plugins replacing render sites; hooks for the trust question and
+for clients' views.
+
+### Hooks: the turn pipeline as middleware
+
+A turn's stages are a chain plugins sit in (`crates/agent/src/hooks.rs`). Hook points are
+always between rounds or calls, never in the middle of a tool call:
+
+| event | when | a hook may |
+|---|---|---|
+| `before_prompt` | once, before a top-level turn's first request | add, change or drop system-prompt sections |
+| `before_request` | before every model request (each round; subagents' too) | replace the messages, cut the tools offered, or stop the turn |
+| `before_tool_call` | before the permission gate of each call (subagents' too) | change the arguments; allow (skip the gate), deny with a message, ask a person |
+| `after_tool_call` | after a call, before the model sees the result | change the result text, attach a card (view tree) to the step |
+| `on_turn_end` | after a top-level turn ended | observe the answer or error |
+
+- **Declared** in the manifest: `hooks: [{event, priority?, native? | (backend), timeout_ms?,
+  fail?, tools?}]` (≤ 16; `tools` filters the two tool events). A hook is **native** (in-tree
+  Rust by id, `Natives::hooks`: `NativeHook` with one method per event, registered with
+  `Natives::hook(id, hook, defaults)`) or answered by the plugin's **backend** (a `hook`
+  request, `docs/plugins-backend.md`; `timeout_ms` default 2000, ≤ 60000).
+- **Order**: by `priority` (lower first, default 100), then precedence (chat > workspace >
+  global > bundled), then plugin id. Each returns continue, modify (natives change things in
+  place, backends return the fields to change) or stop (no later hooks; `before_request`:
+  the turn ends with the reason). In `before_tool_call` the first allow/deny/ask decides.
+  `allow` skips the gate except for must-confirm calls (`always_ask`); `ask` makes the step
+  a must-confirm card, so neither grants nor `--auto-approve` answer it; `deny` refuses with
+  the hook's message ("Not run: …").
+- **Faults**: a backend that errors, times out or answers nonsense is a fault in its
+  status (`plugin_status` shows the model) and, with `fail: "open"` (default), counts as
+  continue; `fail: "closed"` turns it into a stop or deny. A native that panics is skipped.
+- **Where they come from**: `compose` collects the switched-on plugins' hooks (backend ones
+  only while trusted and with their settings); natives nobody the chat sees names keep
+  their default place (`NativeHookReg::defaults`), so engines without plugins behave as
+  before; a native some plugin names runs only while one of those plugins is on. The turn
+  holds them (`Setup::hooks`); `before_prompt` runs on the turn thread (backends may take
+  time), and the engine thread reruns only the natives for its estimates (usage meter,
+  `/compact`) from the chat's last prompt parts (`ChatPrompt`).
+
+What is kernel and what is a bundled plugin on these registries:
+
+| kernel (Rust, not replaceable) | bundled plugins (switchable unless locked; fork to edit) |
+|---|---|
+| turn loop, caps, cancel, the hook host | `prompt` (locked): base prompt (0), plugins' sections and lines (100), user instructions (400) |
+| permission gate + grants (the default policy when no hook decides), sandbox | `workspace-instructions`: AGENTS.md (300) |
+| protocol, store, secrets, plugin loader, trust, authoring tools, `use_skill` | `artifacts` (locked): tools, text type, section, artifact list (600) |
+| child turns (`TurnHost`, a `ToolContext` capability) | `subagents`: `delegate` (a native turn tool) + agents section (500) |
+| environment provider registry (`byob_exec::env::EnvProvider`) | `environments`: nix, pixi, mise, container providers |
+| renderer primitives | `compaction`: `before_request` hook + `/compact`; `core-tools` (locked), `html-apps`, `charts`, `markdown`, `images` |
+
+With the defaults the system prompt is byte-identical to before: the contributors join their
+non-blank sections, trimmed, with blank lines, in the old order (base, plugin sections,
+plugin lines, AGENTS.md, instructions, subagents, artifact list).
 
 **Switches.** `Layer::plugins: {id: bool}` at every settings level (`settings.json`
 `plugins`, the workspace's and the chat's own config); the most specific level that names a
@@ -743,6 +809,17 @@ variables, sandbox access) onto that clean environment, first match winning:
    pointing at byob's registry pinning nixpkgs (seeded from `/etc/nix/registry.json`), since
    the client fetches the global registry itself. So `nix shell nixpkgs#foo --command …` works
    in a run without network.
+
+**Providers are a registry.** Project environments are `byob_exec::env::EnvProvider`s:
+byob's own (ids `nix`, `pixi`, `mise`; `container` switches dev containers the same way) are
+made from what `Found` detects, `Envs::register` adds more, and a plugin declares command
+providers in its manifest: `environments: [{id, label, detect: [files], inputs?, command,
+args?}]` (`CommandProvider`: when the workspace has one of `detect`, the command runs in it,
+sandboxed with network, and prints `{"VAR": "value", "PATH": "…"}` or pixi's
+`{"environment_variables": {…}}`; a file of the plugin in `args` is passed by its full path).
+Each turn's `EnvPlan::providers` says which apply: the bundled `environments` plugin offers
+byob's own (`{native: "nix"}` & co.; off, they're left out), switched-on trusted plugins add
+theirs. The consent question, cache and notes are the same for all.
 
 Failed runs get a one-line hint naming the call to make (`jq: not found`,
 `ModuleNotFoundError`, `pip install`/`apt`/`sudo` attempts). The last resort,

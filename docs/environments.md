@@ -15,7 +15,10 @@ models follow tools and concrete next steps much better than prose, so the desig
 - **Project environments the user agreed to.** If the workspace says how it wants to be
   built (`flake.nix`, `shell.nix`, `pixi.toml`, `mise.toml`, `.venv`,
   `.devcontainer/devcontainer.json`), byob asks once, then every command runs inside that
-  environment without the model having to know about it.
+  environment without the model having to know about it. The providers are a registry
+  (`EnvProvider`): byob's own come with the bundled `environments` plugin, and any plugin can
+  add one in its manifest (`environments`: a file to detect and a command printing the
+  environment as JSON; see `docs/architecture.md`).
 - **Hints on failure.** A failed run that's missing a dependency ends with a single line
   naming the exact call, e.g. `Call install_packages with {"packages": ["imagemagick"]}`.
 - A two-sentence system prompt paragraph, and no long prose.
@@ -222,12 +225,12 @@ its own `pixi.toml` is loaded like a flake (after asking).
 - **Downloading pixi** on first use (see above), if users want it.
 - **Podman** needs a real test (rootless networks, `keep-id`).
 - **devenv** (`devenv.nix`): same shape as the flake (`devenv print-dev-env`). Cheap to add
-  as a `Project` when the `devenv` CLI is present.
+  as an `EnvProvider` when the `devenv` CLI is present.
 - **mise as an installer**: `mise use` would edit the workspace's `mise.toml`, and its
   registry covers CLI tools and runtimes but not Python libraries. A possible backend after
   pixi for hosts that already use mise.
 - **uv projects** (`pyproject.toml` + `uv.lock`): the `.venv` layer covers synced projects;
-  running `uv sync` automatically (network) would be a cheap `Project` behind the same
+  running `uv sync` automatically (network) would be a cheap `EnvProvider` behind the same
   question.
 - **devcontainer features** would need the devcontainer CLI or reimplementing the feature
   install scripts; not planned unless asked for.
