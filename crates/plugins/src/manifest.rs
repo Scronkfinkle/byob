@@ -47,6 +47,26 @@ pub struct Manifest {
     pub backend: Option<BackendDecl>,
     /// Python packages its scripts and backend need (`python.requirements`, pip specs).
     pub requirements: Vec<String>,
+    /// Live views its backend draws at render sites (`views`).
+    pub views: Vec<ManifestView>,
+}
+
+/// Render sites a view may declare.
+pub const VIEW_SITES: [&str; 4] = ["pane", "settings", "status", "card"];
+/// Most views one plugin declares.
+pub const MAX_VIEWS: usize = 16;
+
+/// A view the plugin's backend draws (`views[]`): `{"site": "pane", "id": "todo",
+/// "title": "To do", "icon": "list"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ManifestView {
+    /// `[a-z0-9_-]{1,48}`, unique in the plugin.
+    pub id: String,
+    /// One of [`VIEW_SITES`].
+    pub site: String,
+    /// The plugin's name when left out.
+    pub title: String,
+    pub icon: String,
 }
 
 /// Most `python.requirements` entries.
@@ -372,9 +392,14 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
         return Err(format!("tools[{i}].run is \"backend\" but the plugin has no \"backend\""));
     }
     let requirements = parse_requirements(r.get("python"))?;
+    let name = req_str(r.get("name"), "name")?;
+    let views = parse_views(r.get("views"), &name)?;
+    if backend.is_none() && !views.is_empty() {
+        return Err("views are drawn by the plugin's backend: add \"backend\": \"backend.py\"".into());
+    }
     Ok(Manifest {
         id,
-        name: req_str(r.get("name"), "name")?,
+        name,
         version: opt_str(r.get("version"), "version")?.filter(|v| !v.is_empty()).unwrap_or_else(|| "0.0.0".into()),
         description: opt_str(r.get("description"), "description")?.unwrap_or_default(),
         author,
@@ -388,7 +413,40 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
         platforms,
         backend,
         requirements,
+        views,
     })
+}
+
+/// `"views": [{"site": "pane", "id": "todo", "title": "To do", "icon": "list"}]`.
+fn parse_views(v: Option<&Value>, plugin_name: &str) -> R<Vec<ManifestView>> {
+    let items = list(v, "views")?;
+    if items.len() > MAX_VIEWS {
+        return Err(format!("views: at most {MAX_VIEWS}"));
+    }
+    let mut out: Vec<ManifestView> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let f = format!("views[{i}]");
+        let o = obj(item, &f)?;
+        let site = req_str(o.get("site"), &format!("{f}.site"))?;
+        if !VIEW_SITES.contains(&site.as_str()) {
+            return Err(format!("{f}.site must be one of {}", VIEW_SITES.join(", ")));
+        }
+        let id = match o.get("id") {
+            None => site.clone(),
+            v => req_str(v, &format!("{f}.id"))?,
+        };
+        let id_ok = (1..=48).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'));
+        if !id_ok {
+            return Err(format!("{f}.id must be lowercase letters, digits, _ or -, like \"todo\""));
+        }
+        if out.iter().any(|x| x.id == id) {
+            return Err(format!("{f}.id {id:?} is used twice"));
+        }
+        let title = truncate_chars(&opt_str(o.get("title"), &format!("{f}.title"))?.filter(|t| !t.is_empty()).unwrap_or_else(|| plugin_name.to_owned()), 80);
+        let icon = opt_str(o.get("icon"), &format!("{f}.icon"))?.unwrap_or_default();
+        out.push(ManifestView { id, site, title, icon });
+    }
+    Ok(out)
 }
 
 /// `"backend": "backend.py"`, `{"run": "backend.py", "args": [], "events": []}` or
@@ -700,6 +758,36 @@ mod tests {
             (
                 json!({"id": "a", "name": "x", "python": {"requirements": ["--index-url=http://x"]}}),
                 "byob-plugin.json: python.requirements[0] must be one package spec like \"requests>=2.31\"",
+            ),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(parse_user(raw.clone()).unwrap_err(), want, "for {raw}");
+        }
+    }
+
+    #[test]
+    fn views_at_render_sites() {
+        let m = parse_user(json!({"id": "a", "name": "Todo", "backend": "b.py",
+            "views": [{"site": "pane", "id": "list", "title": "To do", "icon": "list"}, {"site": "status"}]}))
+        .unwrap();
+        assert_eq!(m.views[0], ManifestView { id: "list".into(), site: "pane".into(), title: "To do".into(), icon: "list".into() });
+        assert_eq!((m.views[1].id.as_str(), m.views[1].title.as_str()), ("status", "Todo"), "id defaults to the site, title to the name");
+        let cases = [
+            (
+                json!({"id": "a", "name": "x", "views": [{"site": "pane"}]}),
+                "byob-plugin.json: views are drawn by the plugin's backend: add \"backend\": \"backend.py\"",
+            ),
+            (
+                json!({"id": "a", "name": "x", "backend": "b.py", "views": [{"site": "sidebar"}]}),
+                "byob-plugin.json: views[0].site must be one of pane, settings, status, card",
+            ),
+            (
+                json!({"id": "a", "name": "x", "backend": "b.py", "views": [{"site": "pane", "id": "My View"}]}),
+                "byob-plugin.json: views[0].id must be lowercase letters, digits, _ or -, like \"todo\"",
+            ),
+            (
+                json!({"id": "a", "name": "x", "backend": "b.py", "views": [{"site": "pane"}, {"site": "pane"}]}),
+                "byob-plugin.json: views[1].id \"pane\" is used twice",
             ),
         ];
         for (raw, want) in cases {

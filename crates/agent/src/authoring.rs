@@ -587,6 +587,7 @@ fn new_info(id: &str, dir: &Path) -> PluginInfo {
         commands: Vec::new(),
         servers: Vec::new(),
         backend: None,
+        views: Vec::new(),
         settings: Vec::new(),
         network: false,
         problems: Vec::new(),

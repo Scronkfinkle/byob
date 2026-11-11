@@ -205,6 +205,7 @@ impl Engine {
         for id in clients {
             self.send_extensions(id, false);
         }
+        self.sweep_views();
     }
 
     /// Send client `id` the plugins of the chat it looks at.

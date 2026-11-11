@@ -696,6 +696,14 @@ fn info(plugin: &Plugin, scope: PluginScope, input: &ComposeIn<'_>, tools: &[Str
             commands: plugin.commands.iter().map(|c| c.name.clone()).collect(),
             servers: Vec::new(),
             backend: None,
+            views: m
+                .views
+                .iter()
+                .filter_map(|v| {
+                    let site = byob_protocol::Site::parse(&v.site)?;
+                    Some(byob_protocol::ViewDecl { id: v.id.clone(), site, title: v.title.clone(), icon: v.icon.clone() })
+                })
+                .collect(),
             settings: m
                 .settings
                 .iter()

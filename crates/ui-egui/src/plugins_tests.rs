@@ -27,6 +27,7 @@ pub(crate) fn info(id: &str, scope: PluginScope, origin: PluginOrigin) -> Plugin
         commands: vec![],
         servers: vec![],
         backend: None,
+        views: vec![],
         settings: vec![],
         network: false,
         problems: vec![],
@@ -327,14 +328,14 @@ fn views_draw_plugin_cards_as_before_and_unknown_kinds_as_their_fallback() {
     assert!(has(&older, "Test run failed") && !has(&older, "Keep everywhere"), "an earlier card is only a record");
 
     // A kind nobody registered, and a plugin card from a newer schema: their fallbacks.
-    let grid = View { kind: "sheets.grid".into(), v: 1, data: serde_json::json!({"rows": 3}), fallback: "A **grid** of 3 rows".into() };
+    let grid = View { kind: "sheets.grid".into(), v: 1, data: serde_json::json!({"rows": 3}), fallback: "A **grid** of 3 rows".into(), owner: None };
     let newer = View { v: 99, ..View::of(&c) };
     let s = step_with(10, vec![grid.clone(), newer]);
     let texts = frame(&ctx, vec![], &mut |ui| reg.show_step(ui, &t, &s, &latest, &mut p));
     assert!(has(&texts, "grid") && has(&texts, "of 3 rows"), "{texts:?}");
     assert!(has(&texts, "Plugin scratch") && !has(&texts, "Keep everywhere"), "{texts:?}");
     // An empty fallback still says something.
-    let bare = step_with(11, vec![View { kind: "x.y".into(), v: 0, data: serde_json::Value::Null, fallback: String::new() }]);
+    let bare = step_with(11, vec![View { kind: "x.y".into(), v: 0, data: serde_json::Value::Null, fallback: String::new(), owner: None }]);
     assert!(has(&frame(&ctx, vec![], &mut |ui| reg.show_step(ui, &t, &bare, &latest, &mut p)), "can't show"));
 
     // Registering a renderer draws the kind natively instead.

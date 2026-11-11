@@ -167,6 +167,10 @@ pub struct PluginInfo {
     /// Its backend process, if it declares one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendInfo>,
+    /// The views it declares (13.3+), shown at their sites while it is on (see
+    /// [`crate::sites`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<crate::ViewDecl>,
     #[serde(default)]
     pub settings: Vec<PluginSetting>,
     /// Its tools may use the internet (`permissions.network`).
@@ -388,6 +392,7 @@ mod tests {
             commands: vec![],
             servers: vec![ServerInfo { name: "s".into(), state: ServerState::Connecting, tools: 0, error: None }],
             backend: None,
+            views: vec![],
             settings: vec![PluginSetting { key: "API_KEY".into(), label: "API key".into(), help: None, secret: true, required: true, set: false }],
             network: true,
             problems: vec!["tools/x.py is missing".into()],

@@ -16,18 +16,18 @@ use crate::extensions::PluginsConfig;
 use crate::loop_tests::{Reply, Requests, call, fake_llm};
 use crate::{EngineConfig, EngineHandle, LocalConnection, Policy};
 
-fn have_python() -> bool {
+pub(crate) fn have_python() -> bool {
     std::process::Command::new(&byob_plugins::default_python()[0]).args(["-c", "pass"]).status().is_ok_and(|s| s.success())
 }
 
-struct H {
-    engine: EngineHandle,
-    requests: Requests,
-    home: tempfile::TempDir,
-    _ws: tempfile::TempDir,
+pub(crate) struct H {
+    pub engine: EngineHandle,
+    pub requests: Requests,
+    pub home: tempfile::TempDir,
+    pub _ws: tempfile::TempDir,
 }
 
-fn harness(script: Vec<Reply>, setup: impl FnOnce(&Path)) -> H {
+pub(crate) fn harness(script: Vec<Reply>, setup: impl FnOnce(&Path)) -> H {
     let (url, requests) = fake_llm(script, "final answer");
     let home = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();
@@ -48,7 +48,7 @@ fn harness(script: Vec<Reply>, setup: impl FnOnce(&Path)) -> H {
     H { engine: EngineHandle::spawn_with(config).unwrap(), requests, home, _ws: ws }
 }
 
-fn recv(c: &mut LocalConnection) -> ServerMsg {
+pub(crate) fn recv(c: &mut LocalConnection) -> ServerMsg {
     let start = Instant::now();
     loop {
         if let Some(m) = c.try_recv() {
@@ -64,7 +64,7 @@ fn recv(c: &mut LocalConnection) -> ServerMsg {
     }
 }
 
-fn hello(h: &H) -> (LocalConnection, Extensions) {
+pub(crate) fn hello(h: &H) -> (LocalConnection, Extensions) {
     let mut c = h.engine.connect(Arc::new(|| {}));
     c.send(ClientMsg::hello("test"));
     let mut ext = None;
@@ -87,7 +87,7 @@ fn plugin_msg(c: &mut LocalConnection) -> (String, Value) {
     }
 }
 
-fn turn(c: &mut LocalConnection, text: &str) -> Entry {
+pub(crate) fn turn(c: &mut LocalConnection, text: &str) -> Entry {
     c.send(ClientMsg::SendMessage { text: text.into(), attachments: vec![] });
     let mut entries: Vec<Entry> = Vec::new();
     loop {
@@ -107,7 +107,7 @@ fn turn(c: &mut LocalConnection, text: &str) -> Entry {
     }
 }
 
-fn find<'a>(e: &'a Extensions, id: &str) -> &'a PluginInfo {
+pub(crate) fn find<'a>(e: &'a Extensions, id: &str) -> &'a PluginInfo {
     e.plugins.iter().find(|p| p.id == id).unwrap_or_else(|| panic!("no plugin {id}: {:?}", e.plugins))
 }
 
@@ -128,7 +128,7 @@ def message(msg, client):
 @byob.tool
 def count_clicks(add: int = 0):
     clicks["n"] += add
-    byob.send_view({"type": "text", "text": f"{clicks['n']} clicks"}, key="count")
+    byob.send({"count": f"{clicks['n']} clicks"})
     return f"{clicks['n']} clicks so far"
 
 @byob.on("turn_finished")
@@ -253,16 +253,14 @@ fn a_backend_serves_tools_and_gets_the_events_it_subscribed_to() {
                 assert_eq!(step.status, StepStatus::Done, "{}", step.detail);
                 step_detail = Some(step.detail.clone());
             }
-            ServerMsg::Plugin { msg, .. } if msg["type"] == "view" => view = Some(msg),
+            ServerMsg::Plugin { msg, .. } if msg.get("count").is_some() => view = Some(msg),
             ServerMsg::Plugin { msg, .. } if msg.get("turn_finished").is_some() => finished = Some(msg),
             ServerMsg::EntryFinished { error, .. } => assert_eq!(error, None),
             _ => {}
         }
     }
     assert_eq!(step_detail.as_deref(), Some("5 clicks so far"));
-    let view = view.unwrap();
-    assert_eq!((view["key"].as_str(), view["view"]["text"].as_str()), (Some("count"), Some("5 clicks")));
-    assert!(view.get("client").is_none());
+    assert_eq!(view.unwrap()["count"], "5 clicks");
     assert!(finished.unwrap()["turn_finished"].is_u64());
     let reqs = h.requests.lock().unwrap().clone();
     let tools: Vec<&str> = reqs[0]["tools"].as_array().unwrap().iter().filter_map(|t| t["function"]["name"].as_str()).collect();

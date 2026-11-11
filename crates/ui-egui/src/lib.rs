@@ -237,6 +237,7 @@ impl ByobApp {
                 // No client-side plugin handlers yet.
                 ServerMsg::Plugin { plugin, .. } => self.skip(format!("messages from plugin {plugin:?}")),
                 ServerMsg::Unknown => self.skip("messages of a type this client doesn't know".into()),
+                ServerMsg::LiveView(_) => {}
                 ServerMsg::State(state) => {
                     self.connect.sync(&state);
                     self.state = Some(state);

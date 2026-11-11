@@ -1,0 +1,24 @@
+{
+  "id": "todo-demo",
+  "name": "To-do (demo)",
+  "version": "0.1.0",
+  "description": "A demo of live views: a to-do pane, a count in the header, a settings section and a card on the steps of todo_add. For testing; not shipped on by default (run byob with --plugin examples/plugins/todo-demo).",
+  "icon": "list-checks",
+  "backend": "backend.py",
+  "prompt": "The user has a to-do list (todo-demo plugin). Use todo_add to add items to it.",
+  "views": [
+    {"site": "pane", "id": "list", "title": "To-do", "icon": "list-checks"},
+    {"site": "status", "id": "count", "title": "To-do count"},
+    {"site": "settings", "id": "prefs", "title": "To-do settings"},
+    {"site": "card", "id": "item", "title": "To-do item"}
+  ],
+  "tools": [
+    {
+      "name": "todo_add",
+      "description": "Add an item to the user's to-do list",
+      "params": {"type": "object", "properties": {"text": {"type": "string", "description": "What to do"}}, "required": ["text"]},
+      "run": "backend",
+      "title": "Added to the to-do list: {text}"
+    }
+  ]
+}

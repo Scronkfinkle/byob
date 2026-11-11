@@ -146,6 +146,7 @@ impl ClientMsg {
                 crate::version::check_caps(caps)
             }
             Self::Plugin { plugin, msg } => crate::version::check_plugin_msg(plugin, msg),
+            Self::OpenView { .. } | Self::CloseView { .. } | Self::ViewEvent { .. } => crate::sites::check_sizes(self),
             _ => crate::queue::check_sizes(self),
         }
     }

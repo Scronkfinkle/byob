@@ -12,6 +12,7 @@ pub mod env;
 pub mod media;
 pub mod plugins;
 pub mod queue;
+pub mod sites;
 pub mod tree;
 pub mod usage;
 pub mod version;
@@ -30,6 +31,7 @@ pub use plugins::{
     ServerState, SlashItem, SlashKind,
 };
 pub use queue::{ChatQueue, QueuePause, QueuedMessage};
+pub use sites::{LiveView, Site, ViewDecl, ViewRef};
 pub use usage::{ChatUsage, Compaction};
 pub use version::{PROTOCOL_MAJOR, PROTOCOL_MINOR, Welcome};
 pub use view::{View, ViewData};
@@ -275,6 +277,22 @@ pub enum ClientMsg {
         plugin: String,
         msg: serde_json::Value,
     },
+    /// This client shows live view `view` at its site (13.3+, only when the engine lists
+    /// [`sites::CAP_VIEW_SITES`]): answered with a [`ServerMsg::LiveView`] holding its tree,
+    /// then its changes until [`ClientMsg::CloseView`] or another chat is opened.
+    OpenView {
+        view: ViewRef,
+    },
+    /// This client no longer shows `view`.
+    CloseView {
+        view: ViewRef,
+    },
+    /// The user did something in live view `view` (a click, Enter in a field, a cell edit):
+    /// for the plugin's backend, which answers with a new view.
+    ViewEvent {
+        view: ViewRef,
+        event: tree::Event,
+    },
     /// A message from a newer client this engine doesn't know (answered with a notice).
     #[serde(other)]
     Unknown,
@@ -362,6 +380,9 @@ pub enum ServerMsg {
     /// A message from plugin `plugin` in the engine (the plugin channel; only to clients
     /// that list [`version::CAP_PLUGIN_CHANNEL`]).
     Plugin { plugin: String, msg: serde_json::Value },
+    /// A live view's tree, a change to it, or why it can't be shown (13.3+; only to clients
+    /// that listed [`sites::CAP_VIEW_SITES`] and opened it, see [`sites`]).
+    LiveView(LiveView),
     /// A message from a newer engine this client doesn't know: skip it.
     #[serde(other)]
     Unknown,

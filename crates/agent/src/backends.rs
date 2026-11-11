@@ -33,6 +33,8 @@ pub(crate) struct Entry {
     pub workspace: Option<PathBuf>,
     /// The plugin's fingerprint it was made for.
     fp: u64,
+    /// The views it declares: (id, site).
+    pub views: Vec<(String, byob_protocol::Site)>,
 }
 
 /// Backends by plugin folder.
@@ -76,6 +78,7 @@ impl Backends {
                 chat: (m.scope == PluginScope::Chat).then(|| m.chat.map(str::to_owned)).flatten(),
                 workspace: (m.scope == PluginScope::Workspace).then(|| m.workspace.to_path_buf()),
                 fp: m.fp,
+                views: m.plugin.manifest.views.iter().filter_map(|v| Some((v.id.clone(), byob_protocol::Site::parse(&v.site)?))).collect(),
             },
         );
         backend
@@ -156,6 +159,7 @@ fn make(m: &Make<'_>) -> Backend {
         "scope": m.scope.label(),
         "chat": if m.scope == PluginScope::Chat { m.chat } else { None },
         "workspace": (m.scope == PluginScope::Workspace).then(|| m.workspace.display().to_string()),
+        "views": plugin.manifest.views.iter().map(|v| json!({"id": v.id, "site": v.site, "title": v.title})).collect::<Vec<_>>(),
     });
     let mut env = m.plugin_ref.env.clone();
     let d = dir.display().to_string();
@@ -220,13 +224,8 @@ impl Engine {
             Out::Msg(msg) => {
                 let to = msg.get("client").and_then(Value::as_u64);
                 match msg.get("type").and_then(Value::as_str).unwrap_or_default() {
-                    "view" => {
-                        let mut v = msg.clone();
-                        if let Some(o) = v.as_object_mut() {
-                            o.remove("client");
-                        }
-                        self.backend_send(to, chat.as_deref(), plugin, v);
-                    }
+                    "view" => self.backend_view(dir, &msg),
+                    byob_plugins::backend::CARD_MSG => self.backend_card(dir, plugin, &msg),
                     "notify" => {
                         let inner = msg.get("msg").cloned().unwrap_or(Value::Null);
                         self.backend_send(to, chat.as_deref(), plugin, inner);

@@ -37,6 +37,10 @@ pub struct View {
     /// Markdown shown by a client that can't draw this kind.
     #[serde(default)]
     pub fallback: String,
+    /// A live view this is a snapshot of (13.3+): a client that can (cap
+    /// [`crate::sites::CAP_VIEW_SITES`]) shows the live one and sends its events to the owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<crate::ViewRef>,
 }
 
 /// A typed view: the struct is the `data` schema of kind [`ViewData::KIND`].
@@ -59,7 +63,7 @@ pub fn kind_ok(kind: &str) -> bool {
 impl View {
     /// A typed view (unchecked: built-in data is small).
     pub fn of<T: ViewData>(data: &T) -> Self {
-        Self { kind: T::KIND.to_owned(), v: T::V, data: serde_json::to_value(data).unwrap_or(Value::Null), fallback: data.fallback() }
+        Self { kind: T::KIND.to_owned(), v: T::V, data: serde_json::to_value(data).unwrap_or(Value::Null), fallback: data.fallback(), owner: None }
     }
 
     /// The typed data, if this view is a `T` this build can read.
@@ -136,7 +140,7 @@ mod tests {
         for bad in ["", "plain", ".x", "x.", "a..b", "Byob.card", "a.b c", &format!("a.{}", "x".repeat(MAX_VIEW_KIND_CHARS))] {
             assert!(!kind_ok(bad), "{bad}");
         }
-        let v = |data: Value, fallback: String| View { kind: "x.y".into(), v: 0, data, fallback };
+        let v = |data: Value, fallback: String| View { kind: "x.y".into(), v: 0, data, fallback, owner: None };
         assert!(v(Value::String("x".repeat(MAX_VIEW_DATA_BYTES)), String::new()).check().is_err());
         let long = "é".repeat(MAX_VIEW_FALLBACK_CHARS + 5);
         let big = v(Value::Null, long);

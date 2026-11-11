@@ -281,6 +281,18 @@ impl Backend {
         }
     }
 
+    /// A problem byob found in what it sent (e.g. a view tree it had to fix): kept in its
+    /// status (`faults`) for the model and the user, and passed to the sink as a `fault`.
+    pub fn report_fault(&self, text: &str) {
+        fault(&self.shared, text.to_owned());
+    }
+
+    /// Hand `msg` to the sink as if the backend had sent it (the tool host uses this to pass
+    /// a tool's card on to the engine).
+    pub fn post(&self, msg: Value) {
+        (self.shared.sink)(Out::Msg(msg));
+    }
+
     /// Stop the process for good (this object won't start it again).
     pub fn stop(&self, why: &str) {
         stop(&self.shared, why);
@@ -744,11 +756,34 @@ impl Tool for BackendTool {
             "chat": ctx.chat(),
         });
         match self.backend.request("tool", params, self.timeout, &|| ctx.cancelled()) {
-            Ok(v) => tool_output(v, ctx.workspace),
+            Ok(v) => {
+                if let Some(card) = card_of(&v) {
+                    let mut msg = card;
+                    if let Some(o) = msg.as_object_mut() {
+                        o.insert("type".into(), json!(CARD_MSG));
+                        o.insert("tool".into(), json!(self.name));
+                        o.insert("chat".into(), json!(ctx.chat()));
+                    }
+                    self.backend.post(msg);
+                }
+                tool_output(v, ctx.workspace)
+            }
             Err(e) if e.starts_with("Stopped by the user") => ToolOutput::err(e),
             Err(e) => ToolOutput::err(format!("{} (backend) ran into a problem:\n{e}", self.plugin.name)),
         }
     }
+}
+
+/// The sink message type of a card a backend tool attached to its step (`{"type":
+/// "_tool_card", "tool", "chat", "view"?, "key"?, "tree"}`).
+pub const CARD_MSG: &str = "_tool_card";
+
+/// A tool reply's card (`{"text": …, "card": <view tree>, "card_view"?: id, "card_key"?: k}`):
+/// `{"tree", "view", "key"}`.
+fn card_of(v: &Value) -> Option<Value> {
+    let o = v.as_object()?;
+    let tree = o.get("card").filter(|c| c.is_object())?;
+    Some(json!({"tree": tree, "view": o.get("card_view").and_then(Value::as_str), "key": o.get("card_key").and_then(Value::as_str)}))
 }
 
 /// A tool reply as tool output: text, `{"text": …, "files": […]}`, or any JSON.
@@ -756,7 +791,7 @@ fn tool_output(v: Value, workspace: &Path) -> ToolOutput {
     let (text, files) = match v {
         Value::String(s) => (s, Vec::new()),
         Value::Null => (String::new(), Vec::new()),
-        Value::Object(o) if o.contains_key("text") || o.contains_key("files") => {
+        Value::Object(o) if o.contains_key("text") || o.contains_key("files") || o.contains_key("card") => {
             let text = o.get("text").map(|t| t.as_str().map_or_else(|| t.to_string(), str::to_owned)).unwrap_or_default();
             let files = o.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
             (text, files)

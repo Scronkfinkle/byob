@@ -40,6 +40,7 @@ mod extensions;
 #[cfg(test)]
 mod extensions_tests;
 mod limits;
+mod live_views;
 #[cfg(test)]
 mod loop_tests;
 pub mod permissions;
@@ -52,6 +53,8 @@ mod subagents;
 #[cfg(test)]
 mod test_store;
 mod turn;
+#[cfg(test)]
+mod view_tests;
 #[cfg(test)]
 mod workspace_tests;
 mod workspaces;
@@ -247,6 +250,15 @@ enum Input {
     Connected {
         key: String,
         result: Result<(Arc<dyn byob_plugins::Connector>, Vec<byob_plugins::ConnectorTool>), String>,
+    },
+    /// A plugin backend answered a view request (see `live_views`).
+    ViewReply {
+        dir: PathBuf,
+        view: String,
+        key: String,
+        /// The backend's start count when it answered.
+        starts: u32,
+        result: Result<serde_json::Value, String>,
     },
     /// The backend of the plugin in `dir` said something, started or exited.
     Backend {
@@ -519,6 +531,8 @@ struct Engine {
     plugin_values: BTreeMap<String, BTreeMap<String, String>>,
     /// Views (plugin cards) waiting for their step to finish, by chat: (tool, view).
     step_views: BTreeMap<String, (String, View)>,
+    /// Plugins' live views at render sites, by plugin folder, view and key.
+    live_views: live_views::LiveViews,
     /// Engine-side handlers of the plugin channel.
     channels: PluginChannels,
     /// Each chat's plugin prompt part at its last turn (for usage and compaction estimates).
@@ -588,6 +602,7 @@ impl Engine {
             }),
             plugin_values,
             step_views: BTreeMap::new(),
+            live_views: live_views::LiveViews::default(),
             channels: config.channels,
             ext_prompts: BTreeMap::new(),
             forced_policy: config.policy,
@@ -733,6 +748,8 @@ impl Engine {
         if let Some(client) = self.clients.get_mut(&id) {
             client.chat.clone_from(&chat);
         }
+        // Its views resolve in the new chat (clients open them again after ChatOpened).
+        self.live_views.forget_client(id);
         let workspace = match &summary {
             Some(s) => s.workspace.clone(),
             None => self.new_chat_workspace(id).map(|w| w.id),
@@ -961,6 +978,7 @@ impl Engine {
             }
             Input::Disconnect { id } => {
                 self.clients.remove(&id);
+                self.live_views.forget_client(id);
                 self.gc();
                 self.uploads.forget(id);
                 self.testing.remove(&id);
@@ -992,6 +1010,7 @@ impl Engine {
             }
             Input::Connected { key, result } => self.server_connected(&key, result),
             Input::Backend { dir, plugin, out } => self.backend_out(&dir, &plugin, out),
+            Input::ViewReply { dir, view, key, starts, result } => self.view_reply(&dir, &view, &key, starts, result),
         }
     }
 
@@ -1079,6 +1098,9 @@ impl Engine {
             ClientMsg::ReloadPlugins => self.reload_plugins(id),
             ClientMsg::TrustPlugins { workspace, plugins, trust } => self.trust_plugins(id, &workspace, plugins, trust),
             ClientMsg::Plugin { plugin, msg } => self.plugin_message(id, &plugin, msg),
+            ClientMsg::OpenView { view } => self.open_view(id, view),
+            ClientMsg::CloseView { view } => self.close_view(id, &view),
+            ClientMsg::ViewEvent { view, event } => self.view_event(id, view, event),
             ClientMsg::Unknown => self.notice(id, "this engine doesn't know that request (is the client newer than the engine?)".into()),
         }
     }

@@ -8,16 +8,23 @@ that loop for you:
 
     count = 0
 
+    @byob.view("counter")           # declared in byob-plugin.json "views"
+    def counter():
+        return {"type": "row", "children": [
+            {"type": "text", "text": f"Count: {count}"},
+            {"type": "button", "label": "+", "action": "inc"}]}
+
+    @byob.on_event("counter")       # a click, Enter in a field, a cell edit in that view
+    def clicked(event):             # event["action"], event["values"], event["key"]
+        global count
+        if event["action"] == "inc":
+            count += 1              # byob redraws every view after this
+
     @byob.tool
     def add(n: int = 1):
         global count
         count += n
-        byob.send_view({"type": "text", "text": f"count: {count}"})
         return f"count is now {count}"
-
-    @byob.on_message
-    def clicked(msg, client):
-        byob.send({"echo": msg}, client=client)
 
     @byob.on("turn_finished")
     def done(event):
@@ -25,9 +32,14 @@ that loop for you:
 
     byob.run()
 
+After every view event, tool call and UI message the helper calls each @view function again
+and sends the result; byob sends clients only what changed. Call byob.refresh() after
+changing state anywhere else (a thread, an engine event).
+
 In a backend (once run() is called), print() goes to byob's log of the plugin (stderr).
 """
 
+import inspect
 import json
 import sys
 import threading
@@ -37,14 +49,18 @@ _out = sys.stdout  # the protocol's stream; run() sends print() to stderr instea
 _lock = threading.Lock()
 
 VERSION = 1
-init = {}  # byob's init message: plugin, byob, caps, settings, dir
+init = {}  # byob's init message: plugin, byob, caps, settings, dir, views
 settings = {}  # the plugin's settings that aren't secret (secret ones are environment variables)
 
 _tools = {}
 _events = {}
 _messages = []
 _starts = []
-_views = []
+_views = []  # legacy @on_view handlers: fn(site, key, client)
+_view_fns = {}  # view id -> fn() or fn(key)
+_event_fns = {}  # view id (None: every view) -> [fn(event)]
+_keys = {}  # view id -> keys drawn so far ("" for pane, settings, status; one per card)
+_cards = [0]
 
 
 def _send(msg):
@@ -56,7 +72,8 @@ def _send(msg):
 
 def tool(fn=None, *, name=None):
     """A tool the model can call (declare it in byob-plugin.json with "run": "backend").
-    It gets the model's arguments as keyword arguments and returns text (or a dict)."""
+    It gets the model's arguments as keyword arguments and returns text (or a dict, or
+    byob.card(...) to show a card on its step)."""
     def register(f):
         _tools[name or f.__name__] = f
         return f
@@ -73,7 +90,7 @@ def on(event):
 
 
 def on_message(fn):
-    """Call fn(msg, client) for each message the plugin's UI sends."""
+    """Call fn(msg, client) for each plugin-channel message from a client."""
     _messages.append(fn)
     return fn
 
@@ -85,19 +102,106 @@ def on_start(fn):
 
 
 def on_view(fn):
-    """Call fn(site, key, client) when a client asks for a view; return the view."""
+    """Low level: call fn(site, key, client) for views without a @view function."""
     _views.append(fn)
     return fn
 
 
+def view(view_id):
+    """The function that draws view `view_id` (declared in byob-plugin.json "views"). It
+    returns a view tree (a dict). A card view's function gets the card's key: def f(key)."""
+    def register(f):
+        _view_fns[view_id] = f
+        return f
+    return register
+
+
+def on_event(view_id=None):
+    """Call fn(event) when the user does something in view `view_id` (any view when None).
+    event: {"action", "values" (every named field), "key", "view", "site", "client", "edit"?}.
+    Return None, or {"values": {"field": value}} to also set fields for that user, e.g.
+    {"values": {"new": ""}} to clear an input after Add. Every view is redrawn after it."""
+    if callable(view_id):  # @byob.on_event without parentheses
+        _event_fns.setdefault(None, []).append(view_id)
+        return view_id
+
+    def register(f):
+        _event_fns.setdefault(view_id, []).append(f)
+        return f
+    return register
+
+
+def _site(view_id):
+    for v in init.get("views") or []:
+        if isinstance(v, dict) and v.get("id") == view_id:
+            return v.get("site")
+    return None
+
+
+def _draw(view_id, key):
+    fn = _view_fns[view_id]
+    try:
+        takes_key = len(inspect.signature(fn).parameters) > 0
+    except (TypeError, ValueError):
+        takes_key = True
+    return fn(key) if takes_key else fn()
+
+
+def refresh(view_id=None, values=None, client=None):
+    """Draw view `view_id` (every @view when None) again and send it to byob."""
+    ids = [view_id] if view_id is not None else list(_view_fns)
+    for vid in ids:
+        if vid not in _view_fns:
+            continue
+        keys = set(_keys.get(vid) or ())
+        if _site(vid) != "card":
+            keys.add("")
+        for key in sorted(keys):
+            try:
+                tree = _draw(vid, key)
+            except Exception:
+                traceback.print_exc()
+                fault(f"view {vid}: drawing it failed:\n" + _short_traceback())
+                continue
+            msg = {"type": "view", "id": vid, "key": key, "view": tree}
+            if values:
+                msg["values"] = values
+                msg["client"] = client
+            _send(msg)
+
+
+def card(text, view_id=None, key=None, tree=None):
+    """A tool result that shows a card on the tool's step: `tree`, or what @view(view_id)
+    draws for `key`. Return it from a "run": "backend" tool."""
+    if key is None:
+        _cards[0] += 1
+        key = f"card{_cards[0]}-{threading.get_ident() & 0xffff:x}"
+    key = str(key)
+    if view_id is not None:
+        _keys.setdefault(view_id, set()).add(key)
+        if tree is None and view_id in _view_fns:
+            tree = _draw(view_id, key)
+    out = {"text": str(text), "card": tree, "card_key": key}
+    if view_id is not None:
+        out["card_view"] = view_id
+    return out
+
+
 def send(msg, client=None):
-    """Send msg (any JSON) to the plugin's UI: one client, or every client when None."""
+    """Send msg (any JSON) to clients over the plugin channel: one client, or all when None."""
     _send({"type": "notify", "msg": msg, "client": client})
 
 
-def send_view(view, key="main", site="pane", client=None):
-    """Show `view` (a view tree, a dict) at a render site under `key`."""
-    _send({"type": "view", "site": site, "key": key, "view": view, "client": client})
+def send_view(tree, id=None, key="", values=None, client=None, site=None):
+    """Show `tree` (a view tree, a dict) as view `id` (declared in byob-plugin.json). byob
+    works out what changed and updates every client showing it."""
+    msg = {"type": "view", "id": id, "key": key, "view": tree}
+    if site is not None:
+        msg["site"] = site
+    if values:
+        msg["values"] = values
+        msg["client"] = client
+    _send(msg)
 
 
 def notice(text, level="info"):
@@ -145,15 +249,40 @@ def _request(msg):
             args = params.get("args") or {}
             result = fn(**args) if isinstance(args, dict) else fn(args)
         elif method == "view":
-            if not _views:
-                raise LookupError("this backend has no @on_view handler")
-            result = _views[0](params.get("site"), params.get("key"), params.get("client"))
+            vid, key = params.get("view"), params.get("key") or ""
+            if vid in _view_fns:
+                _keys.setdefault(vid, set()).add(key)
+                result = _draw(vid, key)
+            elif _views:
+                result = _views[0](params.get("site"), key, params.get("client"))
+            else:
+                raise LookupError(f"this backend draws no view {vid!r}: add @byob.view({vid!r}) to a function that returns it")
         else:
             raise LookupError(f"unknown request {method!r}")
         _send({"type": "reply", "id": rid, "result": result})
     except Exception:
         traceback.print_exc()
         _send({"type": "reply", "id": rid, "error": _short_traceback()})
+    if method == "tool":
+        refresh()
+
+
+def _view_event(msg):
+    vid = msg.get("view")
+    _keys.setdefault(vid, set()).add(msg.get("key") or "")
+    handlers = _event_fns.get(vid, []) + _event_fns.get(None, [])
+    if not handlers:
+        fault(f"view {vid}: nothing handles its events; add @byob.on_event({vid!r})")
+    values = None
+    for h in handlers:
+        try:
+            r = h(msg)
+            if isinstance(r, dict) and isinstance(r.get("values"), dict):
+                values = r["values"]
+        except Exception:
+            traceback.print_exc()
+            fault(f"view {vid}: the event handler failed on {msg.get('action')!r}:\n" + _short_traceback())
+    refresh(values=values, client=msg.get("client"))
 
 
 def run(handlers=None):
@@ -193,6 +322,9 @@ def run(handlers=None):
         elif kind == "event":
             if msg.get("event") == "client":
                 _call(_messages, msg.get("msg"), msg.get("client"))
+                refresh()
+            elif msg.get("event") == "view":
+                _view_event(msg)
             else:
                 _call(_events.get(msg.get("event"), []), msg)
         elif kind == "request":

@@ -386,7 +386,7 @@ mod tests {
             views: vec![
                 View::of(&card),
                 // A plugin's view this build has no renderer for: kept as it is.
-                View { kind: "sheets.grid".into(), v: 3, data: json!({"rows": [[1, 2]]}), fallback: "a grid".into() },
+                View { kind: "sheets.grid".into(), v: 3, data: json!({"rows": [[1, 2]]}), fallback: "a grid".into(), owner: None },
             ],
         };
         let new = new_step(&live);
