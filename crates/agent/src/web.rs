@@ -92,6 +92,17 @@ fn content_text(content: Option<&Value>) -> String {
 }
 
 /// An MCP App's HTML from a `resources/read` result.
+/// A document's HTML must stay within [`MAX_DOCUMENT_BYTES`] as it goes on the wire: JSON
+/// escaping (quotes, backslashes, control characters) can make it much larger than the
+/// file, past what one frame to a remote client holds.
+fn check_document(html: &str) -> Result<(), String> {
+    let sent = serde_json::to_string(html).map_or(usize::MAX, |s| s.len());
+    if sent > MAX_DOCUMENT_BYTES {
+        return Err(format!("is too large ({} KB as sent, at most {} KB)", sent / 1024, MAX_DOCUMENT_BYTES / 1024));
+    }
+    Ok(())
+}
+
 fn mcp_document(read: &Value, uri: &str) -> Result<WebDocument, String> {
     let contents = read.get("contents").and_then(Value::as_array).ok_or("the server sent no contents")?;
     let item = contents.iter().find(|c| c.get("uri").and_then(Value::as_str) == Some(uri)).or_else(|| contents.first()).ok_or("the resource is empty")?;
@@ -106,9 +117,7 @@ fn mcp_document(read: &Value, uri: &str) -> Result<WebDocument, String> {
         }
         (None, None) => return Err("the resource has neither text nor blob".into()),
     };
-    if html.len() > MAX_DOCUMENT_BYTES {
-        return Err(format!("the app is too large ({} KB, at most {} KB)", html.len() / 1024, MAX_DOCUMENT_BYTES / 1024));
-    }
+    check_document(&html).map_err(|e| format!("the app {e}"))?;
     let meta = item.pointer("/_meta/ui").cloned().unwrap_or(Value::Null);
     let csp = meta.get("csp").cloned().unwrap_or(Value::Null);
     if !csp.is_null() {
@@ -308,6 +317,7 @@ impl Engine {
                         return Err(WebError::new(REFUSED, format!("{file} is too large")));
                     }
                     let html = std::fs::read_to_string(&path).map_err(|e| WebError::new(REFUSED, format!("{file}: {e}")))?;
+                    check_document(&html).map_err(|e| WebError::new(REFUSED, format!("{file} {e}")))?;
                     serde_json::to_value(WebDocument { html, ..Default::default() }).map_err(|e| WebError::new(REFUSED, e.to_string()))
                 });
             }
@@ -410,6 +420,15 @@ mod tests {
         assert!(mcp_document(&json!({"contents": [{"mimeType": "image/png", "blob": "AA=="}]}), "ui://w/d").is_err());
         assert!(mcp_document(&json!({"contents": []}), "ui://w/d").is_err());
         assert!(mcp_document(&json!({}), "ui://w/d").is_err());
+    }
+
+    #[test]
+    fn a_document_must_fit_as_sent_not_just_as_stored() {
+        let doc = |html: String| json!({"contents": [{"uri": "ui://w/d", "mimeType": "text/html;profile=mcp-app", "text": html}]});
+        assert!(mcp_document(&doc("a".repeat(2 * 1024 * 1024)), "ui://w/d").is_ok());
+        // 2 MB of quotes is 4 MB escaped: past a frame.
+        let e = mcp_document(&doc("\"".repeat(2 * 1024 * 1024)), "ui://w/d").unwrap_err();
+        assert!(e.contains("too large"), "{e}");
     }
 
     #[test]

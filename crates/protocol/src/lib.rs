@@ -841,6 +841,30 @@ impl ServerMsg {
         serde_json::to_string(self).unwrap_or_default()
     }
 
+    /// The frame for a remote client: the JSON, or, if that is over [`MAX_FRAME_BYTES`] (the
+    /// client would refuse it and wait forever), a small message in its place that the
+    /// client acts on: a view change becomes `reset` (the client opens the view again and
+    /// gets the whole tree), a view's tree an `error` at its site, a web reply an error
+    /// answer to its call, anything else a notice.
+    pub fn to_frame(&self) -> String {
+        let json = self.to_json();
+        if json.len() <= MAX_FRAME_BYTES {
+            return json;
+        }
+        let why = format!("it is too large to send over this connection ({} KB, at most {} KB)", json.len() / 1024, MAX_FRAME_BYTES / 1024);
+        let instead = match self {
+            Self::LiveView(lv) if lv.tree.is_none() => Self::LiveView(LiveView { view: lv.view.clone(), reset: true, ..Default::default() }),
+            Self::LiveView(lv) => {
+                Self::LiveView(LiveView { view: lv.view.clone(), error: Some(format!("This view can't be shown here: {why}.")), ..Default::default() })
+            }
+            Self::WebReply { call, .. } => {
+                Self::WebReply { call: *call, result: None, error: Some(web::WebError::new(-32000, format!("byob couldn't send the answer: {why}"))) }
+            }
+            _ => Self::Notice { level: NoticeLevel::Error, text: format!("byob couldn't send an update: {why}.") },
+        };
+        instead.to_json()
+    }
+
     /// Parse an untrusted frame.
     pub fn from_json(text: &str) -> Result<Self, String> {
         if text.len() > MAX_FRAME_BYTES {
@@ -871,6 +895,37 @@ mod tests {
     fn wire_format_is_tagged() {
         let json = ServerMsg::Notice { level: NoticeLevel::Info, text: "hi".into() }.to_json();
         assert_eq!(json, r#"{"type":"notice","level":"info","text":"hi"}"#);
+    }
+
+    #[test]
+    fn a_message_too_large_for_a_frame_is_sent_as_something_the_client_acts_on() {
+        let big = "x".repeat(MAX_FRAME_BYTES);
+        let r = ViewRef::new("p", "v", "k");
+        let small = ServerMsg::Notice { level: NoticeLevel::Info, text: "hi".into() };
+        assert_eq!(small.to_frame(), small.to_json());
+        let frame = |m: ServerMsg| {
+            let f = m.to_frame();
+            assert!(f.len() < 1024, "{} bytes", f.len());
+            ServerMsg::from_json(&f).unwrap()
+        };
+        let mut values = serde_json::Map::new();
+        values.insert("f".into(), serde_json::json!(big));
+        let change = LiveView { view: r.clone(), values, ..Default::default() };
+        assert_eq!(frame(ServerMsg::LiveView(change)), ServerMsg::LiveView(LiveView { view: r.clone(), reset: true, ..Default::default() }));
+        // Within the tree caps (64 K characters a text), over a frame all the same.
+        let texts: Vec<_> = (0..100).map(|_| serde_json::json!({"type": "text", "text": "y".repeat(60_000)})).collect();
+        let (tree, faults) = tree::decode(serde_json::json!({"type": "column", "children": texts}));
+        assert!(faults.is_empty(), "{faults:?}");
+        match frame(ServerMsg::LiveView(LiveView { view: r.clone(), tree: Some(tree), ..Default::default() })) {
+            ServerMsg::LiveView(lv) => assert!(lv.view == r && lv.tree.is_none() && lv.error.is_some_and(|e| e.contains("too large"))),
+            other => panic!("{other:?}"),
+        }
+        match frame(ServerMsg::WebReply { call: 9, result: Some(serde_json::json!(big)), error: None }) {
+            ServerMsg::WebReply { call: 9, result: None, error: Some(e) } => assert!(e.message.contains("too large")),
+            other => panic!("{other:?}"),
+        }
+        let plugin = ServerMsg::Plugin { plugin: "p".into(), msg: serde_json::json!(big) };
+        assert!(matches!(frame(plugin), ServerMsg::Notice { level: NoticeLevel::Error, .. }));
     }
 
     #[test]
