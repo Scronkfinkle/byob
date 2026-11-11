@@ -4,11 +4,14 @@
 
 # byob — bring your own brain
 
-**A desktop AI coworker for the model you already run.** Point byob at any OpenAI-compatible
-endpoint (llama-server, Ollama, LM Studio, vLLM or a hosted API) and it works in a folder with
-you: reads and writes files, runs code, and builds spreadsheets, charts, documents and small
-apps beside the chat. Native Rust, one binary, and the same UI opens in a browser, so your phone
-can use it too.
+**A native desktop AI coworker for the model you already run.** Point byob at any
+OpenAI-compatible endpoint (llama-server, Ollama, LM Studio, vLLM or a hosted API) and it works
+in a folder with you: reads and writes files, runs code, and builds spreadsheets, charts,
+documents and small apps beside the chat.
+
+byob is desktop software, not a web page in a window: one program for Linux, macOS and Windows
+that draws its own interface on the GPU, with no Electron, webview or browser engine inside.
+(HTML apps the model writes are the one exception: they run in an optional, separate helper.)
 
 ![byob building a two-sheet budget workbook: the spreadsheet fills in beside the chat as the model writes it](docs/media/hero.gif)
 
@@ -16,6 +19,9 @@ can use it too.
 
 ## What it does
 
+- **A real desktop app.** One executable, a 12–22 MB download, and native file dialogs,
+  drag and drop and keyboard shortcuts. The browser UI is the reverse of the usual arrangement: the same native interface
+  compiled to WebAssembly, so a tab or your phone gets the identical app, live on the same session.
 - **Your model, your machine.** No bundled inference and no account: any OpenAI-compatible URL.
   First run finds local servers on their usual ports; tool calling falls back to prompt-based
   calls when the server has none.
@@ -26,7 +32,7 @@ can use it too.
   cards with diffs; undo per turn.
 - **Workspaces.** A folder with its own settings and where commands run: this machine, a Nix dev
   shell or a Docker/Podman container. Settings layer global → workspace → chat.
-- **Everywhere you are.** `byob --serve` puts the same live session in a browser; with
+- **Everywhere you are.** `byob --serve` opens that session to browsers too; with
   `tailscale serve` it's on your phone.
 - **Everything is a plugin.** The prompt, the core tools, artifacts, spreadsheets, subagents and
   compaction are bundled plugins on the same API anyone gets. Plugins add tools, draw UI (panes,
