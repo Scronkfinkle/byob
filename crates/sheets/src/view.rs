@@ -1,6 +1,5 @@
-//! The grid view the artifact pane shows (`view:sheet`) and the user's edits in it (the
-//! Python plugin's `draw` and `on_sheet_event`): the same tree, window paging, formula text
-//! (`i`), frozen strips, tabs, and draft versions.
+//! The grid view the artifact pane shows (`view:sheet`) and the user's edits in it: the
+//! tree, window paging, formula text (`i`), frozen strips, tabs, and draft versions.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -57,7 +56,7 @@ pub fn view_book(store: &mut Store, a: &Value) -> Result<(Which, bool, String), 
         && v.as_f64() != l.as_f64()
     {
         store.version_book(Path::new(&path), fmt)?;
-        let note = format!("version {}, read-only (the latest is {})", crate::py::pystr(v), crate::py::pystr(l));
+        let note = format!("version {}, read-only (the latest is {})", crate::text::pystr(v), crate::text::pystr(l));
         return Ok((Which::Old(path.into(), fmt), false, note));
     }
     store.artifact_entry(&aid, Path::new(&path), fmt, version.and_then(Value::as_i64))?;
@@ -290,11 +289,11 @@ impl Views {
         };
         let mut labels = Vec::new();
         if op == "edit" {
-            let v = g.get("value").filter(|v| !v.is_null()).map(crate::py::pystr).unwrap_or_default();
+            let v = g.get("value").filter(|v| !v.is_null()).map(crate::text::pystr).unwrap_or_default();
             book.put_text(sh, row + 1, col + 1, &v)?;
             labels.push(label(book, row + 1, col + 1, row + 1, col + 1));
         } else if op == "paste" {
-            let text = g.get("text").filter(|v| crate::store::truthy(Some(v))).map(crate::py::pystr).unwrap_or_default();
+            let text = g.get("text").filter(|v| crate::store::truthy(Some(v))).map(crate::text::pystr).unwrap_or_default();
             let text = text.replace("\r\n", "\n").replace('\r', "\n");
             let mut lines: Vec<&str> = text.split('\n').collect();
             if lines.last() == Some(&"") {

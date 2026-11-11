@@ -347,15 +347,16 @@ A type can also be drawn by your own backend view: declare `"views": [{"site": "
 `{"id", "version", "path", …}` (the version's file to read). To save what the user changed
 in it, write a file and call `byob.save_artifact(path, a["chat"], id=a["id"], draft=True)`;
 a backend tool saves a new version by returning `{"text": "…", "artifact": {"id": …, "file":
-path}}`. The bundled `sheets` plugin (spreadsheets, `fork` it to read) works this way, with a
-`grid` node.
+path}}`. The bundled `sheets` plugin (spreadsheets) works this way, with a `grid` node.
 
-Some built-in plugins have a **native twin**: `sheets-native` offers exactly the same tools
-and grid as `sheets`, but its backend is Rust inside byob (`"backend": {"native": "sheets"}`)
-instead of `backend.py`. It ships switched off; both `"provides": "spreadsheets"`, so when
-both are on only one is used (the one switched on in settings wins, then by id) and the other
-shows "not used". To change how spreadsheets work, fork the Python one (`sheets`) and edit
-`backend.py` (no rebuild); the native one changes only with byob's source.
+Some built-in plugins are **native**: their backend is Rust inside byob, named in the
+manifest with `"backend": {"native": "<id>"}` instead of a script. `sheets` is one
+(`"backend": {"native": "sheets"}`). Forking it gives you its manifest (tools, prompt, types,
+renderers, view) to edit, but its code stays byob's: the fork still runs the built-in
+backend, and what the tools do changes only with byob's source. To make spreadsheets work
+differently, write your own plugin with a `backend.py` and `"provides": "spreadsheets"` (as
+`sheets` declares): when both are on only one is used (the one switched on in settings wins,
+then by id) and the other shows "not used"; or switch `sheets` off.
 
 ## 9. Hooks: changing how turns run
 

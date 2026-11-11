@@ -1,7 +1,7 @@
 # byob extensibility demos
 
 Hands-on tours of what the `exp/extensibility` branch added: view trees at render sites, long-lived
-plugin backends, bundled plugins (fork to edit, twins), turn hooks, environment providers, web
+plugin backends, bundled plugins (fork to edit), turn hooks, environment providers, web
 views and MCP Apps, spreadsheets.
 
 ```sh
@@ -35,7 +35,7 @@ demos/screenshots.sh [shot...]  # regenerate demos/screenshots/*.png headlessly 
 | [hooks](#hooks) | `before_tool_call` (forced ask / deny), `before_prompt`, `after_tool_call` cards | yes |
 | [env-provider](#env-provider) | a third-party workspace environment + the consent card | yes |
 | [mcp-app](#mcp-app) | an MCP App card (Refresh/Ask) + a plugin HTML pane | yes |
-| [sheets / sheets-native](#sheets) | the spreadsheet plugin and its Rust twin; "Use this one" | yes |
+| [sheets](#sheets) | the spreadsheet plugin: native backend, editable grid | yes |
 | [fork](#fork) | fork a built-in plugin (html-apps), change its guidance, see the effect | yes |
 
 Plugins used here: `examples/plugins/todo-demo` and `demos/plugins/*` (guard, toolbox-env,
@@ -165,15 +165,13 @@ Screenshot: `mcp-app.png`.
 
 ## sheets
 
-**Shows:** spreadsheets as a bundled plugin: `sheets` (Python backend on IronCalc, venv built on
-first use) and `sheets-native` (the same backend in Rust, in-process). Same tools, same `grid`
-view (an editable spreadsheet drawn natively), `"provides": "spreadsheets"` so one is used at a
-time. The workspace is seeded with `sales.csv` (24 rows: month, region, units, revenue).
+**Shows:** spreadsheets as a bundled plugin, `sheets`, whose backend is Rust inside byob
+(IronCalc, in-process: nothing to install). Its tools write formulas and formats; its `grid`
+view is an editable spreadsheet drawn natively. The workspace is seeded with `sales.csv`
+(24 rows: month, region, units, revenue).
 
 ```sh
-demos/run.sh sheets           # the Python one (default); first use builds its venv (~4 s, needs pip)
-demos/run.sh sheets-native    # the profile switches sheets-native on, so it wins
-demos/run.sh sheets-compare   # both, headless and back to back, timed, then the measured table
+demos/run.sh sheets
 ```
 
 1. Send: `Open sales.csv as a spreadsheet and add a column with the month-over-month growth % of revenue for each region.`
@@ -181,14 +179,10 @@ demos/run.sh sheets-compare   # both, headless and back to back, timed, then the
    the grid; scroll; the original `sales.csv` is untouched.
 2. Send: `Build a monthly budget spreadsheet with categories, amounts and a summary by category.`
    (also the empty chat's **Make a budget** starter) → an `.xlsx` artifact with formulas.
-3. **Settings → Plugins**: in `sheets-native`, "Spreadsheets" says *not used: Spreadsheets
-   (native) is* with **Use this one**; press it to switch back (and vice versa). The grid reopens
-   on the winner.
-4. `sheets-compare` prints both runs' wall times and the numbers from
-   `docs/sheets-comparison.md`; `BYOB_COMPARE_BENCH=1` also runs the backend benchmark with the
-   venv the sheets run made. Screenshots land in `/tmp/byob-demo/sheets-compare/`.
+3. **Settings → Plugins → Spreadsheets**: it declares `"provides": "spreadsheets"`, so a
+   plugin of yours that provides the same can replace it ("Use this one").
 
-Screenshots: `sheets.png`, `sheets-native.png`, `sheets-switch.png`.
+Screenshot: `sheets.png`.
 
 ## fork
 
@@ -217,5 +211,4 @@ Screenshots: `fork-settings.png`, `fork.png`.
 `demos/screenshots.sh` runs each shot through `scripts/headless.sh` (Xvfb, debug build, no
 window on your screen) with the same throwaway profiles, sending the prompts above where the
 model is needed (one shot at a time; ~1–4 min each on silicon). Shots: `todo todo-settings
-self-plugin hooks env-provider env-provider-consent mcp-app sheets sheets-native sheets-switch
-fork-settings fork`. Model output varies run to run; the logs are in `/tmp/byob-demo/<demo>/`.
+self-plugin hooks env-provider env-provider-consent mcp-app sheets fork-settings fork`. Model output varies run to run; the logs are in `/tmp/byob-demo/<demo>/`.

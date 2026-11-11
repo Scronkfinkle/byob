@@ -1,9 +1,9 @@
-//! A1 references: forgiving ranges, and formulas shifted like Excel's fill and copy (the
-//! Python plugin's `sheets_refs.py`, rule for rule). Rows and columns are 1-based.
+//! A1 references: forgiving ranges, and formulas shifted like Excel's fill and copy. Rows
+//! and columns are 1-based.
 
 use serde_json::Value;
 
-use crate::py::{pystr, repr, repr_str};
+use crate::text::{pystr, repr, repr_str};
 
 pub const MAX_ROWS: i64 = 1_048_576;
 pub const MAX_COLS: i64 = 16_384;
@@ -285,8 +285,8 @@ fn digits_at(b: &[u8], i: usize) -> usize {
     b[i..].iter().take_while(|c| c.is_ascii_digit()).count()
 }
 
-/// The reference token at `i` (end, token), if any (the three reference alternatives of
-/// sheets_refs.py's `_REF`, in order).
+/// The reference token at `i` (end, token), if any (the three reference alternatives, in
+/// order).
 fn reference(b: &[u8], i: usize) -> Option<(usize, Tok)> {
     let prev = if i == 0 { None } else { b.get(i - 1).copied() };
     let lb = |extra: &[u8]| prev.is_none_or(|p| !(word(p) || p == b'.' || p == b'$' || extra.contains(&p)));

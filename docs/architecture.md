@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10 (web surfaces: the page bridge, MCP Apps, plugin web views; view-backed artifact renderers, the `grid` node, bundled plugins materialized to disk, spreadsheets as a bundled plugin)
+Last updated: 2026-11-11 (spreadsheets: the `sheets` plugin is native only; web surfaces: the page bridge, MCP Apps, plugin web views; view-backed artifact renderers, the `grid` node, bundled plugins materialized to disk, spreadsheets as a bundled plugin)
 
 ## Shape
 
@@ -397,29 +397,27 @@ Servo's MPL-2.0 code and tokio never enter byob; see AGENTS.md §3). The helper 
 
 Spreadsheets dogfood the plugin API: no core code knows them. `crates/bundled/plugins/sheets`
 declares `.xlsx` (binary), `.csv` and `.tsv` artifact types, renders all three with its
-`sheet` view (`view:sheet`, a `grid` node), and serves the model's tools from a Python
-backend on IronCalc (`python.requirements: ["ironcalc==0.9.1"]`, a per-plugin venv):
-`create_sheet`, `describe_sheet` (sheets, used range, header row, a profile per column,
-samples, error cells), `read_cells` (paged TSV, values or formulas), `write_cells` (`start` +
-rows or a cell map; `=` is a formula), `fill` (a first-row formula over a range with relative
-references), `edit_sheet` (sheets, rows/columns, sort, freeze) and `format_cells`. Every write
-recalculates, saves a new version (a tool result's `artifact`) and returns the written
-range's values, every error cell and lints (`IFERROR(…,"")`, typed numbers among formulas,
-cells the user changed since). A CSV becomes an `.xlsx` version on its first write. The
-grid's edits, pastes and clears go to the backend, which saves drafts. Without IronCalc (no
-network for the venv) the backend still starts, says so in every write and reads CSV/TSV.
+`sheet` view (`view:sheet`, a `grid` node), and serves the model's tools from a native
+backend (`"backend": {"native": "sheets"}`): `create_sheet`, `describe_sheet` (sheets, used
+range, header row, a profile per column, samples, error cells), `read_cells` (paged TSV,
+values or formulas), `write_cells` (`start` + rows or a cell map; `=` is a formula), `fill` (a
+first-row formula over a range with relative references), `edit_sheet` (sheets, rows/columns,
+sort, freeze) and `format_cells`. Every write recalculates, saves a new version (a tool
+result's `artifact`) and returns the written range's values, every error cell and lints
+(`IFERROR(…,"")`, typed numbers among formulas, cells the user changed since). A CSV becomes
+an `.xlsx` version on its first write. The grid's edits, pastes and clears go to the backend,
+which saves drafts.
 
-**Native twin (`sheets-native`, `crates/sheets` → `byob-sheets`, L4).** The same backend in
-Rust on the `ironcalc` crate (pinned `=0.9.1`, the version the Python package wraps, so both
-compute the same), registered by the app as native backend `sheets` (default feature
-`native-sheets`; not linked into `ui-egui` or the wasm build). Its manifest is the Python
-one's with `"backend": {"native": "sheets"}` and no Python requirements; a test keeps the
-tools, prompt, types, renderers and view identical (`native_backend_tests.rs`). It ships
-switched off (`"enabled": false`); both declare `"provides": "spreadsheets"` (see Plugins).
-Parity: the Python plugin's own test suite runs against the native binary
-(`BYOB_SHEETS_BACKEND`), and `test_parity.py` sends both backends the same calls and compares
-every reply, tree and message (`crates/sheets/tests/parity.rs`). Measured differences:
-`docs/sheets-comparison.md`.
+The backend is `crates/sheets` (`byob-sheets`, L4) on the `ironcalc` crate (pinned `=0.9.1`),
+registered by the app as native backend `sheets` (default feature `native-sheets`; not
+linked into `ui-egui` or the wasm build; without it the plugin reports its backend missing).
+It runs in byob's process on a thread of its own, needs no Python or network, and starts in
+well under a millisecond. Its tests (`crates/sheets/tests/`) drive it in-process through a
+fake byob with an artifact store: behaviour tests (`functional.rs`) and whole-reply snapshots
+of every tool, a 38-formula battery, the grid and CSV/TSV handling (`snapshots.rs`,
+`tests/snapshots/`; `BYOB_BLESS=1` rewrites them). The plugin declares `"provides":
+"spreadsheets"`, so a third-party spreadsheets plugin can replace it (see Plugins).
+`tests/bench.rs` (ignored) measures it.
 
 ### Web surfaces: the bridge, MCP Apps, plugin web views
 
@@ -630,8 +628,8 @@ byob's own features ship as plugins on the same manifest and registries third pa
 text, the artifacts prompt section), `html-apps` (`text/html` + `guidance.md` + its check +
 the `web` renderer with Open), `charts` (make_chart, the chart type, `native:chart`),
 `markdown`, `images` and `core-tools` (file tools, run_command/run_python/install_*,
-the code-running section), `sheets` (spreadsheets: a Python backend on IronCalc, see
-Spreadsheets below) and its native twin `sheets-native` (off by default). `artifacts` and `core-tools` are `locked` (always on: their switch
+the code-running section), `sheets` (spreadsheets: a native backend on IronCalc, see
+Spreadsheets below). `artifacts` and `core-tools` are `locked` (always on: their switch
 is refused with a notice and the UI shows "always on"; a fork with the same id stays locked);
 the others switch like any plugin. Since the hooks phase they also include `prompt` (locked:
 the base prompt, plugins' prompt parts, the user's instructions), `workspace-instructions`

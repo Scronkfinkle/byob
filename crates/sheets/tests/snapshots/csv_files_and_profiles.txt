@@ -1,0 +1,600 @@
+### 1 describe_sheet {"sheet":"data/big.csv"}
+data/big.csv: 1 sheet (Sheet1).
+Sheet "Sheet1": used range A1:F401 (401 rows × 6 columns).
+Header in row 1; data in rows 2–401.
+  A "date": date, 400 values, 2024-01-01 … 2024-12-28
+  B "category": text, 400 values, 4 distinct: Fun (118), Rent (110), Travel (93), Food (79)
+  C "amount": number, 400 values, min 3.11, max 899.88, sum 185472.55
+  D "paid": bool, 400 values, 400 TRUE/FALSE
+  E "zip": text, 400 values, 396 distinct, e.g. 02867, 03226, 05808, 07654, 01021
+  F "note": text, 400 values, 400 distinct, e.g. x, 0, x, 1, x, 10, x, 100, x, 101
+First rows:
+	A	B	C	D	E	F
+1	date	category	amount	paid	zip	note
+2	2024-01-01	Rent	169.71	FALSE	01454	x, 0
+3	2024-02-02	Fun	684	TRUE	09327	x, 1
+4	2024-03-03	Food	517.77	FALSE	02222	x, 2
+No error cells.
+### 2 read_cells {"sheet":"data/big.csv"}
+Sheet1!A1:F200 values, rows 1–200 of 1–401:
+	A	B	C	D	E	F
+1	date	category	amount	paid	zip	note
+2	2024-01-01	Rent	169.71	FALSE	01454	x, 0
+3	2024-02-02	Fun	684	TRUE	09327	x, 1
+4	2024-03-03	Food	517.77	FALSE	02222	x, 2
+5	2024-04-04	Fun	347.85	TRUE	09513	x, 3
+6	2024-05-05	Rent	854.75	FALSE	07166	x, 4
+7	2024-06-06	Travel	730.67	FALSE	02608	x, 5
+8	2024-07-07	Fun	167.79	TRUE	07827	x, 6
+9	2024-08-08	Rent	495.08	FALSE	05223	x, 7
+10	2024-09-09	Travel	139.98	FALSE	09929	x, 8
+11	2024-10-10	Fun	657.97	TRUE	05489	x, 9
+12	2024-11-11	Food	183.79	TRUE	01641	x, 10
+13	2024-12-12	Rent	393.4	FALSE	02559	x, 11
+14	2024-01-13	Fun	651.92	TRUE	03610	x, 12
+15	2024-02-14	Travel	734.99	FALSE	05670	x, 13
+16	2024-03-15	Food	274.45	TRUE	07587	x, 14
+17	2024-04-16	Rent	650.25	TRUE	06270	x, 15
+18	2024-05-17	Fun	256.09	FALSE	09162	x, 16
+19	2024-06-18	Rent	216.7	TRUE	02204	x, 17
+20	2024-07-19	Rent	199.78	TRUE	05548	x, 18
+21	2024-08-20	Rent	30.3	FALSE	07811	x, 19
+22	2024-09-21	Food	124.33	FALSE	02867	x, 20
+23	2024-10-22	Rent	46.7	FALSE	07684	x, 21
+24	2024-11-23	Fun	514.3	TRUE	03495	x, 22
+25	2024-12-24	Food	259.19	FALSE	08552	x, 23
+26	2024-01-25	Rent	412.57	FALSE	08197	x, 24
+27	2024-02-26	Fun	258.01	FALSE	03192	x, 25
+28	2024-03-27	Travel	865.98	TRUE	07400	x, 26
+29	2024-04-28	Food	763.92	FALSE	02801	x, 27
+30	2024-05-01	Rent	428.82	FALSE	06155	x, 28
+31	2024-06-02	Rent	522.24	FALSE	01558	x, 29
+32	2024-07-03	Rent	649.2	TRUE	05944	x, 30
+33	2024-08-04	Travel	417.78	FALSE	01195	x, 31
+34	2024-09-05	Rent	808.55	TRUE	07885	x, 32
+35	2024-10-06	Fun	474.89	TRUE	07651	x, 33
+36	2024-11-07	Fun	320.61	FALSE	03926	x, 34
+37	2024-12-08	Travel	177.97	TRUE	06008	x, 35
+38	2024-01-09	Fun	55.84	TRUE	03318	x, 36
+39	2024-02-10	Food	3.81	FALSE	08566	x, 37
+40	2024-03-11	Fun	733.63	TRUE	07806	x, 38
+41	2024-04-12	Travel	587.12	FALSE	03912	x, 39
+42	2024-05-13	Travel	853.76	FALSE	05092	x, 40
+43	2024-06-14	Food	645.78	TRUE	08639	x, 41
+44	2024-07-15	Fun	247.99	TRUE	05208	x, 42
+45	2024-08-16	Rent	355.21	FALSE	07406	x, 43
+46	2024-09-17	Rent	798.55	FALSE	04251	x, 44
+47	2024-10-18	Rent	10.93	FALSE	03575	x, 45
+48	2024-11-19	Rent	664.34	TRUE	03981	x, 46
+49	2024-12-20	Rent	766.61	TRUE	09752	x, 47
+50	2024-01-21	Fun	52.22	FALSE	03863	x, 48
+51	2024-02-22	Travel	114.87	FALSE	06003	x, 49
+52	2024-03-23	Travel	899.88	FALSE	06462	x, 50
+53	2024-04-24	Fun	755.94	TRUE	05282	x, 51
+54	2024-05-25	Fun	572.16	FALSE	01979	x, 52
+55	2024-06-26	Rent	831.44	TRUE	03163	x, 53
+56	2024-07-27	Food	417.44	TRUE	07134	x, 54
+57	2024-08-28	Travel	852.94	FALSE	02871	x, 55
+58	2024-09-01	Travel	851.47	FALSE	04545	x, 56
+59	2024-10-02	Travel	273.32	TRUE	01298	x, 57
+60	2024-11-03	Fun	163.34	TRUE	08432	x, 58
+61	2024-12-04	Rent	455.36	FALSE	08634	x, 59
+62	2024-01-05	Travel	461.65	FALSE	03258	x, 60
+63	2024-02-06	Food	420.38	FALSE	09167	x, 61
+64	2024-03-07	Fun	878.49	FALSE	07826	x, 62
+65	2024-04-08	Travel	674.01	FALSE	06540	x, 63
+66	2024-05-09	Rent	842.84	FALSE	09775	x, 64
+67	2024-06-10	Food	714.51	FALSE	04976	x, 65
+68	2024-07-11	Travel	480.9	TRUE	07287	x, 66
+69	2024-08-12	Travel	194.2	TRUE	09871	x, 67
+70	2024-09-13	Fun	839.88	TRUE	04819	x, 68
+71	2024-10-14	Food	377.71	FALSE	06552	x, 69
+72	2024-11-15	Fun	342.62	FALSE	05160	x, 70
+73	2024-12-16	Fun	526.19	FALSE	07274	x, 71
+74	2024-01-17	Travel	82.23	TRUE	03444	x, 72
+75	2024-02-18	Food	108.15	FALSE	03642	x, 73
+76	2024-03-19	Rent	628.28	FALSE	07336	x, 74
+77	2024-04-20	Travel	240.51	TRUE	02517	x, 75
+78	2024-05-21	Travel	19.14	TRUE	08011	x, 76
+79	2024-06-22	Travel	160.59	FALSE	06851	x, 77
+80	2024-07-23	Travel	582.13	FALSE	07127	x, 78
+81	2024-08-24	Food	467.6	TRUE	05927	x, 79
+82	2024-09-25	Food	697.77	FALSE	07025	x, 80
+83	2024-10-26	Travel	19.06	FALSE	03431	x, 81
+84	2024-11-27	Travel	366.62	FALSE	06967	x, 82
+85	2024-12-28	Fun	645.18	FALSE	09745	x, 83
+86	2024-01-01	Fun	206.39	FALSE	02352	x, 84
+87	2024-02-02	Rent	373.2	FALSE	02242	x, 85
+88	2024-03-03	Fun	809.06	FALSE	09159	x, 86
+89	2024-04-04	Fun	407.34	TRUE	06243	x, 87
+90	2024-05-05	Food	170.04	FALSE	02683	x, 88
+91	2024-06-06	Travel	593.75	TRUE	09161	x, 89
+92	2024-07-07	Rent	885.15	TRUE	02143	x, 90
+93	2024-08-08	Rent	788.39	FALSE	01334	x, 91
+94	2024-09-09	Fun	837.63	TRUE	07350	x, 92
+95	2024-10-10	Fun	292.6	TRUE	03568	x, 93
+96	2024-11-11	Travel	349.46	FALSE	03252	x, 94
+97	2024-12-12	Fun	794.89	TRUE	08109	x, 95
+98	2024-01-13	Food	478.83	TRUE	03135	x, 96
+99	2024-02-14	Travel	87.19	TRUE	01526	x, 97
+100	2024-03-15	Rent	789.31	TRUE	09339	x, 98
+101	2024-04-16	Fun	737.65	FALSE	05826	x, 99
+102	2024-05-17	Food	153.55	TRUE	07124	x, 100
+103	2024-06-18	Travel	398.54	FALSE	05437	x, 101
+104	2024-07-19	Travel	210.5	FALSE	02713	x, 102
+105	2024-08-20	Travel	79.99	TRUE	02924	x, 103
+106	2024-09-21	Fun	792.07	TRUE	07688	x, 104
+107	2024-10-22	Food	368.34	TRUE	08869	x, 105
+108	2024-11-23	Food	145.34	FALSE	06247	x, 106
+109	2024-12-24	Rent	702.47	TRUE	08895	x, 107
+110	2024-01-25	Rent	348.32	TRUE	07334	x, 108
+111	2024-02-26	Fun	190.09	FALSE	07088	x, 109
+112	2024-03-27	Rent	368.13	TRUE	06205	x, 110
+113	2024-04-28	Rent	408.92	FALSE	04652	x, 111
+114	2024-05-01	Food	812.4	TRUE	03429	x, 112
+115	2024-06-02	Travel	194.8	FALSE	02459	x, 113
+116	2024-07-03	Travel	55.95	TRUE	05078	x, 114
+117	2024-08-04	Fun	257.82	FALSE	04869	x, 115
+118	2024-09-05	Fun	817.36	FALSE	03917	x, 116
+119	2024-10-06	Travel	817.33	FALSE	05647	x, 117
+120	2024-11-07	Rent	602.75	TRUE	06354	x, 118
+121	2024-12-08	Rent	132.59	TRUE	06525	x, 119
+122	2024-01-09	Rent	401.29	FALSE	04764	x, 120
+123	2024-02-10	Food	230.71	FALSE	02785	x, 121
+124	2024-03-11	Rent	191.21	FALSE	04209	x, 122
+125	2024-04-12	Fun	271.37	TRUE	09147	x, 123
+126	2024-05-13	Rent	508.3	TRUE	05530	x, 124
+127	2024-06-14	Travel	114.58	FALSE	01868	x, 125
+128	2024-07-15	Rent	228.11	TRUE	04747	x, 126
+129	2024-08-16	Food	188.69	FALSE	05938	x, 127
+130	2024-09-17	Fun	212.98	TRUE	04909	x, 128
+131	2024-10-18	Fun	750.27	TRUE	08557	x, 129
+132	2024-11-19	Travel	538.88	FALSE	07109	x, 130
+133	2024-12-20	Food	557	TRUE	07267	x, 131
+134	2024-01-21	Rent	791.38	TRUE	05808	x, 132
+135	2024-02-22	Fun	764.47	FALSE	08907	x, 133
+136	2024-03-23	Travel	399.42	TRUE	06386	x, 134
+137	2024-04-24	Food	254.71	FALSE	06763	x, 135
+138	2024-05-25	Rent	816.33	TRUE	06450	x, 136
+139	2024-06-26	Rent	142.12	TRUE	08586	x, 137
+140	2024-07-27	Food	368.35	FALSE	03772	x, 138
+141	2024-08-28	Rent	599.04	FALSE	06174	x, 139
+142	2024-09-01	Fun	339.25	FALSE	08551	x, 140
+143	2024-10-02	Fun	453.42	FALSE	04549	x, 141
+144	2024-11-03	Travel	564.79	FALSE	09521	x, 142
+145	2024-12-04	Fun	648.46	TRUE	02060	x, 143
+146	2024-01-05	Rent	231.19	TRUE	07342	x, 144
+147	2024-02-06	Rent	449.77	FALSE	04695	x, 145
+148	2024-03-07	Fun	37.91	TRUE	06786	x, 146
+149	2024-04-08	Travel	894.01	FALSE	06094	x, 147
+150	2024-05-09	Rent	472.14	TRUE	09315	x, 148
+151	2024-06-10	Food	207.53	FALSE	07690	x, 149
+152	2024-07-11	Rent	270.42	TRUE	06463	x, 150
+153	2024-08-12	Travel	476.44	TRUE	04901	x, 151
+154	2024-09-13	Rent	554.15	TRUE	03162	x, 152
+155	2024-10-14	Food	735.8	TRUE	07758	x, 153
+156	2024-11-15	Food	331.25	TRUE	09988	x, 154
+157	2024-12-16	Food	866.5	TRUE	02750	x, 155
+158	2024-01-17	Food	893.71	TRUE	04562	x, 156
+159	2024-02-18	Fun	334.01	TRUE	02219	x, 157
+160	2024-03-19	Fun	429.36	FALSE	05561	x, 158
+161	2024-04-20	Rent	869.67	TRUE	05269	x, 159
+162	2024-05-21	Fun	665.24	TRUE	05637	x, 160
+163	2024-06-22	Fun	671.41	TRUE	08665	x, 161
+164	2024-07-23	Fun	5	FALSE	09927	x, 162
+165	2024-08-24	Travel	602.64	FALSE	09102	x, 163
+166	2024-09-25	Rent	759.03	TRUE	02260	x, 164
+167	2024-10-26	Rent	19.37	FALSE	05096	x, 165
+168	2024-11-27	Travel	498.52	FALSE	08708	x, 166
+169	2024-12-28	Fun	890.64	FALSE	02307	x, 167
+170	2024-01-01	Rent	614.54	TRUE	08158	x, 168
+171	2024-02-02	Travel	499.75	TRUE	01859	x, 169
+172	2024-03-03	Rent	559.67	FALSE	07694	x, 170
+173	2024-04-04	Travel	520.67	TRUE	07291	x, 171
+174	2024-05-05	Fun	197.08	FALSE	06545	x, 172
+175	2024-06-06	Travel	239.74	FALSE	05898	x, 173
+176	2024-07-07	Travel	102.87	TRUE	03638	x, 174
+177	2024-08-08	Food	355.6	FALSE	07654	x, 175
+178	2024-09-09	Food	756.59	FALSE	07730	x, 176
+179	2024-10-10	Rent	177.17	FALSE	02673	x, 177
+180	2024-11-11	Travel	858.32	TRUE	04786	x, 178
+181	2024-12-12	Rent	213.37	FALSE	07122	x, 179
+182	2024-01-13	Food	314.68	FALSE	06544	x, 180
+183	2024-02-14	Rent	59.93	FALSE	05072	x, 181
+184	2024-03-15	Food	15.89	FALSE	02660	x, 182
+185	2024-04-16	Food	335.22	FALSE	04213	x, 183
+186	2024-05-17	Fun	94.03	TRUE	09331	x, 184
+187	2024-06-18	Food	607.97	TRUE	02232	x, 185
+188	2024-07-19	Fun	445.74	FALSE	07642	x, 186
+189	2024-08-20	Fun	158.2	FALSE	03281	x, 187
+190	2024-09-21	Travel	755.95	FALSE	08276	x, 188
+191	2024-10-22	Travel	882.45	FALSE	03256	x, 189
+192	2024-11-23	Fun	526.9	FALSE	06730	x, 190
+193	2024-12-24	Travel	899.45	TRUE	06417	x, 191
+194	2024-01-25	Fun	12.16	FALSE	06800	x, 192
+195	2024-02-26	Food	231.28	FALSE	08349	x, 193
+196	2024-03-27	Fun	76.1	FALSE	04190	x, 194
+197	2024-04-28	Rent	817.87	TRUE	03669	x, 195
+198	2024-05-01	Fun	869.24	TRUE	09886	x, 196
+199	2024-06-02	Fun	751.37	TRUE	04776	x, 197
+200	2024-07-03	Food	575.22	FALSE	04460	x, 198
+More rows: read_cells(range="A201:F401").
+### 3 describe_sheet {"sheet":"semi.csv"}
+semi.csv: 1 sheet (Sheet1).
+Sheet "Sheet1": used range A1:C3 (3 rows × 3 columns).
+Header in row 1; data in rows 2–3.
+  A "a": number, 2 values, min 1, max 4, sum 5
+  B "b": number, 2 values, min 2, max 5, sum 7
+  C "c": number, 2 values, min 3, max 6, sum 9
+First rows:
+	A	B	C
+1	a	b	c
+2	1	2	3
+3	4	5	6
+No error cells.
+### 4 read_cells {"sheet":"semi.csv"}
+Sheet1!A1:C3 values, rows 1–3 of 1–3:
+	A	B	C
+1	a	b	c
+2	1	2	3
+3	4	5	6
+### 5 describe_sheet {"sheet":"t.tsv"}
+t.tsv: 1 sheet (Sheet1).
+Sheet "Sheet1": used range A1:B3 (3 rows × 2 columns).
+Header in row 1; data in rows 2–3.
+  A "k": text, 2 values, 2 distinct: x (1), y (1)
+  B "v": number, 1 values, 1 blank, min 1, max 1, sum 1
+First rows:
+	A	B
+1	k	v
+2	x	1
+3	y	
+No error cells.
+### 6 read_cells {"sheet":"t.tsv"}
+Sheet1!A1:B3 values, rows 1–3 of 1–3:
+	A	B
+1	k	v
+2	x	1
+3	y	
+### 7 read_cells {"range":"A201:F","sheet":"data/big.csv"}
+Sheet1!A201:F400 values, rows 201–400 of 201–401:
+	A	B	C	D	E	F
+201	2024-08-04	Food	596.74	TRUE	05199	x, 199
+202	2024-09-05	Fun	164.67	FALSE	02034	x, 200
+203	2024-10-06	Rent	518.45	TRUE	07254	x, 201
+204	2024-11-07	Fun	311.89	TRUE	08413	x, 202
+205	2024-12-08	Travel	233.62	TRUE	01607	x, 203
+206	2024-01-09	Food	128.71	FALSE	01975	x, 204
+207	2024-02-10	Rent	7.68	FALSE	07804	x, 205
+208	2024-03-11	Rent	514.34	FALSE	09055	x, 206
+209	2024-04-12	Fun	626.38	TRUE	05009	x, 207
+210	2024-05-13	Rent	431.82	TRUE	03890	x, 208
+211	2024-06-14	Fun	293.96	TRUE	02023	x, 209
+212	2024-07-15	Fun	516.56	FALSE	06200	x, 210
+213	2024-08-16	Travel	155.35	FALSE	04039	x, 211
+214	2024-09-17	Fun	642.22	TRUE	09791	x, 212
+215	2024-10-18	Fun	836.1	TRUE	05920	x, 213
+216	2024-11-19	Travel	518	FALSE	07793	x, 214
+217	2024-12-20	Rent	814.28	FALSE	01946	x, 215
+218	2024-01-21	Travel	409.44	TRUE	05042	x, 216
+219	2024-02-22	Food	867.65	FALSE	01986	x, 217
+220	2024-03-23	Fun	419.87	FALSE	01262	x, 218
+221	2024-04-24	Rent	503.72	FALSE	08936	x, 219
+222	2024-05-25	Fun	179.98	FALSE	06916	x, 220
+223	2024-06-26	Travel	188.83	FALSE	05760	x, 221
+224	2024-07-27	Travel	245.08	FALSE	02872	x, 222
+225	2024-08-28	Rent	407.28	FALSE	03998	x, 223
+226	2024-09-01	Fun	605.25	TRUE	05025	x, 224
+227	2024-10-02	Rent	352.69	TRUE	01826	x, 225
+228	2024-11-03	Rent	714.96	FALSE	08163	x, 226
+229	2024-12-04	Travel	763.45	FALSE	07013	x, 227
+230	2024-01-05	Travel	422.77	FALSE	06451	x, 228
+231	2024-02-06	Travel	515.17	TRUE	02223	x, 229
+232	2024-03-07	Rent	194.97	FALSE	03156	x, 230
+233	2024-04-08	Rent	641.84	TRUE	03127	x, 231
+234	2024-05-09	Fun	563.56	FALSE	07506	x, 232
+235	2024-06-10	Rent	174.85	TRUE	09090	x, 233
+236	2024-07-11	Food	129.29	TRUE	04792	x, 234
+237	2024-08-12	Fun	184.62	FALSE	04551	x, 235
+238	2024-09-13	Food	227.93	TRUE	04050	x, 236
+239	2024-10-14	Rent	476.34	FALSE	04339	x, 237
+240	2024-11-15	Travel	475.07	FALSE	08425	x, 238
+241	2024-12-16	Food	434.82	FALSE	05060	x, 239
+242	2024-01-17	Travel	238.78	TRUE	08339	x, 240
+243	2024-02-18	Fun	256.81	TRUE	08543	x, 241
+244	2024-03-19	Travel	173.32	FALSE	01823	x, 242
+245	2024-04-20	Rent	671.66	TRUE	04148	x, 243
+246	2024-05-21	Travel	490.76	TRUE	04242	x, 244
+247	2024-06-22	Food	467.43	FALSE	05669	x, 245
+248	2024-07-23	Travel	145.03	TRUE	02190	x, 246
+249	2024-08-24	Fun	737.37	TRUE	01593	x, 247
+250	2024-09-25	Food	82.43	FALSE	04504	x, 248
+251	2024-10-26	Fun	504.98	TRUE	01085	x, 249
+252	2024-11-27	Fun	298.01	FALSE	01562	x, 250
+253	2024-12-28	Travel	851.58	TRUE	03104	x, 251
+254	2024-01-01	Rent	481.63	FALSE	09174	x, 252
+255	2024-02-02	Travel	434.87	FALSE	09518	x, 253
+256	2024-03-03	Rent	455.07	FALSE	09185	x, 254
+257	2024-04-04	Rent	692.12	FALSE	09759	x, 255
+258	2024-05-05	Travel	283.49	FALSE	08141	x, 256
+259	2024-06-06	Food	426.34	TRUE	07136	x, 257
+260	2024-07-07	Fun	848.6	FALSE	02156	x, 258
+261	2024-08-08	Food	449.99	TRUE	06670	x, 259
+262	2024-09-09	Fun	606.28	FALSE	08028	x, 260
+263	2024-10-10	Rent	719.72	FALSE	07591	x, 261
+264	2024-11-11	Fun	215	TRUE	07180	x, 262
+265	2024-12-12	Rent	139.99	FALSE	06249	x, 263
+266	2024-01-13	Travel	422.7	FALSE	09355	x, 264
+267	2024-02-14	Food	883.25	TRUE	04358	x, 265
+268	2024-03-15	Food	445.79	TRUE	08792	x, 266
+269	2024-04-16	Rent	400.39	FALSE	09245	x, 267
+270	2024-05-17	Fun	283.02	TRUE	01844	x, 268
+271	2024-06-18	Travel	356.77	FALSE	01764	x, 269
+272	2024-07-19	Rent	773.19	FALSE	04937	x, 270
+273	2024-08-20	Rent	819.92	FALSE	03990	x, 271
+274	2024-09-21	Rent	92.91	FALSE	02756	x, 272
+275	2024-10-22	Fun	131.49	TRUE	02452	x, 273
+276	2024-11-23	Fun	256.65	FALSE	02593	x, 274
+277	2024-12-24	Fun	890.79	FALSE	02292	x, 275
+278	2024-01-25	Travel	409.81	TRUE	08486	x, 276
+279	2024-02-26	Fun	356.98	TRUE	05428	x, 277
+280	2024-03-27	Food	486.8	FALSE	06228	x, 278
+281	2024-04-28	Fun	869.85	FALSE	07302	x, 279
+282	2024-05-01	Fun	637.57	TRUE	04628	x, 280
+283	2024-06-02	Fun	557.57	TRUE	06572	x, 281
+284	2024-07-03	Food	3.11	TRUE	04372	x, 282
+285	2024-08-04	Rent	847.82	FALSE	08362	x, 283
+286	2024-09-05	Fun	117.64	TRUE	06292	x, 284
+287	2024-10-06	Rent	519.88	FALSE	05469	x, 285
+288	2024-11-07	Fun	76.24	FALSE	05414	x, 286
+289	2024-12-08	Food	710.42	FALSE	06416	x, 287
+290	2024-01-09	Fun	727.52	FALSE	03226	x, 288
+291	2024-02-10	Rent	748.77	TRUE	08821	x, 289
+292	2024-03-11	Travel	495.13	FALSE	09246	x, 290
+293	2024-04-12	Fun	28.63	TRUE	05350	x, 291
+294	2024-05-13	Travel	801.66	TRUE	09108	x, 292
+295	2024-06-14	Fun	798.56	FALSE	04510	x, 293
+296	2024-07-15	Rent	618.36	TRUE	09714	x, 294
+297	2024-08-16	Rent	46.58	FALSE	07830	x, 295
+298	2024-09-17	Rent	713.15	TRUE	07049	x, 296
+299	2024-10-18	Rent	634.68	FALSE	09746	x, 297
+300	2024-11-19	Rent	856.98	TRUE	03010	x, 298
+301	2024-12-20	Fun	873.37	TRUE	08876	x, 299
+302	2024-01-21	Fun	321.09	TRUE	02122	x, 300
+303	2024-02-22	Fun	725.46	FALSE	03941	x, 301
+304	2024-03-23	Travel	527.23	FALSE	06440	x, 302
+305	2024-04-24	Fun	571.44	FALSE	07618	x, 303
+306	2024-05-25	Food	394.87	TRUE	05449	x, 304
+307	2024-06-26	Food	596.78	TRUE	05651	x, 305
+308	2024-07-27	Rent	370.68	TRUE	08077	x, 306
+309	2024-08-28	Travel	54.91	TRUE	05134	x, 307
+310	2024-09-01	Food	489.11	TRUE	02468	x, 308
+311	2024-10-02	Fun	808.54	FALSE	06970	x, 309
+312	2024-11-03	Food	869.53	TRUE	07120	x, 310
+313	2024-12-04	Food	277.68	TRUE	08986	x, 311
+314	2024-01-05	Rent	864.76	TRUE	05808	x, 312
+315	2024-02-06	Travel	673.68	FALSE	06011	x, 313
+316	2024-03-07	Fun	601.51	FALSE	09883	x, 314
+317	2024-04-08	Fun	525.52	FALSE	08867	x, 315
+318	2024-05-09	Rent	855.81	TRUE	08191	x, 316
+319	2024-06-10	Rent	862.42	FALSE	04410	x, 317
+320	2024-07-11	Travel	347.01	FALSE	01369	x, 318
+321	2024-08-12	Fun	615.38	TRUE	05746	x, 319
+322	2024-09-13	Rent	801.76	TRUE	09364	x, 320
+323	2024-10-14	Travel	63.53	FALSE	05420	x, 321
+324	2024-11-15	Rent	676.25	FALSE	08625	x, 322
+325	2024-12-16	Food	590.56	FALSE	05087	x, 323
+326	2024-01-17	Fun	204.13	FALSE	04149	x, 324
+327	2024-02-18	Fun	730.82	FALSE	06900	x, 325
+328	2024-03-19	Rent	781.32	FALSE	09121	x, 326
+329	2024-04-20	Travel	788.12	TRUE	04615	x, 327
+330	2024-05-21	Fun	460.56	TRUE	06748	x, 328
+331	2024-06-22	Rent	167.82	FALSE	01761	x, 329
+332	2024-07-23	Travel	562.52	TRUE	04840	x, 330
+333	2024-08-24	Food	338.3	FALSE	07027	x, 331
+334	2024-09-25	Food	288.61	FALSE	01613	x, 332
+335	2024-10-26	Fun	664.14	TRUE	05356	x, 333
+336	2024-11-27	Rent	335.59	FALSE	05076	x, 334
+337	2024-12-28	Travel	91.11	TRUE	04230	x, 335
+338	2024-01-01	Travel	215.55	TRUE	09865	x, 336
+339	2024-02-02	Food	500.98	FALSE	04246	x, 337
+340	2024-03-03	Food	522.09	TRUE	07499	x, 338
+341	2024-04-04	Travel	220.23	TRUE	01295	x, 339
+342	2024-05-05	Food	272.6	TRUE	06447	x, 340
+343	2024-06-06	Rent	504.06	FALSE	03226	x, 341
+344	2024-07-07	Travel	521.04	FALSE	02471	x, 342
+345	2024-08-08	Travel	116	TRUE	07581	x, 343
+346	2024-09-09	Rent	262.62	TRUE	01302	x, 344
+347	2024-10-10	Rent	37.28	FALSE	06372	x, 345
+348	2024-11-11	Food	201.21	FALSE	01065	x, 346
+349	2024-12-12	Rent	5.16	FALSE	04606	x, 347
+350	2024-01-13	Rent	863.02	TRUE	07463	x, 348
+351	2024-02-14	Rent	135.13	TRUE	08239	x, 349
+352	2024-03-15	Food	794.14	FALSE	05666	x, 350
+353	2024-04-16	Fun	646.17	FALSE	03806	x, 351
+354	2024-05-17	Rent	40.4	FALSE	06190	x, 352
+355	2024-06-18	Travel	696.53	FALSE	05991	x, 353
+356	2024-07-19	Rent	690.79	TRUE	01165	x, 354
+357	2024-08-20	Rent	753.51	FALSE	05895	x, 355
+358	2024-09-21	Food	99.45	FALSE	06617	x, 356
+359	2024-10-22	Food	211.52	TRUE	01071	x, 357
+360	2024-11-23	Food	227.7	FALSE	06367	x, 358
+361	2024-12-24	Travel	312.71	TRUE	07847	x, 359
+362	2024-01-25	Fun	29.46	TRUE	02565	x, 360
+363	2024-02-26	Fun	837.57	TRUE	08631	x, 361
+364	2024-03-27	Fun	748.54	FALSE	08214	x, 362
+365	2024-04-28	Rent	764.56	TRUE	08735	x, 363
+366	2024-05-01	Rent	569.1	FALSE	01959	x, 364
+367	2024-06-02	Rent	759.72	TRUE	03933	x, 365
+368	2024-07-03	Food	890.58	TRUE	04484	x, 366
+369	2024-08-04	Travel	597.41	FALSE	07028	x, 367
+370	2024-09-05	Rent	237.97	TRUE	06133	x, 368
+371	2024-10-06	Fun	386.48	FALSE	07230	x, 369
+372	2024-11-07	Fun	751.16	FALSE	06481	x, 370
+373	2024-12-08	Fun	347.21	TRUE	08900	x, 371
+374	2024-01-09	Rent	864.49	FALSE	05294	x, 372
+375	2024-02-10	Food	39.32	FALSE	02867	x, 373
+376	2024-03-11	Food	536.24	FALSE	01976	x, 374
+377	2024-04-12	Food	772.68	FALSE	01021	x, 375
+378	2024-05-13	Food	757.6	TRUE	03775	x, 376
+379	2024-06-14	Food	652.26	TRUE	04715	x, 377
+380	2024-07-15	Fun	791.09	TRUE	06319	x, 378
+381	2024-08-16	Food	427.2	FALSE	07681	x, 379
+382	2024-09-17	Travel	124.82	FALSE	05773	x, 380
+383	2024-10-18	Travel	714.12	FALSE	09182	x, 381
+384	2024-11-19	Fun	230.19	FALSE	09992	x, 382
+385	2024-12-20	Travel	418.19	FALSE	02920	x, 383
+386	2024-01-21	Fun	536.26	FALSE	06776	x, 384
+387	2024-02-22	Fun	109.54	TRUE	05143	x, 385
+388	2024-03-23	Fun	774.73	TRUE	02758	x, 386
+389	2024-04-24	Travel	650.63	FALSE	03427	x, 387
+390	2024-05-25	Fun	106.9	TRUE	09144	x, 388
+391	2024-06-26	Travel	548.15	FALSE	01994	x, 389
+392	2024-07-27	Fun	476.79	FALSE	07654	x, 390
+393	2024-08-28	Food	640.04	TRUE	05639	x, 391
+394	2024-09-01	Rent	476.41	TRUE	09392	x, 392
+395	2024-10-02	Travel	16.32	FALSE	04719	x, 393
+396	2024-11-03	Fun	464.52	TRUE	04837	x, 394
+397	2024-12-04	Travel	78.61	TRUE	01457	x, 395
+398	2024-01-05	Fun	506.15	TRUE	05481	x, 396
+399	2024-02-06	Fun	382.19	TRUE	07537	x, 397
+400	2024-03-07	Food	593.9	FALSE	01915	x, 398
+More rows: read_cells(range="A401:F401").
+### 8 write_cells {"cells":{"G1":"double","G2":"=C2*2"},"sheet":"data/big.csv"}
+Wrote 2 cells.
+G1 = double
+G2 =C2*2 → 339.42
+No error cells.
+Saved as a new spreadsheet artifact (big.xlsx); data/big.csv itself is unchanged. Use the artifact id below as `sheet` from now on.
+Saved: artifact big-0001, version 1.
+### 9 fill {"formula":"=C2*2","range":"G2:G","sheet":"data/big.csv"}
+(data/big.csv was saved as artifact big-0001 earlier; using that. Pass big-0001 as `sheet` from now on.)
+Filled G2:G401 (400 cells) with =C2*2; G401 got =C401*2.
+G2:G401 now:
+	G
+2	339.42
+3	1368
+4	1035.54
+5	695.7
+6	1709.5
+7	1461.34
+8	335.58
+9	990.16
+10	279.96
+11	1315.94
+12	367.58
+13	786.8
+14	1303.84
+15	1469.98
+16	548.9
+17	1300.5
+18	512.18
+19	433.4
+20	399.56
+21	60.6
+22	248.66
+23	93.4
+24	1028.6
+25	518.38
+26	825.14
+27	516.02
+28	1731.96
+29	1527.84
+30	857.64
+31	1044.48
+32	1298.4
+33	835.56
+34	1617.1
+35	949.78
+36	641.22
+37	355.94
+38	111.68
+39	7.62
+40	1467.26
+41	1174.24
+(Showing G2:G41; read_cells shows the rest.)
+No error cells.
+Saved: artifact big-0001, version 2.
+### 10 edit_sheet {"by":"C","op":"sort","sheet":"big-0001"}
+Sorted A2:G401 by column C, ascending (row 1 kept as the header); 399 rows moved.
+A1:G401 now:
+	A	B	C	D	E	F	G
+1	date	category	amount	paid	zip	note	double
+2	2024-07-03	Food	3.11	TRUE	04372	x, 282	6.22
+3	2024-02-10	Food	3.81	FALSE	08566	x, 37	7.62
+4	2024-07-23	Fun	5	FALSE	09927	x, 162	10
+5	2024-12-12	Rent	5.16	FALSE	04606	x, 347	10.32
+6	2024-02-10	Rent	7.68	FALSE	07804	x, 205	15.36
+7	2024-10-18	Rent	10.93	FALSE	03575	x, 45	21.86
+8	2024-01-25	Fun	12.16	FALSE	06800	x, 192	24.32
+9	2024-03-15	Food	15.89	FALSE	02660	x, 182	31.78
+10	2024-10-02	Travel	16.32	FALSE	04719	x, 393	32.64
+11	2024-10-26	Travel	19.06	FALSE	03431	x, 81	38.12
+12	2024-05-21	Travel	19.14	TRUE	08011	x, 76	38.28
+13	2024-10-26	Rent	19.37	FALSE	05096	x, 165	38.74
+14	2024-04-12	Fun	28.63	TRUE	05350	x, 291	57.26
+15	2024-01-25	Fun	29.46	TRUE	02565	x, 360	58.92
+16	2024-08-20	Rent	30.3	FALSE	07811	x, 19	60.6
+17	2024-10-10	Rent	37.28	FALSE	06372	x, 345	74.56
+18	2024-03-07	Fun	37.91	TRUE	06786	x, 146	75.82
+19	2024-02-10	Food	39.32	FALSE	02867	x, 373	78.64
+20	2024-05-17	Rent	40.4	FALSE	06190	x, 352	80.8
+21	2024-08-16	Rent	46.58	FALSE	07830	x, 295	93.16
+22	2024-10-22	Rent	46.7	FALSE	07684	x, 21	93.4
+23	2024-01-21	Fun	52.22	FALSE	03863	x, 48	104.44
+24	2024-08-28	Travel	54.91	TRUE	05134	x, 307	109.82
+25	2024-01-09	Fun	55.84	TRUE	03318	x, 36	111.68
+26	2024-07-03	Travel	55.95	TRUE	05078	x, 114	111.9
+27	2024-02-14	Rent	59.93	FALSE	05072	x, 181	119.86
+28	2024-10-14	Travel	63.53	FALSE	05420	x, 321	127.06
+29	2024-03-27	Fun	76.1	FALSE	04190	x, 194	152.2
+30	2024-11-07	Fun	76.24	FALSE	05414	x, 286	152.48
+31	2024-12-04	Travel	78.61	TRUE	01457	x, 395	157.22
+32	2024-08-20	Travel	79.99	TRUE	02924	x, 103	159.98
+33	2024-01-17	Travel	82.23	TRUE	03444	x, 72	164.46
+34	2024-09-25	Food	82.43	FALSE	04504	x, 248	164.86
+35	2024-02-14	Travel	87.19	TRUE	01526	x, 97	174.38
+36	2024-12-28	Travel	91.11	TRUE	04230	x, 335	182.22
+37	2024-09-21	Rent	92.91	FALSE	02756	x, 272	185.82
+38	2024-05-17	Fun	94.03	TRUE	09331	x, 184	188.06
+39	2024-09-21	Food	99.45	FALSE	06617	x, 356	198.9
+40	2024-07-07	Travel	102.87	TRUE	03638	x, 174	205.74
+(Showing A1:G40; read_cells shows the rest.)
+Formulas elsewhere that changed: G2 6.22 (was 339.42); G3 7.62 (was 1368); G4 10 (was 1035.54); G5 10.32 (was 695.7); G6 15.36 (was 1709.5); G7 21.86 (was 1461.34); G8 24.32 (was 335.58); G9 31.78 (was 990.16); G10 32.64 (was 279.96); G11 38.12 (was 1315.94) and 389 more.
+No error cells.
+Saved: artifact big-0001, version 3.
+### 11 describe_sheet {"sheet":"big-0001"}
+"big" (big-0001, version 3): 1 sheet (Sheet1).
+Sheet "Sheet1": used range A1:G401 (401 rows × 7 columns).
+Header in row 1; data in rows 2–401.
+  A "date": date, 400 values, 2024-01-01 … 2024-12-28
+  B "category": text, 400 values, 4 distinct: Fun (118), Rent (110), Travel (93), Food (79)
+  C "amount": number, 400 values, min 3.11, max 899.88, sum 185472.55
+  D "paid": bool, 400 values, 400 TRUE/FALSE
+  E "zip": text, 400 values, 396 distinct, e.g. 02867, 03226, 05808, 07654, 01021
+  F "note": text, 400 values, 400 distinct, e.g. x, 0, x, 1, x, 10, x, 100, x, 101
+  G "double": formula → number, 400 values, min 6.22, max 1799.76, sum 370945.1, e.g. G2 =C2*2
+First rows:
+	A	B	C	D	E	F	G
+1	date	category	amount	paid	zip	note	double
+2	2024-07-03	Food	3.11	TRUE	04372	x, 282	6.22
+3	2024-02-10	Food	3.81	FALSE	08566	x, 37	7.62
+4	2024-07-23	Fun	5	FALSE	09927	x, 162	10
+No error cells.
+### 12 create_sheet {"from":"t.tsv","title":"T"}
+Imported t.tsv (the file itself is unchanged).
+New spreadsheet "T" (t.xlsx).
+Sheet "Sheet1": used range A1:B3 (3 rows × 2 columns).
+Header in row 1; data in rows 2–3.
+  A "k": text, 2 values, 2 distinct: x (1), y (1)
+  B "v": number, 1 values, 1 blank, min 1, max 1, sum 1
+First rows:
+	A	B
+1	k	v
+2	x	1
+3	y	
+No error cells.
+Use the artifact id byob reports below as `sheet` in write_cells, fill, read_cells and the other sheet tools.
+Saved: artifact t-0002, version 1.
+### 13 view
+{"children":[{"key":"status","style":"small","text":"Sheet1 · 3 rows × 2 columns","tone":"dim","type":"text"},{"blocks":[{"cells":[["k","v",null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],["x",{"t":"n","v":"1"},null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],["y",null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]],"col":0,"row":0}],"cols":26,"default_width":90.0,"editable":true,"frozen_cols":0,"frozen_rows":0,"headers":true,"key":"g","name":"sheet","rows":100,"type":"grid","widths":{}}],"type":"column"}

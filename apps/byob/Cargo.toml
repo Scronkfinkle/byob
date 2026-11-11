@@ -16,9 +16,8 @@ categories.workspace = true
 # desktop-only binary.
 default = ["web", "native-sheets"]
 web = ["byob-server/embedded-web"]
-# The native spreadsheets backend (byob-sheets, IronCalc in-process) behind the bundled
-# `sheets-native` plugin. Without it that plugin reports its backend missing; the Python
-# `sheets` plugin works either way.
+# The spreadsheets backend (byob-sheets, IronCalc in-process) behind the bundled `sheets`
+# plugin. Without it that plugin reports its backend missing.
 native-sheets = ["dep:byob-sheets"]
 
 [dependencies]

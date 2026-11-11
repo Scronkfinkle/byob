@@ -56,8 +56,7 @@ pub fn load(tools: &mut Registry, artifact_types: &byob_tools::ArtifactTypes, li
     // The built-in features are bundled plugins (inside the binary) naming these tools,
     // artifact types and prompt sections by id; the code-running section is ours to add.
     let natives = byob_agent::Natives::builtin().prompt("exec", move |_| exec_prompt.clone().unwrap_or_default());
-    // The bundled `sheets-native` plugin's backend: spreadsheets in-process (off by default;
-    // the Python `sheets` plugin is the one on).
+    // The bundled `sheets` plugin's backend: spreadsheets in-process.
     #[cfg(feature = "native-sheets")]
     let natives = natives.backend(byob_sheets::ID, byob_sheets::factory());
     let mut plugins = PluginsConfig {
