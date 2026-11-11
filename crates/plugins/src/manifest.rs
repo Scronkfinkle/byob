@@ -42,6 +42,34 @@ pub struct Manifest {
     pub prompt: Option<String>,
     /// Node `process.platform` names (`darwin`, `linux`, `win32`); everywhere when `None`.
     pub platforms: Option<Vec<String>>,
+    /// A long-lived process the engine talks to in JSON lines (`backend`), see
+    /// `docs/plugins-backend.md`.
+    pub backend: Option<BackendDecl>,
+    /// Python packages its scripts and backend need (`python.requirements`, pip specs).
+    pub requirements: Vec<String>,
+}
+
+/// Most `python.requirements` entries.
+pub const MAX_REQUIREMENTS: usize = 64;
+/// Engine events a backend may subscribe to (`backend.events`, or `subscribe` at run time).
+pub const BACKEND_EVENTS: [&str; 5] = ["chat_opened", "turn_started", "turn_finished", "step_done", "artifact_updated"];
+
+/// How to start a plugin's backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BackendDecl {
+    pub run: BackendRun,
+    /// Extra arguments after the script (or the command).
+    pub args: Vec<String>,
+    /// Engine events it gets from the start (`subscribe` adds more at run time).
+    pub events: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum BackendRun {
+    /// A Python script in the plugin folder, run with the plugin's interpreter.
+    Python(String),
+    /// Any program (on `PATH`, or relative to the plugin folder), run in the plugin folder.
+    Command(String),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -77,6 +105,8 @@ pub enum ToolKind {
     Script(String),
     /// One of the app's own tools, by name (built-in plugins only).
     Native(String),
+    /// Served by the plugin's long-lived backend (`"run": "backend"`).
+    Backend,
 }
 
 /// How to reach one MCP server.
@@ -335,6 +365,13 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
         None => None,
         a => Some(req_str(a, "author")?),
     };
+    let backend = parse_backend(r.get("backend"))?;
+    if backend.is_none()
+        && let Some(i) = tools.iter().position(|t| t.kind == ToolKind::Backend)
+    {
+        return Err(format!("tools[{i}].run is \"backend\" but the plugin has no \"backend\""));
+    }
+    let requirements = parse_requirements(r.get("python"))?;
     Ok(Manifest {
         id,
         name: req_str(r.get("name"), "name")?,
@@ -349,7 +386,65 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
         settings,
         prompt,
         platforms,
+        backend,
+        requirements,
     })
+}
+
+/// `"backend": "backend.py"`, `{"run": "backend.py", "args": [], "events": []}` or
+/// `{"command": "node", "args": ["server.js"]}`.
+fn parse_backend(v: Option<&Value>) -> R<Option<BackendDecl>> {
+    let f = "backend";
+    let script = |p: String| -> R<BackendRun> {
+        if !path_inside(&p) || p.is_empty() {
+            return Err(format!("{f}.run must be a path inside the plugin folder, like \"backend.py\""));
+        }
+        Ok(BackendRun::Python(p))
+    };
+    let o = match v {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(s)) => return Ok(Some(BackendDecl { run: script(s.trim().to_string())?, args: Vec::new(), events: Vec::new() })),
+        Some(v) => obj(v, f)?,
+    };
+    let run = match (o.get("run"), o.get("command")) {
+        (Some(r), None) => script(req_str(Some(r), &format!("{f}.run"))?)?,
+        (None, Some(c)) => BackendRun::Command(req_str(Some(c), &format!("{f}.command"))?),
+        _ => return Err(format!("{f} needs \"run\" (a Python script) or \"command\" (a program), one of them")),
+    };
+    let strings = |key: &str| -> R<Vec<String>> {
+        list(o.get(key), &format!("{f}.{key}"))?
+            .iter()
+            .enumerate()
+            .map(|(i, a)| a.as_str().map(str::to_string).ok_or_else(|| format!("{f}.{key}[{i}] must be text")))
+            .collect()
+    };
+    let args = strings("args")?;
+    let events = strings("events")?;
+    if let Some(e) = events.iter().find(|e| !BACKEND_EVENTS.contains(&e.as_str())) {
+        return Err(format!("{f}.events: {e:?} isn't an engine event; use {}", BACKEND_EVENTS.join(", ")));
+    }
+    Ok(Some(BackendDecl { run, args, events }))
+}
+
+/// `"python": {"requirements": ["requests>=2", "./wheels/x.whl"]}`.
+fn parse_requirements(v: Option<&Value>) -> R<Vec<String>> {
+    let Some(v) = v else { return Ok(Vec::new()) };
+    let o = obj(v, "python")?;
+    let reqs = list(o.get("requirements"), "python.requirements")?;
+    if reqs.len() > MAX_REQUIREMENTS {
+        return Err(format!("python.requirements: at most {MAX_REQUIREMENTS} packages"));
+    }
+    reqs.iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let r = req_str(Some(r), &format!("python.requirements[{i}]"))?;
+            // one pip spec each, never options (--index-url …)
+            if r.starts_with('-') || r.contains(['\n', '\r']) || r.len() > 512 {
+                return Err(format!("python.requirements[{i}] must be one package spec like \"requests>=2.31\""));
+            }
+            Ok(r)
+        })
+        .collect()
 }
 
 fn parse_tool(t: &Value, i: usize, builtin: bool) -> R<ManifestTool> {
@@ -377,6 +472,7 @@ fn parse_tool(t: &Value, i: usize, builtin: bool) -> R<ManifestTool> {
     };
     let run = match t.get("run") {
         None => None,
+        Some(Value::String(s)) if s.trim() == "backend" => Some(String::new()),
         v => {
             let p = req_str(v, &format!("{f}.run"))?;
             if !path_inside(&p) {
@@ -386,6 +482,7 @@ fn parse_tool(t: &Value, i: usize, builtin: bool) -> R<ManifestTool> {
         }
     };
     let kind = match (run, native) {
+        (Some(r), _) if r.is_empty() => ToolKind::Backend,
         (Some(r), _) => ToolKind::Script(r),
         (None, Some(n)) => ToolKind::Native(n),
         (None, None) => return Err(format!("{f}.run must name the Python script that runs this tool")),
@@ -570,6 +667,44 @@ mod tests {
         assert_eq!(s.default.as_deref(), Some("/a\n/b"));
         assert!(m.starters[0].file);
         assert_eq!(m.prompt.map(|p| p.chars().count()), Some(600));
+    }
+
+    #[test]
+    fn backends_and_requirements() {
+        let m = parse_user(json!({"id": "a", "name": "x", "backend": "backend.py", "tools": [{"name": "t", "description": "d", "run": "backend"}],
+            "python": {"requirements": ["requests>=2", "./wheels/w.whl"]}}))
+        .unwrap();
+        assert_eq!(m.backend.unwrap().run, BackendRun::Python("backend.py".into()));
+        assert_eq!(m.tools[0].kind, ToolKind::Backend);
+        assert_eq!(m.requirements, ["requests>=2", "./wheels/w.whl"]);
+        let m = parse_user(json!({"id": "a", "name": "x", "backend": {"command": "node", "args": ["s.js"], "events": ["turn_finished"]}})).unwrap();
+        let b = m.backend.unwrap();
+        assert_eq!((b.run, b.args, b.events), (BackendRun::Command("node".into()), vec!["s.js".to_string()], vec!["turn_finished".to_string()]));
+        let cases = [
+            (
+                json!({"id": "a", "name": "x", "tools": [{"name": "t", "description": "d", "run": "backend"}]}),
+                "byob-plugin.json: tools[0].run is \"backend\" but the plugin has no \"backend\"",
+            ),
+            (
+                json!({"id": "a", "name": "x", "backend": "../b.py"}),
+                "byob-plugin.json: backend.run must be a path inside the plugin folder, like \"backend.py\"",
+            ),
+            (
+                json!({"id": "a", "name": "x", "backend": {"run": "b.py", "command": "node"}}),
+                "byob-plugin.json: backend needs \"run\" (a Python script) or \"command\" (a program), one of them",
+            ),
+            (
+                json!({"id": "a", "name": "x", "backend": {"run": "b.py", "events": ["tick"]}}),
+                "byob-plugin.json: backend.events: \"tick\" isn't an engine event; use chat_opened, turn_started, turn_finished, step_done, artifact_updated",
+            ),
+            (
+                json!({"id": "a", "name": "x", "python": {"requirements": ["--index-url=http://x"]}}),
+                "byob-plugin.json: python.requirements[0] must be one package spec like \"requests>=2.31\"",
+            ),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(parse_user(raw.clone()).unwrap_err(), want, "for {raw}");
+        }
     }
 
     #[test]
