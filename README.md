@@ -26,7 +26,7 @@ that draws its own interface on the GPU, with no Electron.
   calls when the server has none.
 - **Artifacts beside the chat.** Spreadsheets (xlsx/csv), charts, Markdown documents,
   images and HTML apps, each with its version history.
-- **Hands, with a leash.** File tools, `run_command` and `run_python` in a sandbox; approval
+- **Hands, with a leash.** File tools, `run_command` and `run_python` (sandboxed on Linux); approval
   cards with diffs; undo per turn.
 - **Workspaces.** A folder with its own settings and where commands run: this machine, a Nix dev
   shell or a Docker/Podman container. Settings layer global → workspace → chat.
