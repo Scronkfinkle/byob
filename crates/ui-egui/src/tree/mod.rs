@@ -7,6 +7,8 @@
 //! takes the tree's value only when the tree changed it (or a reply forces it with
 //! [`TreeState::replied`]), so a reply never clobbers what the user is typing.
 //!
+//! [`show_tree_with`] also draws image nodes, with the site's [`Images`].
+//!
 //! [`TreeView`] bundles a tree and its state for render sites that get replies;
 //! [`StepTrees`] draws `byob.tree` views on steps (registered in the
 //! [`crate::views::ViewRegistry`]).
@@ -143,22 +145,36 @@ impl TreeView {
     }
 }
 
+/// Where a render site gets the pictures of `image` nodes from (workspace files, artifacts).
+pub trait Images {
+    /// The texture for an image node's `media` path or `artifact` id: `Ok(None)` while it
+    /// loads, `Err` if it can't be shown.
+    fn image(&mut self, ctx: &egui::Context, media: Option<&str>, artifact: Option<&str>) -> Result<Option<egui::TextureHandle>, String>;
+}
+
 /// What drawing a node needs.
-struct Cx<'a> {
+struct Cx<'a, 'i> {
     t: &'a Tokens,
     st: &'a mut TreeState,
     /// Ids of keyed nodes are made from this, so they don't move with their position.
     root: egui::Id,
     bold: FontFamily,
+    images: Option<&'i mut dyn Images>,
 }
 
-/// Draw `tree`; what the user did this frame.
+/// Draw `tree`; what the user did this frame. Image nodes show as framed boxes with their
+/// alt text (see [`show_tree_with`]).
 pub fn show_tree(ui: &mut egui::Ui, t: &Tokens, tree: &Node, st: &mut TreeState) -> Vec<Event> {
+    show_tree_with(ui, t, tree, st, None)
+}
+
+/// [`show_tree`], with `images` drawing image nodes.
+pub fn show_tree_with(ui: &mut egui::Ui, t: &Tokens, tree: &Node, st: &mut TreeState, images: Option<&mut dyn Images>) -> Vec<Event> {
     st.pass = st.pass.wrapping_add(1);
     st.md_live.clear();
     let root = st.id.unwrap_or_else(|| ui.scope_id().with("byob-tree"));
     let bold = theme::bold_or_regular(ui.ctx());
-    let mut cx = Cx { t, st: &mut *st, root, bold };
+    let mut cx = Cx { t, st: &mut *st, root, bold, images };
     ui.vertical(|ui| node(ui, &mut cx, tree, root));
     // Fields no longer in the tree are gone.
     let pass = st.pass;
@@ -178,7 +194,7 @@ pub fn show_tree(ui: &mut egui::Ui, t: &Tokens, tree: &Node, st: &mut TreeState)
         .collect()
 }
 
-fn node_id(cx: &Cx<'_>, n: &Node, parent: egui::Id, i: usize) -> egui::Id {
+fn node_id(cx: &Cx<'_, '_>, n: &Node, parent: egui::Id, i: usize) -> egui::Id {
     match &n.key {
         Some(k) => cx.root.with(("key", k)),
         None => parent.with(i),
@@ -196,7 +212,7 @@ pub(crate) fn tone(t: &Tokens, tone: Tone) -> Color32 {
     }
 }
 
-fn children(ui: &mut egui::Ui, cx: &mut Cx<'_>, list: &[Node], id: egui::Id) {
+fn children(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, list: &[Node], id: egui::Id) {
     for (i, c) in list.iter().enumerate() {
         let cid = node_id(cx, c, id, i);
         node(ui, cx, c, cid);
@@ -207,7 +223,7 @@ fn is_container(n: &Node) -> bool {
     matches!(n.kind, Kind::Card { .. } | Kind::Column { .. })
 }
 
-fn node(ui: &mut egui::Ui, cx: &mut Cx<'_>, n: &Node, id: egui::Id) {
+fn node(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, n: &Node, id: egui::Id) {
     let t = cx.t;
     match &n.kind {
         Kind::Column { children: list } => {
@@ -333,7 +349,18 @@ fn node(ui: &mut egui::Ui, cx: &mut Cx<'_>, n: &Node, id: egui::Id) {
         Kind::Separator {} => {
             ui.separator();
         }
-        Kind::Image { alt, width, height, .. } => image_placeholder(ui, t, alt, *width, *height),
+        Kind::Image { media, artifact, alt, width, height } => {
+            let got = match cx.images.as_deref_mut() {
+                Some(images) if media.is_some() || artifact.is_some() => images.image(ui.ctx(), media.as_deref(), artifact.as_deref()),
+                _ => Err(String::new()),
+            };
+            match got {
+                Ok(Some(tex)) => image(ui, t, &tex, alt, *width, *height),
+                Ok(None) => image_placeholder(ui, t, "Loading…", *width, *height),
+                Err(e) if e.is_empty() => image_placeholder(ui, t, alt, *width, *height),
+                Err(e) => image_placeholder(ui, t, &format!("{}: {e}", if alt.is_empty() { "image" } else { alt }), *width, *height),
+            }
+        }
         Kind::Canvas { width, height, shapes, action } => canvas::show(ui, cx, *width, *height, shapes, action.as_deref()),
     }
 }
@@ -348,8 +375,23 @@ pub(crate) fn chip(ui: &mut egui::Ui, t: &Tokens, text: &str, c: Color32) {
         .show(ui, |ui| ui.label(RichText::new(text).small().color(c)));
 }
 
-/// Images are drawn by the render site once it can fetch them (P2c); until then, a framed
-/// box with the alt text.
+/// An image, scaled to fit the width (and `width` × `height` if given), its alt text on hover.
+fn image(ui: &mut egui::Ui, t: &Tokens, tex: &egui::TextureHandle, alt: &str, width: Option<f32>, height: Option<f32>) {
+    let natural = tex.size_vec2();
+    if natural.x <= 0.0 || natural.y <= 0.0 {
+        return;
+    }
+    let max_w = width.unwrap_or(natural.x).min(ui.available_width()).max(8.0);
+    let max_h = height.unwrap_or(natural.y.min(480.0)).max(8.0);
+    let scale = (max_w / natural.x).min(max_h / natural.y);
+    let r = ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), natural * scale)).corner_radius(t.round(6.0)));
+    if !alt.is_empty() {
+        r.on_hover_text(alt);
+    }
+}
+
+/// An image without a picture (none to load, still loading, failed): a framed box with the
+/// alt text or what went wrong.
 fn image_placeholder(ui: &mut egui::Ui, t: &Tokens, alt: &str, width: Option<f32>, height: Option<f32>) {
     let w = width.unwrap_or(200.0).min(ui.available_width()).max(24.0);
     let h = height.unwrap_or(120.0).max(24.0);

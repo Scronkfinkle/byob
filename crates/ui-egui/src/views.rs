@@ -141,6 +141,10 @@ fn plugin_card(ui: &mut egui::Ui, cx: &mut ViewCx<'_>, view: &View) -> bool {
 
 /// `byob.tree`: any step view can be a view tree.
 fn tree_view(ui: &mut egui::Ui, cx: &mut ViewCx<'_>, view: &View) -> bool {
+    // A plugin's live card: drawn by the sites, its events go to the plugin.
+    if view.owner.is_some() {
+        return cx.plugins.sites.card(ui, cx.t, view);
+    }
     cx.trees.show(ui, cx.t, cx.step, cx.index, view)
 }
 

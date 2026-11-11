@@ -68,6 +68,18 @@ impl LiveViews {
         }
     }
 
+    /// A view client `id` has open shows the workspace file `path` (an `image` node), so it
+    /// may fetch it like a conversation's media.
+    pub(crate) fn shows_media(&self, id: ClientId, path: &str) -> bool {
+        fn has(n: &Node, path: &str) -> bool {
+            match &n.kind {
+                tree::Kind::Image { media: Some(m), .. } => m == path,
+                _ => n.children().iter().any(|c| has(c, path)),
+            }
+        }
+        self.map.values().any(|l| l.subs.contains(&id) && l.tree.as_ref().is_some_and(|t| has(t, path)))
+    }
+
     /// The folder of the view `r` client `id` has open.
     fn dir_for(&self, id: ClientId, r: &ViewRef) -> Option<PathBuf> {
         self.map.iter().find(|((_, v, k), l)| l.plugin == r.plugin && *v == r.view && *k == r.key && l.subs.contains(&id)).map(|((d, ..), _)| d.clone())

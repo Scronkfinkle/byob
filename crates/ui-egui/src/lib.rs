@@ -19,6 +19,7 @@ pub mod queue;
 pub mod renderers;
 mod settings;
 pub mod sidebar;
+pub mod sites;
 pub mod slash;
 pub mod steps;
 pub mod theme;
@@ -233,10 +234,13 @@ impl ByobApp {
                 ServerMsg::Welcome(w) => {
                     log::info!("engine speaks protocol {}.{} with caps {:?}", w.protocol, w.minor, w.caps);
                     self.engine = Some(w);
+                    let sites = self.engine_has(byob_protocol::sites::CAP_VIEW_SITES);
+                    self.plugins.sites.set_enabled(sites);
                 }
                 // No client-side plugin handlers yet.
                 ServerMsg::Plugin { plugin, .. } => self.skip(format!("messages from plugin {plugin:?}")),
                 ServerMsg::Unknown => self.skip("messages of a type this client doesn't know".into()),
+                // Handled by the plugins' sites above.
                 ServerMsg::LiveView(_) => {}
                 ServerMsg::State(state) => {
                     self.connect.sync(&state);
@@ -401,6 +405,12 @@ impl ByobApp {
                 self.plugins.open_on_trouble();
                 self.show_settings = true;
             }
+            "plugin-pane" => return self.plugins.sites.open_pane(""),
+            _ if name.starts_with("plugin-pane:") => return self.plugins.sites.open_pane(name.trim_start_matches("plugin-pane:")),
+            _ if name.starts_with("plugin:") => {
+                self.plugins.open(Some(name.trim_start_matches("plugin:")));
+                self.show_settings = true;
+            }
             "chat-settings" => {
                 if self.workspaces.chat.is_none() {
                     self.workspaces.toggle_chat();
@@ -429,6 +439,10 @@ impl ByobApp {
 
     /// The names [`ByobApp::open_panel`] knows.
     pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu, plugins";
+    /// Names [`ByobApp::open_panel`] takes once plugins are known: `plugin-pane` (the first
+    /// plugin pane), `plugin-pane:<plugin>[/<view>]`, `plugin:<id>` (Settings → Plugins, open
+    /// on that plugin).
+    pub const PLUGIN_PANELS: &'static str = "plugin-pane, plugin-pane:<plugin>[/<view>], plugin:<id>";
 
     /// Scripted runs: open the settings at an appearance section (`knobs`, `advanced`).
     pub fn reveal_settings(&mut self, section: &str) {
@@ -460,7 +474,8 @@ impl ByobApp {
                     && self.entries.iter().all(|e| e.done)
                     && !self.uploads.busy()
                     && !self.media.loading()
-                    && !self.artifacts.loading()))
+                    && !self.artifacts.loading()
+                    && !self.plugins.sites.loading()))
     }
 
     /// Messages queued in the chat in view (scripted runs).
@@ -577,6 +592,12 @@ impl ByobApp {
             self.end_frame(ui.ctx());
             return;
         }
+        if narrow && self.plugins.sites.pane_is_open() {
+            // Phones: a plugin's pane takes the whole screen; "← Chat" goes back.
+            egui::CentralPanel::default().show(ui, |ui| self.plugins.sites.pane(ui, &t, true));
+            self.end_frame(ui.ctx());
+            return;
+        }
         if narrow && self.artifacts.is_open() {
             // Phones: the artifact takes the whole screen; "← Chat" goes back.
             egui::CentralPanel::default().show(ui, |ui| self.artifacts.pane(ui, &t, true));
@@ -604,8 +625,9 @@ impl ByobApp {
             self.send_all(sent);
         }
         if !narrow {
-            // The pane, or its rail when collapsed.
+            // The pane, or its rail when collapsed; then the plugins' pane beside it.
             self.artifacts.side_panel(ui, &t);
+            self.plugins.sites.side_panel(ui, &t);
         }
         egui::Panel::bottom("composer").show(ui, |ui| self.composer(ui));
         egui::CentralPanel::default().show(ui, |ui| {

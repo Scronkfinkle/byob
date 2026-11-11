@@ -139,6 +139,8 @@ impl ByobApp {
         }
         self.header_rects.plugins = self.plugins.chip(ui, t, layout.plugin_count, false).map_or(Rect::NOTHING, |r| r.rect);
         self.artifacts.header_toggle(ui);
+        self.plugins.sites.pane_toggles(ui, t);
+        self.plugins.sites.status_items(ui, t);
     }
 
     /// The "⋯" menu: every settings entry point by name, and the artifact actions.

@@ -30,7 +30,7 @@ fn widths(columns: &[TableColumn], avail: f32) -> Vec<f32> {
     columns.iter().map(|c| c.width.unwrap_or(auto)).collect()
 }
 
-pub(super) fn show(ui: &mut egui::Ui, cx: &mut Cx<'_>, tb: Table<'_>, id: egui::Id) {
+pub(super) fn show(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, tb: Table<'_>, id: egui::Id) {
     let t = cx.t;
     let pad = t.pad(4.0);
     let row_h = ui.text_style_height(&egui::TextStyle::Body) + 2.0 * t.pad(4.0);

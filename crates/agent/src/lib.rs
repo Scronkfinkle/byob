@@ -1180,7 +1180,8 @@ impl Engine {
 
     /// Load a chart or image for one client off the engine thread (decoding can take a while).
     fn serve_media(&mut self, id: ClientId, path: String) {
-        let referenced = self.client_chat(id).and_then(|c| self.live.get(&c)).is_some_and(|l| attachments::referenced(&l.entries, &path));
+        let referenced = self.client_chat(id).and_then(|c| self.live.get(&c)).is_some_and(|l| attachments::referenced(&l.entries, &path))
+            || self.live_views.shows_media(id, &path);
         if !referenced {
             let content = byob_protocol::MediaContent::Error { message: "not part of this conversation".into() };
             self.send_to(id, ServerMsg::Media { path, content });

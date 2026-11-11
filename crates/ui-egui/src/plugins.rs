@@ -59,11 +59,16 @@ pub struct PluginsUi {
     /// Open the settings at the Plugins section.
     open_requested: bool,
     out: Vec<ClientMsg>,
+    /// The plugins' live views at render sites (pane, status items, settings sections, cards).
+    pub sites: crate::sites::Sites,
 }
 
 impl PluginsUi {
     /// Take in a message meant for plugins; false if it isn't one.
     pub fn apply(&mut self, msg: &ServerMsg) -> bool {
+        if self.sites.apply(msg) {
+            return true;
+        }
         let ServerMsg::Extensions(e) = msg else { return false };
         self.ext = Some((**e).clone());
         true
@@ -80,7 +85,9 @@ impl PluginsUi {
 
     /// Messages for the engine since the last call.
     pub fn take(&mut self) -> Vec<ClientMsg> {
-        std::mem::take(&mut self.out)
+        let mut out = std::mem::take(&mut self.out);
+        out.extend(self.sites.take());
+        out
     }
 
     /// Something asked to show the Plugins panel (a card's Files, the header chip).
@@ -357,6 +364,9 @@ impl PluginsUi {
     fn plugin_details(&mut self, ui: &mut egui::Ui, t: &Tokens, p: &PluginInfo, workspace: Option<&str>) {
         if !p.description.is_empty() {
             ui.add(egui::Label::new(RichText::new(&p.description).small().color(t.text)).wrap());
+        }
+        if p.shadowed_by.is_none() {
+            self.sites.settings_sections(ui, t, &p.id);
         }
         // The switch and where it comes from.
         ui.horizontal_wrapped(|ui| {

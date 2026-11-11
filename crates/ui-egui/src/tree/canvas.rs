@@ -15,7 +15,7 @@ pub(crate) fn color(t: &Tokens, c: Option<&str>, default: Color32) -> Color32 {
     t.get(c).or_else(|| theme::parse_color(c)).unwrap_or(default)
 }
 
-pub(super) fn show(ui: &mut egui::Ui, cx: &mut Cx<'_>, width: f32, height: f32, shapes: &[Shape], action: Option<&str>) {
+pub(super) fn show(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, width: f32, height: f32, shapes: &[Shape], action: Option<&str>) {
     let t = cx.t;
     let (w, h) = (width.clamp(1.0, 4000.0), height.clamp(1.0, 4000.0));
     let scale = (ui.available_width() / w).clamp(0.05, 1.0);
