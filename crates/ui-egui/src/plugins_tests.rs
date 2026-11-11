@@ -377,6 +377,7 @@ fn bundled_plugins_are_built_in_locked_or_switchable_and_forkable() {
     charts.name = "Charts".into();
     charts.starters = vec![byob_protocol::StarterDecl { title: "Chart some numbers".into(), prompt: "Make a bar chart".into() }];
     p.apply(&ext(vec![core, charts]));
+    assert_eq!(p.summary(), Some((0, false)), "built-in plugins don't count on the header chip");
     let t = Tokens::dark();
     frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::All));
     let texts = frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::All));

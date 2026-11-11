@@ -121,11 +121,12 @@ impl PluginsUi {
         self.ext.as_ref()?.plugins.iter().find(|p| p.id == id && p.shadowed_by.is_none())
     }
 
-    /// (plugins on, any trouble): for the header chip. `None` before the engine said.
+    /// (plugins on, any trouble): for the header chip. `None` before the engine said. The
+    /// built-in plugins count only when one has trouble (they are always there).
     pub fn summary(&self) -> Option<(usize, bool)> {
         let e = self.ext.as_ref()?;
         let used = e.plugins.iter().filter(|p| p.shadowed_by.is_none());
-        let on = used.clone().filter(|p| p.enabled).count();
+        let on = used.clone().filter(|p| p.enabled && p.scope != PluginScope::Bundled).count();
         let trouble = !e.errors.is_empty() || used.filter(|p| p.enabled).any(has_trouble);
         Some((on, trouble))
     }
@@ -360,7 +361,7 @@ impl PluginsUi {
                 ui.label(RichText::new(&p.version).small().color(t.text_faint));
                 ui.label(RichText::new(origin_text(p.origin)).small().color(t.text_dim));
                 if p.locked && !shadowed {
-                    ui.label(RichText::new("🔒 always on").small().color(t.text_faint));
+                    ui.label(RichText::new("always on").small().color(t.text_faint));
                 }
                 if let Some(by) = p.shadowed_by {
                     ui.label(RichText::new(format!("replaced by the copy in {}", by.label())).small().color(t.text_faint));
@@ -673,7 +674,7 @@ impl PluginsUi {
     /// the engine said, or when there are no plugins and no errors.
     pub fn chip(&mut self, ui: &mut egui::Ui, t: &Tokens, count: bool, selected: bool) -> Option<egui::Response> {
         let (on, trouble) = self.summary()?;
-        let any = self.ext.as_ref().is_some_and(|e| !e.plugins.is_empty() || !e.errors.is_empty());
+        let any = trouble || self.ext.as_ref().is_some_and(|e| e.plugins.iter().any(|p| p.scope != PluginScope::Bundled) || !e.errors.is_empty());
         if !any {
             return None;
         }
