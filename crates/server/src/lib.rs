@@ -21,8 +21,8 @@ use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -89,6 +89,11 @@ impl Drop for Slot {
 
 /// Bind and start accepting connections on a background thread. Returns the bound address.
 pub fn spawn(engine: EngineHandle, config: ServerConfig) -> io::Result<SocketAddr> {
+    spawn_counted(engine, config).map(|(addr, _)| addr)
+}
+
+/// [`spawn`], also returning the live connection count (tests wait on it).
+fn spawn_counted(engine: EngineHandle, config: ServerConfig) -> io::Result<(SocketAddr, Arc<AtomicUsize>)> {
     let listener = TcpListener::bind(config.addr)?;
     let addr = listener.local_addr()?;
     if !config.allowed_users.is_empty() {
@@ -97,15 +102,18 @@ pub fn spawn(engine: EngineHandle, config: ServerConfig) -> io::Result<SocketAdd
     let ui = Arc::new(if config.artifacts_only { webui::UiCheck::Fine } else { webui::UiCheck::of(config.web_dir.as_deref()) });
     let config = Arc::new(config);
     let live = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&live);
     thread::Builder::new().name("byob-server".into()).spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             let Some(slot) = Slot::take(&live, config.max_connections) else {
-                refuse_busy(stream);
+                log::warn!("connection limit reached; refusing {:?}", stream.peer_addr().ok());
+                refuse(stream, "too many connections");
                 continue;
             };
             let (engine, config, ui) = (engine.clone(), Arc::clone(&config), Arc::clone(&ui));
-            let spawned = thread::Builder::new().name("byob-conn".into()).spawn(move || {
+            let spawn = |job| thread::Builder::new().name("byob-conn".into()).spawn(job).map(drop);
+            hand_off(stream, spawn, move |stream| {
                 let _slot = slot;
                 let result = catch_unwind(AssertUnwindSafe(|| handle(stream, &engine, &config, &ui)));
                 match result {
@@ -114,18 +122,37 @@ pub fn spawn(engine: EngineHandle, config: ServerConfig) -> io::Result<SocketAdd
                     Ok(Ok(())) => {}
                 }
             });
-            if let Err(e) = spawned {
-                log::error!("could not spawn connection thread: {e}");
-            }
         }
     })?;
     log::info!("byob server listening on http://{addr}");
-    Ok(addr)
+    Ok((addr, counter))
 }
 
-/// Over the connection cap: answer 503 without blocking the accept loop.
-fn refuse_busy(mut stream: TcpStream) {
-    log::warn!("connection limit reached; refusing {:?}", stream.peer_addr().ok());
+type Job = Box<dyn FnOnce() + Send + 'static>;
+
+/// Run `work` on `stream` via `spawn` (a new thread). If no thread can be had (e.g. the
+/// process is out of threads), answer 503 here rather than dropping the socket, which the
+/// client would see as an empty response.
+fn hand_off(stream: TcpStream, spawn: impl FnOnce(Job) -> io::Result<()>, work: impl FnOnce(TcpStream) + Send + 'static) {
+    let cell = Arc::new(Mutex::new(Some(stream)));
+    let theirs = Arc::clone(&cell);
+    let job: Job = Box::new(move || {
+        let stream = theirs.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(stream) = stream {
+            work(stream);
+        }
+    });
+    if let Err(e) = spawn(job) {
+        log::error!("could not spawn connection thread: {e}");
+        let stream = cell.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(stream) = stream {
+            refuse(stream, "server busy");
+        }
+    }
+}
+
+/// Answer 503 (`why`) from the accept loop without blocking it.
+fn refuse(mut stream: TcpStream, why: &str) {
     if stream.set_nonblocking(true).is_err() {
         return;
     }
@@ -140,7 +167,7 @@ fn refuse_busy(mut stream: TcpStream) {
         }
     };
     drain(&mut stream);
-    let _ = http::respond(&mut stream, 503, "text/plain", b"too many connections");
+    let _ = http::respond(&mut stream, 503, "text/plain", why.as_bytes());
     let _ = stream.shutdown(std::net::Shutdown::Write);
     drain(&mut stream);
 }
@@ -247,9 +274,13 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
-    fn start_with(config: ServerConfig) -> SocketAddr {
+    fn start_counted(config: ServerConfig) -> (SocketAddr, Arc<AtomicUsize>) {
         let engine = EngineHandle::spawn(byob_types::InferenceConfig::default()).unwrap();
-        spawn(engine, ServerConfig { addr: SocketAddr::from(([127, 0, 0, 1], 0)), ..config }).unwrap()
+        spawn_counted(engine, ServerConfig { addr: SocketAddr::from(([127, 0, 0, 1], 0)), ..config }).unwrap()
+    }
+
+    fn start_with(config: ServerConfig) -> SocketAddr {
+        start_counted(config).0
     }
 
     fn start() -> SocketAddr {
@@ -259,9 +290,13 @@ mod tests {
     fn raw(addr: SocketAddr, request: &str) -> String {
         let mut s = TcpStream::connect(addr).unwrap();
         s.write_all(request.as_bytes()).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
         let mut out = Vec::new();
-        // A refusing server may reset after responding; keep whatever arrived.
-        let _ = s.read_to_end(&mut out);
+        // A refusing server may reset after responding; keep whatever arrived, but a
+        // failed read with nothing received is an error, not an empty response.
+        if let Err(e) = s.read_to_end(&mut out) {
+            assert!(!out.is_empty(), "reading the response failed with nothing received: {e}");
+        }
         String::from_utf8_lossy(&out).into_owned()
     }
 
@@ -351,10 +386,18 @@ mod tests {
 
     #[test]
     fn connection_cap_answers_503_and_recovers() {
-        let addr = start_with(ServerConfig { max_connections: 2, ..Default::default() });
+        // Under heavy load a loopback connect() can take over a minute (SYN retransmits), so
+        // the idle connections must not hit the head timeout before both are up.
+        let config = ServerConfig { max_connections: 2, head_timeout: Duration::from_secs(600), ..Default::default() };
+        let (addr, live) = start_counted(config);
         let idle1 = TcpStream::connect(addr).unwrap();
         let idle2 = TcpStream::connect(addr).unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+        // The accept loop can lag behind connect(); wait until it holds both slots.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while live.load(Ordering::Acquire) < 2 {
+            assert!(Instant::now() < deadline, "idle connections not accepted (live: {})", live.load(Ordering::Acquire));
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let busy = get(addr, "/", "");
         assert!(busy.starts_with("HTTP/1.1 503"), "{busy}");
         drop((idle1, idle2));
@@ -368,6 +411,34 @@ mod tests {
             assert!(Instant::now() < deadline, "slots never released: {out}");
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Regression: when no connection thread could be spawned, the accepted socket was
+    /// dropped and the client saw an empty response; now it gets a 503.
+    #[test]
+    fn no_thread_for_a_connection_answers_503() {
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || raw(addr, "GET / HTTP/1.1\r\n\r\n"));
+        let (stream, _) = listener.accept().unwrap();
+        hand_off(stream, |_job| Err(io::Error::other("out of threads")), |_| panic!("ran without a thread"));
+        let out = client.join().unwrap();
+        assert!(out.starts_with("HTTP/1.1 503") && out.ends_with("server busy"), "{out}");
+    }
+
+    #[test]
+    fn hand_off_runs_the_work_on_the_spawned_thread() {
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || raw(addr, "GET / HTTP/1.1\r\n\r\n"));
+        let (stream, _) = listener.accept().unwrap();
+        let spawn = |job: Job| std::thread::Builder::new().spawn(job).map(drop);
+        hand_off(stream, spawn, |mut s| {
+            let _ = http::read_request(&mut s, Duration::from_secs(5));
+            http::respond(&mut s, 200, "text/plain", b"ok").unwrap();
+        });
+        let out = client.join().unwrap();
+        assert!(out.starts_with("HTTP/1.1 200") && out.ends_with("ok"), "{out}");
     }
 
     #[test]

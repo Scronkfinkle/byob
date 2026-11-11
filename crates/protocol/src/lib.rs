@@ -401,7 +401,8 @@ pub enum ServerMsg {
     /// JSON-RPC `result` or an `error`.
     WebReply {
         call: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// `Some(Value::Null)` for a JSON-RPC `null` result, which is sent as `null`.
+        #[serde(default, deserialize_with = "present_even_if_null", skip_serializing_if = "Option::is_none")]
         result: Option<serde_json::Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<web::WebError>,
@@ -857,9 +858,29 @@ pub trait Connection {
     fn try_recv(&mut self) -> Option<ServerMsg>;
 }
 
+/// An optional field where a present `null` is `Some(Value::Null)`, not `None` (serde's
+/// default for `Option`); pair with `#[serde(default)]` so a missing one is `None`.
+fn present_even_if_null<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(d).map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a `null` result decoded as `None`, so remote clients answered the page
+    /// with `{}` where the desktop answered `null`.
+    #[test]
+    fn web_reply_keeps_a_null_result() {
+        let null = ServerMsg::WebReply { call: 3, result: Some(serde_json::Value::Null), error: None };
+        assert_eq!(null.to_json(), r#"{"type":"web_reply","call":3,"result":null}"#);
+        assert_eq!(ServerMsg::from_json(&null.to_json()).unwrap(), null);
+        let none = ServerMsg::WebReply { call: 3, result: None, error: None };
+        assert_eq!(none.to_json(), r#"{"type":"web_reply","call":3}"#);
+        assert_eq!(ServerMsg::from_json(&none.to_json()).unwrap(), none);
+        let value = ServerMsg::WebReply { call: 3, result: Some(serde_json::json!({"a": [1]})), error: None };
+        assert_eq!(ServerMsg::from_json(&value.to_json()).unwrap(), value);
+    }
 
     #[test]
     fn client_msg_round_trips() {
