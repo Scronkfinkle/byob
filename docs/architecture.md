@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10 (artifact types and renderers are registrations)
+Last updated: 2026-11-10 (view trees: declarative UI drawn natively)
 
 ## Shape
 
@@ -65,6 +65,39 @@ bumps (`crates/protocol/src/version.rs`, `view.rs`).
   when the engine did (`ByobApp::send_plugin`). Long-lived plugin backends will register here.
 - **Stale browser UIs.** `cargo xtask web` stamps the major into `index.html`; byob refuses to
   serve a UI built for another major (`byob-server`'s `webui.rs`) and explains how to rebuild.
+
+## View trees: declarative UI drawn natively
+
+Plugins (and later the model) describe UI as a JSON tree; every client draws it with egui and
+the theme tokens, on the desktop and in the browser alike. Authoring guide: `docs/views.md`.
+
+- **Schema** (`byob_protocol::tree`, v1): containers `column`, `row`, `card`; leaves `text`,
+  `markdown`, `chip`, `button`, `input`, `toggle`, `select`, `progress`, `table` (virtualized,
+  editable columns), `chart` (`ChartSpec`), `separator`, `image` (media path / artifact id),
+  `canvas` (display list in theme colours). Any node may carry a `key`. Colours are only theme
+  roles (tones), never values, except `#hex` on a canvas. An `Event` is an action plus the
+  value of every named field (form semantics) and an optional cell edit; a `Reply` is a whole
+  `view`, `patch`es, and `values` to force over typed text.
+- **Untrusted input, never an error.** `tree::decode` applies the limits (depth 32, 20k nodes,
+  100k rows, 64 columns, 1k options, 20k shapes, 64k-char strings, finite numbers), shows an
+  unknown node as its `fallback` text or drops it, and returns `Fault`s (JSON pointer +
+  sentence) for whoever wrote the tree — the engine feeds them back to the model so it can fix
+  its own extension. `tree::apply` does the same for patches (one bad patch is skipped).
+- **Patches** address nodes by `key` or `path` (`put` = JSON-pointer replace, `replace`, `set`,
+  `append`, `remove`, `rows`). `set` and deep `put`s round-trip only the node without its
+  children/rows/shapes, so they cost microseconds on a 10k-row table. **`tree::diff(old,
+  new)`** turns two trees into patches, so a plugin may always send its whole view and clients
+  still get small updates (one edited cell of a 10k-row table: one ~40-byte `put`).
+- **Rendering** (`byob_ui_egui::tree`): `show_tree(ui, tokens, &tree, &mut TreeState) ->
+  Vec<Event>` for any render site; `TreeView` holds a tree and applies replies. Tables draw only
+  the rows on screen (`show_rows`, painted cells): ~70 µs a frame at 10k rows. The client keeps
+  only transient state in `TreeState` — field values by name, selection, the cell being edited,
+  scroll by node key — and a field takes the tree's value only when the tree changed it (or a
+  reply's `values` force it), so replies never clobber typing.
+- **On steps** a tree is a `View` of kind `byob.tree` (data = the tree, fallback = a markdown
+  summary). The `ViewRegistry` draws it (decoded once per change, its state kept per step and
+  view) and queues its events (`take_tree_events`); routing them to their owner, and the other
+  render sites (pane, settings section, status item), come with the plugin backends.
 
 ## Concurrency: no async runtime
 
