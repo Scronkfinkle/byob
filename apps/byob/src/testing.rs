@@ -154,7 +154,7 @@ impl Runner {
         // first), one at a time: the next once the app was busy and has settled again.
         if let Some((at, was_busy)) = self.waiting {
             let busy = was_busy || app.busy();
-            let finished = at.elapsed() >= settle_timeout() || if busy { !app.busy() && app.settled() } else { at.elapsed() >= START_TIMEOUT };
+            let finished = message_finished(at.elapsed(), busy, app.busy(), app.settled(), app.awaiting_approval());
             self.waiting = (!finished).then_some((at, busy));
         }
         if self.waiting.is_none()
@@ -268,4 +268,28 @@ fn save_png(path: &Path, image: &egui::ColorImage) -> Result<(), String> {
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
     writer.write_image_data(image.as_raw()).map_err(|e| e.to_string())
+}
+
+/// Is the message sent `elapsed` ago done with, so the next can go (or the screenshot be
+/// taken)? Once the app went busy: when it is idle and settled again, or when the turn
+/// stopped on an approval card (nothing moves until someone answers it). Never busy: after
+/// [`START_TIMEOUT`] (refused or finished at once). Always after the settle timeout.
+fn message_finished(elapsed: Duration, was_busy: bool, busy: bool, settled: bool, awaiting_approval: bool) -> bool {
+    elapsed >= settle_timeout() || if was_busy { settled && (!busy || awaiting_approval) } else { elapsed >= START_TIMEOUT }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_turn_waiting_for_approval_is_finished_for_the_script() {
+        let s = Duration::from_secs(1);
+        // Busy on an approval card: done (it used to wait for the whole settle timeout).
+        assert!(message_finished(s, true, true, true, true));
+        assert!(!message_finished(s, true, true, false, false));
+        assert!(message_finished(s, true, false, true, false));
+        assert!(!message_finished(s, false, false, true, false));
+        assert!(message_finished(START_TIMEOUT, false, false, false, false));
+    }
 }

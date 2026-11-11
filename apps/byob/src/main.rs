@@ -507,7 +507,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size(args.window_size.unwrap_or([1100.0, 750.0])).with_title("byob"),
         wgpu_options: gpu::options(),
-        persistence_path: scratch_state.clone(),
+        persistence_path: scratch_state.clone().or_else(|| window_state_in(std::env::var_os(byob_store::HOME_ENV))),
         ..Default::default()
     };
     // Fail fast on a --theme nothing could match (user themes are checked again below).
@@ -559,9 +559,23 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
     result
 }
 
+/// Where the window's saved state (size, appearance, pane) goes: under `BYOB_HOME` when it
+/// is set, so a separate profile doesn't share it with the user's own; else eframe's default
+/// (the platform data folder).
+fn window_state_in(byob_home: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    byob_home.filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join("window.ron"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_byob_home_profile_keeps_its_own_window_state() {
+        assert_eq!(window_state_in(Some("/tmp/demo/home".into())), Some(PathBuf::from("/tmp/demo/home/window.ron")));
+        assert_eq!(window_state_in(Some("".into())), None);
+        assert_eq!(window_state_in(None), None);
+    }
 
     fn saved(url: Option<&str>, model: Option<&str>, key: Option<&str>) -> (Settings, Secrets) {
         let mut settings = Settings::default();

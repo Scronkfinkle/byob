@@ -228,6 +228,10 @@ How it works:
 - `@byob.view("list")` draws view `list`. After every event (and every tool call) byob calls
   all your view functions again and updates what changed, so just change your variables in
   `@byob.on_event` and return nothing. Return `{"values": {"new": ""}}` to clear a field.
+- To change a view on a timer (a clock, a poll), start a thread before `byob.run()` that
+  changes your variables and calls `byob.refresh("<view id>")`; there is no other timer API:
+  `threading.Thread(target=tick, daemon=True).start()` with `def tick(): while True:
+  time.sleep(30); byob.refresh("clock")`.
 - An event is `{"action": ..., "values": {...}, "key": ...}`: `action` is the button's
   `action` (or an input's `submit`), `values` has the text of every `input` (by `name`),
   every `toggle` (true/false) and `select`. Put an index in the action (`"done:3"`) to tell

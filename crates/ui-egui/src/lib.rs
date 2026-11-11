@@ -473,6 +473,11 @@ impl ByobApp {
         self.conn.send(ClientMsg::SendMessage { text, attachments });
     }
 
+    /// Some turn is stopped on an approval card the user has to answer.
+    pub fn awaiting_approval(&self) -> bool {
+        steps::awaiting_approval(&self.entries)
+    }
+
     /// Connected, and nothing will change without the user: no turn running, no queued
     /// message about to go, and every entry finished streaming (and its charts/images
     /// loaded), or a turn is waiting on an approval card.
