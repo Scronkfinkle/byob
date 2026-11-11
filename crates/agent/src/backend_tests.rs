@@ -324,7 +324,8 @@ fn subprocess_tools_can_import_the_helper_too() {
 
 /// The first fenced block of `lang` after `after` in the authoring guide.
 pub(crate) fn guide_block(after: &str, lang: &str) -> String {
-    let guide = crate::extensions::AUTHORING_SKILL;
+    // A checkout with CRLF line ends (Windows without .gitattributes) still has the blocks.
+    let guide = crate::extensions::AUTHORING_SKILL.replace("\r\n", "\n");
     let rest = &guide[guide.find(after).unwrap()..];
     let open = format!("```{lang}\n");
     let start = rest.find(&open).unwrap() + open.len();
