@@ -1,0 +1,34 @@
+<!doctype html>
+<html><head><title>Notes panel</title>
+<style>
+body { margin: 0; padding: 12px; font-size: 14px; }
+h3 { margin: 0 0 8px; color: var(--byob-strong); }
+.card { background: var(--byob-surface); border: 1px solid var(--byob-border); border-radius: var(--byob-radius); padding: 10px; margin: 8px 0; }
+button { background: var(--byob-accent); color: var(--byob-on-accent); border: 0; border-radius: var(--byob-radius); padding: 5px 10px; }
+input { background: var(--byob-field); color: var(--byob-fg); border: 1px solid var(--byob-border); border-radius: var(--byob-radius); padding: 4px 6px; }
+.muted { color: var(--byob-muted); font-size: 12px; }
+ul { padding-left: 18px; margin: 6px 0; }
+</style></head>
+<body>
+<h3>Notes (a plugin web view)</h3>
+<div class="card"><input id="t" placeholder="A note" value="Buy figs"> <button id="add">Add</button>
+<ul id="list"></ul></div>
+<div class="card"><div>2 + 3 by the backend's <code>add</code> tool: <b id="sum">…</b></div>
+<div class="muted" id="lat">measuring…</div></div>
+<div class="card muted" id="ctx">theme: …</div>
+<script>
+const list = document.getElementById("list");
+function draw(items) { list.innerHTML = ""; for (const n of items) { const li = document.createElement("li"); li.textContent = n; list.appendChild(li); } }
+byob.on((p, method) => { if (method === "byob/message" && p.notes) draw(p.notes); });
+document.getElementById("add").onclick = () => byob.send({add: document.getElementById("t").value});
+byob.ready.then(async ctx => {
+  document.getElementById("ctx").textContent = "theme: " + ctx.theme + " · " + ctx.platform + " · " + Object.keys(ctx.styles.variables).length + " CSS variables";
+  const r = await byob.tool("add", {a: 2, b: 3});
+  document.getElementById("sum").textContent = r.content[0].text;
+  draw((await byob.ask({list: true})).notes);
+  let t0 = performance.now(); for (let i = 0; i < 20; i++) await byob.call("ping", {}); const ping = (performance.now() - t0) / 20;
+  t0 = performance.now(); for (let i = 0; i < 20; i++) await byob.ask({list: true}); const ask = (performance.now() - t0) / 20;
+  document.getElementById("lat").textContent = "bridge round trip: ping " + ping.toFixed(2) + " ms (host), byob.ask " + ask.toFixed(2) + " ms (page → engine → Python → page)";
+  byob.context("The notes panel is open with " + list.children.length + " notes");
+}).catch(e => document.getElementById("lat").textContent = "error: " + e.message);
+</script></body></html>

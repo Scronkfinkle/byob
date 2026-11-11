@@ -1,0 +1,17 @@
+{
+  "id": "toolbox-env",
+  "name": "Toolbox environments",
+  "version": "0.1.0",
+  "description": "Demo of a third-party workspace environment provider: a workspace with a tools.txt gets a .toolbox/bin folder of (fake) tools put on PATH for run_command. byob asks once per workspace before loading it.",
+  "icon": "wrench",
+  "prompt": "Workspaces with a tools.txt have the tools it lists on PATH (the toolbox environment) once the user lets it load; run them with run_command.",
+  "environments": [
+    {
+      "id": "toolbox",
+      "label": "toolbox",
+      "detect": ["tools.txt"],
+      "command": "python3",
+      "args": ["env.py"]
+    }
+  ]
+}

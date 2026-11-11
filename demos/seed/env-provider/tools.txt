@@ -1,0 +1,4 @@
+# The toolbox demo: each line becomes a tool on PATH once byob loads the environment.
+greet: hello from a tool the toolbox-env plugin put on PATH
+deploy-check: all 3 services healthy (pretend)
+weather-cli: 21C and sunny (pretend)

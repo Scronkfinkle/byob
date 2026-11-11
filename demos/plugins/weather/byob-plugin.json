@@ -1,0 +1,9 @@
+{
+  "id": "weather",
+  "name": "Weather (MCP App)",
+  "version": "0.1.0",
+  "description": "Demo of an MCP App: a stdio MCP server whose show_weather tool has a UI (ui://weather/dash). byob draws it as a live card on the step; its Refresh button calls an app-only tool and Ask posts a message.",
+  "icon": "cloud-sun",
+  "prompt": "Use weather__show_weather to show the user the weather for a city.",
+  "mcpServers": { "main": { "command": "python3", "args": ["server.py"] } }
+}

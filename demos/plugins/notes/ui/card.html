@@ -1,0 +1,24 @@
+<!doctype html>
+<html><head><title>Notes card</title>
+<style>
+body { margin: 0; padding: 10px 12px; font-size: 14px; }
+.row { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.pill { background: var(--byob-surface); border: 1px solid var(--byob-border); border-radius: 999px; padding: 2px 10px; }
+.muted { color: var(--byob-muted); font-size: 12px; margin-top: 8px; }
+b { color: var(--byob-accent); }
+</style></head>
+<body>
+<div class="row"><b>Notes</b><span id="notes" class="row"></span></div>
+<div class="muted" id="lat">…</div>
+<script>
+byob.on((p, method) => {
+  if (method !== "byob/card") return;
+  const box = document.getElementById("notes"); box.innerHTML = "";
+  for (const n of (p.data && p.data.notes) || []) { const s = document.createElement("span"); s.className = "pill"; s.textContent = n; box.appendChild(s); }
+});
+byob.ready.then(async ctx => {
+  let t0 = performance.now(); for (let i = 0; i < 20; i++) await byob.call("ping", {}); const ping = (performance.now() - t0) / 20;
+  t0 = performance.now(); for (let i = 0; i < 20; i++) await byob.ask({list: true}); const ask = (performance.now() - t0) / 20;
+  document.getElementById("lat").textContent = "plugin web card · " + ctx.platform + " · ping " + ping.toFixed(2) + " ms · byob.ask " + ask.toFixed(2) + " ms";
+}).catch(e => document.getElementById("lat").textContent = "error: " + e.message);
+</script></body></html>

@@ -1,0 +1,17 @@
+{
+  "id": "notes",
+  "name": "Notes (web view)",
+  "version": "0.1.0",
+  "description": "Demo of plugin HTML views: a Notes pane (an HTML page talking to the Python backend through window.byob) and a web card on show_notes steps.",
+  "icon": "notebook",
+  "backend": "backend.py",
+  "prompt": "The user keeps notes in the Notes pane (notes plugin); show_notes shows them in a card.",
+  "views": [
+    { "site": "pane", "id": "notes", "title": "Notes", "html": "ui/index.html" },
+    { "site": "card", "id": "notescard", "html": "ui/card.html" }
+  ],
+  "tools": [
+    { "name": "add", "description": "Add two numbers", "params": { "type": "object", "properties": { "a": { "type": "integer" }, "b": { "type": "integer" } } }, "run": "backend" },
+    { "name": "show_notes", "description": "Show the user their notes in a card", "params": { "type": "object", "properties": {} }, "run": "backend" }
+  ]
+}

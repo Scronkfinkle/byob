@@ -1,0 +1,14 @@
+{
+  "id": "guard",
+  "name": "Guard",
+  "version": "0.1.0",
+  "description": "Demo of turn hooks: asks a person before every write (even with --auto-approve), never lets the model delete files, adds a line to the system prompt, and puts a 'checked' card on every file and command step.",
+  "icon": "shield",
+  "backend": "backend.py",
+  "hooks": [
+    { "event": "before_tool_call", "tools": ["write_file", "delete_file"], "fail": "closed" },
+    { "event": "before_prompt", "priority": 700 },
+    { "event": "after_tool_call", "tools": ["write_file", "read_file", "list_files", "run_command"] }
+  ],
+  "views": [{ "site": "status", "id": "tally", "title": "Guard decisions" }]
+}
