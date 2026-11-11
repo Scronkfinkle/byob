@@ -76,6 +76,10 @@ byob.run()
   the site; a view that can't be had at all (the backend crashed, a traceback in the view
   function) shows a small error box.
 
+When a tree isn't enough, a pane or card view can be an HTML page instead (`"html":
+"ui/index.html"`, with a `window.byob` API to the plugin's backend and the model): see Web
+views in `docs/plugins-backend.md`.
+
 `examples/plugins/todo-demo` in byob's repository has every site, a settings section and
 cards (run byob with `--plugin examples/plugins/todo-demo`).
 

@@ -450,6 +450,9 @@ mod tests {
         r.apply_plugins(&[plugin("odd", true, &[("text/csv", "native:spreadsheet"), ("text/x-notes", "native:markdown")])]);
         assert_eq!(r.get("text/csv").caps().label, "file");
         assert_eq!(r.get("text/x-notes").caps().label, "document");
+        // `web:<file>`: the plugin's own page draws the type on a web surface.
+        r.apply_plugins(&[plugin("notes", true, &[("text/x-notes", "web:ui/notes.html")])]);
+        assert_eq!(r.get("text/x-notes").caps().label, "view");
         // No declarations at all (an older engine): byob's own registrations.
         r.apply_plugins(&[]);
         assert_eq!(r.get(TYPE_CHART).caps().label, "chart");

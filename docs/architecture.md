@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10 (hooks: the turn pipeline as plugin middleware; prompt, compaction, subagents and environments as bundled plugins)
+Last updated: 2026-11-10 (web surfaces: the page bridge, MCP Apps, plugin web views)
 
 ## Shape
 
@@ -35,9 +35,10 @@ bumps (`crates/protocol/src/version.rs`, `view.rs`).
   minor is informational.
 - **Caps** are feature strings (`[a-z0-9_.-]`, ≤ 64 of ≤ 64 chars). A feature both sides must
   understand is used only when both list its cap (`version::shared`); unknown caps are
-  ignored. Today: `views`, `plugin_channel`, `view_sites`. Minors so far: 1 — `Artifact::content_type`; 2 —
-  `PluginInfo::backend`; 3 — render sites (`PluginInfo::views`, `View::owner`, `OpenView`/`CloseView`/
-  `ViewEvent`, `LiveView`).
+  ignored. Today: `views`, `plugin_channel`, `view_sites`, `bundled_scope`, `web_bridge`. Minors so far: 1 —
+  `Artifact::content_type`; 2 — `PluginInfo::backend`; 3 — render sites (`PluginInfo::views`, `View::owner`,
+  `OpenView`/`CloseView`/`ViewEvent`, `LiveView`); 4 — bundled plugins; 5 — web surfaces (`WebCall`/
+  `WebReply`/`WebPush`, `ViewDecl::html`, step views `byob.mcp_app` and `byob.web`).
 - **Compatibility rules.** Bump the major only for changes an older peer can't survive (a
   renamed/removed field, a changed meaning). Everything else is additive: new fields are
   `#[serde(default)]` (and skipped when empty); new messages and features go behind a cap
@@ -143,6 +144,9 @@ Plugins) and **card** (on a step of the plugin's backend tool). Clients learn th
   live view and attaches it to the tool's step (`step_views`) as a `byob.tree` view with
   `owner`. The step stores that first state (older clients and the transcript show it);
   clients with the cap draw the live one over it.
+- **Web views.** A view with `html` (pane or card) is an HTML page on a web surface instead
+  of a tree (see Web surfaces below); clients show it without `OpenView` and without a
+  running backend, and a backend tool's card naming one becomes a `byob.web` step view.
 - **Images** in trees load like the transcript's: `GetMedia` for workspace paths (the engine
   allows a path a view the client has open shows), `GetArtifact` (latest version) for
   artifacts, decoded once into textures (`byob_ui_egui::sites`).
@@ -332,11 +336,13 @@ Servo's MPL-2.0 code and tokio never enter byob; see AGENTS.md §3). The helper 
 
 - **Protocol** (`byob-artifact-wire`, stdin/stdout): frames of `u32` length + tag + fields.
   byob → helper: `Load{html, theme, viewport}`, `Resize`, `Input` (mouse, wheel, keys, text),
-  `Focus`, `Theme`, `Ping`, `Shutdown`, `Visible(bool)`. Helper → byob: `Ready`, `Features`
-  (bits, right after `Ready`), `Frame{w,h,rgba}` (only when the pixels changed),
-  `ContentHeight`, `Error{message,line}`, `Title`, `Cursor`, `Pong`. Additions are new tags
-  only; byob sends `Visible` only to helpers that announced it in `Features` (an older helper
-  would refuse the tag). Bodies are capped at 64 MiB and validated before use.
+  `Focus`, `Theme`, `Ping`, `Shutdown`, `Visible(bool)`, `Message(json)`. Helper → byob:
+  `Ready`, `Features` (bits, right after `Ready`), `Frame{w,h,rgba}` (only when the pixels
+  changed), `ContentHeight`, `Error{message,line}`, `Title`, `Cursor`, `Pong`, `Message(json)`.
+  Additions are new tags only; byob sends `Visible` and `Message` only to helpers that
+  announced them in `Features` (`VISIBILITY`, `BRIDGE`; an older helper would refuse the tag,
+  and its pages simply never talk). Bodies are capped at 64 MiB (bridge messages at 256 KiB)
+  and validated before use.
 - **Rendering**: Servo with a software GL context (Mesa llvmpipe via surfman), `paint()`,
   `glReadPixels`, compare with the last frame, send. byob uploads the newest frame into an
   egui texture; a reader thread keeps only the latest frame, a writer thread means a stuck
@@ -366,6 +372,79 @@ Servo's MPL-2.0 code and tokio never enter byob; see AGENTS.md §3). The helper 
 - **Liveness**: a ping every 500 ms, answered by evaluating a no-op on the page's script
   thread. No pong for 3 s (a runaway script), the process exiting, or Stop on the card:
   the process group is SIGKILLed and the app shows "Stopped" with Reload / Open in browser.
+
+### Web surfaces: the bridge, MCP Apps, plugin web views
+
+A web surface is HTML that talks to byob: an **MCP App** (an MCP tool whose `_meta.ui.
+resourceUri` names a `ui://` resource), a plugin's **web view** (`views: [{site, id, html}]`,
+pane or card) or a plugin's `web:<file>` **artifact renderer**. It runs on the same runtimes
+as HTML apps (Servo helper, iframe) and speaks JSON-RPC 2.0 to its parent, the MCP Apps
+dialect, so MCP Apps built with the ext-apps SDK run unchanged. Code: `byob_protocol::web`,
+`crates/ui-egui/src/web.rs` (the host), `crates/agent/src/web.rs` (the engine's half),
+`apps/byob/src/apphost` and `IframeView` (transport).
+
+- **Transport.** In the browser the page is a sandboxed `srcdoc` iframe (`allow-scripts
+  allow-forms`, no same-origin; several at once, cards included) and `parent.postMessage`
+  reaches byob's window, which keeps only messages whose `source` is one of its frames'
+  windows. In the Servo helper the page is top-level: `BRIDGE_JS`, put first in every
+  surface's document, turns `parent.postMessage(m)` (its own `window`) into a marked console
+  line the helper sends as `Event::Message`; byob's `Request::Message` is delivered by
+  `evaluate_javascript` as a `message` event whose `source` is the window. Both ways are
+  plain JSON text, capped (256 KiB on the wire, 1 MiB in the browser), and untrusted.
+- **Document.** The client builds it (`web::document`): a CSP meta tag (no network: `connect-
+  src 'none'`, nothing from URLs, `frame-src`/`object-src 'none'`), the theme as CSS defaults
+  (`--byob-*` and the MCP Apps standard names `--color-background-primary`, `--font-sans`,
+  `--border-radius-md`, …), and `BRIDGE_JS`, which applies `hostContext.styles.variables`
+  on initialize and on `host-context-changed`, and defines `window.byob` (`ready`, `tool`,
+  `ask`, `send`, `context`, `message`, `openLink`, `on`, `call`; byob's own pages start the
+  handshake themselves). An MCP App's declared `csp` domains and `permissions` are not
+  granted (the engine logs them); the sandbox stays as strict as for artifacts. A web host
+  is supposed to use a cross-origin sandbox proxy; byob's iframe has an opaque origin
+  instead, which isolates it from byob's page the same way.
+- **The host (client, `Web`).** Owned by the artifact UI next to the `AppView`. Answers
+  `ui/initialize` (`hostInfo`, `hostCapabilities` — `openLinks`, `logging`, and for MCP Apps
+  `serverTools`/`serverResources` — and `hostContext`: theme, style variables, display mode,
+  `toolInfo`, platform), `ui/open-link` (http/https, to the system browser),
+  `ui/request-display-mode` (`fullscreen` = Maximize over the window, `inline`),
+  `ui/notifications/size-changed` (the card's height, 80–640 points) and `ping`. After
+  `ui/notifications/initialized` it sends `tool-input` and `tool-result` (MCP Apps) or
+  `byob/card` / `byob/artifact` (byob pages). Theme changes go out as
+  `host-context-changed`; owners' `WebPush`es as `byob/message`. A surface not drawn for
+  2.5 s gets `ui/resource-teardown` and is closed when it answers (or after 0.5 s); drawn
+  again, it starts afresh from the kept document. Opening another chat tears all down.
+  Everything else becomes a `WebCall`; the engine's `WebReply` goes back with the page's id.
+- **The engine.** `byob/document`: the MCP server's `resources/read` (text or base64 blob,
+  `text/html…`, ≤ 3 MiB) or the plugin's file. `tools/call`: for an MCP App, a tool of the
+  same server and plugin that its `visibility` lets apps call, through the chat's permission
+  rules and grants (the tool's model name; read-only hints count as reads); when the rules
+  say ask, the reply carries `approval` and the client shows an Allow/Deny bar on the
+  surface, then sends the call again `approved`. For a plugin page, one of the plugin's
+  backend tools, without a card (its own UI, like a click in its tree view).
+  `resources/read`: the same server. `ui/message`: answered at once, then a user message in
+  the client's chat (queued while a reply runs). `ui/update-model-context`: text blocks plus
+  `structuredContent` (≤ 8000 characters, ≤ 8 surfaces per chat, the last per surface wins),
+  kept on the chat and added to the next turn's system prompt (the `app_context` prompt part,
+  priority 650). `byob/send` / `byob/call`: a `web` event / request to the plugin's backend.
+  Slow work runs on a worker thread that answers through the engine's inbox.
+- **MCP Apps on steps.** byob advertises `extensions: {"io.modelcontextprotocol/ui":
+  {mimeTypes: ["text/html;profile=mcp-app"]}}` in `initialize`. Tools whose `visibility`
+  lacks `"model"` are left out of the model's tools (apps can still call them). When a tool
+  with a `resourceUri` returns, the adapter attaches (`ToolContext::attach_view`) a
+  `byob.mcp_app` view to its step: plugin, server, tool, URI, the arguments, the
+  `CallToolResult` (≤ 160 KiB, else its text and `structuredContent`) and the tool's entry.
+  Clients with `web_bridge` draw it live with a Maximize button; others show the fallback
+  (the result's text). Steps are stored, so the app comes back with the chat.
+- **Not yet.** `tool-input-partial` (arguments aren't streamed to the page),
+  `tool-cancelled`, `pip` display mode, `notifications/tools/list_changed` to pages, granting
+  declared CSP domains or permissions, dedicated `domain`s, MCP Apps of MCP servers in the
+  engine's own connector list outside plugins, the bridge for model-written HTML apps.
+- **Measured** (Linux, release helper, debug byob): helper wire round trip 0.44 ms (page
+  `postMessage` → `Event::Message` → `Request::Message` → page, 50 messages); engine
+  round trip of a plugin page's `byob.ask` to its Python backend 117 µs, `ping` 4 µs. From
+  inside a page, which adds byob's UI frame: desktop (Servo, Xvfb) `ping` 24–28 ms,
+  `tools/call` to a local MCP server 32–52 ms, `byob.ask` 47 ms; browser (headless Chromium,
+  software GL) `ping` 35 ms, `tools/call` 101 ms, `byob.ask` 78 ms. The page's message waits
+  for the next egui frame on both.
 
 ## Context compaction and usage
 

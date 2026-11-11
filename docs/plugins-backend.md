@@ -75,8 +75,8 @@ unknown fields are ignored by both sides, so either can be newer.
 | type | fields | meaning |
 |---|---|---|
 | `init` | `v` (1), `plugin`, `name`, `version`, `byob` (app version), `caps` (message types the engine handles), `events` (the engine events there are), `settings` (non-secret values; secret ones only as environment variables), `dir`, `scope` (`chat`/`workspace`/`global`), `chat`, `workspace`, `views` (the declared views: `{id, site, title}`), `restart` (0 on the first start) | always the first line of every process |
-| `event` | `event`, plus its fields | `client`: a UI message — `client` (the client's id), `chat` (the chat it looks at), `msg` (any JSON ≤ 256 KiB). `view`: the user did something in one of its views — `view` (id), `site`, `key`, `client`, `chat`, `action`, `values`, `edit`? (see `docs/views.md`); answer with a `view` message. Engine events (only those subscribed), all with `chat`: `chat_opened` {`client`}, `turn_started` {`entry`}, `turn_finished` {`entry`, `error`, `stopped`}, `step_done` {`entry`, `step`, `tool`, `status`, `title`}, `artifact_updated` {`artifact`, `title`, `content_type`, `version`} |
-| `request` | `id` (number), `method`, `params` | answer with a `reply` of the same `id`. `tool`: `params` {`name` (as declared), `args` (the model's arguments), `workspace`, `chat`}; the result is text, `{"text", "files"}` (files relative to the workspace), `{"text", "card": <tree>, "card_view"?, "card_key"?}` (a live card on the tool's step, see below) or any JSON (shown as JSON). `view`: {`site`, `view` (id), `key`, `client`, `chat`}: a client opened the view and the engine has no tree for it; the result is the tree (or `{"view": tree}`). `hook`: a declared hook point (see Hooks) |
+| `event` | `event`, plus its fields | `client`: a UI message — `client` (the client's id), `chat` (the chat it looks at), `msg` (any JSON ≤ 256 KiB). `view`: the user did something in one of its views — `view` (id), `site`, `key`, `client`, `chat`, `action`, `values`, `edit`? (see `docs/views.md`); answer with a `view` message. Engine events (only those subscribed), all with `chat`: `chat_opened` {`client`}, `turn_started` {`entry`}, `turn_finished` {`entry`, `error`, `stopped`}, `step_done` {`entry`, `step`, `tool`, `status`, `title`}, `artifact_updated` {`artifact`, `title`, `content_type`, `version`}. `web`: a web view's page called `byob.send(msg)` — `view`, `key`, `client`, `chat`, `msg` (`{"msg": …}`) |
+| `request` | `id` (number), `method`, `params` | answer with a `reply` of the same `id`. `tool`: `params` {`name` (as declared), `args` (the model's arguments), `workspace`, `chat`}; the result is text, `{"text", "files"}` (files relative to the workspace), `{"text", "card": <tree>, "card_view"?, "card_key"?}` (a live card on the tool's step, see below) or any JSON (shown as JSON). `view`: {`site`, `view` (id), `key`, `client`, `chat`}: a client opened the view and the engine has no tree for it; the result is the tree (or `{"view": tree}`). `hook`: a declared hook point (see Hooks). `web`: {`view`, `key`, `client`, `chat`, `msg`}: a web view's page called `byob.ask(msg)` (`msg` is `{"msg": …}` as the page sent it); the result is the page's answer |
 | `cancel` | `id` | the caller gave up (stopped by the user, or 60 s passed); a late reply is dropped |
 | `shutdown` | | exit now (stdin closes next) |
 
@@ -94,6 +94,7 @@ workspace.
 | `log` | `text` | into its stderr ring and byob's log |
 | `fault` | `text` | a problem for the model and the user: kept in its status (`faults`) |
 | `subscribe` / `unsubscribe` | `events` | engine events to get from now on (unknown names are a fault) |
+| `web` | `view`, `key`? (`""`), `msg` (any JSON ≤ 256 KiB), `client`? | to the pages of web view `view` (clients that listed `web_bridge`; a chat plugin's only to those looking at its chat): they get it as a `byob/message` notification |
 
 Without `client`, messages go to every client that listed the `plugin_channel` cap (for a
 chat plugin: those looking at its chat). Messages to clients are capped at 256 KiB.
@@ -131,6 +132,32 @@ A backend tool shows a card on its step by returning `{"text": …, "card": <tre
 "card_view"?: id, "card_key"?: key}` (the first `card` view when `card_view` is left out;
 a fresh key when `card_key` is). The step keeps the tree it had then; clients show the live
 one, and the user's clicks on it are `view` events with that key.
+
+### Web views
+
+A `pane` or `card` view may be an HTML page instead of a tree: `{"site": "pane", "id":
+"notes", "html": "ui/index.html"}` (a file in the plugin folder; a plugin with only web views
+needs no `backend`). It runs on byob's web surface (the Servo helper on the desktop, a
+sandboxed iframe in the browser; no network, nothing from URLs) with a small `window.byob`
+API over the bridge (`docs/architecture.md`, Web surfaces):
+
+| page | goes to |
+|---|---|
+| `byob.ready` | a promise of the host context (`theme`, `styles.variables`, `platform`, …) after the handshake |
+| `byob.tool(name, args)` | one of the plugin's `"run": "backend"` tools (no approval card: the plugin's own UI); resolves to `{content: [{type: "text", text}], isError}` |
+| `byob.ask(msg)` / `byob.send(msg)` | a `web` request (its result is the answer) / a `web` event to the backend |
+| `byob.context(text, data?)` | the chat's next system prompt (one per page, the last wins; an empty text clears it) |
+| `byob.message(text)` | a user message in the chat (queued if a reply runs) |
+| `byob.openLink(url)` | the system browser (http/https) |
+| `byob.on(fn)` | `fn(params, method)` for `byob/message` (the backend's `web` messages), `byob/card`, `byob/artifact` |
+| `byob.call(method, params)` | any bridge method (the MCP Apps JSON-RPC names) |
+
+A web card: the tool returns `{"text", "card": <any JSON>, "card_view": "<web card view>"}`;
+the step gets a `byob.web` view and the page `byob/card` `{data, key}`. An artifact renderer
+`{"type": …, "renderer": "web:ui/x.html"}` draws that type with a page, which gets
+`byob/artifact` `{id, version, title, content_type, text}`. The theme is in the page as CSS
+variables from the start (`--byob-*` and the MCP Apps names, `--color-background-primary`
+etc.) and follows changes.
 
 ## Hooks
 
@@ -184,6 +211,7 @@ def bump(by: int = 1): ...
 @byob.on_message              # plugin-channel messages: fn(msg, client)
 @byob.on("turn_finished")     # engine events: fn(event); subscribed for you
 @byob.on_start                # fn(init), after every (re)start
+@byob.on_web("notes")         # a web view's byob.ask / byob.send: fn(msg, event) -> answer
 @byob.hook("before_tool_call")  # a declared hook: fn(params) -> None (continue) or a reply:
                               # byob.allow(), byob.deny(msg), byob.ask(msg), byob.stop(reason),
                               # byob.modify(add=[...], args={...}, result=..., card=tree, ...)
@@ -192,6 +220,7 @@ byob.card(text, "item", key)  # a tool result with a card (drawn by @view("item"
 byob.refresh(view_id=None)    # draw views again and send them (after changing state elsewhere)
 byob.send_view(tree, id, key="", values=None, client=None)
 byob.send(msg, client=None); byob.notice(text, level="info"); byob.log(*parts)
+byob.web_send(view_id, msg, key="", client=None)   # to a web view's pages (byob.on in the page)
 byob.fault(text); byob.subscribe(*events); byob.settings; byob.init
 byob.run()                    # or run({"tool:bump": f, "message": g, "turn_finished": h})
 ```
@@ -207,7 +236,10 @@ goes to stderr, so it can't break the protocol.
 
 Python 3.13, Linux: a `tool` request round trip on a running backend averages 21 µs (300
 requests); a UI message through the engine to the backend and back to the client 62 µs (50
-messages). Spawning a process per event costs ~15 ms. A venv with one local wheel builds
+messages); a web view's `byob.ask` through the engine to the backend and back 117 µs (200,
+with a worker thread per call; an engine-only `ping` 4 µs). From inside a page, adding the
+web surface: see `docs/architecture.md` (Web surfaces).
+Spawning a process per event costs ~15 ms. A venv with one local wheel builds
 in 1.5 s (pip, no network) and is found again instantly by the next engine run.
 
 ## Not yet

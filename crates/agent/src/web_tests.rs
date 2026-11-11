@@ -187,6 +187,7 @@ fn a_plugin_web_view_talks_to_its_backend() {
         fs::write(dir.join("ui/card.html"), "<p>card</p>").unwrap();
         let m = json!({"id": "panel", "name": "Panel", "backend": "backend.py",
             "views": [{"site": "pane", "id": "panel", "title": "Panel", "html": "ui/index.html"}, {"site": "card", "id": "chartcard", "html": "ui/card.html"}],
+            "renderers": [{"type": "text/x-notes", "renderer": "web:ui/card.html"}],
             "tools": [{"name": "add", "description": "Add", "params": {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}}, "run": "backend"},
                       {"name": "chart", "description": "Chart", "params": {"type": "object", "properties": {"n": {"type": "integer"}}}, "run": "backend"}]});
         fs::write(dir.join("byob-plugin.json"), m.to_string()).unwrap();
@@ -226,6 +227,11 @@ fn a_plugin_web_view_talks_to_its_backend() {
     );
     let doc = web_call(&mut c, 6, &card.owner(), "byob/document", json!({}), false).unwrap();
     assert_eq!(doc["html"], "<p>card</p>");
+    // A `web:<file>` artifact renderer's page; only files it declares.
+    let renderer = WebOwner::Plugin { plugin: "panel".into(), view: "artifact:ui/card.html".into(), key: "notes-1".into() };
+    assert_eq!(web_call(&mut c, 7, &renderer, "byob/document", json!({}), false).unwrap()["html"], "<p>card</p>");
+    let undeclared = WebOwner::Plugin { plugin: "panel".into(), view: "artifact:backend.py".into(), key: String::new() };
+    assert!(web_call(&mut c, 8, &undeclared, "byob/document", json!({}), false).is_err());
 }
 
 /// Bridge round trip through the engine: page call → engine → plugin backend → page.
