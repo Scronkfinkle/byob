@@ -106,9 +106,16 @@ pub trait AppView {
     fn status(&self, _id: &str, _version: u32) -> AppStatus {
         AppStatus::Unknown
     }
-    /// Send the page of `id`/`version` a bridge message (JSON text; web surfaces). Dropped
-    /// when it isn't running.
-    fn post(&mut self, _id: &str, _version: u32, _msg: &str) {}
+    /// Send the page of `id`/`version` a bridge message (JSON text, at most
+    /// [`AppView::max_message`] bytes; web surfaces). `false`: it didn't go (not running, or
+    /// too large).
+    fn post(&mut self, _id: &str, _version: u32, _msg: &str) -> bool {
+        false
+    }
+    /// The largest bridge message [`AppView::post`] delivers (bytes).
+    fn max_message(&self) -> usize {
+        byob_protocol::web::MAX_CALL_BYTES * 4
+    }
     /// What pages posted since the last call: (id, version, JSON text), untrusted.
     fn take_messages(&mut self) -> Vec<(String, u32, String)> {
         Vec::new()
@@ -495,11 +502,9 @@ mod web {
             Some(AppViewResponse::default())
         }
 
-        fn post(&mut self, id: &str, version: u32, msg: &str) {
-            let Some(w) = self.webs.get(&(id.to_owned(), version)).and_then(|w| w.el.content_window()) else { return };
-            if let Ok(v) = js_sys::JSON::parse(msg) {
-                let _ = w.post_message(&v, "*");
-            }
+        fn post(&mut self, id: &str, version: u32, msg: &str) -> bool {
+            let Some(w) = self.webs.get(&(id.to_owned(), version)).and_then(|w| w.el.content_window()) else { return false };
+            msg.len() <= self.max_message() && js_sys::JSON::parse(msg).is_ok_and(|v| w.post_message(&v, "*").is_ok())
         }
 
         fn take_messages(&mut self) -> Vec<(String, u32, String)> {

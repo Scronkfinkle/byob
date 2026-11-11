@@ -193,7 +193,7 @@ impl Sites {
 
     /// Draw view `r`, opening it first. `snapshot`: what to show until the live tree comes
     /// (a card's stored state), and all there is without the cap.
-    fn draw(&mut self, ui: &mut egui::Ui, t: &Tokens, r: &ViewRef, snapshot: Option<&Node>) {
+    fn draw(&mut self, ui: &mut egui::Ui, t: &Tokens, r: &ViewRef, snapshot: Option<&dyn Fn() -> Node>) {
         let enabled = self.enabled;
         let slot = self.slots.entry(r.clone()).or_default();
         if enabled && !slot.opened {
@@ -203,7 +203,7 @@ impl Sites {
         if slot.view.is_none()
             && let Some(s) = snapshot
         {
-            let mut v = TreeView::new(s.clone());
+            let mut v = TreeView::new(s());
             v.state = TreeState::with_id(egui::Id::unique(("live-view", r)));
             slot.view = Some(v);
         }
@@ -245,7 +245,8 @@ impl Sites {
         if view.kind != tree::KIND || view.v > tree::VERSION {
             return false;
         }
-        let snapshot = tree::decode(view.data.clone()).0;
+        // Decoded only until the live tree is there (not every frame).
+        let snapshot = || tree::decode(view.data.clone()).0;
         ui.scope(|ui| self.draw(ui, t, owner, Some(&snapshot)));
         true
     }
@@ -370,7 +371,7 @@ impl Sites {
             let owner = byob_protocol::web::WebOwner::Plugin { plugin: d.plugin.clone(), view: d.decl.id.clone(), key: String::new() };
             let key = format!("web:pane:{}/{}", d.plugin, d.decl.id);
             let title = d.title().to_owned();
-            web.fill(ui, t, crate::web::Spec { key: &key, owner: &owner, kind: crate::web::Kind::Byob, title: &title, init: crate::web::Init::default() });
+            web.fill(ui, t, crate::web::Spec { key: &key, owner: &owner, kind: crate::web::Kind::Byob, title: &title, init: None });
             return;
         }
         egui::ScrollArea::vertical().id_salt(("plugin-pane-scroll", &active)).auto_shrink([false, false]).show(ui, |ui| {

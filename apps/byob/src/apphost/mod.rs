@@ -446,11 +446,17 @@ impl AppView for ServoView {
         }
     }
 
-    fn post(&mut self, id: &str, version: u32, msg: &str) {
-        let Some(h) = self.apps.get(&(id.to_owned(), version)).and_then(|a| a.helper.as_ref()) else { return };
-        if h.supports(wire::Features::BRIDGE) && msg.len() <= wire::MAX_MESSAGE {
+    fn post(&mut self, id: &str, version: u32, msg: &str) -> bool {
+        let Some(h) = self.apps.get(&(id.to_owned(), version)).and_then(|a| a.helper.as_ref()) else { return false };
+        let ok = h.supports(wire::Features::BRIDGE) && msg.len() <= wire::MAX_MESSAGE;
+        if ok {
             h.send(Request::Message(msg.to_owned()));
         }
+        ok
+    }
+
+    fn max_message(&self) -> usize {
+        wire::MAX_MESSAGE
     }
 
     fn take_messages(&mut self) -> Vec<(String, u32, String)> {

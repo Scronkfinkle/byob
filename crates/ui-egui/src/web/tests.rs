@@ -11,6 +11,8 @@ struct Rec {
     from_page: Rc<RefCell<Vec<(String, u32, String)>>>,
     loaded: Rc<RefCell<Vec<(String, u32, String)>>>,
     closed: Rc<RefCell<Vec<(String, u32)>>>,
+    /// The largest message it takes (0: the default).
+    max: usize,
 }
 
 impl AppView for Rec {
@@ -30,8 +32,13 @@ impl AppView for Rec {
     fn runs_inline(&self) -> bool {
         true
     }
-    fn post(&mut self, id: &str, version: u32, msg: &str) {
+    fn post(&mut self, id: &str, version: u32, msg: &str) -> bool {
+        assert!(msg.len() <= self.max_message(), "posted {} bytes", msg.len());
         self.posted.borrow_mut().push((id.to_owned(), version, serde_json::from_str(msg).unwrap()));
+        true
+    }
+    fn max_message(&self) -> usize {
+        if self.max == 0 { byob_protocol::web::MAX_CALL_BYTES * 4 } else { self.max }
     }
     fn take_messages(&mut self) -> Vec<(String, u32, String)> {
         std::mem::take(&mut *self.from_page.borrow_mut())
@@ -68,7 +75,12 @@ fn init() -> Init {
 
 impl Harness {
     fn new() -> Self {
-        let rec = Rec::default();
+        Self::with_max(0)
+    }
+
+    /// With a runtime that takes messages of at most `max` bytes (0: the default).
+    fn with_max(max: usize) -> Self {
+        let rec = Rec { max, ..Rec::default() };
         let (posted, from_page, loaded, closed) = (Rc::clone(&rec.posted), Rc::clone(&rec.from_page), Rc::clone(&rec.loaded), Rc::clone(&rec.closed));
         let mut web = Web::new(Box::new(rec));
         let w = byob_protocol::Welcome::current();
@@ -83,7 +95,7 @@ impl Harness {
         let input = egui::RawInput { time: Some(self.time), ..Default::default() };
         let web = &mut self.web;
         let mut out = self.ctx.run_ui(input, |ui| {
-            web.card(ui, &Tokens::dark(), Spec { key: KEY, owner: &owner(), kind: Kind::McpApp, title: "Weather", init: init() });
+            web.card(ui, &Tokens::dark(), Spec { key: KEY, owner: &owner(), kind: Kind::McpApp, title: "Weather", init: Some(init()) });
         });
         out.textures_delta.clear();
         self.web.pump(self.time);
@@ -128,6 +140,8 @@ fn documents_get_the_csp_the_bridge_and_the_theme_first() {
     assert!(d.contains("AUTO=false") && !d.contains("__AUTO__"));
     let bridge = d.find("byob-msg").unwrap();
     assert!(bridge < d.find("app()").unwrap(), "the bridge runs before the page's code");
+    // Top-level (the Servo helper): only JSON-RPC goes to byob, the page's own posts to the page.
+    assert!(d.contains("m.jsonrpc!=='2.0')return O(m,...a)"), "{d}");
     let b = document("<p>hi</p>", Kind::Byob, &vars);
     assert!(b.starts_with("<!doctype html><meta") && b.ends_with("<p>hi</p>") && b.contains("AUTO=true"));
     let s = style_variables(&vars);
@@ -269,8 +283,169 @@ fn without_the_cap_nothing_is_asked() {
     let mut web = Web::new(Box::new(rec));
     let ctx = egui::Context::default();
     let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-        web.card(ui, &Tokens::dark(), Spec { key: KEY, owner: &owner(), kind: Kind::McpApp, title: "W", init: init() })
+        web.card(ui, &Tokens::dark(), Spec { key: KEY, owner: &owner(), kind: Kind::McpApp, title: "W", init: Some(init()) })
     });
     out.textures_delta.clear();
     assert!(web.take().is_empty());
+}
+
+impl Harness {
+    /// The document loaded and the handshake done; what was posted so far drained.
+    fn ready(&mut self) {
+        self.frame();
+        let c = self.calls();
+        self.web.apply(&ServerMsg::WebReply { call: c[0].0, result: Some(json!({"html": "<p>x</p>"})), error: None });
+        self.frame();
+        self.page(json!({"jsonrpc": "2.0", "id": 1, "method": "ui/initialize", "params": {}}));
+        self.page(json!({"jsonrpc": "2.0", "method": "ui/notifications/initialized"}));
+        self.posted();
+    }
+
+    /// The engine says the gate asks about the call it was sent as `call`.
+    fn gate_asks(&mut self, call: u64) {
+        let approval = WebApproval { title: "weather: delete_city".into(), access: byob_protocol::ToolAccess::Network };
+        self.web.apply(&ServerMsg::WebReply { call, result: None, error: Some(WebError { code: -32000, message: "ask".into(), approval: Some(approval) }) });
+    }
+}
+
+/// `byob.openLink("https://x/&calc")` ran calc on Windows (through `cmd /C start`); and a
+/// page could open a thousand tabs a frame.
+#[test]
+fn links_are_encoded_and_one_per_surface_every_couple_of_seconds() {
+    let mut h = Harness::new();
+    h.ready();
+    h.page(json!({"jsonrpc": "2.0", "id": 2, "method": "ui/open-link", "params": {"url": "https://x/\"&calc^|<>"}}));
+    assert_eq!(h.web.take_links(), ["https://x/%22&calc%5E%7C%3C%3E"]);
+    assert!(h.posted()[0].get("result").is_some());
+    for id in 3..20 {
+        h.page(json!({"jsonrpc": "2.0", "id": id, "method": "ui/open-link", "params": {"url": "https://example.com/"}}));
+    }
+    assert!(h.web.take_links().is_empty(), "too soon");
+    let p = h.posted();
+    assert_eq!(p.len(), 17);
+    assert!(p.iter().all(|m| m.get("error").is_some()), "every call is answered");
+    for _ in 0..20 {
+        h.frame();
+    }
+    h.page(json!({"jsonrpc": "2.0", "id": 30, "method": "ui/open-link", "params": {"url": "https://example.com/"}}));
+    assert_eq!(h.web.take_links(), ["https://example.com/"]);
+}
+
+/// An answer larger than the runtime takes (the Servo helper: 256 KB) was dropped, and the
+/// page's promise never settled.
+#[test]
+fn answers_too_large_for_the_page_settle_with_an_error() {
+    let mut h = Harness::with_max(2000);
+    h.ready();
+    h.page(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "big"}}));
+    let c = h.calls();
+    h.web.apply(&ServerMsg::WebReply { call: c[0].0, result: Some(json!({"text": "x".repeat(5000)})), error: None });
+    let p = h.posted();
+    assert_eq!(p.len(), 1);
+    assert_eq!(p[0]["id"], 2);
+    assert!(p[0]["error"]["message"].as_str().unwrap().contains("too large"), "{p:?}");
+}
+
+/// A `web:` renderer's artifact text is cut to what one message takes.
+#[test]
+fn artifact_text_is_cut_to_fit_one_message() {
+    let a: byob_protocol::Artifact = serde_json::from_value(json!({
+        "id": "notes", "kind": "markdown", "title": "Notes \"quoted\"", "filename": "notes.md",
+        "versions": [{"n": 1, "path": "notes.md", "created_at": 0}]
+    }))
+    .unwrap();
+    for (text, max) in [("a\"\\\n\u{1}é".repeat(50_000), 256 << 10), ("short".to_owned(), 256 << 10), ("x".repeat(300_000), 10_000)] {
+        let init = artifact_init(&a, 1, &text, max);
+        let (m, p) = init.notify.unwrap();
+        let msg = json!({"jsonrpc": "2.0", "method": m, "params": p}).to_string();
+        assert!(msg.len() <= max, "{} > {max}", msg.len());
+        let sent = p["text"].as_str().unwrap();
+        assert!(text.starts_with(sent));
+        assert_eq!(p["truncated"], sent.len() < text.len());
+        assert!(sent.len() * 2 > max.min(text.len()) / 6, "not cut more than it needs: {}", sent.len());
+    }
+    assert_eq!(fit_json("ab\"c", 5), ("ab", true));
+    assert_eq!(fit_json("ab\"c", 6), ("ab\"", true));
+    assert_eq!(fit_json("ab\"c", 8), ("ab\"c", false));
+}
+
+/// A second call the gate asks about replaced the first one's bar: the first never got an
+/// answer.
+#[test]
+fn a_second_gated_call_is_refused_while_one_waits() {
+    let mut h = Harness::new();
+    h.ready();
+    h.page(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "delete_city"}}));
+    h.page(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "delete_city"}}));
+    let c = h.calls();
+    h.gate_asks(c[0].0);
+    h.gate_asks(c[1].0);
+    let p = h.posted();
+    assert_eq!((p.len(), p[0]["id"].clone()), (1, json!(3)), "the second is refused: {p:?}");
+    assert!(p[0]["error"]["message"].as_str().unwrap().contains("waiting"));
+    h.web.decide(KEY, false);
+    let p = h.posted();
+    assert_eq!((p[0]["id"].clone(), p[0]["error"]["message"].clone()), (json!(2), json!("Denied by the user")));
+}
+
+/// Surface records outlived their chat, and eviction didn't evict.
+#[test]
+fn surface_records_go_with_their_chat_and_are_capped() {
+    let mut h = Harness::new();
+    h.ready();
+    h.web.apply(&ServerMsg::ChatOpened { chat: None, workspace: None });
+    h.idle(TEARDOWN_WAIT + 0.1);
+    assert!(h.web.surfaces.is_empty(), "{}", h.web.surfaces.len());
+    for i in 0..=MAX_SURFACES {
+        h.time += 0.1;
+        let input = egui::RawInput { time: Some(h.time), ..Default::default() };
+        let web = &mut h.web;
+        let mut out = h.ctx.run_ui(input, |ui| {
+            web.card(ui, &Tokens::dark(), Spec { key: &format!("k{i}"), owner: &owner(), kind: Kind::McpApp, title: "W", init: Some(init()) });
+        });
+        out.textures_delta.clear();
+        if i + 1 == MAX_SURFACES {
+            h.idle(TEARDOWN_AFTER + TEARDOWN_WAIT + 1.0);
+        }
+    }
+    assert!(h.web.surfaces.len() <= MAX_SURFACES, "{}", h.web.surfaces.len());
+}
+
+/// Step views are decoded when their data changes (not every frame), and a new result still
+/// reaches the page.
+#[test]
+fn step_views_follow_their_data() {
+    let mut h = Harness::new();
+    let app = |text: &str| View {
+        kind: "byob.mcp_app".into(),
+        v: McpApp::V,
+        data: json!({"plugin": "weather", "server": "main", "tool": "get_weather", "uri": "ui://weather/dash", "result": {"t": text}}),
+        fallback: String::new(),
+        owner: None,
+    };
+    let draw = |h: &mut Harness, view: &View| {
+        h.time += 0.1;
+        let input = egui::RawInput { time: Some(h.time), ..Default::default() };
+        let web = &mut h.web;
+        let mut out = h.ctx.run_ui(input, |ui| assert!(mcp_app_view(ui, &Tokens::dark(), web, 7, 0, view)));
+        out.textures_delta.clear();
+        h.web.pump(h.time);
+    };
+    let one = app("21");
+    draw(&mut h, &one);
+    let c = h.calls();
+    h.web.apply(&ServerMsg::WebReply { call: c[0].0, result: Some(json!({"html": "<p>x</p>"})), error: None });
+    draw(&mut h, &one);
+    h.from_page.borrow_mut().push((KEY.into(), 1, json!({"jsonrpc": "2.0", "id": 1, "method": "ui/initialize", "params": {}}).to_string()));
+    draw(&mut h, &one);
+    h.from_page.borrow_mut().push((KEY.into(), 1, json!({"jsonrpc": "2.0", "method": "ui/notifications/initialized"}).to_string()));
+    draw(&mut h, &one);
+    let p = h.posted();
+    assert_eq!(p.last().unwrap()["params"]["t"], "21");
+    draw(&mut h, &one);
+    assert!(h.posted().is_empty());
+    draw(&mut h, &app("22"));
+    let p = h.posted();
+    assert_eq!((p[0]["method"].clone(), p[0]["params"]["t"].clone()), (json!("ui/notifications/tool-result"), json!("22")));
+    assert_eq!(h.web.step_views.len(), 1);
 }

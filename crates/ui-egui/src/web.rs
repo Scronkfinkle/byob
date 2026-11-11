@@ -44,6 +44,8 @@ const CARD_MAX: f32 = 640.0;
 const MAX_PENDING: usize = 256;
 /// Surfaces remembered.
 const MAX_SURFACES: usize = 64;
+/// A surface opens at most one link this often (seconds).
+const LINK_INTERVAL: f64 = 2.0;
 
 /// The document's sandbox policy (a meta tag; the iframe's `sandbox` and the Servo helper's
 /// load filter do the rest).
@@ -54,7 +56,7 @@ pub const CSP: &str = "default-src 'none'; script-src 'unsafe-inline' data: blob
 /// page says as untrusted. `AUTO` (replaced): start the handshake for byob's own API.
 pub const BRIDGE_JS: &str = r"<script>(()=>{
 const T=window.parent===window,AUTO=__AUTO__;
-if(T){const L=console.log.bind(console);try{Object.defineProperty(window,'postMessage',{configurable:true,writable:true,value:function(m){try{L('\x01byob-msg '+JSON.stringify(m))}catch(e){}}})}catch(e){}}
+if(T){const L=console.log.bind(console),O=window.postMessage.bind(window);try{Object.defineProperty(window,'postMessage',{configurable:true,writable:true,value:function(m,...a){if(!m||typeof m!=='object'||m.jsonrpc!=='2.0')return O(m,...a);try{L('\x01byob-msg '+JSON.stringify(m))}catch(e){}}})}catch(e){}}
 const P=m=>{try{(T?window:parent).postMessage(m,'*')}catch(e){}};
 const V=o=>{if(!o||typeof o!=='object')return;for(const[k,v]of Object.entries(o))if(/^--[a-z0-9-]{1,48}$/.test(k)&&typeof v==='string'&&v.length<200&&!/[;{}<>]/.test(v))document.documentElement.style.setProperty(k,v)};
 const C=c=>{if(!c||typeof c!=='object')return;if(c.styles)V(c.styles.variables);if(c.theme==='dark'||c.theme==='light')document.documentElement.style.colorScheme=c.theme};
@@ -198,7 +200,8 @@ pub struct Spec<'a> {
     pub owner: &'a WebOwner,
     pub kind: Kind,
     pub title: &'a str,
-    pub init: Init,
+    /// `None`: the same as last frame (not built again each frame; see [`Web::known`]).
+    pub init: Option<Init>,
 }
 
 enum Doc {
@@ -237,6 +240,10 @@ struct Surface {
     fullscreen: bool,
     /// Closed after a teardown, not drawn since.
     closed: bool,
+    /// When it last had a link opened (egui time).
+    last_link: Option<f64>,
+    /// Its chat was closed: the record goes once the page does.
+    gone: bool,
 }
 
 /// What a call to the engine was for.
@@ -264,6 +271,8 @@ pub struct Web {
     dark: bool,
     links: Vec<String>,
     now: f64,
+    /// Step views' surfaces, decoded (by surface key).
+    step_views: HashMap<String, StepView>,
     /// The surface shown over the window (an MCP App's "Maximize").
     maximized: Option<String>,
     /// The page to answer teardown with: (key, host request id).
@@ -283,6 +292,7 @@ impl Web {
             dark: true,
             links: Vec::new(),
             now: 0.0,
+            step_views: HashMap::new(),
             maximized: None,
             next_host_id: 1,
         }
@@ -330,7 +340,14 @@ impl Web {
                 // Another chat: its surfaces go (told first).
                 let keys: Vec<String> = self.surfaces.keys().cloned().collect();
                 for k in keys {
+                    if let Some(s) = self.surfaces.get_mut(&k) {
+                        s.gone = true;
+                    }
                     self.teardown(&k, "the chat was closed");
+                    // Already closed (out of view before): nothing to wait for.
+                    if self.surfaces.get(&k).is_some_and(|s| s.closed) {
+                        self.surfaces.remove(&k);
+                    }
                 }
                 self.maximized = None;
                 false
@@ -376,7 +393,12 @@ impl Web {
                 if let Some(approval) = error.as_ref().and_then(|e| e.approval.clone())
                     && let Some(s) = self.surfaces.get_mut(&key)
                 {
-                    s.asking = Some(Asking { page_id: id, method, params, approval });
+                    if s.asking.is_some() {
+                        // One question at a time: the one asked keeps its bar (and its answer).
+                        self.answer(&key, id, Err((-32000, "Another call is waiting for the user's OK; try again after it".into())));
+                    } else {
+                        s.asking = Some(Asking { page_id: id, method, params, approval });
+                    }
                     return;
                 }
                 let msg = match (result, error) {
@@ -393,18 +415,35 @@ impl Web {
         (key.to_owned(), s.generation)
     }
 
-    /// Send the page a JSON-RPC message.
-    fn post(&mut self, key: &str, msg: &Value) {
-        let Some(s) = self.surfaces.get(key) else { return };
+    /// The largest message a page gets (bytes; the Servo helper's is smaller than the
+    /// browser's).
+    pub fn max_message(&self) -> usize {
+        self.view.max_message()
+    }
+
+    /// Send the page a JSON-RPC message; whether it went. An answer too large for the
+    /// runtime is answered with an error instead, so the page's call still settles.
+    fn post(&mut self, key: &str, msg: &Value) -> bool {
+        let Some(s) = self.surfaces.get(key) else { return false };
         let (id, v) = Self::doc_key(key, s);
         let text = msg.to_string();
-        if text.len() <= byob_protocol::web::MAX_CALL_BYTES * 4 {
-            self.view.post(&id, v, &text);
+        let max = self.view.max_message();
+        if text.len() <= max {
+            return self.view.post(&id, v, &text);
         }
+        match msg.get("id") {
+            Some(page_id) if msg.get("method").is_none() => {
+                let message = format!("The answer is too large for the page ({} KB; at most {} KB)", text.len() / 1024, max / 1024);
+                let err = json!({"jsonrpc": "2.0", "id": page_id, "error": {"code": -32000, "message": message}});
+                self.view.post(&id, v, &err.to_string());
+            }
+            _ => log::warn!("web surface {key}: dropped a message of {} bytes (at most {max})", text.len()),
+        }
+        false
     }
 
     fn notify(&mut self, key: &str, method: &str, params: Value) {
-        self.post(key, &json!({"jsonrpc": "2.0", "method": method, "params": params}));
+        let _ = self.post(key, &json!({"jsonrpc": "2.0", "method": method, "params": params}));
     }
 
     fn answer(&mut self, key: &str, id: Value, result: Result<Value, (i64, String)>) {
@@ -412,11 +451,11 @@ impl Web {
             Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),
             Err((code, message)) => json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}),
         };
-        self.post(key, &msg);
+        let _ = self.post(key, &msg);
     }
 
     /// Make or refresh a surface's record; fetch its document the first time.
-    fn ensure(&mut self, key: &str, owner: &WebOwner, kind: Kind, title: &str, init: Init) {
+    fn ensure(&mut self, key: &str, owner: &WebOwner, kind: Kind, title: &str, init: Option<Init>) {
         if !self.surfaces.contains_key(key) {
             if self.surfaces.len() >= MAX_SURFACES {
                 let oldest = self
@@ -427,6 +466,7 @@ impl Web {
                     .map(|(k, _)| k.clone());
                 if let Some(k) = oldest {
                     self.close_now(&k);
+                    self.surfaces.remove(&k);
                 }
             }
             let mut s = Surface {
@@ -434,7 +474,7 @@ impl Web {
                 kind,
                 title: title.to_owned(),
                 doc: Doc::Failed("this byob can't show apps (the engine is older)".into()),
-                init,
+                init: init.unwrap_or_default(),
                 initialized: false,
                 generation: 1,
                 height: None,
@@ -443,6 +483,8 @@ impl Web {
                 asking: None,
                 fullscreen: false,
                 closed: false,
+                last_link: None,
+                gone: false,
             };
             if self.enabled {
                 s.doc = Doc::Fetching;
@@ -451,7 +493,8 @@ impl Web {
             if self.enabled {
                 let _ = self.call(owner.clone(), "byob/document", json!({}), false, Pending::Document(key.to_owned()));
             }
-        } else if let Some(s) = self.surfaces.get_mut(key)
+        } else if let Some(init) = init
+            && let Some(s) = self.surfaces.get_mut(key)
             && s.init != init
         {
             let changed_result = s.init.tool_result != init.tool_result;
@@ -463,6 +506,11 @@ impl Web {
                 self.notify(key, "ui/notifications/tool-result", r);
             }
         }
+    }
+
+    /// Surface `key` has a record (what it starts with needn't be built again).
+    pub fn known(&self, key: &str) -> bool {
+        self.surfaces.contains_key(key)
     }
 
     /// Draw surface `key` in a card (full width, the page's own height).
@@ -527,6 +575,7 @@ impl Web {
         s.last_drawn = now;
         s.fullscreen = fill;
         s.closed = false;
+        s.gone = false;
         if s.tearing.is_some() {
             // Came back while it was being told to go: it carries on.
             s.tearing = None;
@@ -641,7 +690,8 @@ impl Web {
         self.post(key, &json!({"jsonrpc": "2.0", "id": format!("byob-{id}"), "method": "ui/resource-teardown", "params": {"reason": reason}}));
     }
 
-    /// Stop the page now; the next draw starts it afresh (same document).
+    /// Stop the page now; the next draw starts it afresh (same document). A surface whose
+    /// chat closed, or whose document failed, is forgotten.
     fn close_now(&mut self, key: &str) {
         let Some(s) = self.surfaces.get_mut(key) else { return };
         let (id, v) = (key.to_owned(), s.generation);
@@ -651,7 +701,7 @@ impl Web {
         s.closed = true;
         s.generation = s.generation.wrapping_add(1);
         self.view.close(&id, v);
-        if matches!(s.doc, Doc::Failed(_)) {
+        if s.gone || matches!(s.doc, Doc::Failed(_)) {
             self.surfaces.remove(key);
         }
     }
@@ -700,9 +750,12 @@ impl Web {
                 }
             }
             ("ui/open-link", Some(id)) => {
-                let url = params.get("url").and_then(Value::as_str).unwrap_or_default().to_owned();
-                let ok = (url.starts_with("https://") || url.starts_with("http://")) && url.len() <= 4096 && !url.chars().any(char::is_whitespace);
-                if ok {
+                let url = params.get("url").and_then(Value::as_str).and_then(crate::export::browser_url);
+                let now = self.now;
+                if s.last_link.is_some_and(|at| now - at < LINK_INTERVAL && now >= at) {
+                    self.answer(key, id, Err((-32000, "Too many links at once; try again in a moment".into())));
+                } else if let Some(url) = url {
+                    s.last_link = Some(now);
                     self.links.push(url);
                     self.answer(key, id, Ok(json!({})));
                 } else {
@@ -770,34 +823,62 @@ impl Web {
 
 // ---- renderers --------------------------------------------------------------------------
 
+/// What a step view's surface is, decoded once per change of its data.
+pub(crate) struct StepView {
+    data: Value,
+    /// `None`: the data doesn't fit (the fallback shows).
+    shown: Option<(WebOwner, Kind, String, Init)>,
+}
+
+/// Draw step view `view` as surface `key`, decoding it (`decode`) only when its data changed.
+fn step_view(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    web: &mut Web,
+    key: String,
+    view: &View,
+    decode: impl FnOnce(&View) -> Option<(WebOwner, Kind, String, Init)>,
+) -> bool {
+    let fresh = web.step_views.get(&key).is_none_or(|c| c.data != view.data);
+    if fresh {
+        if web.step_views.len() >= MAX_SURFACES * 4 {
+            let surfaces = &web.surfaces;
+            web.step_views.retain(|k, _| surfaces.contains_key(k));
+        }
+        web.step_views.insert(key.clone(), StepView { data: view.data.clone(), shown: decode(view) });
+    }
+    let Some((owner, kind, title, init)) = web.step_views.get(&key).and_then(|c| c.shown.as_ref()) else { return false };
+    let init = (fresh || !web.known(&key)).then(|| init.clone());
+    let (owner, kind, title) = (owner.clone(), *kind, title.clone());
+    web.card(ui, t, Spec { key: &key, owner: &owner, kind, title: &title, init });
+    true
+}
+
 /// `byob.mcp_app` on a step: the MCP App, live.
 pub(crate) fn mcp_app_view(ui: &mut egui::Ui, t: &Tokens, web: &mut Web, step: u64, index: usize, view: &View) -> bool {
-    let Some(app) = view.get::<McpApp>() else { return false };
     if view.v > McpApp::V {
         return false;
     }
-    let key = format!("web:mcp:{step}:{index}");
-    let init = Init {
-        tool_input: Some(app.input.clone()),
-        tool_result: Some(app.result.clone()),
-        tool_def: Some(app.tool_def.clone()).filter(|d| !d.is_null()),
-        notify: None,
-    };
-    let title = if app.title.is_empty() { app.tool.clone() } else { app.title.clone() };
-    web.card(ui, t, Spec { key: &key, owner: &app.owner(), kind: Kind::McpApp, title: &title, init });
-    true
+    step_view(ui, t, web, format!("web:mcp:{step}:{index}"), view, |view| {
+        let app = view.get::<McpApp>()?;
+        let title = if app.title.is_empty() { app.tool.clone() } else { app.title.clone() };
+        let owner = app.owner();
+        let init = Init { tool_input: Some(app.input), tool_result: Some(app.result), tool_def: Some(app.tool_def).filter(|d| !d.is_null()), notify: None };
+        Some((owner, Kind::McpApp, title, init))
+    })
 }
 
 /// `byob.web` on a step: a plugin's web card.
 pub(crate) fn web_card_view(ui: &mut egui::Ui, t: &Tokens, web: &mut Web, step: u64, index: usize, view: &View) -> bool {
-    let Some(card) = view.get::<WebCard>() else { return false };
     if view.v > WebCard::V {
         return false;
     }
-    let key = format!("web:card:{step}:{index}");
-    let init = Init { notify: Some(("byob/card".into(), json!({"data": card.data, "key": card.key}))), ..Default::default() };
-    web.card(ui, t, Spec { key: &key, owner: &card.owner(), kind: Kind::Byob, title: &card.view, init });
-    true
+    step_view(ui, t, web, format!("web:card:{step}:{index}"), view, |view| {
+        let card = view.get::<WebCard>()?;
+        let owner = card.owner();
+        let init = Init { notify: Some(("byob/card".into(), json!({"data": card.data, "key": card.key}))), ..Default::default() };
+        Some((owner, Kind::Byob, card.view, init))
+    })
 }
 
 /// A plugin's `web:<file>` artifact renderer: the page gets the artifact's text.
@@ -808,9 +889,14 @@ pub(crate) struct WebArtifact {
 
 impl WebArtifact {
     fn draw(&self, ui: &mut egui::Ui, cx: &mut crate::renderers::ArtifactCx<'_>, fill: bool) {
-        let (t, a, version) = (cx.t, cx.artifact.clone(), cx.version);
-        let text = match cx.bytes() {
-            crate::renderers::Fetch::Ready(b) => String::from_utf8_lossy(b).into_owned(),
+        let (t, a, version) = (cx.t, cx.artifact, cx.version);
+        let place = if fill { "pane" } else { "card" };
+        // The key carries the version: a surface once made has its text (not copied again).
+        let key = format!("web:artifact:{}:{}:{version}:{place}", self.plugin, a.id);
+        let (known, max) = (cx.bridge().known(&key), cx.bridge().max_message());
+        let init = match cx.bytes() {
+            crate::renderers::Fetch::Ready(_) if known => None,
+            crate::renderers::Fetch::Ready(b) => Some(artifact_init(a, version, &String::from_utf8_lossy(b), max)),
             crate::renderers::Fetch::Loading => {
                 crate::theme::spinner(ui, t, Some(12.0));
                 return;
@@ -821,10 +907,6 @@ impl WebArtifact {
             }
         };
         let owner = WebOwner::Plugin { plugin: self.plugin.clone(), view: format!("artifact:{}", self.file), key: a.id.clone() };
-        let place = if fill { "pane" } else { "card" };
-        let key = format!("web:artifact:{}:{}:{version}:{place}", self.plugin, a.id);
-        let data = json!({"id": a.id, "version": version, "title": a.title, "content_type": a.content_type(), "text": text});
-        let init = Init { notify: Some(("byob/artifact".into(), data)), ..Default::default() };
         let web = cx.bridge();
         if fill {
             web.fill(ui, t, Spec { key: &key, owner: &owner, kind: Kind::Byob, title: &a.title, init });
@@ -832,6 +914,36 @@ impl WebArtifact {
             web.card(ui, t, Spec { key: &key, owner: &owner, kind: Kind::Byob, title: &a.title, init });
         }
     }
+}
+
+/// Room in a `byob/artifact` message for everything but the text (bytes).
+const ARTIFACT_OVERHEAD: usize = 4096;
+
+/// What a `web:` renderer's page starts with: the artifact and as much of its text as fits
+/// one message of at most `max` bytes (`truncated` says if it was cut).
+fn artifact_init(a: &byob_protocol::Artifact, version: u32, text: &str, max: usize) -> Init {
+    let title: String = a.title.chars().take(500).collect();
+    let budget = max.saturating_sub(ARTIFACT_OVERHEAD.saturating_add(title.len().saturating_mul(6)).saturating_add(a.id.len().saturating_mul(6)));
+    let (text, cut) = fit_json(text, budget);
+    let data = json!({"id": a.id, "version": version, "title": title, "content_type": a.content_type(), "text": text, "truncated": cut});
+    Init { notify: Some(("byob/artifact".into(), data)), ..Default::default() }
+}
+
+/// The longest start of `text` whose JSON string is at most `budget` bytes; whether it was cut.
+fn fit_json(text: &str, budget: usize) -> (&str, bool) {
+    let mut used: usize = 2;
+    for (i, c) in text.char_indices() {
+        let n = match c {
+            '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+            c if u32::from(c) < 0x20 => 6,
+            c => c.len_utf8(),
+        };
+        used = used.saturating_add(n);
+        if used > budget {
+            return (text.get(..i).unwrap_or_default(), true);
+        }
+    }
+    (text, false)
 }
 
 impl crate::renderers::ArtifactRenderer for WebArtifact {
