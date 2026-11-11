@@ -74,7 +74,7 @@ context:(text,data)=>call('ui/update-model-context',{content:text?[{type:'text',
 openLink:url=>call('ui/open-link',{url:String(url)}),
 on:f=>{if(typeof f==='function')S.push(f)}};
 B.ready=AUTO?call('ui/initialize',{protocolVersion:'2026-01-26',appInfo:{name:document.title||'byob view',version:'1'},appCapabilities:{}}).then(r=>{P({jsonrpc:'2.0',method:'ui/notifications/initialized',params:{}});return r&&r.hostContext}):Promise.resolve(null);
-if(AUTO&&typeof ResizeObserver==='function'){let h=0;new ResizeObserver(()=>{const v=Math.ceil(document.documentElement.scrollHeight);if(v!==h){h=v;P({jsonrpc:'2.0',method:'ui/notifications/size-changed',params:{width:innerWidth,height:v}})}}).observe(document.documentElement)}
+if(AUTO&&typeof ResizeObserver==='function')addEventListener('DOMContentLoaded',()=>{const b=document.body;let h=0;new ResizeObserver(()=>{const v=Math.ceil(b.getBoundingClientRect().bottom+(parseFloat(getComputedStyle(b).marginBottom)||0)+scrollY);if(v!==h){h=v;P({jsonrpc:'2.0',method:'ui/notifications/size-changed',params:{width:innerWidth,height:v}})}}).observe(b)});
 window.byob=B;
 })()</script>";
 

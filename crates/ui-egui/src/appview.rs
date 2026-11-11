@@ -334,6 +334,8 @@ mod web {
         web_list: Rc<RefCell<Vec<(Key, web_sys::HtmlIFrameElement)>>>,
         inbox: Rc<RefCell<Vec<(String, u32, String)>>>,
         _on_web_message: Option<Closure<dyn FnMut(web_sys::MessageEvent)>>,
+        /// To repaint when a page says something (its message waits for the next frame).
+        ctx: Rc<RefCell<Option<egui::Context>>>,
     }
 
     impl IframeView {
@@ -346,7 +348,7 @@ mod web {
             if self._on_web_message.is_some() {
                 return;
             }
-            let (list, inbox) = (Rc::clone(&self.web_list), Rc::clone(&self.inbox));
+            let (list, inbox, ctx) = (Rc::clone(&self.web_list), Rc::clone(&self.inbox), Rc::clone(&self.ctx));
             let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
                 let Some(src) = e.source() else { return };
                 let key = list.borrow().iter().find(|(_, f)| f.content_window().is_some_and(|w| js_sys::Object::is(&src, &w))).map(|(k, _)| k.clone());
@@ -356,6 +358,9 @@ mod web {
                 let mut inbox = inbox.borrow_mut();
                 if text.len() <= MAX_MESSAGE && inbox.len() < MAX_INBOX {
                     inbox.push((id, version, text));
+                    if let Some(c) = ctx.borrow().as_ref() {
+                        c.request_repaint();
+                    }
                 }
             });
             if let Some(w) = web_sys::window() {
@@ -514,6 +519,9 @@ mod web {
         }
 
         fn end_frame(&mut self, ctx: &egui::Context) {
+            if self.ctx.borrow().is_none() {
+                *self.ctx.borrow_mut() = Some(ctx.clone());
+            }
             for w in self.webs.values_mut() {
                 let style = w.rect.take().and_then(|(rect, clip)| overlay_style(ctx, rect, clip)).unwrap_or_else(|| HIDDEN.to_owned());
                 if style != w.last_style {

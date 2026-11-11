@@ -680,6 +680,9 @@ mod tests {
                 statuses.push(v.status("app", 1));
                 assert_eq!(v.apps[&key].hidden, !drawn);
             }
+            // Neither stand-in announced the bridge: bridge messages aren't sent to them.
+            v.post("app", 1, r#"{"jsonrpc":"2.0","method":"x"}"#);
+            assert_eq!(v.bridged("app", 1), Some(false));
             if let Some(mut h) = v.apps.get_mut(&key).and_then(|a| a.helper.take()) {
                 h.send(Request::Shutdown);
                 std::thread::sleep(Duration::from_millis(100));
@@ -700,8 +703,9 @@ mod tests {
         assert_eq!(vis, [&Request::Visible(false), &Request::Visible(true)], "{reqs:?}");
         assert!(matches!(reqs.first(), Some(Request::Load(_))), "{reqs:?}");
         assert!(statuses.iter().all(|s| *s == AppStatus::Running), "minimized still runs: {statuses:?}");
+        assert!(!reqs.iter().any(|r| matches!(r, Request::Message(_))), "{reqs:?}");
         let (reqs, _) = run(false);
-        assert!(!reqs.iter().any(|r| matches!(r, Request::Visible(_))), "old helpers only get what they know: {reqs:?}");
+        assert!(!reqs.iter().any(|r| matches!(r, Request::Visible(_) | Request::Message(_))), "old helpers only get what they know: {reqs:?}");
     }
 
     /// The real helper, if one is built: `$BYOB_ARTIFACT_HOST`, else the helper workspace's
@@ -795,6 +799,44 @@ mod tests {
         let (x, y) = (20.0, 180.0);
         let (out, _) = drive(&path, page, &[click(x, y).as_slice(), &click(x, y)[1..]].concat());
         assert!(out.contains(&"selection \"pick\"".to_owned()), "{out:?}");
+    }
+
+    /// The bridge through the real helper: the page's posts come back as `Event::Message`,
+    /// byob's `Request::Message`s reach the page as message events (an echo page answers
+    /// each). Also times the round trip at the wire (no UI frames). Needs a built helper.
+    #[test]
+    fn the_bridge_carries_messages_both_ways() {
+        let Some(path) = built_helper() else {
+            eprintln!("skipped: no byob-artifact-host built");
+            return;
+        };
+        let page = "<script>addEventListener('message',e=>{if(e.data&&e.data.echo!==undefined)parent.postMessage({jsonrpc:'2.0',id:e.data.echo,result:{back:e.data.echo}},'*')});\
+            addEventListener('load',()=>parent.postMessage({jsonrpc:'2.0',method:'hello',params:{n:1}},'*'))</script><p>echo</p>";
+        let html = byob_ui_egui::web::document(page, byob_ui_egui::web::Kind::McpApp, &[]);
+        let mut h = helper::Helper::spawn(&path, || {}).unwrap();
+        h.send(Request::Load(Box::new(wire::Load { html, theme: wire::Theme::default(), viewport: Viewport { width: 200, height: 100, scale: 1.0 } })));
+        let next = |h: &mut helper::Helper| {
+            let start = Instant::now();
+            loop {
+                if let Some(m) = h.poll().into_iter().find_map(|e| if let wire::Event::Message(m) = e { Some(m) } else { None }) {
+                    return m;
+                }
+                assert!(start.elapsed() < Duration::from_secs(30), "no message from the page");
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        };
+        let hello: serde_json::Value = serde_json::from_str(&next(&mut h)).unwrap();
+        assert_eq!(hello["method"], "hello");
+        assert!(h.supports(wire::Features::BRIDGE));
+        let n = 50u32;
+        let start = Instant::now();
+        for i in 0..n {
+            h.send(Request::Message(format!("{{\"echo\":{i}}}")));
+            let back: serde_json::Value = serde_json::from_str(&next(&mut h)).unwrap();
+            assert_eq!(back["result"]["back"], i);
+        }
+        eprintln!("helper bridge round trip: {:?} (wire, {n} messages)", start.elapsed() / n);
+        h.kill();
     }
 
     /// Without a helper on disk the view isn't offered (the placeholder stays).
