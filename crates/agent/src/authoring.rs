@@ -52,10 +52,9 @@ impl AuthorEnv {
         request(&self.inbox, chat, op, ctx.cancel_flag())
     }
 
-    fn card(&self, ctx: &ToolContext<'_>, tool: &str, card: PluginCard) {
-        if let Some(chat) = ctx.chat() {
-            let _ = self.inbox.send(Input::StepView { chat: chat.to_owned(), tool: tool.to_owned(), view: byob_protocol::View::of(&card) });
-        }
+    /// Show `card` on the call's step.
+    fn card(&self, ctx: &ToolContext<'_>, card: PluginCard) {
+        ctx.attach_view(byob_protocol::View::of(&card));
     }
 }
 
@@ -395,7 +394,7 @@ impl MakeTool {
         }
         let card =
             PluginCard { plugin: id, scope, action: PluginAction::Made, tools: new_tools, added, removed, test, problems: found, missing_settings: missing };
-        self.0.card(ctx, "make_tool", card);
+        self.0.card(ctx, card);
         out.text = text;
         Ok(out)
     }
@@ -424,7 +423,7 @@ fn plugin_file(dir: &Path, rel: &str) -> Result<PathBuf, String> {
 }
 
 /// Reload after an edit and tell the model (and the card) what the loader says.
-fn after_edit(env: &AuthorEnv, ctx: &ToolContext<'_>, tool: &str, info_before: &PluginInfo, before: &PluginReply, what: String) -> Result<ToolOutput, String> {
+fn after_edit(env: &AuthorEnv, ctx: &ToolContext<'_>, info_before: &PluginInfo, before: &PluginReply, what: String) -> Result<ToolOutput, String> {
     let dir = PathBuf::from(&info_before.dir);
     let after = env.ask(ctx, PluginOp::Reload)?;
     let found = problems(&after, &info_before.id, &dir);
@@ -450,7 +449,7 @@ fn after_edit(env: &AuthorEnv, ctx: &ToolContext<'_>, tool: &str, info_before: &
         problems: found.clone(),
         missing_settings: missing_settings(&after, &info_before.id),
     };
-    env.card(ctx, tool, card);
+    env.card(ctx, card);
     Ok(if loads && found.is_empty() { ToolOutput::ok(text) } else { ToolOutput::err(text) })
 }
 
@@ -518,7 +517,7 @@ impl Tool for EditPlugin {
             }
             let new = text.replacen(&a.find, &a.replace, 1);
             fs::write(&file, new).map_err(|e| format!("couldn't write {}: {e}", a.file))?;
-            after_edit(&self.0, ctx, "edit_plugin", &info, &before, format!("Edited {} of plugin {}.", a.file, info.id))
+            after_edit(&self.0, ctx, &info, &before, format!("Edited {} of plugin {}.", a.file, info.id))
         };
         run().unwrap_or_else(ToolOutput::err)
     }
@@ -599,7 +598,7 @@ impl Tool for WritePluginFile {
                 note.push_str(&format!(" A new plugin {id} was started in this chat with a minimal byob-plugin.json."));
             }
             fs::write(&file, content).map_err(|e| format!("couldn't write {rel}: {e}"))?;
-            after_edit(&self.0, ctx, "write_plugin_file", &info, &before, format!("Wrote {rel} in plugin {id}{note}."))
+            after_edit(&self.0, ctx, &info, &before, format!("Wrote {rel} in plugin {id}{note}."))
         };
         run().unwrap_or_else(ToolOutput::err)
     }
@@ -947,10 +946,22 @@ fn fork(
     for f in files.keys().take(MAX_LISTED) {
         text.push_str(&format!("  {f}\n"));
     }
+    // Under its own id the copy wins outright; under a new id the built-in stays, and only
+    // the native parts both name (hooks, prompt sections) run once, from the copy.
+    let replaces = if id == info.id {
+        "The copy is used instead of the built-in one".to_owned()
+    } else if info.locked {
+        format!("The built-in {} stays on beside the copy (it can't be switched off); hooks and prompt sections both name run once, from the copy", info.id)
+    } else {
+        format!(
+            "The built-in {} stays beside the copy; hooks and prompt sections both name run once, from the copy, and switching {} off leaves only the copy",
+            info.id, info.id
+        )
+    };
     let (title, warning) = match scope {
         PluginScope::Global => (
             format!("Fork the built-in plugin {} for every chat as {id}", info.id),
-            Some("The copy is used instead of the built-in one; edits to it change how byob behaves everywhere.".to_owned()),
+            Some(format!("{replaces}; edits to it change how byob behaves everywhere.")),
         ),
         _ => (format!("Fork the built-in plugin {} into this workspace as {id}", info.id), None),
     };
@@ -971,9 +982,9 @@ fn fork(
         problems: problems(&after, &id, &dir),
         missing_settings: missing_settings(&after, &id),
     };
-    env.card(ctx, "keep_plugin", card);
+    env.card(ctx, card);
     Ok(ToolOutput::ok(format!(
-        "Forked the built-in plugin {} as `{id}` {} ({}). The copy is used instead of the built-in one; change it with edit_plugin (plugin \"{id}\"). Its files: {}.",
+        "Forked the built-in plugin {} as `{id}` {} ({}). {replaces}; change it with edit_plugin (plugin \"{id}\"). Its files: {}.",
         info.id,
         scope.label(),
         dir.display(),
@@ -1001,7 +1012,7 @@ impl Tool for KeepPlugin {
                 "properties": {
                     "plugin": {"type": "string", "description": "Plugin id, e.g. scratch"},
                     "scope": {"type": "string", "enum": ["workspace", "global"], "description": "workspace: chats in this workspace; global: every chat"},
-                    "new_id": {"type": "string", "description": "A descriptive id to keep it under (recommended for the scratch plugin), e.g. weather"}
+                    "new_id": {"type": "string", "description": "A descriptive id to keep it under (recommended for the scratch plugin), e.g. weather. Leave it out when forking a built-in plugin: only a copy under the same id replaces it"}
                 },
                 "required": ["plugin", "scope"]
             }),
@@ -1077,7 +1088,7 @@ impl Tool for KeepPlugin {
                 problems: problems(&after, &id, &dir),
                 missing_settings: missing_settings(&after, &id),
             };
-            self.0.card(ctx, "keep_plugin", card);
+            self.0.card(ctx, card);
             Ok(ToolOutput::ok(format!(
                 "Kept {} as `{id}` {} ({}). Its tools: {}.",
                 info.id,
@@ -1139,7 +1150,7 @@ impl Tool for RemovePlugin {
                 problems: Vec::new(),
                 missing_settings: Vec::new(),
             };
-            self.0.card(ctx, "remove_plugin", card);
+            self.0.card(ctx, card);
             let left = after.find(&info.id).map(|p| format!(" The copy in {} is used now.", p.scope.label())).unwrap_or_default();
             Ok(ToolOutput::ok(format!("Removed the plugin {} ({}).{left}", info.id, info.scope.label())))
         };

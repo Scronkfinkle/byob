@@ -901,6 +901,16 @@ impl NativeParts {
             chat_types,
             ..
         } = self;
+        // A native hook runs once per event, for the plugin with the highest precedence
+        // naming it (a fork under a new id beside its locked built-in doesn't double it).
+        let mut winners: BTreeMap<(String, Event), (u8, String)> = BTreeMap::new();
+        for b in hooks.iter().filter(|b| matches!(b.run, hooks::Runner::Native(_))) {
+            let w = winners.entry((b.id.clone(), b.event)).or_insert_with(|| (b.rank, b.plugin.clone()));
+            if (b.rank, &b.plugin) < (w.0, &w.1) {
+                *w = (b.rank, b.plugin.clone());
+            }
+        }
+        hooks.retain(|b| !matches!(b.run, hooks::Runner::Native(_)) || winners.get(&(b.id.clone(), b.event)).is_some_and(|w| w.1 == b.plugin));
         // Native hooks nobody here names keep their default places.
         hooks.extend(hooks::default_bindings(&natives.hooks, |id| !claimed_hooks.contains(id)));
         out.hooks = hooks;
@@ -928,6 +938,12 @@ impl NativeParts {
             }
         }
         sections.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        // Likewise a native section goes in once.
+        let mut native_sections = BTreeSet::new();
+        sections.retain(|(_, _, s)| match s {
+            Section::Native(n) => native_sections.insert(n.clone()),
+            Section::Text(_) => true,
+        });
         let texts: Vec<String> = sections
             .into_iter()
             .filter_map(|(_, _, s)| match s {
@@ -1016,6 +1032,7 @@ fn backend_tools(
     }
     let backend = backends.ensure(m);
     let id = m.plugin.id();
+    let cards: Vec<(String, bool)> = m.plugin.manifest.views.iter().filter(|v| v.site == "card").map(|v| (v.id.clone(), !v.html.is_empty())).collect();
     let tools = m
         .plugin
         .manifest
@@ -1024,7 +1041,7 @@ fn backend_tools(
         .filter(|t| t.kind == ToolKind::Backend)
         .map(|t| {
             let name = names.claim(&t.name, &byob_plugins::names::namespaced(id, &t.name));
-            Arc::new(BackendTool::new(name, m.plugin_ref.clone(), t.clone(), Arc::clone(&backend)).with_types(types.clone()))
+            Arc::new(BackendTool::new(name, m.plugin_ref.clone(), t.clone(), Arc::clone(&backend)).with_types(types.clone()).with_cards(cards.clone()))
         })
         .collect();
     (crate::backends::info(&backend), tools, Some(backend))

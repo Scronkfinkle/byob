@@ -21,8 +21,9 @@ use crate::{ClientId, Engine};
 /// Bytes of stderr shown to clients and the model.
 const STDERR_SHOWN: usize = 4096;
 
-/// Makes the sink of the backend of the plugin in a folder.
-pub(crate) type SinkFor = Arc<dyn Fn(&Path, &str) -> Sink + Send + Sync>;
+/// Makes the sink of the backend of the plugin in a folder (with the backend's generation,
+/// so what an earlier backend of the folder says late is told apart).
+pub(crate) type SinkFor = Arc<dyn Fn(&Path, &str, u64) -> Sink + Send + Sync>;
 
 /// One plugin copy's backend and where it applies.
 pub(crate) struct Entry {
@@ -38,12 +39,16 @@ pub(crate) struct Entry {
     pub views: Vec<(String, byob_protocol::Site)>,
     /// Those that are web views (`html`).
     pub web_views: Vec<String>,
+    /// Which backend of its folder this is (its sink's messages carry it).
+    pub generation: u64,
 }
 
 /// Backends by plugin folder.
 #[derive(Default)]
 pub(crate) struct Backends {
     map: BTreeMap<PathBuf, Entry>,
+    /// The last generation given out.
+    generation: u64,
 }
 
 /// What [`Backends::ensure`] needs to make one.
@@ -74,7 +79,9 @@ impl Backends {
         if let Some(old) = self.map.remove(dir) {
             old.backend.stop("its plugin changed");
         }
-        let backend = Arc::new(make(m));
+        self.generation = self.generation.saturating_add(1);
+        let generation = self.generation;
+        let backend = Arc::new(make(m, generation));
         self.map.insert(
             dir.clone(),
             Entry {
@@ -85,6 +92,7 @@ impl Backends {
                 fp: m.fp,
                 views: m.plugin.manifest.views.iter().filter_map(|v| Some((v.id.clone(), byob_protocol::Site::parse(&v.site)?))).collect(),
                 web_views: m.plugin.manifest.views.iter().filter(|v| !v.html.is_empty()).map(|v| v.id.clone()).collect(),
+                generation,
             },
         );
         backend
@@ -145,7 +153,7 @@ impl Backends {
 }
 
 /// A new (idle) backend for `m.plugin`.
-fn make(m: &Make<'_>) -> Backend {
+fn make(m: &Make<'_>, generation: u64) -> Backend {
     let plugin = m.plugin;
     let dir = plugin.dir.clone();
     let secret: Vec<&str> = plugin.manifest.settings.iter().filter(|s| s.secret).map(|s| s.key.as_str()).collect();
@@ -209,7 +217,7 @@ fn make(m: &Make<'_>) -> Backend {
         argv.extend(decl.args.iter().map(Into::into));
         Ok(Launch { argv, cwd: prepare_dir.clone(), env, remove_env: vec!["BYOB_API_KEY".into()] }.into())
     });
-    let sink = (m.sink)(&dir, plugin.id());
+    let sink = (m.sink)(&dir, plugin.id(), generation);
     Backend::new(plugin.id(), init, &m.decl.events, prepare, sink)
 }
 
@@ -229,8 +237,10 @@ pub(crate) fn info(backend: &Backend) -> BackendInfo {
 
 impl Engine {
     /// `Input::Backend`: the backend of the plugin in `dir` said something (or started/exited).
-    pub(crate) fn backend_out(&mut self, dir: &Path, plugin: &str, out: Out) {
-        let chat = self.ext.as_ref().and_then(|e| e.backends.get(dir)).map(|e| e.chat.clone());
+    /// Late words of a backend the folder no longer has (`generation` is an earlier one's)
+    /// are dropped.
+    pub(crate) fn backend_out(&mut self, dir: &Path, plugin: &str, generation: u64, out: Out) {
+        let chat = self.ext.as_ref().and_then(|e| e.backends.get(dir)).filter(|e| e.generation == generation).map(|e| e.chat.clone());
         let Some(chat) = chat else { return };
         match out {
             Out::Started | Out::Exited(_) => self.extensions_changed(),
@@ -238,7 +248,7 @@ impl Engine {
                 let to = msg.get("client").and_then(Value::as_u64);
                 match msg.get("type").and_then(Value::as_str).unwrap_or_default() {
                     "view" => self.backend_view(dir, &msg),
-                    byob_plugins::backend::CARD_MSG => self.backend_card(dir, plugin, &msg),
+                    byob_plugins::backend::CARD_MSG => self.backend_card(dir, &msg),
                     "web" => self.backend_web(plugin, chat.as_deref(), &msg),
                     "notify" => {
                         let inner = msg.get("msg").cloned().unwrap_or(Value::Null);

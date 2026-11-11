@@ -795,11 +795,19 @@ pub struct BackendTool {
     timeout: Duration,
     /// The chat's artifact types, for the versions its results save.
     types: byob_tools::ArtifactTypes,
+    /// The plugin's card views: (id, a web view).
+    cards: Vec<(String, bool)>,
 }
 
 impl BackendTool {
     pub fn new(name: String, plugin: PluginRef, decl: ManifestTool, backend: Arc<Backend>) -> Self {
-        Self { name, plugin, decl, backend, timeout: REQUEST_TIMEOUT, types: byob_tools::ArtifactTypes::builtin() }
+        Self { name, plugin, decl, backend, timeout: REQUEST_TIMEOUT, types: byob_tools::ArtifactTypes::builtin(), cards: Vec::new() }
+    }
+
+    /// The card views its plugin declares (`views` with `"site": "card"`): (id, web view).
+    pub fn with_cards(mut self, cards: Vec<(String, bool)>) -> Self {
+        self.cards = cards;
+        self
     }
 
     /// Save the artifact versions its results carry with these types (the chat's).
@@ -844,15 +852,7 @@ impl Tool for BackendTool {
         });
         match self.backend.request("tool", params, self.timeout, &|| ctx.cancelled()) {
             Ok(v) => {
-                if let Some(card) = card_of(&v) {
-                    let mut msg = card;
-                    if let Some(o) = msg.as_object_mut() {
-                        o.insert("type".into(), json!(CARD_MSG));
-                        o.insert("tool".into(), json!(self.name));
-                        o.insert("chat".into(), json!(ctx.chat()));
-                    }
-                    self.backend.post(msg);
-                }
+                self.attach_card(&v, ctx);
                 let mut out = tool_output(v.clone(), ctx.workspace);
                 save_artifacts(&v, &self.types, ctx, &mut out);
                 out
@@ -863,19 +863,55 @@ impl Tool for BackendTool {
     }
 }
 
-/// The sink message type of a card a backend tool attached to its step (`{"type":
-/// "_tool_card", "tool", "chat", "view"?, "key"?, "tree"}`).
-pub const CARD_MSG: &str = "_tool_card";
-
-/// A tool reply's card (`{"text": …, "card": <view tree>, "card_view"?: id, "card_key"?: k}`):
-/// `{"tree", "view", "key"}`.
-fn card_of(v: &Value) -> Option<Value> {
-    let o = v.as_object()?;
-    let tree = o.get("card").filter(|c| c.is_object())?;
-    Some(
-        json!({"tree": tree, "view": o.get("card_view").and_then(Value::as_str), "key": o.get("card_key").and_then(Value::as_str), "text": o.get("text").and_then(Value::as_str)}),
-    )
+impl BackendTool {
+    /// A tool reply's card (`{"text": …, "card": <view tree>, "card_view"?: id, "card_key"?:
+    /// k}`) goes onto the call's step (through `ctx`, so it lands on this call's step and
+    /// nowhere else). A tree card is also posted to the engine (`CARD_MSG`) to be cached as
+    /// the live view it owns; a web card's page gets the card's data.
+    fn attach_card(&self, v: &Value, ctx: &ToolContext<'_>) {
+        let Some(o) = v.as_object() else { return };
+        let Some(tree) = o.get("card").filter(|c| c.is_object()) else { return };
+        let card = match o.get("card_view").and_then(Value::as_str) {
+            Some(want) => match self.cards.iter().find(|(id, _)| id == want) {
+                Some(c) => c,
+                None => {
+                    let ids: Vec<&str> = self.cards.iter().map(|(id, _)| id.as_str()).collect();
+                    self.backend.report_fault(&format!("card_view {want:?} isn't a card view in byob-plugin.json (card views: {})", ids.join(", ")));
+                    return;
+                }
+            },
+            None => match self.cards.first() {
+                Some(c) => c,
+                None => {
+                    self.backend.report_fault("a tool returned a \"card\", but byob-plugin.json declares no view with \"site\": \"card\"");
+                    return;
+                }
+            },
+        };
+        let (view, web) = (card.0.clone(), card.1);
+        let key = match o.get("card_key").and_then(Value::as_str) {
+            Some(k) if !k.is_empty() => k.chars().take(byob_protocol::sites::MAX_VIEW_KEY_CHARS).collect(),
+            _ => format!("{}-{}", self.name, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())),
+        };
+        if web {
+            let text = o.get("text").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let card = byob_protocol::web::WebCard { plugin: self.plugin.id.clone(), view, key, data: tree.clone(), text };
+            ctx.attach_view(byob_protocol::View::of(&card));
+            return;
+        }
+        let (node, _faults) = byob_protocol::tree::decode(tree.clone());
+        let mut shown = byob_protocol::View::of(&node);
+        shown.owner = Some(byob_protocol::ViewRef::new(&self.plugin.id, &view, &key));
+        // Only while a step takes it: a call from the plugin's own page shows no card.
+        if ctx.attach_view(shown) {
+            self.backend.post(json!({"type": CARD_MSG, "view": view, "key": key, "tree": tree}));
+        }
+    }
 }
+
+/// The sink message type of a tree card a backend tool attached to its step (`{"type":
+/// "_tool_card", "view", "key", "tree"}`): the engine caches it as a live view.
+pub const CARD_MSG: &str = "_tool_card";
 
 /// Most artifact versions one tool result saves.
 const MAX_SAVED: usize = 4;

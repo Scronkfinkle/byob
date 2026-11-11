@@ -18,12 +18,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use byob_plugins::backend::{Backend, Phase};
 use byob_protocol::sites::{CAP_VIEW_SITES, LiveView};
 use byob_protocol::tree::{self, Fault, Node, Reply};
-use byob_protocol::{ServerMsg, Site, View, ViewRef};
+use byob_protocol::{ServerMsg, Site, ViewRef};
 use serde_json::{Map, Value, json};
 
 use crate::{ClientId, Engine, Input};
@@ -317,46 +317,18 @@ impl Engine {
         self.set_view(dir, &view, &key, reply, faults, to, starts);
     }
 
-    /// A backend tool's card (`byob_plugins::backend::CARD_MSG`): cached as a live view and
-    /// attached to the tool's step.
-    pub(crate) fn backend_card(&mut self, dir: &Path, plugin: &str, msg: &Value) {
+    /// A backend tool's tree card (`byob_plugins::backend::CARD_MSG`; the tool attached it to
+    /// its step itself): cached as the live view it owns.
+    pub(crate) fn backend_card(&mut self, dir: &Path, msg: &Value) {
         let Some(entry) = self.ext.as_ref().and_then(|e| e.backends.get(dir)) else { return };
         let starts = entry.backend.status().starts;
-        let backend = Arc::clone(&entry.backend);
-        let cards: Vec<String> = entry.views.iter().filter(|(_, s)| *s == Site::Card).map(|(v, _)| v.clone()).collect();
-        let (Some(chat), Some(tool)) = (msg.get("chat").and_then(Value::as_str), msg.get("tool").and_then(Value::as_str)) else { return };
-        let view = match msg.get("view").and_then(Value::as_str) {
-            Some(v) if cards.iter().any(|c| c == v) => v.to_owned(),
-            Some(v) => {
-                backend.report_fault(&format!("card_view {v:?} isn't a card view in byob-plugin.json (card views: {})", cards.join(", ")));
-                return;
-            }
-            None => match cards.first() {
-                Some(v) => v.clone(),
-                None => {
-                    backend.report_fault("a tool returned a \"card\", but byob-plugin.json declares no view with \"site\": \"card\"");
-                    return;
-                }
-            },
-        };
-        let key = match msg.get("key").and_then(Value::as_str) {
-            Some(k) if !k.is_empty() => k.chars().take(byob_protocol::sites::MAX_VIEW_KEY_CHARS).collect(),
-            _ => format!("{tool}-{}", SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos())),
-        };
-        let web = self.ext.as_ref().and_then(|e| e.backends.get(dir)).is_some_and(|e| e.web_views.contains(&view));
-        if web {
-            // A web card: the page gets the card's data (`byob/card`); no tree.
-            let data = msg.get("tree").cloned().unwrap_or(Value::Null);
-            let text = msg.get("text").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let card = byob_protocol::web::WebCard { plugin: plugin.to_owned(), view, key, data, text };
-            self.step_views.insert(chat.to_owned(), (tool.to_owned(), View::of(&card)));
+        let (Some(view), Some(key)) = (msg.get("view").and_then(Value::as_str), msg.get("key").and_then(Value::as_str)) else { return };
+        if !entry.views.iter().any(|(v, s)| v == view && *s == Site::Card) || entry.web_views.iter().any(|v| v == view) {
             return;
         }
         let (tree, faults) = tree::decode(msg.get("tree").cloned().unwrap_or(Value::Null));
-        let mut view_data = View::of(&tree);
-        view_data.owner = Some(ViewRef::new(plugin, &view, &key));
+        let (view, key) = (view.to_owned(), key.to_owned());
         self.set_view(dir, &view, &key, Reply { view: Some(tree), ..Default::default() }, faults, None, starts);
-        self.step_views.insert(chat.to_owned(), (tool.to_owned(), view_data));
     }
 
     /// Apply `reply` to the cached view (made if needed) and send the change to the clients
