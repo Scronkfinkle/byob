@@ -811,11 +811,7 @@ impl NativeParts {
                 priority: h.priority,
                 rank: rank(scope),
                 tools: h.tools.clone(),
-                run: hooks::Runner::Backend {
-                    backend: Arc::clone(backend),
-                    timeout: Duration::from_millis(h.timeout_ms),
-                    fail_closed: h.fail_closed,
-                },
+                run: hooks::Runner::Backend { backend: Arc::clone(backend), timeout: Duration::from_millis(h.timeout_ms), fail_closed: h.fail_closed },
             });
         }
     }
@@ -864,14 +860,24 @@ impl NativeParts {
 
     /// Into `out`: the chat's artifact types, its native tools, the sections.
     fn finish(self, out: &mut Composed, natives: &Natives, types: &ArtifactTypes) {
-        let Self { claimed_tools, claimed_types, offered, mut declared_types, mut sections, claimed_hooks, claimed_envs, offered_envs, external_envs, mut hooks, .. } =
-            self;
+        let Self {
+            claimed_tools,
+            claimed_types,
+            offered,
+            mut declared_types,
+            mut sections,
+            claimed_hooks,
+            claimed_envs,
+            offered_envs,
+            external_envs,
+            mut hooks,
+            ..
+        } = self;
         // Native hooks nobody here names keep their default places.
         hooks.extend(hooks::default_bindings(&natives.hooks, |id| !claimed_hooks.contains(id)));
         out.hooks = hooks;
         out.turn_tools_off = claimed_tools.difference(&offered).filter(|t| natives.turn_tools.contains(*t)).cloned().collect();
-        out.env_providers =
-            byob_tools::EnvProviders { off: claimed_envs.difference(&offered_envs).cloned().collect(), external: external_envs };
+        out.env_providers = byob_tools::EnvProviders { off: claimed_envs.difference(&offered_envs).cloned().collect(), external: external_envs };
         // The engine's order: unclaimed types stay, claimed ones only as a switched-on
         // plugin declares them; new types after.
         let chat_types = ArtifactTypes::empty();

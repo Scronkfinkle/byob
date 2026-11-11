@@ -1,5 +1,6 @@
 //! byob's bundled plugins: the built-in features (artifacts, HTML apps, charts, markdown,
-//! images, the file and code-running tools) as plugins on the same manifest third parties
+//! images, the file and code-running tools, the system prompt, compaction, subagents,
+//! workspace environments) as plugins on the same manifest third parties
 //! use. Their sources are `plugins/<id>/` in this crate, embedded at build time (`build.rs`),
 //! so `cargo install` needs no extra files. Their native parts (tools, artifact types,
 //! renderers, prompt builders) are in-tree Rust, named by id in the manifests and resolved
@@ -44,7 +45,22 @@ mod tests {
     fn every_plugin_has_a_manifest() {
         let all = plugins();
         let ids: Vec<&str> = all.iter().map(|(id, _)| *id).collect();
-        assert_eq!(ids, ["artifacts", "charts", "core-tools", "html-apps", "images", "markdown"]);
+        assert_eq!(
+            ids,
+            [
+                "artifacts",
+                "charts",
+                "compaction",
+                "core-tools",
+                "environments",
+                "html-apps",
+                "images",
+                "markdown",
+                "prompt",
+                "subagents",
+                "workspace-instructions"
+            ]
+        );
         for (id, _) in &all {
             assert!(file(id, "byob-plugin.json").is_some_and(|m| m.contains(&format!("\"id\": \"{id}\""))), "{id}");
         }

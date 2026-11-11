@@ -523,7 +523,6 @@ impl crate::hooks::NativeHook for CompactionHook {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

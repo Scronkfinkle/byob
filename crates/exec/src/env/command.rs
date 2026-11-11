@@ -59,7 +59,11 @@ impl EnvProvider for CommandProvider {
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let text = run_tool(&t, &refs, run, true)?.unwrap_or_default();
         let host: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-        let kind = if serde_json::from_str::<serde_json::Value>(&text).ok().is_some_and(|v| v.get("environment_variables").is_some()) { Kind::Pixi } else { Kind::Mise };
+        let kind = if serde_json::from_str::<serde_json::Value>(&text).ok().is_some_and(|v| v.get("environment_variables").is_some()) {
+            Kind::Pixi
+        } else {
+            Kind::Mise
+        };
         parse_env(kind, &text, &host).map_err(|e| format!("{e} (from `{name}`)"))
     }
 }

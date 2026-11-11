@@ -30,6 +30,12 @@ that loop for you:
     def done(event):
         byob.log("a turn finished in", event.get("chat"))
 
+    @byob.hook("before_tool_call")  # declared in byob-plugin.json "hooks"
+    def guard(call):                # call["tool"], call["args"], call["access"], ...
+        if call["tool"] == "delete_file":
+            return byob.deny("Deleting is off in this workspace.")
+        # returning None carries on (the permission gate decides)
+
     byob.run()
 
 After every view event, tool call and UI message the helper calls each @view function again
@@ -60,6 +66,7 @@ _views = []  # legacy @on_view handlers: fn(site, key, client)
 _view_fns = {}  # view id -> fn() or fn(key)
 _event_fns = {}  # view id (None: every view) -> [fn(event)]
 _keys = {}  # view id -> keys drawn so far ("" for pane, settings, status; one per card)
+_hooks = {}  # event -> fn(payload)
 _cards = [0]
 
 
@@ -87,6 +94,44 @@ def on(event):
         _events.setdefault(event, []).append(f)
         return f
     return register
+
+
+def hook(event):
+    """Answer the turn pipeline's hook `event` (before_prompt, before_request,
+    before_tool_call, after_tool_call, on_turn_end; declare it in byob-plugin.json "hooks"
+    with no "native"). fn(payload) returns None to carry on, or one of modify(...),
+    stop(reason), allow(), deny(message), ask(message)."""
+    def register(f):
+        _hooks[event] = f
+        return f
+    return register
+
+
+def modify(**fields):
+    """A hook reply that changes things: before_prompt add=[text] / sections=[{id, text}],
+    before_request messages=[...] / tools=[names], before_tool_call args={...},
+    after_tool_call result=text / card=tree."""
+    return dict(fields, action="modify")
+
+
+def stop(reason=""):
+    """A hook reply: no later hooks (before_request: the turn ends with `reason`)."""
+    return {"action": "stop", "reason": str(reason)}
+
+
+def allow():
+    """before_tool_call: run the call without asking."""
+    return {"action": "allow"}
+
+
+def deny(message):
+    """before_tool_call: don't run the call; the model gets `message`."""
+    return {"action": "deny", "message": str(message)}
+
+
+def ask(message=""):
+    """before_tool_call: a person decides on an approval card (`message` on it)."""
+    return {"action": "ask", "message": str(message)}
 
 
 def on_message(fn):
@@ -248,6 +293,11 @@ def _request(msg):
                 raise LookupError(f"this backend has no tool {params.get('name')!r} (known: {', '.join(_tools) or 'none'})")
             args = params.get("args") or {}
             result = fn(**args) if isinstance(args, dict) else fn(args)
+        elif method == "hook":
+            fn = _hooks.get(params.get("event"))
+            result = fn(params) if fn is not None else None
+            if result is None:
+                result = {"action": "continue"}
         elif method == "view":
             vid, key = params.get("view"), params.get("key") or ""
             if vid in _view_fns:

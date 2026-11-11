@@ -561,7 +561,9 @@ fn parse_hooks(v: Option<&Value>, has_backend: bool) -> R<Vec<ManifestHook>> {
         }
         let timeout_ms = match o.get("timeout_ms") {
             None | Some(Value::Null) => HOOK_TIMEOUT_MS,
-            Some(t) => t.as_u64().filter(|t| (1..=MAX_HOOK_TIMEOUT_MS).contains(t)).ok_or_else(|| format!("{f}.timeout_ms must be 1 to {MAX_HOOK_TIMEOUT_MS}"))?,
+            Some(t) => {
+                t.as_u64().filter(|t| (1..=MAX_HOOK_TIMEOUT_MS).contains(t)).ok_or_else(|| format!("{f}.timeout_ms must be 1 to {MAX_HOOK_TIMEOUT_MS}"))?
+            }
         };
         let fail_closed = match opt_str(o.get("fail"), &format!("{f}.fail"))?.as_deref() {
             None | Some("open") => false,
@@ -624,7 +626,8 @@ fn parse_environments(v: Option<&Value>) -> R<Vec<ManifestEnv>> {
         if native.is_none() && (detect.is_empty() || command.is_none()) {
             return Err(format!("{f} needs \"native\" (built into byob) or \"detect\" (the workspace files) and \"command\" (prints the environment as JSON)"));
         }
-        let label = truncate_chars(&opt_str(o.get("label"), &format!("{f}.label"))?.filter(|l| !l.is_empty()).unwrap_or_else(|| format!("{id} environment")), 60);
+        let label =
+            truncate_chars(&opt_str(o.get("label"), &format!("{f}.label"))?.filter(|l| !l.is_empty()).unwrap_or_else(|| format!("{id} environment")), 60);
         out.push(ManifestEnv { id, native, label, detect, inputs, command, args });
     }
     Ok(out)
@@ -1181,5 +1184,48 @@ mod tests {
     fn inside_paths() {
         assert!(path_inside("tools/x.py") && path_inside("./a/../b.py"));
         assert!(!path_inside("../x") && !path_inside("a/../../x") && !path_inside("/x") && !path_inside("C:\\x") && !path_inside("\\x"));
+    }
+
+    #[test]
+    fn hooks_and_environments() {
+        let parse = |extra: serde_json::Value| {
+            let mut m = serde_json::json!({"id": "p", "name": "P"});
+            for (k, v) in extra.as_object().unwrap() {
+                m[k] = v.clone();
+            }
+            parse_manifest(&m, ParseOptions::default())
+        };
+        let m = parse(serde_json::json!({"backend": "b.py", "hooks": [
+            {"event": "before_tool_call", "priority": -5, "tools": ["delete_file"], "fail": "closed", "timeout_ms": 500},
+            {"event": "before_request", "native": "compaction"}
+        ]}))
+        .unwrap();
+        assert_eq!(
+            m.hooks[0],
+            ManifestHook {
+                event: "before_tool_call".into(),
+                priority: -5,
+                native: None,
+                timeout_ms: 500,
+                fail_closed: true,
+                tools: vec!["delete_file".into()]
+            }
+        );
+        assert_eq!((m.hooks[1].priority, m.hooks[1].timeout_ms, m.hooks[1].fail_closed), (DEFAULT_HOOK_PRIORITY, HOOK_TIMEOUT_MS, false));
+        let err = |v| parse(v).unwrap_err().message;
+        assert!(err(serde_json::json!({"hooks": [{"event": "before_lunch", "native": "x"}]})).contains("event must be one of"));
+        assert!(err(serde_json::json!({"hooks": [{"event": "on_turn_end"}]})).contains("add \"backend\""));
+        assert!(err(serde_json::json!({"hooks": [{"event": "before_prompt", "native": "x", "tools": ["a"]}]})).contains("tools only applies"));
+        assert!(err(serde_json::json!({"backend": "b.py", "hooks": [{"event": "on_turn_end", "timeout_ms": 0}]})).contains("timeout_ms"));
+        assert!(err(serde_json::json!({"backend": "b.py", "hooks": [{"event": "on_turn_end", "fail": "maybe"}]})).contains("\"open\" or \"closed\""));
+        let m = parse(serde_json::json!({"environments": [
+            {"native": "nix"},
+            {"id": "conda", "detect": ["environment.yml"], "command": "python3", "args": ["env.py"]}
+        ]}))
+        .unwrap();
+        assert_eq!((m.environments[0].id.as_str(), m.environments[0].native.as_deref()), ("nix", Some("nix")));
+        assert_eq!((m.environments[1].label.as_str(), m.environments[1].command.as_deref()), ("conda environment", Some("python3")));
+        assert!(err(serde_json::json!({"environments": [{"id": "x", "detect": ["a"]}]})).contains("needs \"native\""));
+        assert!(err(serde_json::json!({"environments": [{"id": "x", "detect": ["../a"], "command": "c"}]})).contains("inside the workspace"));
     }
 }

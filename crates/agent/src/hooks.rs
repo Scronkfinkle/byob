@@ -653,9 +653,7 @@ pub(crate) fn prompt_parts() -> Vec<(&'static str, i64, fn(&PromptInputs) -> Vec
         ("base_prompt", 0, |i| vec![i.base.clone()]),
         ("plugin_prompts", 100, |i| vec![i.plugin_sections.clone(), i.plugin_lines.clone()]),
         ("agents_md", 300, |i| i.agents_md.clone().into_iter().collect()),
-        ("instructions", 400, |i| {
-            if i.instructions.is_empty() { vec![] } else { vec![format!("The user's instructions for this chat:\n{}", i.instructions)] }
-        }),
+        ("instructions", 400, |i| if i.instructions.is_empty() { vec![] } else { vec![format!("The user's instructions for this chat:\n{}", i.instructions)] }),
         ("subagents", 500, |i| i.delegation.clone().into_iter().collect()),
         ("artifact_list", 600, |i| vec![i.artifacts.clone()]),
     ]

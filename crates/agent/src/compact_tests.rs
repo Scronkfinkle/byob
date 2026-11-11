@@ -526,3 +526,45 @@ crate::test_store::folder_too!(
     a_summary_longer_than_the_conversation_is_not_used,
     stopping_a_manual_compaction,
 );
+
+/// The bundled `compaction` plugin carries the hook: switched off, chats are never
+/// compacted (automatically or with /compact, which then goes to the model as text) and the
+/// meter shows no threshold.
+#[test]
+fn switching_the_compaction_plugin_off_turns_compaction_off() {
+    for on in [true, false] {
+        let (url, seen) = server(vec![Reply::Text("answer".into())], Summaries::Answer);
+        let home = tempfile::tempdir().unwrap();
+        let mut config = EngineConfig::new(InferenceConfig { base_url: url, model: "m".into(), api_key: None });
+        config.workspace = PathBuf::from("/ws");
+        config.system_prompt = "You are a test.".into();
+        config.adapt = crate::AdaptOptions { probe: false, ..Default::default() };
+        config.auto_title = false;
+        config.compaction = at(700);
+        config.defaults = crate::Layer { plugins: Some([("compaction".to_owned(), on)].into_iter().collect()), ..Default::default() };
+        config.plugins = Some(crate::PluginsConfig {
+            scratch_root: Some(home.path().join("chats")),
+            bundled: crate::natives::bundled_plugins(),
+            natives: crate::Natives::builtin(),
+            ..Default::default()
+        });
+        let engine = EngineHandle::spawn_with(config).unwrap();
+        let (mut c, mut v) = connect(&engine);
+        for i in 1..=5 {
+            turn(&mut c, &mut v, &question(i));
+        }
+        assert_eq!(summaries(&seen).len(), usize::from(on), "compaction on: {on}");
+        assert_eq!(v.usage.clone().unwrap().compact_at, if on { 700 } else { 0 });
+        if on {
+            // A manual compaction, not a turn.
+            c.send(ClientMsg::SendMessage { text: "/compact".into(), attachments: vec![] });
+            while !matches!(recv(&mut c), ServerMsg::Compacted(_)) {}
+            assert_eq!(summaries(&seen).len(), 2);
+        } else {
+            turn(&mut c, &mut v, "/compact");
+            let last = texts(normal(&seen).last().unwrap());
+            assert_eq!(last.last().map(String::as_str), Some("/compact"), "{last:?}");
+            assert!(summaries(&seen).is_empty());
+        }
+    }
+}

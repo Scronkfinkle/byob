@@ -266,7 +266,11 @@ impl Backend {
             let gave_up = if cancelled() {
                 Some("Stopped by the user.".to_owned())
             } else if started.elapsed() >= timeout {
-                Some(format!("the backend didn't answer within {} seconds", timeout.as_secs()))
+                Some(if timeout < Duration::from_secs(1) {
+                    format!("the backend didn't answer within {} ms", timeout.as_millis())
+                } else {
+                    format!("the backend didn't answer within {} seconds", timeout.as_secs())
+                })
             } else {
                 None
             };

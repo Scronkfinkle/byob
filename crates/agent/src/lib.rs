@@ -1871,7 +1871,14 @@ impl Engine {
         let chat_prompt = self.chat_prompt(chat);
         let compaction = CompactOptions { auto: compaction.auto && chat_prompt.compaction, ..compaction };
         let (context_used, estimated) = live.tally.context.unwrap_or_else(|| {
-            let prompt = chat_prompt.hooks.native_prompt(&workspaces::prompt_inputs(&self.system_prompt, chat, &settings.effective, live, &chat_prompt, &self.artifact_types));
+            let prompt = chat_prompt.hooks.native_prompt(&workspaces::prompt_inputs(
+                &self.system_prompt,
+                chat,
+                &settings.effective,
+                live,
+                &chat_prompt,
+                &self.artifact_types,
+            ));
             let (messages, _) = compact::history(&live.entries, latest(live), None, &prompt);
             (u64::try_from(plan.raw_tokens(&messages, &turn::specs(&self.tools))).unwrap_or(u64::MAX), true)
         });
@@ -2050,7 +2057,6 @@ impl Engine {
         self.send_viewers(chat, ServerMsg::State(state));
     }
 }
-
 
 /// The compaction the next request builds on: (last entry covered, summary).
 fn latest(live: &Live) -> Option<(u64, &str)> {

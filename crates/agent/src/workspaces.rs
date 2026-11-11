@@ -637,7 +637,14 @@ impl Engine {
 /// What the `before_prompt` hooks build `chat`'s system prompt from: the engine's prompt (`base`),
 /// the plugins' parts of its last turn (`cp`), its workspace's AGENTS.md, the user's
 /// instructions of every level, and its artifacts.
-pub(crate) fn prompt_inputs(base: &str, chat: &str, e: &Effective, live: &crate::Live, cp: &crate::ChatPrompt, types: &byob_tools::ArtifactTypes) -> crate::hooks::PromptInputs {
+pub(crate) fn prompt_inputs(
+    base: &str,
+    chat: &str,
+    e: &Effective,
+    live: &crate::Live,
+    cp: &crate::ChatPrompt,
+    types: &byob_tools::ArtifactTypes,
+) -> crate::hooks::PromptInputs {
     crate::hooks::PromptInputs {
         chat: chat.to_owned(),
         workspace: live.workspace.as_ref().clone(),
