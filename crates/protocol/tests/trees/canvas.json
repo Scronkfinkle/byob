@@ -1,0 +1,9 @@
+{"type": "card", "title": "Gauge (display list)", "children": [
+  {"type": "canvas", "width": 260, "height": 120, "action": "click", "shapes": [
+    {"type": "rect", "x": 0, "y": 0, "w": 260, "h": 120, "fill": "field_bg", "stroke": "border", "radius": 8},
+    {"type": "rect", "x": 20, "y": 70, "w": 220, "h": 14, "fill": "hover", "radius": 7},
+    {"type": "rect", "x": 20, "y": 70, "w": 150, "h": 14, "fill": "accent", "radius": 7},
+    {"type": "circle", "x": 170, "y": 77, "r": 9, "fill": "on_accent", "stroke": "accent"},
+    {"type": "line", "points": [[20, 50], [60, 30], [100, 40], [140, 20], [180, 35], [240, 15]], "stroke": "chart2", "width": 2},
+    {"type": "text", "x": 20, "y": 92, "text": "68% CPU", "color": "text_dim", "size": 13},
+    {"type": "circle", "x": 240, "y": 15, "r": 4, "fill": "#e5484d"}]}]}

@@ -12,6 +12,7 @@ pub mod env;
 pub mod media;
 pub mod plugins;
 pub mod queue;
+pub mod tree;
 pub mod usage;
 pub mod version;
 pub mod view;

@@ -1,0 +1,12 @@
+{"type": "card", "key": "root", "title": "Weather plugin", "children": [
+  {"type": "markdown", "text": "Fetches forecasts from **open-meteo**. Changes apply on the next turn."},
+  {"type": "row", "children": [{"type": "text", "text": "City"}, {"type": "input", "name": "city", "value": "Lisbon", "placeholder": "City name", "submit": "save"}]},
+  {"type": "row", "children": [{"type": "text", "text": "Units"}, {"type": "select", "name": "units", "options": ["metric", "imperial"], "value": "metric"}]},
+  {"type": "toggle", "name": "alerts", "label": "Show severe-weather alerts", "value": true},
+  {"type": "separator"},
+  {"type": "image", "media": "plots/forecast.png", "alt": "Forecast plot", "width": 240, "height": 80},
+  {"type": "row", "children": [
+    {"type": "button", "label": "Save", "action": "save", "primary": true},
+    {"type": "chip", "key": "saved", "text": "saved", "tone": "success"},
+    {"type": "chip", "text": "beta", "tone": "warning"},
+    {"type": "chip", "text": "v1.2", "tone": "dim"}]}]}

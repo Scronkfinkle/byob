@@ -1,0 +1,21 @@
+{"type": "column", "key": "root", "children": [
+  {"type": "row", "children": [
+    {"type": "text", "text": "Build health", "style": "heading"},
+    {"type": "chip", "key": "status", "text": "3 failing", "tone": "danger"}]},
+  {"type": "row", "children": [
+    {"type": "card", "title": "Builds today", "children": [
+      {"type": "text", "text": "128", "style": "heading"},
+      {"type": "text", "text": "+12% vs yesterday", "tone": "success", "style": "small"}]},
+    {"type": "card", "title": "Median time", "children": [
+      {"type": "text", "text": "4m 12s", "style": "heading"},
+      {"type": "progress", "value": 0.62, "label": "62% of budget"}]}]},
+  {"type": "chart", "spec": {"version": 1, "type": "line", "title": "Build minutes", "x": "day",
+    "series": [{"key": "min", "label": "Minutes"}],
+    "data": [{"day": "Mon", "min": 4.1}, {"day": "Tue", "min": 4.6}, {"day": "Wed", "min": 3.9}, {"day": "Thu", "min": 5.2}, {"day": "Fri", "min": 4.2}]}},
+  {"type": "table", "key": "fails", "name": "fails", "height": 120,
+    "columns": [{"key": "job", "label": "Job", "width": 160}, {"key": "err", "label": "Error", "width": 260}, {"key": "tries", "label": "Tries", "editable": true}],
+    "rows": [["linux-x64", "test timeout", 2], ["mac-arm", "link error", 1], ["wasm", "clippy", 3]]},
+  {"type": "row", "children": [
+    {"type": "button", "label": "Re-run failed", "action": "rerun", "primary": true},
+    {"type": "button", "label": "Refresh", "action": "refresh"},
+    {"type": "button", "label": "Cancel all", "action": "cancel", "danger": true}]}]}
