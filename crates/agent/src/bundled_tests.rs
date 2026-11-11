@@ -268,6 +268,21 @@ fn a_model_forks_html_apps_and_its_guidance_edit_changes_the_prompt() {
 }
 
 #[test]
+fn clients_before_13_4_see_bundled_plugins_as_global() {
+    let home = tempfile::tempdir().unwrap();
+    let ws = tempfile::tempdir().unwrap();
+    let ws = ws.path().canonicalize().unwrap();
+    let (engine, _) = engine(vec![], true, home.path(), &ws);
+    let mut c = engine.connect(Arc::new(|| {}));
+    let caps = byob_protocol::version::client_caps().into_iter().filter(|c| c != byob_protocol::version::CAP_BUNDLED_SCOPE).collect();
+    c.send(ClientMsg::Hello { protocol: byob_protocol::PROTOCOL_MAJOR, minor: 3, client: "old".into(), caps });
+    let e = wait_ext(&mut c, |e| !e.plugins.is_empty());
+    assert!(e.plugins.iter().all(|p| p.scope == PluginScope::Global && p.origin == PluginOrigin::Bundled));
+    // And as JSON a 13.3 client can read: no "bundled" scope anywhere.
+    assert!(!ServerMsg::Extensions(Box::new(e)).to_json().contains("\"scope\":\"bundled\""));
+}
+
+#[test]
 fn clients_switch_and_fork_bundled_plugins() {
     let home = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();

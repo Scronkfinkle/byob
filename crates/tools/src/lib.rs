@@ -339,12 +339,6 @@ pub fn register_builtins_with(reg: &mut Registry, types: &ArtifactTypes) {
     reg.register(Arc::new(ReadArtifact { types: types.clone() }));
 }
 
-/// The artifact tools (`create_artifact`, `update_artifact`, `read_artifact`) for `types`
-/// (a chat's types, when plugins decide which it has).
-pub fn artifact_tools(types: &ArtifactTypes) -> Vec<Arc<dyn Tool>> {
-    vec![Arc::new(CreateArtifact { types: types.clone() }), Arc::new(UpdateArtifact { types: types.clone() }), Arc::new(ReadArtifact { types: types.clone() })]
-}
-
 /// A registry with just the built-in file tools.
 pub fn builtin() -> Registry {
     let mut reg = Registry::default();

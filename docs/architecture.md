@@ -173,7 +173,7 @@ L4  agent: engine, turns, tool loop, permissions, approvals
 L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python, install_packages, workspace environments)
 L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
 L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store (SQLite or folder) · artifact-wire (helper protocol)
-L0  types
+L0  types · bundled (the bundled plugins' files, embedded)
 ```
 
 `cargo xtask layers` enforces: dependencies point down; only `ui-egui`, `byob`, `byob-web`
