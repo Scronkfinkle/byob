@@ -13,6 +13,7 @@ use egui::{Stroke, vec2};
 use crate::markdown;
 use crate::plugins::PluginsUi;
 use crate::theme::Tokens;
+use crate::tree::{StepEvent, StepTrees};
 
 /// What a renderer draws with besides the view.
 pub struct ViewCx<'a> {
@@ -24,6 +25,10 @@ pub struct ViewCx<'a> {
     pub latest: bool,
     /// The client's plugin state (the plugin card reads and changes it).
     pub plugins: &'a mut PluginsUi,
+    /// The view's index on the step.
+    pub index: usize,
+    /// View trees on steps, decoded, with their client state.
+    pub trees: &'a mut StepTrees,
 }
 
 /// Draws one view kind.
@@ -43,6 +48,7 @@ pub struct ViewRegistry {
     fallbacks: markdown::Cache,
     /// Kinds already logged as unknown.
     logged: BTreeSet<String>,
+    trees: StepTrees,
 }
 
 impl Default for ViewRegistry {
@@ -50,6 +56,7 @@ impl Default for ViewRegistry {
     fn default() -> Self {
         let mut r = Self::empty();
         r.register(<PluginCard as byob_protocol::ViewData>::KIND, Renderer { draw: plugin_card, key: Some(plugin_card_key) });
+        r.register(byob_protocol::tree::KIND, Renderer { draw: tree_view, key: None });
         r
     }
 }
@@ -62,7 +69,13 @@ fn fallback_key(step: u64) -> u64 {
 impl ViewRegistry {
     /// No renderers: every view shows its fallback.
     pub fn empty() -> Self {
-        Self { renderers: BTreeMap::new(), fallbacks: markdown::Cache::default(), logged: BTreeSet::new() }
+        Self { renderers: BTreeMap::new(), fallbacks: markdown::Cache::default(), logged: BTreeSet::new(), trees: StepTrees::default() }
+    }
+
+    /// What the user did in view trees on steps since the last call (sent on by the app
+    /// once the engine routes them to their owners).
+    pub fn take_tree_events(&mut self) -> Vec<StepEvent> {
+        self.trees.take_events()
     }
 
     /// Draw views of `kind` with `renderer` (replacing an earlier one).
@@ -95,7 +108,7 @@ impl ViewRegistry {
                 Some(key) => latest.get(&(view.kind.clone(), key)) == Some(&step.id),
                 None => true,
             };
-            let mut cx = ViewCx { t, step: step.id, latest: is_latest, plugins: &mut *plugins };
+            let mut cx = ViewCx { t, step: step.id, latest: is_latest, plugins: &mut *plugins, index: i, trees: &mut self.trees };
             let drawn = renderer.is_some_and(|r| (r.draw)(ui, &mut cx, view));
             if !drawn {
                 if self.logged.insert(view.kind.clone()) {
@@ -124,6 +137,11 @@ fn plugin_card(ui: &mut egui::Ui, cx: &mut ViewCx<'_>, view: &View) -> bool {
     let Some(card) = view.get::<PluginCard>() else { return false };
     cx.plugins.card(ui, cx.t, cx.step, &card, cx.latest);
     true
+}
+
+/// `byob.tree`: any step view can be a view tree.
+fn tree_view(ui: &mut egui::Ui, cx: &mut ViewCx<'_>, view: &View) -> bool {
+    cx.trees.show(ui, cx.t, cx.step, cx.index, view)
 }
 
 fn plugin_card_key(view: &View) -> Option<String> {

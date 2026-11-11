@@ -601,6 +601,7 @@ dependencies = [
  "byob-artifact-wire",
  "byob-exec",
  "byob-plugins",
+ "byob-protocol",
  "byob-sandbox",
  "byob-server",
  "byob-store",
@@ -613,6 +614,7 @@ dependencies = [
  "log",
  "nix",
  "png",
+ "serde_json",
  "tempfile",
 ]
 

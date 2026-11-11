@@ -22,6 +22,7 @@ pub mod sidebar;
 pub mod slash;
 pub mod steps;
 pub mod theme;
+pub mod tree;
 pub mod upload;
 pub mod usage;
 pub mod views;

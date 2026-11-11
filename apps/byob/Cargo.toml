@@ -40,6 +40,9 @@ nix.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# examples/view_trees.rs
+byob-protocol.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
