@@ -19,8 +19,8 @@ that draws its own interface on the GPU, with no Electron, webview or browser en
 
 ## What it does
 
-- **A real desktop app.** One executable, a 12–22 MB download, and native file dialogs,
-  drag and drop and keyboard shortcuts. The browser UI is the reverse of the usual arrangement: the same native interface
+- **A real desktop app.** One folder, about a 60 MB download with everything in it (13 MB for
+  the slim build), and native file dialogs, drag and drop and keyboard shortcuts. The browser UI is the reverse of the usual arrangement: the same native interface
   compiled to WebAssembly, so a tab or your phone gets the identical app, live on the same session.
 - **Your model, your machine.** No bundled inference and no account: any OpenAI-compatible URL.
   First run finds local servers on their usual ports; tool calling falls back to prompt-based
