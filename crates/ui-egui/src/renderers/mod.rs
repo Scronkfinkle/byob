@@ -81,6 +81,13 @@ pub trait ArtifactRenderer {
 pub struct ArtifactRenderers {
     by_type: BTreeMap<String, Rc<dyn ArtifactRenderer>>,
     fallback: Rc<dyn ArtifactRenderer>,
+    /// Renderers plugin manifests name (`native:<id>`, `web`), by id.
+    natives: BTreeMap<String, Rc<dyn ArtifactRenderer>>,
+    /// What the engine's plugins say (`PluginInfo::renderers`), by content type: `Some`
+    /// renderer while a plugin declaring it is on; `None` for a type only plugins that are
+    /// off declare (its registration is skipped, so it shows as text). Empty until an
+    /// engine sends renderer declarations.
+    from_plugins: BTreeMap<String, Option<Rc<dyn ArtifactRenderer>>>,
 }
 
 impl Default for ArtifactRenderers {
@@ -98,7 +105,49 @@ impl Default for ArtifactRenderers {
 impl ArtifactRenderers {
     /// Only the fallback: everything shows as text source.
     pub fn empty() -> Self {
-        Self { by_type: BTreeMap::new(), fallback: Rc::new(text::Text) }
+        let mut natives: BTreeMap<String, Rc<dyn ArtifactRenderer>> = BTreeMap::new();
+        natives.insert("text".into(), Rc::new(text::Text));
+        Self { by_type: BTreeMap::new(), fallback: Rc::new(text::Text), natives, from_plugins: BTreeMap::new() }
+    }
+
+    /// Make `renderer` available to plugin manifests as `native:<id>`.
+    pub fn native(&mut self, id: &str, renderer: Rc<dyn ArtifactRenderer>) {
+        self.natives.insert(id.to_owned(), renderer);
+    }
+
+    /// The ids manifests can name.
+    pub fn native_ids(&self) -> Vec<String> {
+        self.natives.keys().cloned().collect()
+    }
+
+    /// Take the renderer declarations of the engine's plugins (for the chat in view): a
+    /// switched-on, unshadowed plugin's declaration draws its type with the named native
+    /// renderer; a type that only switched-off plugins declare loses its registration
+    /// (shown as text). Unknown renderer ids show as text too. Without any declarations
+    /// (an older engine) the registrations stand as they are.
+    pub fn apply_plugins(&mut self, plugins: &[byob_protocol::PluginInfo]) {
+        self.from_plugins.clear();
+        for p in plugins {
+            for d in &p.renderers {
+                self.from_plugins.entry(d.content_type.to_ascii_lowercase()).or_insert(None);
+            }
+        }
+        for p in plugins.iter().filter(|p| p.enabled && p.shadowed_by.is_none()) {
+            for d in &p.renderers {
+                let id = match d.renderer.as_str() {
+                    "web" | "text" => Some(d.renderer.as_str()),
+                    other => other.strip_prefix("native:"),
+                };
+                let renderer = id.and_then(|id| self.natives.get(id)).cloned();
+                if renderer.is_none() {
+                    log::warn!("plugin {}: no renderer {:?} in this client; {} shows as text", p.id, d.renderer, d.content_type);
+                }
+                let slot = self.from_plugins.entry(d.content_type.to_ascii_lowercase()).or_insert(None);
+                if slot.is_none() {
+                    *slot = renderer;
+                }
+            }
+        }
     }
 
     /// Draw `content_type` (or every `type/*`) with `renderer`, replacing an earlier one.
@@ -117,10 +166,16 @@ impl ArtifactRenderers {
     }
 
     /// An exact registration for `content_type`, else one for its `type/*`, else the fallback.
+    /// Plugins' declarations ([`Self::apply_plugins`]) come before registrations.
     pub fn get(&self, content_type: &str) -> Rc<dyn ArtifactRenderer> {
-        let exact = self.by_type.get(content_type);
-        let wild = || content_type.split_once('/').and_then(|(major, _)| self.by_type.get(&format!("{major}/*")));
-        Rc::clone(exact.or_else(wild).unwrap_or(&self.fallback))
+        let lookup = |key: &str| -> Option<&Rc<dyn ArtifactRenderer>> {
+            match self.from_plugins.get(key) {
+                Some(declared) => declared.as_ref(),
+                None => self.by_type.get(key),
+            }
+        };
+        let wild = || content_type.split_once('/').and_then(|(major, _)| lookup(&format!("{major}/*")));
+        Rc::clone(lookup(content_type).or_else(wild).unwrap_or(&self.fallback))
     }
 
     /// The renderer of `a`.
@@ -359,5 +414,32 @@ mod tests {
         };
         assert_eq!(r.of(&a).caps().label, "chart");
         assert_eq!(ArtifactRenderers::empty().get(TYPE_MARKDOWN).caps().label, "file");
+    }
+
+    fn plugin(id: &str, enabled: bool, decls: &[(&str, &str)]) -> byob_protocol::PluginInfo {
+        let mut p = crate::plugins::tests::info(id, byob_protocol::PluginScope::Bundled, byob_protocol::PluginOrigin::Bundled);
+        p.enabled = enabled;
+        p.renderers = decls.iter().map(|(t, r)| byob_protocol::RendererDecl { content_type: (*t).into(), renderer: (*r).into() }).collect();
+        p
+    }
+
+    #[test]
+    fn plugins_decide_which_native_renderer_draws_a_type() {
+        let mut r = ArtifactRenderers::default();
+        assert!(r.native_ids().contains(&"web".to_owned()) && r.native_ids().contains(&"chart".to_owned()));
+        // Charts switched off: its type shows as text; HTML apps still on the web surface.
+        r.apply_plugins(&[plugin("charts", false, &[(TYPE_CHART, "native:chart")]), plugin("html-apps", true, &[(TYPE_HTML, "web")])]);
+        assert_eq!(r.get(TYPE_CHART).caps().label, "file");
+        assert!(r.get(TYPE_HTML).caps().web_surface);
+        // Back on.
+        r.apply_plugins(&[plugin("charts", true, &[(TYPE_CHART, "native:chart")])]);
+        assert_eq!(r.get(TYPE_CHART).caps().label, "chart");
+        // A renderer this client doesn't have: text. A plugin may map a new type to a native.
+        r.apply_plugins(&[plugin("odd", true, &[("text/csv", "native:spreadsheet"), ("text/x-notes", "native:markdown")])]);
+        assert_eq!(r.get("text/csv").caps().label, "file");
+        assert_eq!(r.get("text/x-notes").caps().label, "document");
+        // No declarations at all (an older engine): byob's own registrations.
+        r.apply_plugins(&[]);
+        assert_eq!(r.get(TYPE_CHART).caps().label, "chart");
     }
 }

@@ -22,6 +22,8 @@ mod authoring;
 #[cfg(test)]
 mod backend_tests;
 mod backends;
+#[cfg(test)]
+mod bundled_tests;
 mod channel;
 mod chats;
 mod compact;
@@ -43,6 +45,7 @@ mod limits;
 mod live_views;
 #[cfg(test)]
 mod loop_tests;
+pub mod natives;
 pub mod permissions;
 mod plugins;
 mod queue;
@@ -83,6 +86,7 @@ pub use channel::{PluginChannels, PluginHandler, PluginOut};
 pub use compact::CompactOptions;
 pub use delegate::SubagentOptions;
 pub use extensions::PluginsConfig;
+pub use natives::Natives;
 pub use permissions::{Policy, Rule};
 
 /// How often streamed text is written to the database while a reply runs.
@@ -1531,7 +1535,12 @@ impl Engine {
         let composed = self.compose_for(Some(&chat), None, true);
         // `/name args`: what the model gets instead (the transcript keeps what was typed).
         let model_text = composed.as_ref().and_then(|c| extensions::expand_slash(&text, c)).unwrap_or_else(|| text.clone());
-        let mut extra = composed.as_ref().map(|c| c.prompt.clone()).unwrap_or_default();
+        // Plugins' sections (artifacts, code running, …), then their prompt lines, skills
+        // and the authoring line, then AGENTS.md.
+        let mut extra = composed
+            .as_ref()
+            .map(|c| [c.sections.as_str(), c.prompt.as_str()].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n"))
+            .unwrap_or_default();
         if let Some(md) = workspace_dir.as_deref().and_then(|w| extensions::agents_md(w)) {
             extra = if extra.is_empty() { md } else { format!("{extra}\n\n{md}") };
         }

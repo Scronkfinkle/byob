@@ -1,0 +1,17 @@
+{
+  "id": "artifacts",
+  "name": "Artifacts",
+  "version": "1.0.0",
+  "description": "Files the model makes to keep beside the chat: create_artifact, update_artifact and read_artifact, plain-text artifacts, and the prompt section on when to make one. Other plugins add types (HTML apps, charts, markdown, images).",
+  "icon": "files",
+  "locked": true,
+  "tools": [
+    { "native": "create_artifact" },
+    { "native": "update_artifact" },
+    { "native": "read_artifact" }
+  ],
+  "artifact_types": [
+    { "type": "text/plain", "native": "text" }
+  ],
+  "system_prompt": { "native": "artifacts" }
+}

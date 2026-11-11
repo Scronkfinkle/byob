@@ -31,6 +31,10 @@ pub const MAX_TRUSTED_AT_ONCE: usize = 200;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginScope {
+    /// Ships inside byob (13.4+, cap [`crate::version::CAP_BUNDLED_SCOPE`]; older clients
+    /// are told `global` with origin `bundled`). The least specific: any other copy with
+    /// the same id wins (a fork).
+    Bundled,
     Global,
     Workspace,
     Chat,
@@ -39,6 +43,7 @@ pub enum PluginScope {
 impl PluginScope {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Bundled => "built in",
             Self::Global => "everywhere",
             Self::Workspace => "this workspace",
             Self::Chat => "this chat",
@@ -186,6 +191,32 @@ pub struct PluginInfo {
     /// Changes whenever a file of the plugin changes (hex).
     #[serde(default)]
     pub fingerprint: String,
+    /// Always on: its switch can't turn it off (13.4+; core bundled plugins and their forks).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
+    /// Which renderer draws a content type while it is on (13.4+).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renderers: Vec<RendererDecl>,
+    /// Prompt suggestions for an empty chat (13.4+).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub starters: Vec<StarterDecl>,
+}
+
+/// A plugin's renderer for one content type: `renderer` is `web` (the web surface), `text`
+/// (the source) or `native:<id>` (one of the client's in-tree renderers). A client that
+/// doesn't have it shows the text source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendererDecl {
+    pub content_type: String,
+    pub renderer: String,
+}
+
+/// A suggestion for an empty chat: `title` on the button, `prompt` sent (or put in the
+/// composer).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StarterDecl {
+    pub title: String,
+    pub prompt: String,
 }
 
 /// A plugin folder that couldn't load at all (bad manifest, duplicate id).
@@ -398,6 +429,9 @@ mod tests {
             problems: vec!["tools/x.py is missing".into()],
             last_error: Some("boom".into()),
             fingerprint: "00ff".into(),
+            locked: false,
+            renderers: vec![],
+            starters: vec![],
         }
     }
 

@@ -39,7 +39,7 @@ pub use commands::{Command, load_commands_dir, split_slash};
 pub use connectors::{
     Connector, ConnectorContent, ConnectorDraft, ConnectorResult, ConnectorTool, ConnectorToolAdapter, connector_tools, connector_tools_from, parse_connector,
 };
-pub use discover::{Discovery, Plugin, PluginSources, discover, load_plugin};
+pub use discover::{BUNDLED_DIR, Discovery, Embedded, Plugin, PluginSources, discover, discover_embedded, load_embedded, load_plugin};
 pub use manifest::{MANIFEST, Manifest, ManifestError, McpServerConfig, OLD_MANIFEST, parse_manifest};
 pub use names::ToolNames;
 pub use pyenv::{PluginPython, PyEnvs};

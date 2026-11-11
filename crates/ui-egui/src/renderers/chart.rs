@@ -7,6 +7,7 @@ use super::{ArtifactCx, ArtifactRenderer, ArtifactRenderers, Place, RendererCaps
 
 pub fn register(r: &mut ArtifactRenderers) {
     r.register(TYPE_CHART, Chart);
+    r.native("chart", std::rc::Rc::new(Chart));
 }
 
 pub struct Chart;

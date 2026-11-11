@@ -128,9 +128,49 @@ fn broken(reply: &PluginReply, id: &str) -> Option<PluginInfo> {
 
 fn writable(info: &PluginInfo) -> Result<(), String> {
     if info.origin == PluginOrigin::Bundled {
-        return Err(format!("{} ships with byob and can't be changed", info.id));
+        return Err(format!(
+            "{id} is built into byob and its files can't be changed here. Fork it first: keep_plugin with plugin \"{id}\" and scope \"global\" makes an editable copy that is used instead (its native parts stay the same), then edit that.",
+            id = info.id
+        ));
     }
     Ok(())
+}
+
+/// Write a bundled plugin's `files` to `<target_root>/<id>` (a fork; the manifest's id
+/// becomes `id`). Returns the files written.
+pub(crate) fn fork_files(files: &std::collections::BTreeMap<String, String>, target_root: &Path, id: &str) -> Result<Vec<String>, String> {
+    if !plugin_id_ok(id) {
+        return Err(format!("{id:?} isn't a plugin id (lowercase letters, digits, dashes)"));
+    }
+    let dst = target_root.join(id);
+    if dst.exists() {
+        return Err(format!("there's already a plugin folder {}; remove it first (or pick another id)", dst.display()));
+    }
+    let write = || -> std::io::Result<()> {
+        for (rel, text) in files {
+            if !path_inside(rel) {
+                continue;
+            }
+            let path = dst.join(rel);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, text)?;
+        }
+        Ok(())
+    };
+    if let Err(e) = write() {
+        let _ = fs::remove_dir_all(&dst);
+        return Err(format!("couldn't copy the plugin: {e}"));
+    }
+    let mut manifest = byob_plugins::authoring::read_manifest_json(&dst, id)?;
+    if manifest.get("id").and_then(Value::as_str) != Some(id) {
+        if let Some(o) = manifest.as_object_mut() {
+            o.insert("id".into(), Value::String(id.to_owned()));
+        }
+        write_manifest(&dst, &manifest)?;
+    }
+    Ok(files.keys().cloned().collect())
 }
 
 /// The loader's problems with the plugin in `dir` after a reload, verbatim.
@@ -593,6 +633,9 @@ fn new_info(id: &str, dir: &Path) -> PluginInfo {
         problems: Vec::new(),
         last_error: None,
         fingerprint: String::new(),
+        locked: false,
+        renderers: Vec::new(),
+        starters: Vec::new(),
     }
 }
 
@@ -625,12 +668,13 @@ fn file_list(dir: &Path) -> Vec<String> {
     out
 }
 
-fn describe(p: &PluginInfo, detail: bool) -> String {
+fn describe(p: &PluginInfo, detail: bool, bundled: &std::collections::BTreeMap<String, Arc<std::collections::BTreeMap<String, String>>>) -> String {
     let state = match (p.shadowed_by, p.enabled, p.trusted) {
         (Some(s), _, _) => format!("not used: the copy in {} wins", s.label()),
         (None, false, _) => format!("switched off ({})", p.enabled_from.label()),
         (None, true, false) if p.declined => "its code is off: the user declined it".into(),
         (None, true, false) => "its code waits for the user's OK (it came with the workspace)".into(),
+        (None, true, true) if p.locked => "on (part of byob's core: always on)".into(),
         (None, true, true) => "on".into(),
     };
     let origin = match p.origin {
@@ -690,7 +734,11 @@ fn describe(p: &PluginInfo, detail: bool) -> String {
         }
     }
     if detail {
-        s.push_str(&format!("\n  folder: {}\n  files: {}", p.dir, list(&file_list(Path::new(&p.dir)).into_iter().take(MAX_LISTED).collect::<Vec<_>>())));
+        let files = match bundled.get(&p.id).filter(|_| p.scope == PluginScope::Bundled) {
+            Some(files) => files.keys().cloned().collect(),
+            None => file_list(Path::new(&p.dir)),
+        };
+        s.push_str(&format!("\n  folder: {}\n  files: {}", p.dir, list(&files.into_iter().take(MAX_LISTED).collect::<Vec<_>>())));
     }
     s
 }
@@ -733,7 +781,7 @@ impl Tool for PluginStatus {
                 text.push_str("No plugins yet. make_tool makes one in this chat.");
             }
             for p in &reply.infos {
-                text.push_str(&describe(p, false));
+                text.push_str(&describe(p, false, &reply.bundled));
                 text.push('\n');
             }
         } else {
@@ -755,10 +803,20 @@ impl Tool for PluginStatus {
             let file = str_arg(args, "file").trim();
             if !file.is_empty() {
                 let Some(p) = copies.iter().find(|p| p.shadowed_by.is_none()).or(copies.first()) else { return ToolOutput::err("no such plugin") };
-                return read_plugin_file(p, file);
+                return match reply.bundled.get(&p.id).filter(|_| p.scope == PluginScope::Bundled) {
+                    Some(files) => match files.get(file.trim_start_matches("./")) {
+                        Some(text) => ToolOutput::ok(format!("{file} of plugin {} (built in; fork it with keep_plugin to change it):\n{text}", p.id)),
+                        None => ToolOutput::err(format!(
+                            "{file} isn't a file of plugin {}. Its files: {}",
+                            p.id,
+                            files.keys().cloned().collect::<Vec<_>>().join(", ")
+                        )),
+                    },
+                    None => read_plugin_file(p, file),
+                };
             }
             for p in copies {
-                text.push_str(&describe(p, true));
+                text.push_str(&describe(p, true, &reply.bundled));
                 text.push('\n');
             }
         }
@@ -862,6 +920,63 @@ fn copy_dir(src: &Path, dst: &Path, depth: usize) -> std::io::Result<()> {
     Ok(())
 }
 
+/// keep_plugin on a bundled plugin: copy it to the workspace or everywhere (asking like a
+/// keep does), where it wins by id and can be edited.
+fn fork(
+    env: &AuthorEnv,
+    ctx: &ToolContext<'_>,
+    before: &PluginReply,
+    info: &PluginInfo,
+    scope: PluginScope,
+    new_id: Option<&str>,
+) -> Result<ToolOutput, String> {
+    let files = before.bundled.get(&info.id).ok_or_else(|| format!("{} isn't built into byob", info.id))?;
+    let id = new_id.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&info.id).to_owned();
+    let root = match scope {
+        PluginScope::Workspace => ctx.workspace.join(".byob").join("plugins"),
+        _ => before.global_dir.clone().ok_or("there's no global plugins folder in this run")?,
+    };
+    if root.join(&id).exists() {
+        return Err(format!("{} already has a plugin {id}; edit that one (or remove it first)", scope.label()));
+    }
+    let mut text = String::from("Files:\n");
+    for f in files.keys().take(MAX_LISTED) {
+        text.push_str(&format!("  {f}\n"));
+    }
+    let (title, warning) = match scope {
+        PluginScope::Global => (
+            format!("Fork the built-in plugin {} for every chat as {id}", info.id),
+            Some("The copy is used instead of the built-in one; edits to it change how byob behaves everywhere.".to_owned()),
+        ),
+        _ => (format!("Fork the built-in plugin {} into this workspace as {id}", info.id), None),
+    };
+    confirm(ctx, title, text.trim_end().to_owned(), warning, scope == PluginScope::Global)?;
+    fork_files(files, &root, &id)?;
+    let op = if scope == PluginScope::Workspace { PluginOp::Made { id: id.clone() } } else { PluginOp::Reload };
+    let after = env.ask(ctx, op)?;
+    let dir = root.join(&id);
+    let tools = tools_of(&after, &id, &dir);
+    let card = PluginCard {
+        plugin: id.clone(),
+        scope,
+        action: PluginAction::Kept,
+        tools: tools.clone(),
+        added: Vec::new(),
+        removed: Vec::new(),
+        test: None,
+        problems: problems(&after, &id, &dir),
+        missing_settings: missing_settings(&after, &id),
+    };
+    env.card(ctx, "keep_plugin", card);
+    Ok(ToolOutput::ok(format!(
+        "Forked the built-in plugin {} as `{id}` {} ({}). The copy is used instead of the built-in one; change it with edit_plugin (plugin \"{id}\"). Its files: {}.",
+        info.id,
+        scope.label(),
+        dir.display(),
+        files.keys().cloned().collect::<Vec<_>>().join(", ")
+    )))
+}
+
 struct KeepPlugin(Arc<AuthorEnv>);
 
 #[derive(Deserialize)]
@@ -876,7 +991,7 @@ impl Tool for KeepPlugin {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "keep_plugin".into(),
-            description: "Keep one of this chat's plugins for later chats: move it into the workspace (.byob/plugins) or everywhere. The user is asked first. Only when the user wants to keep it.".into(),
+            description: "Keep one of this chat's plugins for later chats: move it into the workspace (.byob/plugins) or everywhere. On a built-in plugin (html-apps, charts, …) it makes an editable copy (a fork) that is used instead. The user is asked first. Only when the user wants it.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -911,6 +1026,9 @@ impl Tool for KeepPlugin {
             };
             let before = self.0.ask(ctx, PluginOp::Status)?;
             let info = find(&before, a.plugin.trim())?.clone();
+            if info.scope == PluginScope::Bundled {
+                return fork(&self.0, ctx, &before, &info, scope, a.new_id.as_deref());
+            }
             writable(&info)?;
             if info.scope == scope {
                 return Ok(ToolOutput::ok(format!("{} is already kept {}.", info.id, scope.label())));

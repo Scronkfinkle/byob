@@ -49,6 +49,8 @@ pub(crate) struct PluginReply {
     pub scratch_dir: PathBuf,
     /// Where plugins kept everywhere go.
     pub global_dir: Option<PathBuf>,
+    /// The bundled plugins' files by id (they aren't on disk; reading or forking one uses these).
+    pub bundled: BTreeMap<String, Arc<BTreeMap<String, String>>>,
 }
 
 impl PluginReply {
@@ -134,7 +136,7 @@ impl Engine {
     fn compose_now(&mut self, chat: Option<&str>, ws: &Path, effective: &Effective) -> Option<Composed> {
         let trust = self.workspaces.by_folder(ws).map(|w| w.plugin_trust.clone()).unwrap_or_default();
         let ext = self.ext.as_mut()?;
-        let input = ComposeIn { chat, workspace: ws, effective, trust: &trust, values: &self.plugin_values, base: &self.tools };
+        let input = ComposeIn { chat, workspace: ws, effective, trust: &trust, values: &self.plugin_values, base: &self.tools, types: &self.artifact_types };
         let mut composed = ext.compose(&input);
         for job in std::mem::take(&mut composed.connect) {
             let inbox = self.inbox.clone();
@@ -159,7 +161,7 @@ impl Engine {
         let chats: Vec<String> = match scope {
             PluginScope::Chat => chat.map(str::to_owned).into_iter().collect(),
             PluginScope::Workspace => self.chats_in(ws).unwrap_or_default(),
-            PluginScope::Global => self.all_chats(),
+            PluginScope::Global | PluginScope::Bundled => self.all_chats(),
         };
         for tool in tools {
             log::info!("plugin tool {tool} changed; its \"always allow\" grants are withdrawn");
@@ -214,7 +216,32 @@ impl Engine {
         let Some(c) = self.compose_for(chat.as_deref(), Some(id), refresh) else { return };
         let ws = self.ext_workspace(chat.as_deref(), Some(id));
         let workspace = self.workspaces.by_folder(&ws).map(|w| w.id.clone());
-        self.send_to(id, ServerMsg::Extensions(Box::new(ExtMsg { chat, workspace, plugins: c.infos, errors: c.errors, slash: c.slash })));
+        let mut plugins = c.infos;
+        let mut errors = c.errors;
+        let mut slash = c.slash;
+        // Clients before 13.4 don't know the bundled scope: to them it's global (with origin
+        // bundled, which they do know).
+        let knows_bundled = self.clients.get(&id).is_some_and(|c| c.caps.iter().any(|c| c == byob_protocol::version::CAP_BUNDLED_SCOPE));
+        if !knows_bundled {
+            let global = |s: &mut PluginScope| {
+                if *s == PluginScope::Bundled {
+                    *s = PluginScope::Global;
+                }
+            };
+            for p in &mut plugins {
+                global(&mut p.scope);
+                if let Some(s) = p.shadowed_by.as_mut() {
+                    global(s);
+                }
+            }
+            for e in &mut errors {
+                global(&mut e.scope);
+            }
+            for s in slash.iter_mut().filter_map(|s| s.scope.as_mut()) {
+                global(s);
+            }
+        }
+        self.send_to(id, ServerMsg::Extensions(Box::new(ExtMsg { chat, workspace, plugins, errors, slash })));
     }
 
     /// `Input::Plugins`: a request from an authoring tool or a turn.
@@ -251,7 +278,8 @@ impl Engine {
             // Also when the files didn't change (a trust answer): switches and trust did.
             self.extensions_changed();
         }
-        let Some(ext) = self.ext.as_ref() else { return };
+        let Some(ext) = self.ext.as_mut() else { return };
+        let bundled = ext.all_bundled_files();
         let _ = reply.send(PluginReply {
             infos: c.infos,
             errors: c.errors,
@@ -259,6 +287,7 @@ impl Engine {
             owners: c.owners,
             scratch_dir: ext.scratch_dir(chat),
             global_dir: ext.global_dir().map(Path::to_path_buf),
+            bundled,
         });
     }
 
@@ -337,6 +366,10 @@ impl Engine {
 
     /// `ClientMsg::SetPluginEnabled`: switch a plugin at one level.
     pub(crate) fn set_plugin_enabled(&mut self, client: ClientId, scope: ConfigScope, plugin: &str, enabled: Option<bool>) {
+        if enabled == Some(false) && self.ext.as_mut().is_some_and(|e| e.is_locked(plugin)) {
+            self.notice(client, format!("{plugin} is part of byob's core and can't be switched off"));
+            return;
+        }
         let set = |l: &mut byob_types::config::Layer| {
             let mut map = l.plugins.take().unwrap_or_default();
             match enabled {
@@ -395,7 +428,7 @@ impl Engine {
         let chat = self.client_chat(client);
         let ws = self.ext_workspace(chat.as_deref(), Some(client));
         let Some(ext) = self.ext.as_mut() else { return };
-        let declared = [PluginScope::Chat, PluginScope::Workspace, PluginScope::Global]
+        let declared = [PluginScope::Chat, PluginScope::Workspace, PluginScope::Global, PluginScope::Bundled]
             .into_iter()
             .flat_map(|s| ext.plugins_in(s, chat.as_deref(), &ws))
             .find(|p| p.id() == plugin)
@@ -451,15 +484,22 @@ impl Engine {
     }
 
     /// `ClientMsg::KeepPlugin`: the user keeps a chat's plugin in its workspace or everywhere.
+    /// For a bundled plugin this is "fork to edit": its files are copied there and the copy
+    /// wins by id.
     pub(crate) fn keep_plugin_msg(&mut self, client: ClientId, plugin: &str, scope: PluginScope, new_id: Option<String>) {
-        let Some(chat) = self.client_chat(client) else {
-            self.notice(client, "open the chat whose plugin you want to keep".into());
-            return;
-        };
-        let ws = self.ext_workspace(Some(&chat), None);
-        let Some(c) = self.compose_for(Some(&chat), None, true) else { return };
+        let chat = self.client_chat(client);
+        let ws = self.ext_workspace(chat.as_deref(), Some(client));
+        let Some(c) = self.compose_for(chat.as_deref(), Some(client), true) else { return };
         let Some(info) = c.infos.iter().find(|p| p.id == plugin && p.shadowed_by.is_none()) else {
             self.notice(client, format!("this chat has no plugin {plugin}"));
+            return;
+        };
+        if info.scope == PluginScope::Bundled {
+            self.fork_plugin_msg(client, chat.as_deref(), plugin, scope, &ws, new_id);
+            return;
+        }
+        let Some(chat) = chat else {
+            self.notice(client, "open the chat whose plugin you want to keep".into());
             return;
         };
         let target = match scope {
@@ -471,7 +511,7 @@ impl Engine {
                     return;
                 }
             },
-            PluginScope::Chat => {
+            PluginScope::Chat | PluginScope::Bundled => {
                 self.notice(client, "a plugin is kept in a workspace or everywhere".into());
                 return;
             }
@@ -484,6 +524,46 @@ impl Engine {
                 let op = if scope == PluginScope::Workspace { PluginOp::Made { id: new_id.clone() } } else { PluginOp::Reload };
                 self.plugin_op(&chat, op, &reply);
                 let text = format!("Kept plugin {new_id} {}.", scope.label());
+                self.send_to(client, ServerMsg::Notice { level: NoticeLevel::Info, text });
+            }
+            Err(e) => self.notice(client, e),
+        }
+    }
+
+    /// Copy bundled plugin `plugin` to `scope` (global by default) so it can be edited.
+    fn fork_plugin_msg(&mut self, client: ClientId, chat: Option<&str>, plugin: &str, scope: PluginScope, ws: &Path, new_id: Option<String>) {
+        let Some(ext) = self.ext.as_mut() else { return };
+        let Some(files) = ext.bundled_files(plugin) else {
+            self.notice(client, format!("{plugin} isn't built into byob"));
+            return;
+        };
+        let target = match scope {
+            PluginScope::Workspace => ws.join(".byob").join("plugins"),
+            _ => match ext.global_dir() {
+                Some(d) => d.to_path_buf(),
+                None => {
+                    self.notice(client, "there's no global plugins folder in this run".into());
+                    return;
+                }
+            },
+        };
+        let id = new_id.unwrap_or_else(|| plugin.to_owned());
+        match crate::authoring::fork_files(&files, &target, &id) {
+            Ok(_) => {
+                let reply = channel().0;
+                if scope == PluginScope::Workspace
+                    && let Some(chat) = chat
+                {
+                    self.plugin_op(chat, PluginOp::Made { id: id.clone() }, &reply);
+                }
+                self.compose_for(chat, Some(client), true);
+                self.extensions_changed();
+                let place = if scope == PluginScope::Workspace { PluginScope::Workspace } else { PluginScope::Global };
+                let text = format!(
+                    "Forked {plugin} {} ({}); edit its files there — the copy is used instead of the built-in one.",
+                    place.label(),
+                    target.join(&id).display()
+                );
                 self.send_to(client, ServerMsg::Notice { level: NoticeLevel::Info, text });
             }
             Err(e) => self.notice(client, e),

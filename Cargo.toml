@@ -19,6 +19,7 @@ categories = ["gui", "development-tools"]
 # Internal crates (see docs/architecture.md for layering).
 byob-types = { path = "crates/types", version = "0.2.1" }
 byob-web-assets = { path = "crates/web-assets", version = "0.2.1" }
+byob-bundled = { path = "crates/bundled", version = "0.2.1" }
 byob-protocol = { path = "crates/protocol", version = "0.2.1" }
 byob-server = { path = "crates/server", version = "0.2.1" }
 byob-llm = { path = "crates/llm", version = "0.2.1" }

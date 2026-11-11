@@ -160,6 +160,13 @@ impl ArtifactTypes {
         types
     }
 
+    /// The ids plugin manifests name byob's own types by (`artifact_types[].native`), with
+    /// their content types, in the order [`Self::builtin`] registers them.
+    pub fn native_ids() -> Vec<(&'static str, &'static str)> {
+        use byob_protocol::artifact::{TYPE_CHART, TYPE_HTML, TYPE_JPEG, TYPE_MARKDOWN, TYPE_PNG};
+        vec![("markdown", TYPE_MARKDOWN), ("html_app", TYPE_HTML), ("text", TYPE_TEXT), ("chart", TYPE_CHART), ("png", TYPE_PNG), ("jpeg", TYPE_JPEG)]
+    }
+
     /// Add a type, or replace the one with its content type (keeping its place).
     pub fn register(&self, t: ArtifactType) {
         let mut types = self.0.write().unwrap_or_else(PoisonError::into_inner);

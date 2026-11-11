@@ -1,0 +1,22 @@
+{
+  "id": "core-tools",
+  "name": "Files and code",
+  "version": "1.0.0",
+  "description": "The workspace tools: list, read, write, move and delete files; run commands and Python in the sandbox; install packages where the workspace's environment can.",
+  "icon": "terminal",
+  "locked": true,
+  "tools": [
+    { "native": "list_files" },
+    { "native": "read_file" },
+    { "native": "write_file" },
+    { "native": "move_file" },
+    { "native": "move_files" },
+    { "native": "delete_file" },
+    { "native": "run_command", "optional": true },
+    { "native": "run_python", "optional": true },
+    { "native": "install_packages", "optional": true },
+    { "native": "install_python_packages", "optional": true },
+    { "native": "install_system_packages", "optional": true }
+  ],
+  "system_prompt": { "native": "exec" }
+}

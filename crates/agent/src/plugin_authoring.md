@@ -13,6 +13,8 @@ places; the same id resolves chat > workspace > global:
 - the workspace: `.byob/plugins/<id>/` in the workspace folder (shared with the repo);
 - everywhere: the user's global plugins folder.
 
+byob's own features are built-in plugins below those (see section 8 to change one).
+
 New tools are callable from your **next step** in this same reply. Prompt lines and skills of
 a plugin you change apply from the next message.
 
@@ -265,3 +267,26 @@ How it works:
   have it. The user is asked first; only do it when the user wants to keep it. Give a
   descriptive `new_id` when keeping the `scratch` plugin.
 - `remove_plugin(plugin)`: delete it (asks unless it's this chat's scratch plugin).
+
+## 8. byob's built-in plugins, and forking them
+
+byob's own features are plugins too, built into the app (scope "built in", the least
+specific: any copy with the same id wins): `artifacts` (create/update/read_artifact and the
+prompt part on artifacts), `html-apps` (HTML apps: `guidance.md` is the prompt's rules for
+writing them), `charts` (make_chart, chart artifacts), `markdown`, `images`, `core-tools`
+(file tools, run_command, run_python). `artifacts` and `core-tools` are always on; the
+others can be switched off. `plugin_status(plugin="html-apps", file="guidance.md")` shows a
+built-in plugin's files.
+
+To change one (e.g. the HTML app rules), fork it: `keep_plugin(plugin="html-apps",
+scope="global")` copies it to the user's plugins folder (the user is asked), and that copy is
+used from then on. Then `edit_plugin(plugin="html-apps", file="guidance.md", find=…,
+replace=…)`; the next message's prompt has the new text. Its in-tree parts stay the same:
+the manifest names them by id (`{"native": "make_chart"}` tools, `"artifact_types": [{"type":
+"text/html", "native": "html_app", "guidance": "guidance.md"}]`, `"renderers": [{"type":
+"text/html", "renderer": "web"}]`, `"system_prompt": {"native": "artifacts"}`), and an id this
+byob doesn't have shows up as a problem. A plugin of your own may use the same fields: a
+`"system_prompt": "prompt.md"` file (a longer prompt part than `prompt`), or a plain text
+type `{"type": "text/csv", "suffixes": [".csv"], "label": "table", "pick": "a table → .csv"}`
+drawn by an existing renderer (`"renderer": "native:markdown"`, `"text"`). Removing the fork
+(`remove_plugin`) brings the built-in one back.

@@ -1,8 +1,8 @@
-//! What the model can use besides plugins: built-in file and artifact tools and the
-//! code-running tools (sandboxed), registered once; the user's own subagents
-//! (`<config>/agents/*.md`); and where the engine finds plugins (the config folder's
-//! `plugins`, `settings.json` `plugin_dirs`, `--plugin`). The engine loads plugins itself,
-//! per chat and workspace, and reloads them when their files change.
+//! The in-tree parts of byob's bundled plugins (file, artifact, chart and code-running tools,
+//! registered once; the prompt sections they name) and the plugins themselves; the user's
+//! own subagents (`<config>/agents/*.md`); and where the engine finds plugins (the config
+//! folder's `plugins`, `settings.json` `plugin_dirs`, `--plugin`). The engine loads plugins
+//! itself, per chat and workspace, and reloads them when their files change.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,8 +14,6 @@ use byob_tools::Registry;
 
 /// What [`load`] found besides tools.
 pub struct Loaded {
-    /// Text to append to the system prompt (artifacts, code running).
-    pub prompt: String,
     /// The user's own subagents (`<config>/agents`); plugins' come per chat.
     pub agents: Vec<AgentDef>,
     /// Workspace environment settings for the engine (with run_command / run_python).
@@ -55,7 +53,17 @@ pub fn load(tools: &mut Registry, artifact_types: &byob_tools::ArtifactTypes, li
         _ => None,
     };
 
-    let mut plugins = PluginsConfig { linked, python: byob_plugins::default_python(), sandbox, ..Default::default() };
+    // The built-in features are bundled plugins (inside the binary) naming these tools,
+    // artifact types and prompt sections by id; the code-running section is ours to add.
+    let natives = byob_agent::Natives::builtin().prompt("exec", move |_| exec_prompt.clone().unwrap_or_default());
+    let mut plugins = PluginsConfig {
+        linked,
+        python: byob_plugins::default_python(),
+        sandbox,
+        bundled: byob_agent::natives::bundled_plugins(),
+        natives,
+        ..Default::default()
+    };
     match &paths {
         Ok(paths) => {
             plugins.global_roots.push(paths.config_dir.join("plugins"));
@@ -67,11 +75,6 @@ pub fn load(tools: &mut Registry, artifact_types: &byob_tools::ArtifactTypes, li
         Err(e) => log::warn!("no config folder ({e}); only --plugin folders are loaded"),
     }
 
-    let mut prompt = artifact_types.prompt();
-    if let Some(p) = exec_prompt {
-        prompt.push_str("\n\n");
-        prompt.push_str(&p);
-    }
     let agents = match &paths {
         Ok(paths) => {
             let (agents, errors) = byob_plugins::load_agents_dir(&paths.config_dir.join("agents"));
@@ -85,5 +88,5 @@ pub fn load(tools: &mut Registry, artifact_types: &byob_tools::ArtifactTypes, li
     if !agents.is_empty() {
         log::info!("{} subagent(s) of your own: {}", agents.len(), agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "));
     }
-    Loaded { prompt: prompt.trim().to_owned(), agents, envs, plugins }
+    Loaded { agents, envs, plugins }
 }

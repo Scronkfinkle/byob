@@ -1,0 +1,16 @@
+{
+  "id": "html-apps",
+  "name": "HTML apps",
+  "version": "1.0.0",
+  "description": "Interactive single-file apps (.html) as artifacts: the rules the model writes them by (guidance.md), a check for network use, and the web-surface renderer (Servo on the desktop, an iframe in the browser) with Open in browser.",
+  "icon": "app-window",
+  "artifact_types": [
+    { "type": "text/html", "native": "html_app", "guidance": "guidance.md" }
+  ],
+  "renderers": [
+    { "type": "text/html", "renderer": "web" }
+  ],
+  "starters": [
+    { "title": "Make a small app", "prompt": "Make me a tip calculator app: bill amount, tip percentage and number of people." }
+  ]
+}

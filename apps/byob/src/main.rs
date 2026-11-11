@@ -438,9 +438,6 @@ fn run() -> Result<(), String> {
     let themes_dir = config.paths.as_ref().map(Paths::themes_dir);
     let plugins = args.plugins.clone();
     let extra = extensions::load(&mut config.tools, &config.artifact_types, plugins);
-    if !extra.prompt.is_empty() {
-        config.system_prompt = format!("{}\n\n{}", config.system_prompt, extra.prompt);
-    }
     config.agents = extra.agents;
     config.envs = extra.envs;
     config.plugins = Some(extra.plugins);

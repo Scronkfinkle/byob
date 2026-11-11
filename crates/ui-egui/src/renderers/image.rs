@@ -13,7 +13,8 @@ const CARD_HEIGHT: f32 = 260.0;
 pub fn register(r: &mut ArtifactRenderers) {
     let image: Rc<dyn ArtifactRenderer> = Rc::new(Image);
     r.register_rc(TYPE_PNG, Rc::clone(&image));
-    r.register_rc(TYPE_JPEG, image);
+    r.register_rc(TYPE_JPEG, Rc::clone(&image));
+    r.native("image", image);
 }
 
 pub struct Image;

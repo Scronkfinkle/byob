@@ -9,6 +9,7 @@ use crate::markdown;
 
 pub fn register(r: &mut ArtifactRenderers) {
     r.register(TYPE_MARKDOWN, Markdown);
+    r.native("markdown", std::rc::Rc::new(Markdown));
 }
 
 pub struct Markdown;

@@ -27,8 +27,8 @@ pub use delegation::{Delegation, DelegationState, DelegationUpdate};
 pub use env::{ContainerEnv, EnvAction, EnvSupport, WorkspaceEnv};
 pub use media::{MediaContent, MediaKind, MediaRef};
 pub use plugins::{
-    BackendInfo, Extensions, PluginAction, PluginCard, PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, PluginTest, ServerInfo,
-    ServerState, SlashItem, SlashKind,
+    BackendInfo, Extensions, PluginAction, PluginCard, PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, PluginTest, RendererDecl,
+    ServerInfo, ServerState, SlashItem, SlashKind, StarterDecl,
 };
 pub use queue::{ChatQueue, QueuePause, QueuedMessage};
 pub use sites::{LiveView, Site, ViewDecl, ViewRef};

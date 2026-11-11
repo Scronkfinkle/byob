@@ -300,6 +300,11 @@ impl Registry {
         self.tools.get(name)
     }
 
+    /// Take a tool out (a native tool whose plugin is off).
+    pub fn remove(&mut self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.remove(name)
+    }
+
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools.values().map(|t| t.spec()).collect()
     }
@@ -332,6 +337,12 @@ pub fn register_builtins_with(reg: &mut Registry, types: &ArtifactTypes) {
     reg.register(Arc::new(CreateArtifact { types: types.clone() }));
     reg.register(Arc::new(UpdateArtifact { types: types.clone() }));
     reg.register(Arc::new(ReadArtifact { types: types.clone() }));
+}
+
+/// The artifact tools (`create_artifact`, `update_artifact`, `read_artifact`) for `types`
+/// (a chat's types, when plugins decide which it has).
+pub fn artifact_tools(types: &ArtifactTypes) -> Vec<Arc<dyn Tool>> {
+    vec![Arc::new(CreateArtifact { types: types.clone() }), Arc::new(UpdateArtifact { types: types.clone() }), Arc::new(ReadArtifact { types: types.clone() })]
 }
 
 /// A registry with just the built-in file tools.

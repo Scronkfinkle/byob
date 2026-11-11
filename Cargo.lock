@@ -622,6 +622,7 @@ dependencies = [
 name = "byob-agent"
 version = "0.2.1"
 dependencies = [
+ "byob-bundled",
  "byob-exec",
  "byob-llm",
  "byob-plugins",
@@ -641,6 +642,10 @@ dependencies = [
 
 [[package]]
 name = "byob-artifact-wire"
+version = "0.2.1"
+
+[[package]]
+name = "byob-bundled"
 version = "0.2.1"
 
 [[package]]

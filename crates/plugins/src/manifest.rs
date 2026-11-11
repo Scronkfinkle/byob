@@ -49,6 +49,51 @@ pub struct Manifest {
     pub requirements: Vec<String>,
     /// Live views its backend draws at render sites (`views`).
     pub views: Vec<ManifestView>,
+    /// Can't be switched off (`locked`; honoured for bundled plugins and their forks).
+    pub locked: bool,
+    /// Artifact content types it adds (`artifact_types`, also `content_types`).
+    pub artifact_types: Vec<ManifestArtifactType>,
+    /// Which renderer draws a content type on clients (`renderers`).
+    pub renderers: Vec<ManifestRenderer>,
+    /// A section of the system prompt (`system_prompt`): a file of the plugin, or text an
+    /// in-tree builder makes.
+    pub system_prompt: Option<PromptSource>,
+}
+
+/// Most artifact types or renderers one plugin declares.
+pub const MAX_TYPES: usize = 16;
+
+/// An artifact type a plugin adds: `{"type": "text/html", "native": "html_app", "guidance":
+/// "guidance.md"}`, or a declarative text type `{"type": "text/csv", "suffixes": [".csv"],
+/// "label": "table", "describe": ".csv (a table)", "pick": "a table → .csv"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ManifestArtifactType {
+    /// The content type, e.g. `text/html`.
+    pub content_type: String,
+    /// An in-tree type (hooks, defaults) by id; the fields below override its defaults.
+    pub native: Option<String>,
+    pub suffixes: Option<Vec<String>>,
+    pub label: Option<String>,
+    pub describe: Option<String>,
+    pub pick: Option<String>,
+    /// A file of the plugin with the type's system-prompt guidance.
+    pub guidance: Option<String>,
+}
+
+/// `{"type": "text/html", "renderer": "web" | "text" | "native:<id>"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ManifestRenderer {
+    pub content_type: String,
+    pub renderer: String,
+}
+
+/// Where a plugin's system-prompt section comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum PromptSource {
+    /// A file of the plugin (`"system_prompt": "prompt.md"`).
+    File(String),
+    /// An in-tree builder by id (`"system_prompt": {"native": "artifacts"}`).
+    Native(String),
 }
 
 /// Render sites a view may declare.
@@ -117,13 +162,17 @@ pub struct ManifestTool {
     pub kind: ToolKind,
     /// Step title with `{arg}` placeholders.
     pub title: Option<String>,
+    /// A native tool this build may not have (e.g. `install_packages` without a package
+    /// manager): missing isn't a problem.
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ToolKind {
     /// A Python script, relative to the plugin folder.
     Script(String),
-    /// One of the app's own tools, by name (built-in plugins only).
+    /// One of the app's own (in-tree) tools, by name. A name this build doesn't have is a
+    /// problem of the plugin.
     Native(String),
     /// Served by the plugin's long-lived backend (`"run": "backend"`).
     Backend,
@@ -359,7 +408,7 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
     if !plugin_id_ok(&id) {
         return Err("id must be lowercase letters, digits and dashes, like \"trip-planner\"".into());
     }
-    let tools = list(r.get("tools"), "tools")?.iter().enumerate().map(|(i, t)| parse_tool(t, i, builtin)).collect::<R<Vec<_>>>()?;
+    let tools = list(r.get("tools"), "tools")?.iter().enumerate().map(|(i, t)| parse_tool(t, i)).collect::<R<Vec<_>>>()?;
     let mcp_servers = parse_servers(r.get("mcpServers"))?;
     let settings = list(r.get("settings"), "settings")?.iter().enumerate().map(|(i, s)| parse_setting(s, i)).collect::<R<Vec<_>>>()?;
     let starters = list(r.get("starters"), "starters")?
@@ -414,7 +463,118 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
         backend,
         requirements,
         views,
+        locked: r.get("locked") == Some(&Value::Bool(true)),
+        artifact_types: parse_artifact_types(r.get("artifact_types").or_else(|| r.get("content_types")))?,
+        renderers: parse_renderers(r.get("renderers"))?,
+        system_prompt: parse_prompt_source(r.get("system_prompt"))?,
     })
+}
+
+/// `type/subtype`, lowercase (what `byob_protocol::artifact::valid_content_type` takes).
+fn content_type_ok(t: &str) -> bool {
+    let ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'+' | b'_' | b'-'));
+    t.len() <= 128 && t.split_once('/').is_some_and(|(a, b)| ok(a) && (ok(b) || b == "*"))
+}
+
+fn native_id_ok(id: &str) -> bool {
+    (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-' | b'.'))
+}
+
+fn parse_artifact_types(v: Option<&Value>) -> R<Vec<ManifestArtifactType>> {
+    let items = list(v, "artifact_types")?;
+    if items.len() > MAX_TYPES {
+        return Err(format!("artifact_types: at most {MAX_TYPES}"));
+    }
+    let mut out: Vec<ManifestArtifactType> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let f = format!("artifact_types[{i}]");
+        let o = obj(item, &f)?;
+        let content_type = req_str(o.get("type"), &format!("{f}.type"))?.to_ascii_lowercase();
+        if !content_type_ok(&content_type) || content_type.ends_with("/*") {
+            return Err(format!("{f}.type must be a content type like \"text/csv\""));
+        }
+        if out.iter().any(|t| t.content_type == content_type) {
+            return Err(format!("{f}.type {content_type:?} is declared twice"));
+        }
+        let native = opt_str(o.get("native"), &format!("{f}.native"))?;
+        if let Some(n) = &native
+            && !native_id_ok(n)
+        {
+            return Err(format!("{f}.native must be an id like \"html_app\""));
+        }
+        let suffixes = match o.get("suffixes") {
+            None => None,
+            v => Some(
+                list(v, &format!("{f}.suffixes"))?
+                    .iter()
+                    .enumerate()
+                    .map(|(j, s)| match s.as_str().map(str::trim) {
+                        Some(s) if s.starts_with('.') && s.len() > 1 && s.len() <= 32 && !s.contains(['/', '\\']) => Ok(s.to_ascii_lowercase()),
+                        _ => Err(format!("{f}.suffixes[{j}] must be a file name ending like \".csv\"")),
+                    })
+                    .collect::<R<Vec<_>>>()?,
+            ),
+        };
+        if native.is_none() && suffixes.as_ref().is_none_or(Vec::is_empty) {
+            return Err(format!("{f} needs \"native\" (a type built into byob) or \"suffixes\" (the file names it covers)"));
+        }
+        let guidance = opt_str(o.get("guidance"), &format!("{f}.guidance"))?;
+        if let Some(g) = &guidance
+            && (g.is_empty() || !path_inside(g))
+        {
+            return Err(format!("{f}.guidance must be a file inside the plugin folder, like \"guidance.md\""));
+        }
+        let short = |key: &str| -> R<Option<String>> { Ok(opt_str(o.get(key), &format!("{f}.{key}"))?.map(|s| truncate_chars(&s, 400))) };
+        out.push(ManifestArtifactType { content_type, native, suffixes, label: short("label")?, describe: short("describe")?, pick: short("pick")?, guidance });
+    }
+    Ok(out)
+}
+
+fn parse_renderers(v: Option<&Value>) -> R<Vec<ManifestRenderer>> {
+    let items = list(v, "renderers")?;
+    if items.len() > MAX_TYPES {
+        return Err(format!("renderers: at most {MAX_TYPES}"));
+    }
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let f = format!("renderers[{i}]");
+            let o = obj(item, &f)?;
+            let content_type = req_str(o.get("type"), &format!("{f}.type"))?.to_ascii_lowercase();
+            if !content_type_ok(&content_type) {
+                return Err(format!("{f}.type must be a content type like \"text/csv\" (or \"image/*\")"));
+            }
+            let renderer = req_str(o.get("renderer"), &format!("{f}.renderer"))?;
+            let ok = matches!(renderer.as_str(), "web" | "text") || renderer.strip_prefix("native:").is_some_and(native_id_ok);
+            if !ok {
+                return Err(format!("{f}.renderer must be \"web\", \"text\" or \"native:<id>\""));
+            }
+            Ok(ManifestRenderer { content_type, renderer })
+        })
+        .collect()
+}
+
+fn parse_prompt_source(v: Option<&Value>) -> R<Option<PromptSource>> {
+    let f = "system_prompt";
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => {
+            let s = s.trim();
+            if s.is_empty() || !path_inside(s) {
+                return Err(format!("{f} must be a file inside the plugin folder, like \"prompt.md\""));
+            }
+            Ok(Some(PromptSource::File(s.to_owned())))
+        }
+        Some(v) => {
+            let o = obj(v, f)?;
+            let n = req_str(o.get("native"), &format!("{f}.native"))?;
+            if !native_id_ok(&n) {
+                return Err(format!("{f}.native must be an id like \"artifacts\""));
+            }
+            Ok(Some(PromptSource::Native(n)))
+        }
+    }
 }
 
 /// `"views": [{"site": "pane", "id": "todo", "title": "To do", "icon": "list"}]`.
@@ -505,16 +665,13 @@ fn parse_requirements(v: Option<&Value>) -> R<Vec<String>> {
         .collect()
 }
 
-fn parse_tool(t: &Value, i: usize, builtin: bool) -> R<ManifestTool> {
+fn parse_tool(t: &Value, i: usize) -> R<ManifestTool> {
     let f = format!("tools[{i}]");
     let t = obj(t, &f)?;
     let native = match t.get("native") {
         None => None,
         n => Some(req_str(n, &format!("{f}.native"))?),
     };
-    if native.is_some() && !builtin {
-        return Err(format!("{f}.native is only for plugins that ship with the app; use \"run\" with a Python script"));
-    }
     // native tools bring their own name, description and parameters
     let name = match (&native, t.get("name")) {
         (Some(n), None) => n.clone(),
@@ -553,7 +710,8 @@ fn parse_tool(t: &Value, i: usize, builtin: bool) -> R<ManifestTool> {
         None => None,
         v => Some(req_str(v, &format!("{f}.title"))?),
     };
-    Ok(ManifestTool { name, description, params, kind, title })
+    let optional = t.get("optional") == Some(&Value::Bool(true));
+    Ok(ManifestTool { name, description, params, kind, title, optional })
 }
 
 fn parse_servers(v: Option<&Value>) -> R<BTreeMap<String, McpServerConfig>> {
@@ -683,8 +841,20 @@ mod tests {
                 "byob-plugin.json: tools[0].name must be letters, digits or _, starting with a letter",
             ),
             (
-                json!({"id": "a", "name": "x", "tools": [{"native": "run_python"}]}),
-                "byob-plugin.json: tools[0].native is only for plugins that ship with the app; use \"run\" with a Python script",
+                json!({"id": "a", "name": "x", "artifact_types": [{"type": "csv"}]}),
+                "byob-plugin.json: artifact_types[0].type must be a content type like \"text/csv\"",
+            ),
+            (
+                json!({"id": "a", "name": "x", "artifact_types": [{"type": "text/csv"}]}),
+                "byob-plugin.json: artifact_types[0] needs \"native\" (a type built into byob) or \"suffixes\" (the file names it covers)",
+            ),
+            (
+                json!({"id": "a", "name": "x", "renderers": [{"type": "text/csv", "renderer": "wasm"}]}),
+                "byob-plugin.json: renderers[0].renderer must be \"web\", \"text\" or \"native:<id>\"",
+            ),
+            (
+                json!({"id": "a", "name": "x", "system_prompt": "../p.md"}),
+                "byob-plugin.json: system_prompt must be a file inside the plugin folder, like \"prompt.md\"",
             ),
             (
                 json!({"id": "a", "name": "x", "settings": [{"key": "api_key", "label": "k"}]}),
@@ -796,11 +966,27 @@ mod tests {
     }
 
     #[test]
-    fn native_tools_for_builtins() {
-        let raw = json!({"id": "code", "name": "Code", "tools": [{"native": "run_python"}]});
-        let m = parse_manifest(&raw, ParseOptions { builtin: true, file: None }).unwrap();
+    fn native_bindings() {
+        // Any plugin may name in-tree parts (a fork of a bundled plugin keeps them); the
+        // engine resolves the ids and reports unknown ones as problems.
+        let raw = json!({"id": "code", "name": "Code", "locked": true,
+            "tools": [{"native": "run_python"}, {"native": "install_packages", "optional": true}],
+            "artifact_types": [{"type": "text/html", "native": "html_app", "guidance": "guidance.md"},
+                               {"type": "Text/CSV", "suffixes": [".CSV"], "label": "table", "pick": "a table → .csv"}],
+            "renderers": [{"type": "text/html", "renderer": "web"}, {"type": "image/*", "renderer": "native:image"}],
+            "system_prompt": {"native": "artifacts"}});
+        let m = parse_user(raw).unwrap();
         assert_eq!(m.tools[0].name, "run_python");
         assert_eq!(m.tools[0].kind, ToolKind::Native("run_python".into()));
+        assert!(!m.tools[0].optional && m.tools[1].optional && m.locked);
+        assert_eq!(m.artifact_types[0].native.as_deref(), Some("html_app"));
+        assert_eq!(m.artifact_types[0].guidance.as_deref(), Some("guidance.md"));
+        assert_eq!((m.artifact_types[1].content_type.as_str(), m.artifact_types[1].suffixes.clone()), ("text/csv", Some(vec![".csv".to_string()])));
+        assert_eq!(m.renderers[1], ManifestRenderer { content_type: "image/*".into(), renderer: "native:image".into() });
+        assert_eq!(m.system_prompt, Some(PromptSource::Native("artifacts".into())));
+        let m = parse_user(json!({"id": "a", "name": "x", "content_types": [{"type": "text/x", "native": "text"}], "system_prompt": "prompt.md"})).unwrap();
+        assert_eq!(m.artifact_types[0].native.as_deref(), Some("text"));
+        assert_eq!(m.system_prompt, Some(PromptSource::File("prompt.md".into())));
     }
 
     #[test]

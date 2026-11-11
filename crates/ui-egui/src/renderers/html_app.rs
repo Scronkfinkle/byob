@@ -13,6 +13,9 @@ use crate::appview::AppDoc;
 
 pub fn register(r: &mut ArtifactRenderers) {
     r.register(TYPE_HTML, HtmlApp);
+    // `web` in a manifest: the web surface.
+    r.native("web", std::rc::Rc::new(HtmlApp));
+    r.native("html_app", std::rc::Rc::new(HtmlApp));
 }
 
 pub struct HtmlApp;

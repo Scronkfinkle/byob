@@ -1,0 +1,16 @@
+{
+  "id": "markdown",
+  "name": "Markdown documents",
+  "version": "1.0.0",
+  "description": "Reports, summaries and notes as .md artifacts, rendered with a Preview/Source switch.",
+  "icon": "file-text",
+  "artifact_types": [
+    { "type": "text/markdown", "native": "markdown" }
+  ],
+  "renderers": [
+    { "type": "text/markdown", "renderer": "native:markdown" }
+  ],
+  "starters": [
+    { "title": "Write a report", "prompt": "Write a one-page report on the history of the bicycle as a markdown document." }
+  ]
+}

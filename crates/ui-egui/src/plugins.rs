@@ -78,6 +78,12 @@ impl PluginsUi {
         self.ext.as_ref()
     }
 
+    /// Prompt suggestions for an empty chat: the starters of switched-on plugins (at most 6).
+    pub fn starters(&self) -> Vec<byob_protocol::StarterDecl> {
+        let Some(e) = self.ext.as_ref() else { return Vec::new() };
+        e.plugins.iter().filter(|p| p.enabled && p.shadowed_by.is_none()).flat_map(|p| p.starters.iter().cloned()).take(6).collect()
+    }
+
     /// What the composer's `/` menu offers.
     pub fn slash(&self) -> &[SlashItem] {
         self.ext.as_ref().map_or(&[], |e| e.slash.as_slice())
@@ -277,7 +283,7 @@ impl PluginsUi {
             return;
         }
         let scopes: &[PluginScope] = match filter {
-            Filter::All => &[PluginScope::Chat, PluginScope::Workspace, PluginScope::Global],
+            Filter::All => &[PluginScope::Chat, PluginScope::Workspace, PluginScope::Global, PluginScope::Bundled],
             Filter::Workspace(_) => &[PluginScope::Workspace],
         };
         ui.horizontal_wrapped(|ui| {
@@ -339,8 +345,12 @@ impl PluginsUi {
             .show_header(ui, |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 let mut on = p.enabled;
-                let tip = switch_tip(p, switch_at.as_ref());
-                if ui.add_enabled(!shadowed && switch_at.is_some(), egui::Checkbox::without_text(&mut on)).on_hover_text(tip).changed()
+                let tip = if p.locked { "Part of byob's core: always on (fork it to change it)".to_owned() } else { switch_tip(p, switch_at.as_ref()) };
+                if ui
+                    .add_enabled(!shadowed && !p.locked && switch_at.is_some(), egui::Checkbox::without_text(&mut on))
+                    .on_disabled_hover_text(&tip)
+                    .on_hover_text(tip)
+                    .changed()
                     && let Some(scope) = switch_at.clone()
                 {
                     self.out.push(ClientMsg::SetPluginEnabled { scope, plugin: p.id.clone(), enabled: Some(on) });
@@ -349,6 +359,9 @@ impl PluginsUi {
                 ui.label(RichText::new(&p.name).strong().color(color));
                 ui.label(RichText::new(&p.version).small().color(t.text_faint));
                 ui.label(RichText::new(origin_text(p.origin)).small().color(t.text_dim));
+                if p.locked && !shadowed {
+                    ui.label(RichText::new("🔒 always on").small().color(t.text_faint));
+                }
                 if let Some(by) = p.shadowed_by {
                     ui.label(RichText::new(format!("replaced by the copy in {}", by.label())).small().color(t.text_faint));
                 } else if p.origin == PluginOrigin::Repo && !p.trusted {
@@ -369,35 +382,40 @@ impl PluginsUi {
             self.sites.settings_sections(ui, t, &p.id);
         }
         // The switch and where it comes from.
-        ui.horizontal_wrapped(|ui| {
-            let state = if p.enabled { "On" } else { "Off" };
-            let from = match p.enabled_from {
-                Level::Default => "nobody switched it".to_owned(),
-                Level::Global => "set for every chat".to_owned(),
-                Level::Workspace => "set in this workspace".to_owned(),
-                Level::Chat => "set in this chat".to_owned(),
-                Level::Flag => "set on the command line".to_owned(),
-            };
-            ui.label(RichText::new(format!("{state}: {from}")).small().color(t.text_dim));
-            if p.enabled_from != Level::Default
-                && let Some(scope) = scope_for(p.enabled_from, workspace)
-                && ui.small_button("Reset").on_hover_text("Forget this switch: the less specific one (or on) applies").clicked()
-            {
-                self.out.push(ClientMsg::SetPluginEnabled { scope, plugin: p.id.clone(), enabled: None });
-            }
-            ui.menu_button(RichText::new("Switch…").small(), |ui| {
-                for (level, text) in [(Level::Chat, "in this chat"), (Level::Workspace, "in this workspace"), (Level::Global, "everywhere")] {
-                    let Some(scope) = scope_for(level, workspace) else { continue };
-                    for on in [true, false] {
-                        let label = format!("{} {text}", if on { "On" } else { "Off" });
-                        if ui.button(label).clicked() {
-                            self.out.push(ClientMsg::SetPluginEnabled { scope: scope.clone(), plugin: p.id.clone(), enabled: Some(on) });
-                            ui.close();
+        if p.locked {
+            ui.label(RichText::new("Always on: part of byob's core. Fork it to change how it works.").small().color(t.text_dim));
+        }
+        if !p.locked {
+            ui.horizontal_wrapped(|ui| {
+                let state = if p.enabled { "On" } else { "Off" };
+                let from = match p.enabled_from {
+                    Level::Default => "nobody switched it".to_owned(),
+                    Level::Global => "set for every chat".to_owned(),
+                    Level::Workspace => "set in this workspace".to_owned(),
+                    Level::Chat => "set in this chat".to_owned(),
+                    Level::Flag => "set on the command line".to_owned(),
+                };
+                ui.label(RichText::new(format!("{state}: {from}")).small().color(t.text_dim));
+                if p.enabled_from != Level::Default
+                    && let Some(scope) = scope_for(p.enabled_from, workspace)
+                    && ui.small_button("Reset").on_hover_text("Forget this switch: the less specific one (or on) applies").clicked()
+                {
+                    self.out.push(ClientMsg::SetPluginEnabled { scope, plugin: p.id.clone(), enabled: None });
+                }
+                ui.menu_button(RichText::new("Switch…").small(), |ui| {
+                    for (level, text) in [(Level::Chat, "in this chat"), (Level::Workspace, "in this workspace"), (Level::Global, "everywhere")] {
+                        let Some(scope) = scope_for(level, workspace) else { continue };
+                        for on in [true, false] {
+                            let label = format!("{} {text}", if on { "On" } else { "Off" });
+                            if ui.button(label).clicked() {
+                                self.out.push(ClientMsg::SetPluginEnabled { scope: scope.clone(), plugin: p.id.clone(), enabled: Some(on) });
+                                ui.close();
+                            }
                         }
                     }
-                }
+                });
             });
-        });
+        }
         list_line(ui, t, "Tools", &p.tools, "");
         list_line(ui, t, "Skills", &p.skills, "");
         list_line(ui, t, "Subagents", &p.agents, "");
@@ -481,9 +499,16 @@ impl PluginsUi {
                     PluginScope::Chat => &[(PluginScope::Workspace, "Keep in this workspace"), (PluginScope::Global, "Keep everywhere")],
                     PluginScope::Workspace => &[(PluginScope::Global, "Keep everywhere")],
                     PluginScope::Global => &[],
+                    // Fork to edit: a copy everywhere wins by id; its native parts stay.
+                    PluginScope::Bundled => &[(PluginScope::Global, "Fork to edit")],
                 };
                 for (scope, text) in keep {
-                    if ui.small_button(*text).clicked() {
+                    let tip = if p.scope == PluginScope::Bundled {
+                        "Copy it to your plugins folder to change it (its prompt text, guidance, manifest); the copy is used instead of the built-in one"
+                    } else {
+                        "Move it there so later chats have it too"
+                    };
+                    if ui.small_button(*text).on_hover_text(tip).clicked() {
                         self.out.push(ClientMsg::KeepPlugin { plugin: p.id.clone(), scope: *scope, new_id: None });
                     }
                 }
@@ -505,7 +530,8 @@ impl PluginsUi {
     /// The chat settings popover's part: each plugin's switch for this chat only.
     pub fn chat_switches(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let Some(ext) = self.ext.as_ref() else { return };
-        let used: Vec<PluginInfo> = ext.plugins.iter().filter(|p| p.shadowed_by.is_none()).cloned().collect();
+        // Locked plugins (byob's core) have no switch.
+        let used: Vec<PluginInfo> = ext.plugins.iter().filter(|p| p.shadowed_by.is_none() && !p.locked).cloned().collect();
         if used.is_empty() {
             return;
         }
@@ -730,6 +756,7 @@ fn scope_heading(scope: PluginScope) -> &'static str {
         PluginScope::Chat => "THIS CHAT",
         PluginScope::Workspace => "THIS WORKSPACE",
         PluginScope::Global => "EVERYWHERE",
+        PluginScope::Bundled => "BUILT IN",
     }
 }
 

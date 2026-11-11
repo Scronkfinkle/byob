@@ -5,12 +5,13 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::LoadError;
-use crate::agents::{AgentDef, load_agents_dir};
-use crate::commands::{Command, load_commands_dir};
+use crate::agents::{AgentDef, load_agents_dir, parse_agent};
+use crate::commands::{Command, load_commands_dir, parse_command};
 use crate::manifest::{MANIFEST, Manifest, OLD_MANIFEST, ParseOptions, ToolKind, parse_manifest_str};
-use crate::skills::{Skill, load_skills_dir, read_capped};
+use crate::skills::{Skill, load_skills_dir, parse_skill, read_capped};
 
 /// Biggest manifest we read.
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -30,6 +31,22 @@ pub struct Plugin {
     /// Non-fatal problems for the plugin's card (a bad skill, a missing script). The parts
     /// that work are still used.
     pub problems: Vec<String>,
+    /// Its files when they are in the binary (a bundled plugin), by path; `None`: on disk
+    /// in `dir`.
+    pub embedded: Option<Arc<BTreeMap<String, String>>>,
+}
+
+/// Biggest plugin file [`Plugin::read`] returns.
+pub const MAX_PLUGIN_FILE_BYTES: u64 = 256 * 1024;
+
+/// Where bundled plugins say they are (for display; nothing is on disk there).
+pub const BUNDLED_DIR: &str = "(built into byob)";
+
+/// A plugin whose files are in the binary: its id and its files by path (`/`-separated).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Embedded {
+    pub id: String,
+    pub files: BTreeMap<String, String>,
 }
 
 impl Plugin {
@@ -37,16 +54,26 @@ impl Plugin {
         &self.manifest.id
     }
 
+    /// The text of its file `rel` (a path inside the plugin, checked): from the binary for
+    /// a bundled plugin, else from its folder; capped at [`MAX_PLUGIN_FILE_BYTES`].
+    pub fn read(&self, rel: &str) -> Result<String, String> {
+        let rel = rel.trim().trim_start_matches("./");
+        if rel.is_empty() || !crate::manifest::path_inside(rel) {
+            return Err(format!("{rel:?} must be a path inside the plugin folder"));
+        }
+        match &self.embedded {
+            Some(files) => files.get(rel).cloned().ok_or_else(|| format!("{rel} isn't a file of plugin {}", self.id())),
+            None => read_capped(&self.dir.join(rel), MAX_PLUGIN_FILE_BYTES),
+        }
+    }
+
     /// The manifest's `platforms` include this system (or it has none).
     pub fn supported_here(&self) -> bool {
         self.manifest.platforms.as_ref().is_none_or(|p| p.iter().any(|x| x == current_platform()))
     }
 
-    /// Names of the app's own tools this (built-in) plugin turns on.
+    /// Names of the app's own (in-tree) tools this plugin turns on.
     pub fn native_tools(&self) -> Vec<&str> {
-        if !self.builtin {
-            return Vec::new();
-        }
         self.manifest
             .tools
             .iter()
@@ -111,7 +138,58 @@ pub fn load_plugin(dir: &Path, builtin: bool) -> Option<Result<Plugin, LoadError
     problems.extend(agent_errors.into_iter().map(|e| e.to_string()));
     let (commands, command_errors) = load_commands_dir(&dir.join("commands"));
     problems.extend(command_errors.into_iter().map(|e| e.message));
-    Some(Ok(Plugin { manifest, dir: dir.to_path_buf(), builtin, skills, agents, commands, problems }))
+    Some(Ok(Plugin { manifest, dir: dir.to_path_buf(), builtin, skills, agents, commands, problems, embedded: None }))
+}
+
+/// Load a plugin whose files are in the binary (see [`Embedded`]). Its `dir` is
+/// `(built into byob)/<id>`, for display only. Scripts and backends need files on disk, so
+/// they are problems here (fork the plugin to give it some).
+pub fn load_embedded(e: &Embedded) -> Result<Plugin, LoadError> {
+    let dir = Path::new(BUNDLED_DIR).join(&e.id);
+    let err = |message: String| LoadError { path: dir.clone(), message };
+    let text = e.files.get(MANIFEST).ok_or_else(|| err(format!("{MANIFEST} is missing")))?;
+    let manifest = parse_manifest_str(text, ParseOptions { builtin: true, file: Some(MANIFEST) }).map_err(|x| err(x.to_string()))?;
+    if manifest.id != e.id {
+        return Err(err(format!("{MANIFEST}: id {:?} isn't the folder's name {:?}", manifest.id, e.id)));
+    }
+    let mut problems = Vec::new();
+    for t in &manifest.tools {
+        if let ToolKind::Script(run) = &t.kind {
+            problems.push(format!("{MANIFEST}: {run}: scripts of built-in plugins don't run; fork the plugin to use them"));
+        }
+    }
+    if manifest.backend.is_some() {
+        problems.push(format!("{MANIFEST}: built-in plugins can't have a backend; fork the plugin to use one"));
+    }
+    let (mut skills, mut agents, mut commands) = (Vec::new(), Vec::new(), Vec::new());
+    for (path, text) in &e.files {
+        let parts: Vec<&str> = path.split('/').collect();
+        let result = match parts.as_slice() {
+            ["skills", name, "SKILL.md"] => parse_skill(text, &dir.join("skills").join(name)).map(|s| skills.push(s)),
+            ["agents", file] if file.ends_with(".md") => parse_agent(text, &dir.join("agents").join(file)).map(|a| agents.push(a)),
+            ["commands", file] if file.ends_with(".md") => parse_command(text, &dir.join("commands").join(file)).map(|c| commands.push(c)),
+            _ => Ok(()),
+        };
+        if let Err(m) = result {
+            problems.push(m);
+        }
+    }
+    Ok(Plugin { manifest, dir, builtin: true, skills, agents, commands, problems, embedded: Some(Arc::new(e.files.clone())) })
+}
+
+/// Load every embedded plugin; ids are unique.
+pub fn discover_embedded(list: &[Embedded]) -> Discovery {
+    let mut d = Discovery::default();
+    for e in list {
+        match load_embedded(e) {
+            Err(x) => d.errors.push(x),
+            Ok(p) if d.plugins.iter().any(|q| q.id() == p.id()) => {
+                d.errors.push(LoadError { path: p.dir.clone(), message: format!("id \"{}\" is already used", p.id()) });
+            }
+            Ok(p) => d.plugins.push(p),
+        }
+    }
+    d
 }
 
 /// Where to look for plugins.

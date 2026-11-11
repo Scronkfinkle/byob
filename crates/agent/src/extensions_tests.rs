@@ -55,7 +55,7 @@ fn harness(script: Vec<Reply>, policy: Option<Policy>, setup: impl FnOnce(&Path,
     H { engine: EngineHandle::spawn_with(config).unwrap(), requests, home, ws, _ws_dir: ws_dir }
 }
 
-fn recv(c: &mut LocalConnection) -> ServerMsg {
+pub(crate) fn recv(c: &mut LocalConnection) -> ServerMsg {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(m) = c.try_recv() {
@@ -81,7 +81,7 @@ fn hello(h: &H) -> (LocalConnection, Extensions) {
 }
 
 /// Run a turn; `on_wait` answers approval cards. Returns the reply and every message seen.
-fn turn(c: &mut LocalConnection, text: &str, mut on_wait: impl FnMut(&Step, &mut LocalConnection)) -> (Entry, Vec<ServerMsg>) {
+pub(crate) fn turn(c: &mut LocalConnection, text: &str, mut on_wait: impl FnMut(&Step, &mut LocalConnection)) -> (Entry, Vec<ServerMsg>) {
     c.send(ClientMsg::SendMessage { text: text.into(), attachments: vec![] });
     let mut entries: Vec<Entry> = Vec::new();
     let mut seen = Vec::new();
@@ -108,7 +108,7 @@ fn turn(c: &mut LocalConnection, text: &str, mut on_wait: impl FnMut(&Step, &mut
     }
 }
 
-fn tool_names(req: &Value) -> Vec<String> {
+pub(crate) fn tool_names(req: &Value) -> Vec<String> {
     req["tools"].as_array().map(|t| t.iter().filter_map(|t| t["function"]["name"].as_str().map(str::to_owned)).collect()).unwrap_or_default()
 }
 
@@ -116,7 +116,7 @@ fn tool_schema(req: &Value, name: &str) -> Value {
     req["tools"].as_array().and_then(|t| t.iter().find(|t| t["function"]["name"] == name)).map(|t| t["function"]["parameters"].clone()).unwrap_or(Value::Null)
 }
 
-fn system(req: &Value) -> String {
+pub(crate) fn system(req: &Value) -> String {
     req["messages"][0]["content"].as_str().unwrap_or("").to_owned()
 }
 
@@ -138,11 +138,11 @@ fn write_plugin(root: &Path, id: &str, tool: &str, out: &str, extra: Value) -> P
     dir
 }
 
-fn step<'a>(e: &'a Entry, tool: &str) -> &'a Step {
+pub(crate) fn step<'a>(e: &'a Entry, tool: &str) -> &'a Step {
     e.steps.iter().find(|s| s.tool == tool).unwrap_or_else(|| panic!("no {tool} step in {:?}", e.steps.iter().map(|s| &s.tool).collect::<Vec<_>>()))
 }
 
-fn wait_ext(c: &mut LocalConnection, f: impl Fn(&Extensions) -> bool) -> Extensions {
+pub(crate) fn wait_ext(c: &mut LocalConnection, f: impl Fn(&Extensions) -> bool) -> Extensions {
     loop {
         if let ServerMsg::Extensions(e) = recv(c)
             && f(&e)
@@ -231,7 +231,15 @@ fn chat_beats_workspace_beats_global_and_core_tools_cant_be_shadowed() {
     let values = BTreeMap::new();
     let compose = |ext: &mut Ext, chat: Option<&str>| {
         ext.refresh(chat, ws.path());
-        ext.compose(&ComposeIn { chat, workspace: ws.path(), effective: &effective, trust: &trust, values: &values, base: &base })
+        ext.compose(&ComposeIn {
+            chat,
+            workspace: ws.path(),
+            effective: &effective,
+            trust: &trust,
+            values: &values,
+            base: &base,
+            types: &byob_tools::ArtifactTypes::builtin(),
+        })
     };
     let c = compose(&mut ext, Some("c1"));
     assert_eq!(c.owners["hello"].scope, PluginScope::Chat);
@@ -244,7 +252,15 @@ fn chat_beats_workspace_beats_global_and_core_tools_cant_be_shadowed() {
     assert!(c.tools.get("read_file").is_some_and(|t| t.spec().description != "test tool"));
     // Without the workspace's OK, its copy only brings prompt and skills.
     let untrusted = BTreeMap::new();
-    let c2 = ext.compose(&ComposeIn { chat: None, workspace: ws.path(), effective: &effective, trust: &untrusted, values: &values, base: &base });
+    let c2 = ext.compose(&ComposeIn {
+        chat: None,
+        workspace: ws.path(),
+        effective: &effective,
+        trust: &untrusted,
+        values: &values,
+        base: &base,
+        types: &byob_tools::ArtifactTypes::builtin(),
+    });
     assert_eq!(c2.undecided, ["hello"]);
     assert!(!c2.owners.contains_key("hello"), "the global copy is shadowed, the workspace's waits");
 }

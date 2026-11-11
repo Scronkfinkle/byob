@@ -10,6 +10,7 @@ use std::process::{Command, ExitCode};
 const LAYERS: &[(&str, u8)] = &[
     ("byob-types", 0),
     ("byob-web-assets", 0),
+    ("byob-bundled", 0),
     ("byob-protocol", 1),
     ("byob-artifact-wire", 1),
     ("byob-llm", 1),

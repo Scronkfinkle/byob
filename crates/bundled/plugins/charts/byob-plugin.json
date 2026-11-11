@@ -1,0 +1,19 @@
+{
+  "id": "charts",
+  "name": "Charts",
+  "version": "1.0.0",
+  "description": "Charts of numbers: the make_chart tool, chart artifacts (.chart.json specs, checked before saving) and the native chart renderer.",
+  "icon": "chart-column",
+  "tools": [
+    { "native": "make_chart" }
+  ],
+  "artifact_types": [
+    { "type": "application/vnd.byob.chart+json", "native": "chart" }
+  ],
+  "renderers": [
+    { "type": "application/vnd.byob.chart+json", "renderer": "native:chart" }
+  ],
+  "starters": [
+    { "title": "Chart some numbers", "prompt": "Make a bar chart of the planets' diameters in km." }
+  ]
+}

@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10 (render sites: plugins' live views in the pane, header, settings and on steps)
+Last updated: 2026-11-10 (bundled plugins: built-in features as plugins with native bindings; fork to edit)
 
 ## Shape
 
@@ -315,8 +315,13 @@ the same API third parties (and, in P3, bundled plugins) use.
   app's reported errors and "Send error to byob", Open). Register more with
   `ByobApp::artifact_renderers_mut` (like `views_mut` for step views).
 - The HTML-app, chart and markdown pieces live together per side (`artifact_types::html_app` +
-  `renderers::html_app`, …), ready to move into bundled plugins; the web-surface runtimes
-  (Servo helper, iframe) stay core.
+  `renderers::html_app`, …) and are switched on by bundled plugins (see Plugins → Bundled
+  plugins): a chat gets the engine's types less those of switched-off plugins
+  (`Composed::artifact_types`, which the artifact tools and the prompt use), and a client
+  draws a type with the renderer an enabled plugin names (`ArtifactRenderers::apply_plugins`;
+  a type only switched-off plugins declare shows as text). Serving and `GetArtifact` keep the
+  engine-wide registry, so old artifacts still open. The web-surface runtimes (Servo helper,
+  iframe) stay core.
 
 ### Desktop HTML apps: the Servo helper
 
@@ -464,21 +469,73 @@ Python tools (`tools[].run`, JSON on stdin), MCP servers (`mcpServers`), skills
 Claude Code's format), settings (`settings`, passed as environment variables) and one
 system-prompt line (`prompt`). The engine loads them itself
 (`crates/agent/src/extensions.rs`, `plugins.rs`); the app only says where to look
-(`PluginsConfig`) and registers the base tools (file, artifact, code-running) once.
+(`PluginsConfig`) and registers the base tools (file, artifact, chart, code-running) once —
+which bundled plugins then switch on by name (below).
 
-**Scopes.** Three sets of folders, most specific first; the same id resolves chat > workspace
-> global, and the losing copies are listed as `shadowed_by`:
+**Scopes.** Four sets, most specific first; the same id resolves chat > workspace > global >
+bundled, and the losing copies are listed as `shadowed_by`:
 
 | scope | folder | written by |
 |---|---|---|
 | chat (scratch) | `<data>/chats/<chat>/plugins/<id>` (gone with the chat) | the model (`make_tool` & co.), never asked |
 | workspace | `<workspace>/.byob/plugins/<id>` (+ standalone skills `.byob/skills`) | committed with the repo; the model's file tools may edit `.byob/{plugins,agents,skills}` |
 | global | `<config>/plugins/<id>`, `settings.json` `plugin_dirs`, `--plugin DIR` (+ `<config>/skills`) | the user, or `keep_plugin … global` |
+| bundled | inside the binary (`crates/bundled/plugins/<id>`, embedded at build time; `PluginsConfig::bundled`, plus any `builtin_roots`) | byob's source tree; read-only, fork to change |
+
+### Bundled plugins and native bindings
+
+byob's own features ship as plugins on the same manifest and registries third parties use
+(`crates/bundled`: `build.rs` embeds every file under `plugins/<id>/` with `include_str!`, so
+`cargo install` needs nothing on disk; `byob_plugins::load_embedded` reads them from memory,
+`Plugin::embedded`/`Plugin::read`). They are `artifacts` (create/update/read_artifact, plain
+text, the artifacts prompt section), `html-apps` (`text/html` + `guidance.md` + its check +
+the `web` renderer with Open), `charts` (make_chart, the chart type, `native:chart`),
+`markdown`, `images` and `core-tools` (file tools, run_command/run_python/install_*,
+the code-running section). `artifacts` and `core-tools` are `locked` (always on: their switch
+is refused with a notice and the UI shows "always on"; a fork with the same id stays locked);
+the others switch like any plugin. Authoring tools (make_tool & co.), `use_skill` and
+`delegate` stay kernel, never plugins.
+
+**Native bindings** (`crates/agent/src/natives.rs`). Manifest fields name in-tree Rust by id;
+no code is loaded at run time (no dlopen: `unsafe` is forbidden):
+
+- `tools[].native` (+ `optional`): a tool of the engine's base registry
+  (`EngineConfig::tools`) by name; the artifact tools are rebuilt per chat with its types
+  (`Natives::typed_tools`).
+- `artifact_types` (alias `content_types`) `[{type, native?, suffixes?, label?, describe?,
+  pick?, guidance? (a file)}]`: a native type (`Natives::artifact_types`, id → a type of
+  `EngineConfig::artifact_types`: `text`, `markdown`, `html_app`, `chart`, `png`, `jpeg`) with
+  the manifest's overrides, or a plain text type of the plugin's own.
+- `system_prompt`: a file of the plugin, or `{"native": id}` (`Natives::prompts`: `artifacts`
+  builds from the chat's types; the app adds `exec`). Sections go between the base prompt and
+  the plugin prompt lines, bundled ones first in bundled order.
+- `renderers [{type, renderer: "web" | "text" | "native:<id>"}]`, sent to clients in
+  `PluginInfo::renderers` and resolved there (`ArtifactRenderers::native`).
+
+A native tool or type that some plugin the chat sees names is offered only while one of
+those plugins is on (`NativeParts` in `extensions.rs`); one nobody names is always there
+(third-party in-tree code, engines without bundled plugins). An id this build doesn't have is
+a plugin problem ("… isn't a tool built into this byob"), never a crash. With the defaults the
+system prompt and tool list are byte-identical to before (`bundled_tests.rs`).
+
+**Fork to edit.** `KeepPlugin { plugin, scope: global|workspace }` on a bundled plugin (Settings
+→ Plugins → "Fork to edit") and the model's `keep_plugin` on one (asks a person for global)
+write its files to that folder (`authoring::fork_files`); the copy wins by id, its native ids
+keep pointing at the same code, and edits to its manifest, `guidance.md` or prompt file apply
+from the next turn. `edit_plugin` on the bundled copy says to fork first; `plugin_status(plugin,
+file)` reads bundled files from memory. Removing the fork brings the built-in back.
+
+**Starters.** Manifest `starters [{title, prompt}]` reach clients as `PluginInfo::starters`;
+an empty chat lists the switched-on plugins' starters (up to 6), and a click puts the prompt
+in the composer.
+
+Deferred to later phases: delegation/subagents and workspace environment providers as
+bundled plugins (they stay engine code), hooks (P4), plugins replacing render sites.
 
 **Switches.** `Layer::plugins: {id: bool}` at every settings level (`settings.json`
 `plugins`, the workspace's and the chat's own config); the most specific level that names a
 plugin wins, unnamed plugins are on (`Effective::plugin_on`). They change only through
-`SetPluginEnabled`; `SetConfig` keeps them. Built-in and authoring tools are not plugins: they
+`SetPluginEnabled`; `SetConfig` keeps them. Authoring tools are not plugins (and locked bundled plugins stay on): they
 can't be switched off, and a plugin tool whose name is taken (by them or another plugin) gets
 `<plugin>__<tool>`.
 
@@ -537,7 +594,7 @@ view (or the new chat a client is about to start). `PluginInfo`:
 | field | meaning |
 |---|---|
 | `id`, `name`, `version`, `description`, `icon` | from the manifest |
-| `scope` | `chat` / `workspace` / `global` |
+| `scope` | `chat` / `workspace` / `global` / `bundled` (13.4, cap `bundled_scope`; older clients get `global`) |
 | `origin` | `bundled` / `user` / `agent` (byob made it) / `repo` (came with the workspace) |
 | `dir` | folder, for display |
 | `enabled`, `enabled_from` | the switch and the level that set it (`default`: nobody, on) |
@@ -553,6 +610,9 @@ view (or the new chat a client is about to start). `PluginInfo`:
 | `problems` | the loader's messages (missing script, bad skill, "needs settings: …") |
 | `last_error` | the last failed run of one of its tools in this engine run |
 | `fingerprint` | changes whenever a file of it changes |
+| `locked` | always on (13.4) |
+| `renderers` | `{ content_type, renderer }` it declares (13.4) |
+| `starters` | `{ title, prompt }` for an empty chat (13.4) |
 
 `errors: Vec<PluginLoadError { scope, path, message }>`: folders that couldn't load at all.
 

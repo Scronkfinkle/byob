@@ -1,0 +1,15 @@
+{
+  "id": "images",
+  "name": "Images",
+  "version": "1.0.0",
+  "description": "PNG and JPEG images that tools make (make_chart, run_python), kept as artifacts and drawn in the chat and the pane.",
+  "icon": "image",
+  "artifact_types": [
+    { "type": "image/png", "native": "png" },
+    { "type": "image/jpeg", "native": "jpeg" }
+  ],
+  "renderers": [
+    { "type": "image/png", "renderer": "native:image" },
+    { "type": "image/jpeg", "renderer": "native:image" }
+  ]
+}

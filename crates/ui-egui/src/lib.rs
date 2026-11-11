@@ -228,6 +228,10 @@ impl ByobApp {
                 self.queue_changed();
                 continue;
             }
+            // Which plugins draw which artifact types follows the chat in view.
+            if let ServerMsg::Extensions(e) = &msg {
+                self.artifacts.renderers_mut().apply_plugins(&e.plugins);
+            }
             if self.usage.apply(&msg) || self.workspaces.apply(&msg) || self.sidebar.apply(&msg) || self.artifacts.apply(&msg) || self.plugins.apply(&msg) {
                 continue;
             }
@@ -837,9 +841,32 @@ impl ByobApp {
                 None => {}
             },
             connect::EmptyView::Ready | connect::EmptyView::Waiting => {
-                ui.centered_and_justified(|ui| {
-                    ui.label(egui::RichText::new("Ask anything to get started.").color(t.text_dim));
+                // Switched-on plugins' starters (`starters` in their manifests): a click
+                // puts the prompt in the composer.
+                let starters = self.plugins.starters();
+                if starters.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(egui::RichText::new("Ask anything to get started.").color(t.text_dim));
+                    });
+                    return;
+                }
+                let mut picked = None;
+                ui.vertical_centered(|ui| {
+                    ui.add_space((ui.available_height() * 0.35).max(t.pad(12.0)));
+                    ui.label(egui::RichText::new("Ask anything to get started, or try:").color(t.text_dim));
+                    ui.add_space(t.pad(6.0));
+                    for s in &starters {
+                        let button = egui::Button::new(egui::RichText::new(&s.title).color(t.text)).corner_radius(t.round(8.0));
+                        if ui.add(button).on_hover_text(&s.prompt).clicked() {
+                            picked = Some(s.prompt.clone());
+                        }
+                        ui.add_space(t.pad(4.0));
+                    }
                 });
+                if let Some(p) = picked {
+                    self.input = p;
+                    self.focus_composer = true;
+                }
             }
         }
     }

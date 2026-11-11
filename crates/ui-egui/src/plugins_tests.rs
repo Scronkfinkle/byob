@@ -33,6 +33,9 @@ pub(crate) fn info(id: &str, scope: PluginScope, origin: PluginOrigin) -> Plugin
         problems: vec![],
         last_error: None,
         fingerprint: "0".into(),
+        locked: false,
+        renderers: vec![],
+        starters: vec![],
     }
 }
 
@@ -360,4 +363,40 @@ fn a_crashed_backend_is_trouble_and_its_output_shows_the_last_lines() {
     let text: String = (1..=40).map(|i| format!("line {i}\n")).collect();
     let tail = tail_lines(&text, 30);
     assert!(tail.starts_with("line 11\n") && tail.ends_with("line 40"));
+}
+
+#[test]
+fn bundled_plugins_are_built_in_locked_or_switchable_and_forkable() {
+    let ctx = egui::Context::default();
+    ctx.global_style_mut(|s| s.animation_time = 0.0);
+    let mut p = PluginsUi::default();
+    let mut core = info("core-tools", PluginScope::Bundled, PluginOrigin::Bundled);
+    core.name = "Files and code".into();
+    core.locked = true;
+    let mut charts = info("charts", PluginScope::Bundled, PluginOrigin::Bundled);
+    charts.name = "Charts".into();
+    charts.starters = vec![byob_protocol::StarterDecl { title: "Chart some numbers".into(), prompt: "Make a bar chart".into() }];
+    p.apply(&ext(vec![core, charts]));
+    let t = Tokens::dark();
+    frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::All));
+    let texts = frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::All));
+    assert!(has(&texts, "BUILT IN") && has(&texts, "built in") && has(&texts, "always on"));
+    // The locked one's switch does nothing; the other switches like any plugin.
+    let r = find(&texts, "Files and code");
+    click_at(&ctx, egui::pos2(r.left() - 10.0, r.center().y), &mut |ui| p.panel(ui, &t, &Filter::All));
+    assert!(p.take().is_empty(), "core plugins can't be switched off");
+    let r = find(&texts, "Charts");
+    click_at(&ctx, egui::pos2(r.left() - 10.0, r.center().y), &mut |ui| p.panel(ui, &t, &Filter::All));
+    assert_eq!(p.take(), [ClientMsg::SetPluginEnabled { scope: ConfigScope::Global, plugin: "charts".into(), enabled: Some(false) }]);
+    // Fork to edit: a copy everywhere.
+    p.focus = Some("charts".into());
+    frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::All));
+    let open = frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::All));
+    assert!(!has(&open, "Remove…"), "bundled plugins can't be removed");
+    click(&ctx, &open, "Fork to edit", &mut |ui| p.panel(ui, &t, &Filter::All));
+    assert_eq!(p.take(), [ClientMsg::KeepPlugin { plugin: "charts".into(), scope: PluginScope::Global, new_id: None }]);
+    // The locked one isn't in the chat's switches; starters come from switched-on plugins.
+    let sw = frame(&ctx, vec![], &mut |ui| p.chat_switches(ui, &t));
+    assert!(has(&sw, "Charts") && !has(&sw, "Files and code"));
+    assert_eq!(p.starters().len(), 1);
 }
