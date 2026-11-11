@@ -325,6 +325,80 @@ fn backend_hook_faults_fail_open_or_closed_and_reach_the_plugins_status() {
     assert!(faults.iter().any(|f| f.contains("before_tool_call hook") && f.contains("the policy file is missing")), "{faults:?}");
 }
 
+const OBSERVER: &str = r#"
+import json, os
+import byob_plugin as byob
+
+@byob.hook("after_tool_call")
+def after(call):
+    return byob.modify(result=call["result"] + "\n(checked by observer)", card={"type": "text", "text": "observed " + call["tool"]})
+
+@byob.hook("on_turn_end")
+def end(turn):
+    with open(os.path.join(os.environ["BYOB_PLUGIN_DIR"], "ended.json"), "w") as f:
+        json.dump({"answer": turn["answer"], "error": turn["error"]}, f)
+
+byob.run()
+"#;
+
+#[test]
+fn after_tool_call_changes_the_result_and_attaches_a_card_and_on_turn_end_observes() {
+    if !have_python() {
+        return;
+    }
+    let script = vec![call("list_files", "{}"), Reply::Text("Listed.")];
+    let h = harness(script, Some(Policy::ALLOW_ALL), Natives::builtin(), |root| {
+        plugin(
+            root,
+            "observer",
+            json!({"id": "observer", "name": "Observer", "backend": "backend.py", "hooks": [
+                {"event": "after_tool_call", "tools": ["list_files"]},
+                {"event": "on_turn_end"}
+            ]}),
+            &[("backend.py", OBSERVER)],
+        );
+    });
+    let (mut c, _) = hello(&h);
+    let (reply, error, _) = turn(&mut c, "list", ApprovalAnswer::Deny);
+    assert_eq!(error, None);
+    let reqs = h.requests.lock().unwrap().clone();
+    assert!(results(&reqs[1])[0].ends_with("\n(checked by observer)"), "{:?}", results(&reqs[1]));
+    let step = &reply.steps[0];
+    assert_eq!(step.views.len(), 1);
+    assert_eq!(step.views[0].kind, byob_protocol::tree::KIND);
+    assert!(step.views[0].fallback.contains("observed list_files"), "{:?}", step.views[0]);
+    let ended = h.home.path().join("plugins/observer/ended.json");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ended.exists() {
+        assert!(Instant::now() < deadline, "on_turn_end never ran");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let v: Value = serde_json::from_str(&fs::read_to_string(ended).unwrap()).unwrap();
+    assert_eq!(v, json!({"answer": "Listed.", "error": null}));
+}
+
+/// Wants a person to confirm every run_command, whatever the policy.
+struct AskFirst;
+impl NativeHook for AskFirst {
+    fn before_tool_call(&self, _: &mut ToolCallCtx<'_>) -> Decision {
+        Decision::Ask("The careful plugin wants you to see this one.".into())
+    }
+}
+
+#[test]
+fn an_ask_decision_shows_a_card_even_with_auto_approve() {
+    let natives = Natives::builtin().hook("ask_first", Arc::new(AskFirst), &[(Event::BeforeToolCall, 10)]);
+    let script = vec![call("write_file", r#"{"path":"x.txt","content":"x"}"#), Reply::Text("done")];
+    let h = harness(script, Some(Policy::ALLOW_ALL), natives, |_| {});
+    let (mut c, _) = hello(&h);
+    let (reply, _, cards) = turn(&mut c, "write", ApprovalAnswer::Allow);
+    assert_eq!(cards, 1, "--auto-approve doesn't answer what a hook wants a person to see");
+    let step = &reply.steps[0];
+    assert_eq!(step.status, StepStatus::Done);
+    assert!(step.ask.as_ref().is_some_and(|a| a.text.contains("careful plugin")), "{:?}", step.ask);
+    assert!(h.ws.path().join("x.txt").exists());
+}
+
 // ---- built-ins on the pipeline ----------------------------------------------------------
 
 #[test]
