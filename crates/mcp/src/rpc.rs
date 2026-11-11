@@ -59,13 +59,25 @@ impl Router {
 
     /// The connection is gone: fail every waiting caller and refuse new requests.
     pub fn shut(&self, why: &str) {
-        let pending = {
+        self.shut_answering(why, None);
+    }
+
+    /// [`shut`](Self::shut), but caller `answer.0` gets `answer.1` instead of `Closed`. The
+    /// connection is marked gone before anyone is woken, so a caller that checks
+    /// [`gone`](Self::gone) right after its reply sees it.
+    pub fn shut_answering(&self, why: &str, answer: Option<(u64, Reply)>) {
+        let mut pending = {
             let mut st = self.state();
             if st.gone.is_none() {
                 st.gone = Some(why.to_owned());
             }
             std::mem::take(&mut st.pending)
         };
+        if let Some((id, reply)) = answer
+            && let Some(tx) = pending.remove(&id)
+        {
+            let _ = tx.send(reply);
+        }
         for tx in pending.into_values() {
             let _ = tx.send(Err(McpError::Closed(why.to_owned())));
         }
@@ -178,6 +190,16 @@ mod tests {
         assert_eq!(replies[0], json!({"jsonrpc":"2.0","id":"s1","result":{}}));
         assert_eq!(replies[1]["id"], json!(7));
         assert_eq!(replies[1]["error"]["code"], json!(-32601));
+    }
+
+    #[test]
+    fn the_answered_caller_wakes_to_a_connection_already_gone() {
+        let r = Router::default();
+        let (a, b) = (r.register(1).unwrap(), r.register(2).unwrap());
+        r.shut_answering("expired", Some((1, Err(McpError::SessionExpired))));
+        assert_eq!(a.recv().unwrap(), Err(McpError::SessionExpired));
+        assert!(r.gone().is_some());
+        assert_eq!(b.recv().unwrap(), Err(McpError::Closed("expired".into())));
     }
 
     #[test]

@@ -241,10 +241,8 @@ impl Shared {
             if status == 404 && had_session.is_some() {
                 lock(&self.session).take();
                 // This caller learns why; everyone else waiting sees the connection close.
-                if let Some(id) = id {
-                    self.router.resolve(id, Err(McpError::SessionExpired));
-                }
-                self.router.shut("the connector session ended");
+                // Gone first, then woken: the caller may check is_alive() right away.
+                self.router.shut_answering("the connector session ended", id.map(|id| (id, Err(McpError::SessionExpired))));
                 return Err(McpError::SessionExpired);
             }
             if !(200..300).contains(&status) {
