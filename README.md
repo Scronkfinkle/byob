@@ -9,9 +9,8 @@ OpenAI-compatible endpoint (llama-server, Ollama, LM Studio, vLLM or a hosted AP
 in a folder with you: reads and writes files, runs code, and builds spreadsheets, charts,
 documents and small apps beside the chat.
 
-byob is desktop software, not a web page in a window: one program for Linux, macOS and Windows
-that draws its own interface on the GPU, with no Electron, webview or browser engine inside.
-(The one exception is the HTML apps the model writes: those are drawn by a separate Servo renderer process that ships alongside.)
+byob is **desktop software, not a web page in a window**: one program for Linux, macOS and Windows
+that draws its own interface on the GPU, with no Electron.
 
 ![byob building a two-sheet budget workbook: the spreadsheet fills in beside the chat as the model writes it](docs/media/hero.gif)
 
