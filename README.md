@@ -11,7 +11,7 @@ documents and small apps beside the chat.
 
 byob is desktop software, not a web page in a window: one program for Linux, macOS and Windows
 that draws its own interface on the GPU, with no Electron, webview or browser engine inside.
-(The one exception is optional: to draw the HTML apps the model writes inline, the desktop can use a separate Servo helper process.)
+(The one exception is the HTML apps the model writes: those are drawn by a separate Servo renderer process that ships alongside.)
 
 ![byob building a two-sheet budget workbook: the spreadsheet fills in beside the chat as the model writes it](docs/media/hero.gif)
 
@@ -42,7 +42,7 @@ that draws its own interface on the GPU, with no Electron, webview or browser en
 <table>
   <tr>
     <td width="50%"><img src="docs/media/self-plugin.gif" alt="Asking byob for a counter plugin: it writes the plugin and the pane appears beside the chat"><br><sub>“Make me a plugin with a counter pane”: byob writes it, reads its own load errors, fixes them, and the pane appears.</sub></td>
-    <td width="50%"><img src="docs/media/html-app.png" alt="A tip calculator HTML app rendered inline in the chat"><br><sub>HTML apps work in every build: inline in the browser UI, inline on the desktop with the optional Servo helper (in the Nix package), otherwise one click opens them in your browser.</sub></td>
+    <td width="50%"><img src="docs/media/html-app.png" alt="A tip calculator HTML app rendered inline in the chat"><br><sub>HTML apps run inline, on the desktop (a separate Servo renderer process ships with byob) and in the browser UI.</sub></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/media/sheets.png" alt="sales.csv open as a spreadsheet with a new growth column"><br><sub>Open a CSV as a spreadsheet; every write recalculates and reports errors back to the model.</sub></td>
@@ -60,10 +60,13 @@ cargo install byob --no-default-features    # slim: desktop only, a few MB small
 nix build github:Scronkfinkle/byob          # or .#byob-slim
 ```
 
-Release archives for Linux, macOS and Windows come in the same two flavours
-(`byob-…` and `byob-slim-…`) on the [releases page](https://github.com/Scronkfinkle/byob/releases).
-On Linux they need no GUI toolkit: file dialogs go through the XDG desktop portal (or zenity);
-without either, drop files onto the window.
+Release archives for Linux, macOS and Windows are on the
+[releases page](https://github.com/Scronkfinkle/byob/releases): `byob-…` has everything (the
+browser UI and `byob-artifact-host`, which draws HTML apps inline; keep it next to `byob`), and
+`byob-slim-…` is byob alone. `cargo install` doesn't build the renderer; without it, HTML apps
+open in your browser with one click. On Linux byob needs no GUI toolkit (file dialogs go through
+the XDG desktop portal or zenity; without either, drop files onto the window), and the renderer
+draws with the system's OpenGL (Mesa).
 
 ## Use
 
