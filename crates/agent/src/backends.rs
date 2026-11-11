@@ -184,7 +184,7 @@ fn make(m: &Make<'_>, generation: u64) -> Backend {
     // absolute: it is also the working folder, so a relative one (--plugin DIR) would resolve twice
     let prepare_dir = std::path::absolute(&dir).unwrap_or_else(|_| dir.clone());
     let native = m.native.clone();
-    let prepare = Box::new(move |_: &dyn Fn() -> bool| {
+    let prepare = Box::new(move |called_off: &dyn Fn() -> bool| {
         if let BackendRun::Native(id) = &decl.run {
             // in-tree code: nothing to prepare, a fresh one on every (re)start
             return native.as_ref().map(|make| Start::Native(make())).ok_or_else(|| format!("\"{id}\" isn't a backend built into this byob"));
@@ -196,7 +196,7 @@ fn make(m: &Make<'_>, generation: u64) -> Backend {
                 if !file.is_file() {
                     return Err(format!("backend {script} is missing"));
                 }
-                let py = python.python()?;
+                let py = python.python_until(called_off)?;
                 env.extend(py.env);
                 let mut argv = py.program;
                 argv.push(file.into_os_string());
@@ -205,7 +205,7 @@ fn make(m: &Make<'_>, generation: u64) -> Backend {
             BackendRun::Native(_) => Vec::new(),
             BackendRun::Command(cmd) => {
                 // byob's helper is on PYTHONPATH for Python run any other way too
-                if let Ok(py) = python.python() {
+                if let Ok(py) = python.python_until(called_off) {
                     env.extend(py.env);
                 }
                 let local = prepare_dir.join(cmd);

@@ -34,7 +34,10 @@ byob_plugin.py` (the Python helper), `crates/plugins/src/pyenv.rs` (Python envir
   the first time the backend or a script tool needs it, off the engine thread: `uv venv` +
   `uv pip install` when `uv` is on `PATH`, else `python -m venv` + `pip install`. A failure
   becomes one of the plugin's problems with the installer's output (its last 3000
-  characters) and is kept until the plugin changes or plugins are reloaded.
+  characters) and is kept until the plugin changes or plugins are reloaded. Stopping the
+  tool call (or the backend) stops the build; that isn't kept. Two byob processes sharing
+  the data folder take turns: a build holds `<hash>.lock` (refreshed while it runs; one
+  not refreshed for 2 minutes is taken over), and the other uses what it built.
 - Every plugin's Python (backend and script tools) gets byob's helper `byob_plugin.py` on
   `PYTHONPATH` (written to `<data>/plugin-python/lib`).
 
@@ -51,9 +54,10 @@ byob_plugin.py` (the Python helper), `crates/plugins/src/pyenv.rs` (Python envir
 - **Started lazily** on first use (a UI message, a subscribed event, a tool call), on a
   thread of its own: preparing (the venv) and spawning never block the engine. Messages
   wait in a queue (≤ 256, ≤ 16 MiB) while it starts; once it runs, at most 256 wait for it
-  to read them (more are dropped, with a fault). Working folder: the plugin folder.
-  Environment: byob's, plus the plugin's settings (secret ones too), `BYOB_PLUGIN_DIR`,
-  `PYTHONPATH`, `PYTHONUNBUFFERED=1`, minus `BYOB_API_KEY`. On Unix it leads a process
+  to read them (more are dropped, with a fault). Stopping it calls off a venv build in
+  progress. Working folder: the plugin folder. Environment: byob's, plus the plugin's
+  settings (secret ones too), `BYOB_PLUGIN_DIR`, `PYTHONPATH`, `PYTHONUNBUFFERED=1`,
+  minus `BYOB_API_KEY`. On Unix it leads a process
   group of its own, killed with it (so are what it started). No sandbox: like VS Code extensions, an
   installed plugin runs with the user's rights; the trust question for plugins that came
   with a workspace still applies before anything runs.

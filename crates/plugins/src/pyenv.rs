@@ -7,7 +7,12 @@
 //! built the first time something needs it, never on the engine thread: with `uv` when it
 //! is on `PATH` (`uv venv` + `uv pip install`), else `python -m venv` + `pip install`. A
 //! failure is kept (with the installer's output) until the plugin is reloaded, and shows
-//! as one of the plugin's problems.
+//! as one of the plugin's problems. A build can be called off (the tool call stopped, the
+//! backend stopped); it isn't kept as a failure then.
+//!
+//! Two byob processes may share the data folder: a build holds a lock file next to the
+//! environment (`<venv>.lock`), and the other waits for it and uses what it built. A lock
+//! whose holder stopped refreshing it (a byob that died mid-build) is taken over.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -15,8 +20,8 @@ use std::fs;
 use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, TryLockError};
+use std::time::{Duration, Instant, SystemTime};
 
 use byob_sandbox::RunOptions;
 
@@ -34,6 +39,14 @@ const MAX_BUILD_OUTPUT: usize = 64 * 1024;
 const PROBLEM_OUTPUT: usize = 3000;
 /// The file that says an environment is complete.
 const READY: &str = ".byob-ready";
+/// What a build that was called off says.
+pub const BUILD_CALLED_OFF: &str = "the Python environment wasn't built: stopped";
+/// How often a build refreshes its lock file.
+const LOCK_BEAT: Duration = Duration::from_secs(20);
+/// A lock file not refreshed for this long is left over from a byob that died.
+const LOCK_STALE: Duration = Duration::from_secs(120);
+/// How often a waiting build looks at the lock again.
+const LOCK_POLL: Duration = Duration::from_millis(100);
 
 /// How to start Python for one plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,8 +151,8 @@ impl PyEnvs {
     }
 
     /// How to start Python for a plugin with this environment (`None`: no requirements).
-    /// Builds the environment if needed: call it off the engine thread.
-    pub fn python(&self, env: Option<&PyEnv>) -> Result<Python, String> {
+    /// Builds the environment if needed, until `cancelled()`: call it off the engine thread.
+    pub fn python(&self, env: Option<&PyEnv>, cancelled: &dyn Fn() -> bool) -> Result<Python, String> {
         let helper = self.helper_dir();
         let mut read = Vec::new();
         let mut vars = BTreeMap::new();
@@ -159,7 +172,7 @@ impl PyEnvs {
         let program = match env {
             None => self.base.clone(),
             Some(env) => {
-                let python = env.ensure()?;
+                let python = env.ensure(cancelled)?;
                 read.push(env.dir.clone());
                 vec![python.into_os_string()]
             }
@@ -184,7 +197,12 @@ impl PluginPython {
 
     /// See [`PyEnvs::python`] (may build the environment: not on the engine thread).
     pub fn python(&self) -> Result<Python, String> {
-        self.envs.python(self.env.as_deref())
+        self.python_until(&|| false)
+    }
+
+    /// [`Self::python`] whose build gives up once `cancelled()`.
+    pub fn python_until(&self, cancelled: &dyn Fn() -> bool) -> Result<Python, String> {
+        self.envs.python(self.env.as_deref(), cancelled)
     }
 
     /// Why its environment couldn't be built (never blocks).
@@ -208,7 +226,8 @@ pub struct PyEnv {
     uv: Option<PathBuf>,
     offline: bool,
     state: Mutex<State>,
-    /// Held while building, so one build runs at a time.
+    /// Held while building, so one build runs at a time (in this process; the lock file
+    /// covers others).
     build: Mutex<()>,
 }
 
@@ -242,14 +261,22 @@ impl PyEnv {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
-    /// The environment's interpreter, building it first if needed (blocks while it builds).
-    pub fn ensure(&self) -> Result<PathBuf, String> {
+    /// The environment's interpreter, building it first if needed (blocks while it builds,
+    /// or another byob does, until `cancelled()`: then [`BUILD_CALLED_OFF`]).
+    pub fn ensure(&self, cancelled: &dyn Fn() -> bool) -> Result<PathBuf, String> {
         match self.get() {
             State::Ready(p) => return Ok(p),
             State::Failed(e) => return Err(e),
             State::Unknown => {}
         }
-        let _building = self.build.lock().unwrap_or_else(PoisonError::into_inner);
+        let _building = loop {
+            match self.build.try_lock() {
+                Ok(g) => break g,
+                Err(TryLockError::Poisoned(p)) => break p.into_inner(),
+                Err(TryLockError::WouldBlock) if cancelled() => return Err(BUILD_CALLED_OFF.into()),
+                Err(TryLockError::WouldBlock) => std::thread::sleep(LOCK_POLL),
+            }
+        };
         // Someone else may have finished while we waited.
         match self.get() {
             State::Ready(p) => return Ok(p),
@@ -257,18 +284,35 @@ impl PyEnv {
             State::Unknown => {}
         }
         let python = venv_python(&self.dir);
-        if self.dir.join(READY).is_file() && python.exists() {
+        if self.built(&python) {
+            self.set(State::Ready(python.clone()));
+            return Ok(python);
+        }
+        if let Some(parent) = self.dir.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        let lock = BuildLock::take(&self.dir.with_extension("lock"), cancelled)?;
+        // Another byob may have built it while we waited.
+        if self.built(&python) {
             self.set(State::Ready(python.clone()));
             return Ok(python);
         }
         log::info!("building a Python environment for {} in {}", self.reqs.join(" "), self.dir.display());
-        match self.build_now(&python) {
+        let called_off = || {
+            lock.beat();
+            cancelled()
+        };
+        match self.build_now(&python, &called_off) {
             Ok(()) => {
                 self.set(State::Ready(python.clone()));
                 Ok(python)
             }
             Err(e) => {
                 let _ = fs::remove_dir_all(&self.dir);
+                if cancelled() {
+                    // not a failure: the next use builds it again
+                    return Err(BUILD_CALLED_OFF.into());
+                }
                 let e = format!("python.requirements couldn't be installed: {e}");
                 self.set(State::Failed(e.clone()));
                 Err(e)
@@ -276,31 +320,89 @@ impl PyEnv {
         }
     }
 
-    fn build_now(&self, python: &Path) -> Result<(), String> {
+    fn built(&self, python: &Path) -> bool {
+        self.dir.join(READY).is_file() && python.exists()
+    }
+
+    fn build_now(&self, python: &Path, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
         let _ = fs::remove_dir_all(&self.dir);
-        if let Some(parent) = self.dir.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-        }
         let Some((base, lead)) = self.base.split_first() else { return Err("no Python interpreter configured".into()) };
         match &self.uv {
             Some(uv) => {
                 let mut c = Command::new(uv);
                 c.arg("venv").arg("--quiet").arg("--python").arg(base).arg(&self.dir);
-                run(c, "uv venv")?;
+                run(c, "uv venv", cancelled)?;
                 let mut c = Command::new(uv);
                 c.args(["pip", "install", "--python"]).arg(python).args(self.offline.then_some("--offline")).args(&self.reqs);
-                run(c, "uv pip install")?;
+                run(c, "uv pip install", cancelled)?;
             }
             None => {
                 let mut c = Command::new(base);
                 c.args(lead).args(["-m", "venv"]).arg(&self.dir);
-                run(c, "python -m venv")?;
+                run(c, "python -m venv", cancelled)?;
                 let mut c = Command::new(python);
                 c.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-input"]).args(self.offline.then_some("--no-index")).args(&self.reqs);
-                run(c, "pip install")?;
+                run(c, "pip install", cancelled)?;
             }
         }
         fs::write(self.dir.join(READY), self.reqs.join("\n")).map_err(|e| format!("{}: {e}", self.dir.display()))
+    }
+}
+
+/// The lock file of one environment's build, shared by every byob using the data folder:
+/// created (exclusively) to build, refreshed while building, removed when done.
+struct BuildLock {
+    path: PathBuf,
+    file: Option<fs::File>,
+    beat: std::cell::Cell<Instant>,
+}
+
+impl BuildLock {
+    /// Take the lock at `path`, waiting while another build holds it (until `cancelled()`).
+    fn take(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<Self, String> {
+        let mut waited = false;
+        loop {
+            match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+                Ok(mut file) => {
+                    let _ = std::io::Write::write_all(&mut file, format!("{}\n", std::process::id()).as_bytes());
+                    return Ok(Self { path: path.to_path_buf(), file: Some(file), beat: std::cell::Cell::new(Instant::now()) });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let age = fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|t| SystemTime::now().duration_since(t).ok());
+                    if age.is_some_and(|a| a > LOCK_STALE) {
+                        log::warn!("{} is left over from a build that stopped; taking it over", path.display());
+                        let _ = fs::remove_file(path);
+                        continue;
+                    }
+                    if !waited {
+                        log::info!("waiting for another byob to build the Python environment ({})", path.display());
+                        waited = true;
+                    }
+                }
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            }
+            if cancelled() {
+                return Err(BUILD_CALLED_OFF.into());
+            }
+            std::thread::sleep(LOCK_POLL);
+        }
+    }
+
+    /// Say the build is still going (at most every [`LOCK_BEAT`]).
+    fn beat(&self) {
+        if self.beat.get().elapsed() >= LOCK_BEAT {
+            if let Some(f) = &self.file {
+                let _ = f.set_modified(SystemTime::now());
+            }
+            self.beat.set(Instant::now());
+        }
+    }
+}
+
+impl Drop for BuildLock {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = fs::remove_file(&self.path);
     }
 }
 
@@ -308,11 +410,14 @@ fn venv_python(dir: &Path) -> PathBuf {
     if cfg!(windows) { dir.join("Scripts").join("python.exe") } else { dir.join("bin").join("python") }
 }
 
-fn run(cmd: Command, what: &str) -> Result<(), String> {
+fn run(cmd: Command, what: &str, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
     let opts = RunOptions { stdin: Vec::new(), timeout: BUILD_TIMEOUT, max_output: MAX_BUILD_OUTPUT };
-    let o = byob_sandbox::run(cmd, &opts, &|| false).map_err(|e| format!("{what}: {e}"))?;
+    let o = byob_sandbox::run(cmd, &opts, cancelled).map_err(|e| format!("{what}: {e}"))?;
     if o.success() {
         return Ok(());
+    }
+    if o.cancelled {
+        return Err(BUILD_CALLED_OFF.into());
     }
     let out = format!("{}\n{}", o.stdout.text().trim(), o.stderr.text().trim());
     let out = out.trim();
@@ -342,10 +447,79 @@ mod tests {
     fn helper_is_written_once_and_on_the_path() {
         let root = tempfile::tempdir().unwrap();
         let envs = PyEnvs::new(root.path(), crate::default_python());
-        let py = envs.python(None).unwrap();
+        let py = envs.python(None, &|| false).unwrap();
         let dir = envs.helper_dir().unwrap();
         assert_eq!(fs::read_to_string(dir.join(HELPER_FILE)).unwrap(), HELPER);
         assert!(py.env["PYTHONPATH"].starts_with(&dir.display().to_string()));
         assert_eq!(py.program, crate::default_python());
+    }
+
+    /// An environment whose interpreter doesn't exist: a build fails at once.
+    fn broken(root: &Path) -> Arc<PyEnv> {
+        PyEnvs::new(root, vec!["/definitely/not/python".into()]).with_uv(None).for_plugin(&["x".into()], Path::new("/p"))
+    }
+
+    #[test]
+    fn another_byobs_build_is_waited_for_and_used_not_clobbered() {
+        let root = tempfile::tempdir().unwrap();
+        let env = broken(root.path());
+        let lock = env.dir().with_extension("lock");
+        fs::create_dir_all(env.dir()).unwrap();
+        fs::write(&lock, "4242\n").unwrap();
+        // the other byob finishes its build, then lets go of the lock
+        let dir = env.dir().to_path_buf();
+        let other = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let python = venv_python(&dir);
+            fs::create_dir_all(python.parent().unwrap()).unwrap();
+            fs::write(&python, "").unwrap();
+            fs::write(dir.join(READY), "x").unwrap();
+            fs::remove_file(dir.with_extension("lock")).unwrap();
+        });
+        assert_eq!(env.ensure(&|| false), Ok(venv_python(env.dir())));
+        other.join().unwrap();
+        assert!(env.dir().join(READY).is_file(), "its build was left alone");
+    }
+
+    #[test]
+    fn waiting_for_another_build_can_be_called_off() {
+        let root = tempfile::tempdir().unwrap();
+        let env = broken(root.path());
+        fs::create_dir_all(env.dir()).unwrap();
+        fs::write(env.dir().join("theirs"), "").unwrap();
+        fs::write(env.dir().with_extension("lock"), "4242\n").unwrap();
+        let t = Instant::now();
+        assert_eq!(env.ensure(&|| t.elapsed() > Duration::from_millis(200)), Err(BUILD_CALLED_OFF.to_owned()));
+        assert!(env.dir().join("theirs").exists(), "their half-built environment was left alone");
+        assert!(env.failure().is_none(), "not a failure: tried again next time");
+    }
+
+    #[test]
+    fn a_lock_left_by_a_byob_that_died_is_taken_over() {
+        let root = tempfile::tempdir().unwrap();
+        let env = broken(root.path());
+        let lock = env.dir().with_extension("lock");
+        fs::create_dir_all(env.dir()).unwrap();
+        let f = fs::File::create(&lock).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(3600)).unwrap();
+        drop(f);
+        let e = env.ensure(&|| false).unwrap_err();
+        assert!(e.starts_with("python.requirements couldn't be installed"), "{e}");
+        assert!(!lock.exists(), "the lock goes with the build");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_build_can_be_called_off() {
+        let root = tempfile::tempdir().unwrap();
+        // an "interpreter" whose `-m venv` takes half a minute
+        let base: Vec<OsString> = vec!["sh".into(), "-c".into(), "sleep 30".into(), "sh".into()];
+        let env = PyEnvs::new(root.path(), base).with_uv(None).for_plugin(&["x".into()], Path::new("/p"));
+        let t = Instant::now();
+        assert_eq!(env.ensure(&|| t.elapsed() > Duration::from_millis(300)), Err(BUILD_CALLED_OFF.to_owned()));
+        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+        assert!(env.failure().is_none());
+        assert!(!env.dir().exists());
+        assert!(!env.dir().with_extension("lock").exists());
     }
 }

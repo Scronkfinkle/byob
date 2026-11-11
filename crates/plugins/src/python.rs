@@ -327,12 +327,14 @@ impl Tool for PythonTool {
         let mut read = vec![self.plugin.dir.clone()];
         let program = match &self.python {
             None => self.interpreter.clone(),
-            Some(p) => match p.python() {
+            // a first use builds its environment: the user can stop that too
+            Some(p) => match p.python_until(&|| ctx.cancelled()) {
                 Ok(py) => {
                     read.extend(py.read);
                     env.extend(py.env);
                     py.program
                 }
+                Err(_) if ctx.cancelled() => return ToolOutput::err("Stopped by the user."),
                 Err(e) => return ToolOutput::err(format!("{} couldn't run: {e}", self.plugin.name)),
             },
         };

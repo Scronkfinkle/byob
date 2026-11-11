@@ -354,7 +354,7 @@ fn requirements_get_a_cached_venv_used_by_the_backend() {
     // a second engine run finds it built
     let again = PyEnvs::new(root.join("py"), base).with_uv(None).offline();
     let t = Instant::now();
-    assert!(again.for_plugin(&reqs, root).ensure().is_ok());
+    assert!(again.for_plugin(&reqs, root).ensure(&|| false).is_ok());
     assert!(t.elapsed() < Duration::from_secs(2));
 }
 
