@@ -957,8 +957,9 @@ fn entry_view(
                 match entry.role {
                     // reply text with its tool steps where they happened, approval cards, undo
                     EntryRole::Assistant => {
+                        let newest = artifact::newest_cards(&entry.steps);
                         answer = steps::body(ui, t, entry, markdown, &mut |ui, step| {
-                            artifacts.cards(ui, t, &step.artifacts);
+                            artifacts.step_cards(ui, t, step.id, &step.artifacts, &newest);
                             views.show_step_with(ui, t, step, latest, plugins, artifacts.web_mut());
                         });
                     }

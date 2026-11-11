@@ -628,6 +628,14 @@ impl Artifacts {
         }
     }
 
+    /// The cards of a step in a reply, minus artifacts a later step of the same reply changed
+    /// again (`newest` from [`newest_cards`]): one card per artifact per reply, not one per write.
+    pub fn step_cards(&mut self, ui: &mut egui::Ui, t: &Tokens, step: u64, refs: &[ArtifactRef], newest: &HashMap<String, u64>) {
+        for r in refs.iter().filter(|r| keeps_card(newest, step, &r.id)) {
+            self.card(ui, t, r);
+        }
+    }
+
     fn card(&mut self, ui: &mut egui::Ui, t: &Tokens, r: &ArtifactRef) {
         let Some(a) = self.get(&r.id).cloned() else {
             ui.label(RichText::new("This artifact is no longer available.").small().color(t.text_faint));
@@ -990,11 +998,62 @@ fn kind_badge(ui: &mut egui::Ui, t: &Tokens, label: &str) {
     );
 }
 
+/// For each artifact a reply's steps changed, the last step that did: only that step shows its
+/// card (its version picker lists the others), so a model that writes a sheet thirty times in
+/// one reply leaves one card, not thirty.
+pub fn newest_cards(steps: &[byob_protocol::Step]) -> HashMap<String, u64> {
+    let mut newest = HashMap::new();
+    for step in steps {
+        for r in &step.artifacts {
+            newest.insert(r.id.clone(), step.id);
+        }
+    }
+    newest
+}
+
+/// Whether `step` shows its card for artifact `id`: unless a later step of the reply changed it
+/// again. Steps outside `newest` (a subagent's) keep theirs.
+fn keeps_card(newest: &HashMap<String, u64>, step: u64, id: &str) -> bool {
+    newest.get(id).is_none_or(|&s| s == step)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::appview::AppDoc;
     use byob_protocol::{ArtifactKind, ArtifactVersion};
+
+    fn wrote(id: u64, refs: &[(&str, u32)]) -> byob_protocol::Step {
+        byob_protocol::Step {
+            id,
+            tool: "write_cells".into(),
+            title: "Write cells".into(),
+            access: byob_protocol::ToolAccess::Write,
+            status: byob_protocol::StepStatus::Done,
+            detail: "{}".into(),
+            changes: vec![],
+            at: 0,
+            preview: None,
+            media: vec![],
+            artifacts: refs.iter().map(|(a, v)| ArtifactRef { id: (*a).into(), version: *v }).collect(),
+            delegation: None,
+            ask: None,
+            views: vec![],
+        }
+    }
+
+    #[test]
+    fn a_reply_shows_one_card_per_artifact_on_its_last_change() {
+        // budget written three times (with a chart made in between), then notes once
+        let steps =
+            [wrote(1, &[("budget", 1)]), wrote(2, &[("budget", 2), ("chart", 1)]), wrote(3, &[]), wrote(4, &[("budget", 3)]), wrote(5, &[("notes", 1)])];
+        let newest = newest_cards(&steps);
+        let shown: Vec<(u64, &str)> =
+            steps.iter().flat_map(|s| s.artifacts.iter().filter(|r| keeps_card(&newest, s.id, &r.id)).map(move |r| (s.id, r.id.as_str()))).collect();
+        assert_eq!(shown, [(2, "chart"), (4, "budget"), (5, "notes")]);
+        // a subagent's step isn't one of the reply's: its cards stay unless the reply changed it later
+        assert!(keeps_card(&newest, 99, "other") && !keeps_card(&newest, 99, "budget"));
+    }
 
     fn artifact(id: &str, kind: ArtifactKind, filename: &str, versions: &[u32]) -> Artifact {
         let versions = versions
