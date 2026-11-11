@@ -368,12 +368,15 @@ fn after_tool_call_changes_the_result_and_attaches_a_card_and_on_turn_end_observ
     assert_eq!(step.views[0].kind, byob_protocol::tree::KIND);
     assert!(step.views[0].fallback.contains("observed list_files"), "{:?}", step.views[0]);
     let ended = h.home.path().join("plugins/observer/ended.json");
+    // on_turn_end runs after Finished: wait until the file is there and fully written.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !ended.exists() {
+    let v = loop {
+        if let Some(v) = fs::read_to_string(&ended).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+            break v;
+        }
         assert!(Instant::now() < deadline, "on_turn_end never ran");
         std::thread::sleep(Duration::from_millis(20));
-    }
-    let v: Value = serde_json::from_str(&fs::read_to_string(ended).unwrap()).unwrap();
+    };
     assert_eq!(v, json!({"answer": "Listed.", "error": null}));
 }
 
