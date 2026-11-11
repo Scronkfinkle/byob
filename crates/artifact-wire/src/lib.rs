@@ -7,6 +7,12 @@
 //! byte strings as a `u32` length + bytes, lists as a `u32` count + items). Bodies over
 //! [`MAX_FRAME`] are refused before anything is allocated.
 //!
+//! The helper's stdout is shared with every library inside it, and some print there (surfman
+//! does on Windows). So when byob sets [`MARKED_ENV`], the helper starts each frame with
+//! [`MARK`] ([`send_marked`]), and byob reads with a [`Reader`], which passes anything between
+//! frames to a callback instead of losing the stream. Unmarked frames still read, so an older
+//! helper keeps working.
+//!
 //! No dependencies on purpose: both workspaces build it, and the helper's must not pull
 //! anything else of byob's.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
@@ -250,6 +256,135 @@ pub fn send<M: Message>(w: &mut impl Write, msg: &M) -> io::Result<()> {
     w.write_all(&len.to_le_bytes())?;
     w.write_all(&body)?;
     w.flush()
+}
+
+/// Set (to `1`) in the helper's environment by a byob that reads marked frames.
+pub const MARKED_ENV: &str = "BYOB_WIRE_MARKED";
+
+/// Starts every marked frame. Never confused with text (0xFF isn't UTF-8) nor with an
+/// unmarked header, whose last byte is at most 0x04 ([`MAX_FRAME`] < 2^27) where text and
+/// this mark have a printable byte or 0xFF.
+pub const MARK: [u8; 4] = [0xFF, b'B', b'Y', b'B'];
+
+/// Longest stretch of stray output passed on at once (longer lines arrive in pieces).
+const MAX_NOISE: usize = 4096;
+
+/// Write one frame preceded by [`MARK`], in one write (so a `println!` elsewhere in the
+/// process lands before or after it, not inside).
+pub fn send_marked<M: Message>(w: &mut impl Write, msg: &M) -> io::Result<()> {
+    let body = msg.to_bytes();
+    if body.len() > MAX_FRAME {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("frame of {} bytes is too large", body.len())));
+    }
+    let len = u32::try_from(body.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "frame too large"))?;
+    let mut frame = Vec::with_capacity(body.len().saturating_add(8));
+    frame.extend_from_slice(&MARK);
+    frame.extend_from_slice(&len.to_le_bytes());
+    frame.extend_from_slice(&body);
+    w.write_all(&frame)?;
+    w.flush()
+}
+
+/// Reads frames, marked or not, from a stream other things may also write text to.
+#[derive(Debug, Default)]
+pub struct Reader {
+    /// A marked frame has arrived: from now on only marked frames count.
+    marked: bool,
+    /// Bytes read past a line of stray output that belong to what follows.
+    back: Vec<u8>,
+}
+
+impl Reader {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The next frame; stray output before it goes to `noise` (a line at a time, at most
+    /// [`MAX_NOISE`] bytes). `Ok(None)` at a clean end of stream.
+    pub fn recv<M: Message>(&mut self, r: &mut impl io::BufRead, noise: &mut impl FnMut(&[u8])) -> io::Result<Option<M>> {
+        loop {
+            let mut head = [0u8; 4];
+            if !self.fill(r, &mut head)? {
+                return Ok(None);
+            }
+            if head == MARK {
+                self.marked = true;
+                let mut len = [0u8; 4];
+                if !self.fill(r, &mut len)? {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+                return self.body(r, u32::from_le_bytes(len)).map(Some);
+            }
+            let len = u32::from_le_bytes(head);
+            if !self.marked && usize::try_from(len).is_ok_and(|l| l <= MAX_FRAME) {
+                return self.body(r, len).map(Some);
+            }
+            // Stray output: up to the end of its line. A newline inside the four bytes means
+            // what follows it is the next thing on the stream.
+            if let Some(i) = head.iter().position(|&b| b == b'\n') {
+                let (line, rest) = head.split_at(i.saturating_add(1));
+                let mut back = rest.to_vec();
+                back.append(&mut self.back);
+                self.back = back;
+                noise(line);
+                continue;
+            }
+            let mut line = head.to_vec();
+            self.until_newline(r, &mut line)?;
+            noise(&line);
+        }
+    }
+
+    /// Exactly `buf.len()` bytes; `false` at a clean end of stream before the first.
+    fn fill(&mut self, r: &mut impl Read, buf: &mut [u8]) -> io::Result<bool> {
+        let mut got = 0;
+        while got < buf.len() {
+            if !self.back.is_empty() {
+                let n = self.back.len().min(buf.len().saturating_sub(got));
+                if let (Some(dst), Some(src)) = (buf.get_mut(got..got.saturating_add(n)), self.back.get(..n)) {
+                    dst.copy_from_slice(src);
+                }
+                self.back.drain(..n);
+                got = got.saturating_add(n);
+                continue;
+            }
+            match r.read(buf.get_mut(got..).unwrap_or_default()) {
+                Ok(0) if got == 0 => return Ok(false),
+                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                Ok(n) => got = got.saturating_add(n),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(true)
+    }
+
+    fn body<M: Message>(&mut self, r: &mut impl Read, len: u32) -> io::Result<M> {
+        let len = usize::try_from(len).unwrap_or(usize::MAX);
+        if len > MAX_FRAME {
+            return Err(WireError(format!("frame of {len} bytes is over the limit")).into());
+        }
+        let mut body = vec![0u8; len];
+        if len > 0 && !self.fill(r, &mut body)? {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        Ok(M::from_bytes(&body)?)
+    }
+
+    /// Append to `line` up to and including a newline (or [`MAX_NOISE`] bytes, or the end).
+    fn until_newline(&mut self, r: &mut impl io::BufRead, line: &mut Vec<u8>) -> io::Result<()> {
+        while line.len() < MAX_NOISE {
+            let mut b = [0u8; 1];
+            if !self.fill(r, &mut b)? {
+                return Ok(());
+            }
+            line.push(b[0]);
+            if b[0] == b'\n' {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Read one frame; `Ok(None)` at a clean end of stream.
@@ -600,6 +735,70 @@ impl Message for Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Everything a [`Reader`] gets from `bytes`: frames, and the stray text it skipped.
+    fn read_all(bytes: &[u8]) -> (Vec<Event>, Vec<String>) {
+        let mut r = io::BufReader::new(bytes);
+        let mut reader = Reader::new();
+        let (mut events, mut noise) = (Vec::new(), Vec::new());
+        while let Some(e) = reader.recv::<Event>(&mut r, &mut |t| noise.push(String::from_utf8_lossy(t).into_owned())).unwrap() {
+            events.push(e);
+        }
+        (events, noise)
+    }
+
+    fn marked(e: &Event) -> Vec<u8> {
+        let mut b = Vec::new();
+        send_marked(&mut b, e).unwrap();
+        b
+    }
+
+    #[test]
+    fn stray_output_between_marked_frames_is_skipped_and_reported() {
+        // surfman prints a warning to stdout on Windows; shorter and longer lines too.
+        let mut s = b"surfman: Could not find the NVIDIA and/or AMD GPU selection symbols.\n".to_vec();
+        s.extend(marked(&Event::Ready));
+        s.extend(b"ok\n");
+        s.extend(marked(&Event::Pong(7)));
+        s.extend(b"\n");
+        s.extend(b"x\r\n");
+        s.extend(marked(&Event::Message("{\"a\":1}".into())));
+        s.extend(b"no newline at the end");
+        let (events, noise) = read_all(&s);
+        assert_eq!(events, vec![Event::Ready, Event::Pong(7), Event::Message("{\"a\":1}".into())]);
+        assert_eq!(noise, vec!["surfman: Could not find the NVIDIA and/or AMD GPU selection symbols.\n", "ok\n", "\n", "x\r\n", "no newline at the end"]);
+    }
+
+    #[test]
+    fn unmarked_frames_still_read_until_a_marked_one_arrives() {
+        // An older helper doesn't mark its frames.
+        let mut s = Vec::new();
+        send(&mut s, &Event::Ready).unwrap();
+        send(&mut s, &Event::Pong(1)).unwrap();
+        assert_eq!(read_all(&s).0, vec![Event::Ready, Event::Pong(1)]);
+        // Once frames are marked, text that happens to look like a small header is text.
+        let mut s = marked(&Event::Ready);
+        s.extend(b"\x05\x00\x00\x00\n");
+        s.extend(marked(&Event::Pong(2)));
+        let (events, noise) = read_all(&s);
+        assert_eq!(events, vec![Event::Ready, Event::Pong(2)]);
+        assert_eq!(noise.len(), 1, "{noise:?}");
+    }
+
+    #[test]
+    fn long_stray_output_comes_in_pieces_and_a_cut_frame_is_an_error() {
+        let mut s = vec![b'y'; MAX_NOISE * 2 + 10];
+        s.push(b'\n');
+        s.extend(marked(&Event::Ready));
+        let (events, noise) = read_all(&s);
+        assert_eq!(events, vec![Event::Ready]);
+        assert_eq!(noise.iter().map(String::len).sum::<usize>(), MAX_NOISE * 2 + 11);
+        assert!(noise.iter().all(|n| n.len() <= MAX_NOISE));
+        let mut cut = marked(&Event::Message("hello".into()));
+        cut.truncate(cut.len() - 2);
+        let mut r = io::BufReader::new(cut.as_slice());
+        assert!(Reader::new().recv::<Event>(&mut r, &mut |_| {}).is_err());
+    }
 
     fn round_trip<M: Message + PartialEq + fmt::Debug>(m: M) {
         let mut buf = Vec::new();

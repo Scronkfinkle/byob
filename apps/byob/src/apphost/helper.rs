@@ -69,6 +69,9 @@ impl Helper {
     pub fn spawn(path: &Path, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
         let mut cmd = Command::new(path);
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        // Its stdout is shared with the libraries inside it: ask for marked frames so what they
+        // print there is skipped instead of breaking the stream.
+        cmd.env(wire::MARKED_ENV, "1");
         // Mesa's software GL (llvmpipe) otherwise starts a render thread per core, per app.
         if std::env::var_os("LP_NUM_THREADS").is_none() {
             cmd.env("LP_NUM_THREADS", "2");
@@ -132,8 +135,15 @@ fn pipes(
     let why = Arc::clone(&broken);
     std::thread::Builder::new().name("artifact-host-out".into()).spawn(move || {
         let mut r = BufReader::new(stdout);
+        let mut reader = wire::Reader::new();
+        let mut noise = |text: &[u8]| {
+            let text = String::from_utf8_lossy(text);
+            if !text.trim().is_empty() {
+                log::warn!("artifact host printed: {}", text.trim_end());
+            }
+        };
         loop {
-            match wire::recv::<Event>(&mut r) {
+            match reader.recv::<Event>(&mut r, &mut noise) {
                 Ok(Some(Event::Frame(f))) => *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(f),
                 Ok(Some(e)) => {
                     if tx.send(e).is_err() {
@@ -325,10 +335,30 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_helper_that_prints_to_its_stdout_is_reported_not_left_hanging() {
-        // Its stdout is our channel: a stray line (a library logging) is an unreadable frame.
+    fn what_a_helper_prints_to_its_stdout_is_skipped() {
+        // Its stdout is our channel, and libraries inside it print there (surfman does on
+        // Windows): asked for marked frames, it gets through anyway.
         let dir = tempfile::tempdir().unwrap();
-        let path = script(dir.path(), "chatty", "echo 'hello from a library'; sleep 30");
+        let ready = r"\377BYB\001\000\000\000\000";
+        let var = wire::MARKED_ENV;
+        let body = format!("[ \"${var}\" = 1 ] || exit 4; echo 'surfman: Could not find the GPU selection symbols.'; printf '{ready}'; echo 'ok'; sleep 30");
+        let path = script(dir.path(), "chatty", &body);
+        let mut h = Helper::spawn(&path, || {}).unwrap();
+        let start = Instant::now();
+        while !h.ready() && h.check(Instant::now()).is_none() && start.elapsed() < Duration::from_secs(5) {
+            h.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(h.ready(), "gone: {:?}", h.check(Instant::now()));
+        h.kill();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_whose_output_is_unreadable_says_so() {
+        // A frame that claims to be bigger than anything allowed.
+        let dir = tempfile::tempdir().unwrap();
+        let path = script(dir.path(), "broken", r"printf '\377BYB\377\377\377\177'; sleep 30");
         let mut h = Helper::spawn(&path, || {}).unwrap();
         let start = Instant::now();
         let mut gone = None;

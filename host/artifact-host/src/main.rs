@@ -568,8 +568,13 @@ fn main() {
     let pending = Arc::clone(&waker.pending);
     let servo = ServoBuilder::default().preferences(prefs()).event_loop_waker(Box::new(waker)).build();
     servo.setup_logging();
-    let mut out = BufWriter::new(io::stdout().lock());
-    if wire::send(&mut out, &Event::Ready).is_err() || wire::send(&mut out, &Event::Features(wire::Features::ALL)).is_err() {
+    // Our stdout is byob's channel, and libraries in here print to it too (surfman does on
+    // Windows). A byob that asks gets frames it can find among their text; each goes out in
+    // one write and the lock isn't held between them, so their prints land between frames.
+    let marked = std::env::var_os(wire::MARKED_ENV).is_some_and(|v| v == "1");
+    let mut out = io::stdout();
+    let send = move |out: &mut io::Stdout, e: &Event| if marked { wire::send_marked(out, e) } else { wire::send(&mut BufWriter::new(out.lock()), e) };
+    if send(&mut out, &Event::Ready).is_err() || send(&mut out, &Event::Features(wire::Features::ALL)).is_err() {
         return;
     }
     let mut host = Host {
@@ -608,7 +613,7 @@ fn main() {
         host.tick();
         let events = std::mem::take(&mut *host.page.out.borrow_mut());
         for e in events {
-            if wire::send(&mut out, &e).is_err() {
+            if send(&mut out, &e).is_err() {
                 // byob is gone.
                 std::process::exit(0);
             }
