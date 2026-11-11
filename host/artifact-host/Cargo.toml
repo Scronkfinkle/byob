@@ -27,6 +27,14 @@ dpi = "0.1"
 # refused (see main.rs).
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 
+# Windows: draw with ANGLE (OpenGL ES over Direct3D 11) instead of WGL. surfman's WGL backend
+# needs WGL_NV_DX_interop, which only GPU drivers have, so a VM, a Remote Desktop session or a
+# machine without a GPU driver got "no software rendering context"; ANGLE falls back to
+# Direct3D's WARP software rasterizer, which every Windows has. It builds libEGL.dll and
+# libGLESv2.dll, which ship next to the helper.
+[target.'cfg(windows)'.dependencies]
+servo = { version = "0.8.0", default-features = false, features = ["no-wgl"] }
+
 [lints.rust]
 unsafe_code = "forbid"
 

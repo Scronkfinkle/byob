@@ -80,12 +80,26 @@ jobs:
           key: helper-${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked --manifest-path host/artifact-host/Cargo.toml --target ${{ matrix.target }}
+      # Windows draws through ANGLE (Cargo.toml): its two DLLs go next to the helper, with
+      # ANGLE's licence from the exact source that was built.
+      - name: Gather the helper's files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rel=host/artifact-host/target/${{ matrix.target }}/release
+          mkdir -p helper-out
+          cp "$rel"/byob-artifact-host* helper-out/ 2>/dev/null || true
+          rm -f helper-out/*.d helper-out/*.pdb
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            egl=$(find "$rel/build" -path '*mozangle-*/out/libEGL.dll' | head -1)
+            cp "$egl" "$(dirname "$egl")/libGLESv2.dll" helper-out/
+            cp "$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path '*mozangle-*/gfx/angle/checkout/LICENSE' | head -1)" helper-out/LICENSE-ANGLE
+          fi
+          ls -la helper-out
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: helper-${{ matrix.target }}
-          path: |
-            host/artifact-host/target/${{ matrix.target }}/release/byob-artifact-host
-            host/artifact-host/target/${{ matrix.target }}/release/byob-artifact-host.exe
+          path: helper-out/
           if-no-files-found: error
 
   build:
@@ -160,7 +174,7 @@ jobs:
             if [[ -n "$helper" ]]; then
               # byob finds it next to itself. It links Servo/SpiderMonkey (MPL-2.0): NOTICE says
               # where their source is.
-              cp helper/byob-artifact-host* "$name/"
+              cp helper/* "$name/"
               chmod +x "$name"/byob-artifact-host* || true
               cp host/artifact-host/NOTICE "$name/NOTICE-byob-artifact-host"
             fi

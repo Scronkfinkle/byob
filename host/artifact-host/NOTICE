@@ -13,6 +13,10 @@ Mozilla Public License, version 2.0 (https://mozilla.org/MPL/2.0/). The source c
 those components is available from the links above; the exact versions used are listed in
 host/artifact-host/Cargo.lock (servo 0.8.0, mozjs_sys 153.6.0-1). We have not modified them.
 
+On Windows it also ships ANGLE (https://chromium.googlesource.com/angle/angle, built by
+mozangle 0.7.1) as libEGL.dll and libGLESv2.dll, under the BSD 3-Clause licence in
+LICENSE-ANGLE.
+
 Other dependencies are under permissive licences (MIT, Apache-2.0, BSD, ISC, Zlib and
 similar), or MPL-2.0 for some Servo-project crates; see Cargo.lock and each crate's
 licence on crates.io.
