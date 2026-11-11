@@ -73,13 +73,23 @@ pub struct Rects {
     pub more: Rect,
     /// The plugins chip (`Rect::NOTHING` while it isn't shown).
     pub plugins: Rect,
+    /// The app settings' Close button (`Rect::NOTHING` while they are shut).
+    pub settings_close: Rect,
     /// Scripted runs: open the "⋯" menu on the next frame.
     pub open_menu: bool,
 }
 
 impl Default for Rects {
     fn default() -> Self {
-        Self { chats: Rect::NOTHING, chat_settings: Rect::NOTHING, settings: Rect::NOTHING, more: Rect::NOTHING, plugins: Rect::NOTHING, open_menu: false }
+        Self {
+            chats: Rect::NOTHING,
+            chat_settings: Rect::NOTHING,
+            settings: Rect::NOTHING,
+            more: Rect::NOTHING,
+            plugins: Rect::NOTHING,
+            settings_close: Rect::NOTHING,
+            open_menu: false,
+        }
     }
 }
 

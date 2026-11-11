@@ -591,6 +591,10 @@ impl ByobApp {
             // Tall on purpose (gallery, knobs, every colour role): scrolls within most of the window.
             let max = (ui.available_height() * 0.72).max(200.0);
             egui::Panel::top("settings").show(ui, |ui| {
+                self.settings_title(ui);
+                if !self.show_settings {
+                    return;
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("settings-scroll")
                     .max_height(max)
@@ -1158,6 +1162,40 @@ mod app_tests {
         assert!(app.show_settings, "a frame without the key leaves it open");
         press(&ctx, &mut app);
         assert!(!app.show_settings);
+    }
+
+    #[test]
+    fn the_settings_close_button_stays_put_when_the_settings_scroll() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        app.show_settings = true;
+        frame(&ctx, &mut app, 1000.0);
+        frame(&ctx, &mut app, 1000.0);
+        let before = app.header_rects.settings_close;
+        assert!(before.is_positive(), "{before:?}");
+        // Wheel well down inside the settings body.
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
+        let over = egui::pos2(500.0, before.max.y + 150.0);
+        for _ in 0..10 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![
+                    egui::Event::PointerMoved(over),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -400.0),
+                        modifiers: egui::Modifiers::NONE,
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Wheel,
+                    },
+                ],
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+            out.textures_delta.clear();
+        }
+        frame(&ctx, &mut app, 1000.0);
+        assert_eq!(app.header_rects.settings_close, before, "Close moved when the settings scrolled");
     }
 
     #[test]

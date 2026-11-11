@@ -43,7 +43,9 @@ impl Default for AppearanceUi {
 }
 
 impl ByobApp {
-    pub(crate) fn settings(&mut self, ui: &mut egui::Ui) {
+    /// The title row with the way out, drawn above the scrolling body so Close stays in reach
+    /// however far down the settings are scrolled.
+    pub(crate) fn settings_title(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
         ui.add_space(4.0);
         // Which settings these are (a chat and a workspace have their own), and the way out.
@@ -53,13 +55,20 @@ impl ByobApp {
             ui.label(RichText::new("App settings").size(t.text_size(16.0)).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let shortcut = crate::header::settings_shortcut(ui.ctx());
-                if ui.button("Close").on_hover_text(format!("Close the settings ({shortcut})")).clicked() {
+                let close = ui.button("Close").on_hover_text(format!("Close the settings ({shortcut})"));
+                self.header_rects.settings_close = close.rect;
+                if close.clicked() {
                     self.show_settings = false;
                 }
             });
         });
         ui.label(RichText::new("Connection and defaults for every chat; appearance on this device.").small().color(t.text_dim));
-        ui.add_space(8.0);
+        ui.add_space(4.0);
+    }
+
+    pub(crate) fn settings(&mut self, ui: &mut egui::Ui) {
+        let t = self.tokens;
+        ui.add_space(4.0);
         if std::mem::take(&mut self.reveal_connection) {
             ui.scroll_to_cursor(Some(egui::Align::Min));
         }
