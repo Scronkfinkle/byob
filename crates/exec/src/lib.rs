@@ -1166,7 +1166,7 @@ mod tests {
         let ws = ws.path().canonicalize().unwrap();
         let plan = byob_tools::EnvPlan {
             providers: Some(byob_tools::EnvProviders {
-                native: vec![],
+                off: vec![],
                 external: vec![byob_tools::CommandEnv {
                     id: "demo-env".into(),
                     label: "demo environment".into(),

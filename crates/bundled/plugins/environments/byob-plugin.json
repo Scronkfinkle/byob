@@ -1,0 +1,25 @@
+{
+  "id": "environments",
+  "name": "Workspace environments",
+  "version": "1.0.0",
+  "description": "Loads what a workspace declares for its commands, asked once per workspace: Nix dev shells (flake.nix, shell.nix), pixi projects, mise tools, and dev containers (devcontainer.json, Docker or Podman). Plugins can add providers of their own (\"environments\" in a manifest).",
+  "icon": "boxes",
+  "environments": [
+    {
+      "native": "nix",
+      "label": "Nix dev shell"
+    },
+    {
+      "native": "pixi",
+      "label": "pixi environment"
+    },
+    {
+      "native": "mise",
+      "label": "mise tools"
+    },
+    {
+      "native": "container",
+      "label": "dev container"
+    }
+  ]
+}

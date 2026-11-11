@@ -419,6 +419,111 @@ impl Tally {
     }
 }
 
+/// The compaction hook's id (bundled plugin `compaction`, `hooks[].native`).
+pub const HOOK: &str = "compaction";
+/// Where it runs among `before_request` hooks when no plugin names it.
+pub const HOOK_PRIORITY: i64 = 100;
+
+/// Automatic compaction as a `before_request` hook (see the module docs).
+pub(crate) struct CompactionHook;
+
+/// What the hook remembers during one turn.
+#[derive(Default)]
+struct TurnState {
+    /// Compactions made, and whether one failed (then this turn stops trying).
+    compactions: usize,
+    failed: bool,
+    /// Estimated request tokens right after this turn's last compaction.
+    compacted_to: usize,
+}
+
+impl crate::hooks::NativeHook for CompactionHook {
+    /// Before a model request: if it would pass the threshold, summarise the conversation
+    /// and continue from the summary. Before the first request the newest turns stay
+    /// verbatim; later (inside the tool loop) everything is summarised and the request is
+    /// repeated after the summary. A failed summary leaves the messages alone (fit_history
+    /// still shortens them) and turns compaction off for the rest of the turn.
+    fn before_request(&self, ctx: &mut crate::hooks::RequestCtx<'_>) -> crate::hooks::Flow {
+        use crate::hooks::Flow;
+        use crate::turn::{Compacted, TurnEvent};
+        let Some(auto) = ctx.compact else { return Flow::Continue };
+        let slot = ctx.state.entry(HOOK.to_owned()).or_insert_with(|| Box::new(TurnState::default()));
+        let Some(st) = slot.downcast_mut::<TurnState>() else { return Flow::Continue };
+        if st.failed || st.compactions >= MAX_PER_TURN {
+            return Flow::Continue;
+        }
+        let before = ctx.plan.raw_tokens(ctx.messages, ctx.specs);
+        // After a compaction in this turn, wait until the request has grown again by a
+        // quarter of the threshold (a threshold just above the fixed prompt would churn).
+        if before <= auto.at || before < st.compacted_to.saturating_add(auto.at / 4) {
+            return Flow::Continue;
+        }
+        let start = content_start(ctx.messages);
+        let (covered, tail, through) = if ctx.round == 0 {
+            let end = ctx.messages.len().saturating_sub(1);
+            let Some(split) = split_point(ctx.messages, end, auto.keep_turns, auto.at / 4) else { return Flow::Continue };
+            let through = ctx.ids.get(..split).and_then(|ids| ids.iter().rev().find(|id| **id > 0)).copied().unwrap_or(0);
+            (ctx.messages.get(start..split).unwrap_or_default().to_vec(), ctx.messages.get(split..).unwrap_or_default().to_vec(), through)
+        } else {
+            let Some(resume) = resume_message(ctx.messages) else { return Flow::Continue };
+            (ctx.messages.get(start..).unwrap_or_default().to_vec(), vec![resume], ctx.prior)
+        };
+        // Not worth a model call if little but an earlier summary would be summarised (the
+        // threshold may sit just above the system prompt and tool definitions).
+        if fresh_tokens(&covered) < auto.at / 4 {
+            return Flow::Continue;
+        }
+        log::info!("compacting the context of entry {} (~{before} tokens, threshold {})", ctx.entry, auto.at);
+        let id = ctx.entry;
+        (ctx.emit)(TurnEvent::Compacting { id, on: true });
+        let result = summarize(ctx.llm, &covered, None, ctx.plan, ctx.cancel);
+        (ctx.emit)(TurnEvent::Compacting { id, on: false });
+        let summary = match result {
+            Ok(s) => s,
+            Err(Failure::Stopped) => return Flow::Stop("stopped".into()),
+            Err(Failure::Error(e)) => {
+                log::warn!("compaction failed: {e}");
+                st.failed = true;
+                let text = format!("Couldn't summarise the conversation to free context ({e}); older messages were shortened instead.");
+                (ctx.emit)(TurnEvent::Notice { id, text });
+                return Flow::Continue;
+            }
+        };
+        *ctx.model_calls = ctx.model_calls.saturating_add(1);
+        st.compactions = st.compactions.saturating_add(1);
+        let (prompt, completion) = summary.usage.map_or((0, 0), |u| (u.prompt_tokens, u.completion_tokens));
+        ctx.usage.prompt_tokens = ctx.usage.prompt_tokens.saturating_add(prompt);
+        ctx.usage.completion_tokens = ctx.usage.completion_tokens.saturating_add(completion);
+        let mut messages: Vec<ChatMessage> = ctx.messages.get(..start).unwrap_or_default().to_vec();
+        messages.extend(summary_messages(&summary.text));
+        messages.extend(tail);
+        let after = ctx.plan.raw_tokens(&messages, ctx.specs);
+        let to_u64 = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+        if after >= before {
+            // A summary longer than what it replaces: keep the messages, stop trying.
+            st.failed = true;
+            (ctx.emit)(TurnEvent::Usage { id, prompt, completion, context: to_u64(before), estimated: true });
+            let text = "The conversation summary came out longer than the conversation; older messages were shortened instead.".to_owned();
+            (ctx.emit)(TurnEvent::Notice { id, text });
+            return Flow::Continue;
+        }
+        *ctx.messages = messages;
+        st.compacted_to = after;
+        (ctx.emit)(TurnEvent::Usage { id, prompt, completion, context: to_u64(after), estimated: true });
+        let made = Compacted {
+            through,
+            summary: summary.text,
+            tokens_before: to_u64(before),
+            tokens_after: to_u64(after),
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+        };
+        (ctx.emit)(TurnEvent::Compacted { id, made });
+        Flow::Continue
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

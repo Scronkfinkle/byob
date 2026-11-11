@@ -1,0 +1,25 @@
+{
+  "id": "prompt",
+  "name": "System prompt",
+  "version": "1.0.0",
+  "description": "Builds the system prompt in the before_prompt hook pipeline: byob's base prompt, the switched-on plugins' prompt sections and lines (with the skills list), and the user's instructions from every settings level. Other plugins add sections around these by priority.",
+  "icon": "scroll-text",
+  "locked": true,
+  "hooks": [
+    {
+      "event": "before_prompt",
+      "native": "base_prompt",
+      "priority": 0
+    },
+    {
+      "event": "before_prompt",
+      "native": "plugin_prompts",
+      "priority": 100
+    },
+    {
+      "event": "before_prompt",
+      "native": "instructions",
+      "priority": 400
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "workspace-instructions",
+  "name": "Workspace instructions",
+  "version": "1.0.0",
+  "description": "Puts the workspace's AGENTS.md (its first 16 KB) into the system prompt, so a repository can tell the model how it works.",
+  "icon": "book-open",
+  "hooks": [
+    {
+      "event": "before_prompt",
+      "native": "agents_md",
+      "priority": 300
+    }
+  ]
+}

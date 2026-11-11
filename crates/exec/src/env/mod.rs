@@ -428,18 +428,18 @@ impl Envs {
     }
 
     /// Add a provider (after byob's own), switched on and off in chats by `id` like theirs
-    /// (an [`EnvPlan::providers`] that doesn't list it leaves it out).
+    /// (an [`EnvPlan::providers`] whose `off` names it leaves it out).
     pub fn register(&mut self, id: &str, provider: Box<dyn EnvProvider>) {
         self.projects.retain(|(have, _)| have != id);
         self.projects.push((id.to_owned(), provider));
     }
 
-    /// The providers a run with `plan` uses: the registered ones its plan switches on (all
-    /// without a list), then the plugins' command providers.
+    /// The providers a run with `plan` uses: the registered ones its plan doesn't switch
+    /// off, then the plugins' command providers.
     fn providers(&self, plan: &EnvPlan) -> Vec<Provider<'_>> {
         let mut out = Vec::new();
         for (id, p) in &self.projects {
-            if plan.providers.as_ref().is_none_or(|on| on.native.iter().any(|n| n == id)) {
+            if plan.providers.as_ref().is_none_or(|p| !p.off.iter().any(|n| n == id)) {
                 out.push(Provider::Native(p.as_ref()));
             }
         }
@@ -453,7 +453,7 @@ impl Envs {
 
     /// Dev containers are switched on for runs with `plan` (see [`NATIVE_PROVIDERS`]).
     fn containers_on(&self, plan: &EnvPlan) -> bool {
-        plan.providers.as_ref().is_none_or(|on| on.native.iter().any(|n| n == "container"))
+        plan.providers.as_ref().is_none_or(|p| !p.off.iter().any(|n| n == "container"))
     }
 
     /// The package manager `install_packages` uses here, if any.

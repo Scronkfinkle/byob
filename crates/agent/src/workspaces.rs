@@ -291,15 +291,16 @@ impl Engine {
         Ok(client)
     }
 
-    /// The system prompt, then `extra` (the chat's plugins and workspace instructions), then
-    /// the instructions of every level.
-    pub(crate) fn prompt_with(&self, e: &Effective, extra: &str) -> String {
-        let mut out = self.system_prompt.clone();
-        if !extra.trim().is_empty() {
-            out = format!("{out}\n\n{}", extra.trim());
-        }
-        let own = e.instructions_text();
-        if own.is_empty() { out } else { format!("{out}\n\nThe user's instructions for this chat:\n{own}") }
+    /// The prompt parts of `chat`'s last turn (byob's defaults before its first).
+    pub(crate) fn chat_prompt(&self, chat: &str) -> crate::ChatPrompt {
+        self.chat_prompts.get(chat).cloned().unwrap_or_else(|| crate::ChatPrompt { hooks: self.default_hooks.clone(), compaction: true, ..Default::default() })
+    }
+
+    /// The compaction hook is on in the chat client `client` looks at (or would start): its
+    /// plugin (bundled `compaction`) is switched on, or no plugin names it.
+    pub(crate) fn compaction_on(&mut self, client: ClientId) -> bool {
+        let chat = self.client_chat(client);
+        self.compose_for(chat.as_deref(), Some(client), false).is_none_or(|c| c.hooks.iter().any(|b| b.id == crate::compact::HOOK))
     }
 
     /// The chat's compaction settings. The engine's own `compaction.auto: false` turns it off
@@ -630,6 +631,23 @@ impl Engine {
             };
             let _ = inbox.send(Input::Reply { client, msg: Box::new(ServerMsg::ContainersChecked { ok, message }) });
         });
+    }
+}
+
+/// What the `before_prompt` hooks build `chat`'s system prompt from: the engine's prompt (`base`),
+/// the plugins' parts of its last turn (`cp`), its workspace's AGENTS.md, the user's
+/// instructions of every level, and its artifacts.
+pub(crate) fn prompt_inputs(base: &str, chat: &str, e: &Effective, live: &crate::Live, cp: &crate::ChatPrompt, types: &byob_tools::ArtifactTypes) -> crate::hooks::PromptInputs {
+    crate::hooks::PromptInputs {
+        chat: chat.to_owned(),
+        workspace: live.workspace.as_ref().clone(),
+        base: base.to_owned(),
+        plugin_sections: cp.plugin_sections.clone(),
+        plugin_lines: cp.plugin_lines.clone(),
+        agents_md: crate::extensions::agents_md(&live.workspace),
+        instructions: e.instructions_text(),
+        delegation: cp.delegation.clone(),
+        artifacts: crate::artifact::prompt_list(types, &live.artifacts),
     }
 }
 

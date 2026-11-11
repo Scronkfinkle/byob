@@ -41,6 +41,9 @@ mod engine_tests;
 mod extensions;
 #[cfg(test)]
 mod extensions_tests;
+pub mod hooks;
+#[cfg(test)]
+mod hooks_tests;
 mod limits;
 mod live_views;
 #[cfg(test)]
@@ -455,6 +458,20 @@ struct Running {
     tools: Arc<turn::ToolSet>,
     /// Which plugin each of its plugin tools belongs to.
     owners: BTreeMap<String, extensions::Owner>,
+    /// Tools made for this turn (`delegate`), kept when plugins change its tools.
+    turn_tools: Vec<Arc<dyn byob_tools::Tool>>,
+}
+
+/// What a chat's last turn built its system prompt from (for the usage and compaction
+/// estimates, which run the native prompt contributors again on the engine thread).
+#[derive(Clone, Default)]
+struct ChatPrompt {
+    plugin_sections: String,
+    plugin_lines: String,
+    delegation: Option<String>,
+    hooks: hooks::Hooks,
+    /// Its plugins left the compaction hook on.
+    compaction: bool,
 }
 
 struct Engine {
@@ -539,8 +556,10 @@ struct Engine {
     live_views: live_views::LiveViews,
     /// Engine-side handlers of the plugin channel.
     channels: PluginChannels,
-    /// Each chat's plugin prompt part at its last turn (for usage and compaction estimates).
-    ext_prompts: BTreeMap<String, String>,
+    /// Each chat's prompt parts at its last turn (for usage and compaction estimates).
+    chat_prompts: BTreeMap<String, ChatPrompt>,
+    /// byob's native hooks in their default places (chats without plugins).
+    default_hooks: hooks::Hooks,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -599,6 +618,7 @@ impl Engine {
             })
         });
         let mut engine = Self {
+            default_hooks: hooks::Hooks::defaults(&config.plugins.as_ref().map_or_else(natives::Natives::builtin, |p| p.natives.clone().with_kernel()).hooks),
             ext: config.plugins.map(|p| {
                 let mut ext = extensions::Extensions::new(p);
                 ext.sink = Some(sink);
@@ -608,7 +628,7 @@ impl Engine {
             step_views: BTreeMap::new(),
             live_views: live_views::LiveViews::default(),
             channels: config.channels,
-            ext_prompts: BTreeMap::new(),
+            chat_prompts: BTreeMap::new(),
             forced_policy: config.policy,
             defaults: config.defaults,
             forced,
@@ -885,7 +905,7 @@ impl Engine {
         self.live.remove(chat);
         self.queues.remove(chat);
         self.provisional.remove(chat);
-        self.ext_prompts.remove(chat);
+        self.chat_prompts.remove(chat);
         self.step_views.remove(chat);
         if let Some(ext) = self.ext.as_mut() {
             ext.forget_chat(chat);
@@ -1468,6 +1488,7 @@ impl Engine {
         let busy = self.client_chat(client).filter(|c| self.chat_busy(c));
         if busy.is_none()
             && let Some(focus) = compact::command(&text)
+            && self.compaction_on(client)
         {
             self.compact_chat(client, focus);
             return;
@@ -1535,38 +1556,48 @@ impl Engine {
         let composed = self.compose_for(Some(&chat), None, true);
         // `/name args`: what the model gets instead (the transcript keeps what was typed).
         let model_text = composed.as_ref().and_then(|c| extensions::expand_slash(&text, c)).unwrap_or_else(|| text.clone());
-        // Plugins' sections (artifacts, code running, …), then their prompt lines, skills
-        // and the authoring line, then AGENTS.md.
-        let mut extra = composed
-            .as_ref()
-            .map(|c| [c.sections.as_str(), c.prompt.as_str()].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n"))
-            .unwrap_or_default();
-        if let Some(md) = workspace_dir.as_deref().and_then(|w| extensions::agents_md(w)) {
-            extra = if extra.is_empty() { md } else { format!("{extra}\n\n{md}") };
-        }
-        self.ext_prompts.insert(chat.clone(), extra.clone());
         let plugin_agents = composed.as_ref().map(|c| c.agents.clone()).unwrap_or_default();
-        let delegation =
-            workspace_dir.as_deref().filter(|_| eff.subagents.value).and_then(|ws| self.delegation_env(&settings.inference, &llm, &plan, ws, &plugin_agents));
-        let mut base_prompt = self.prompt_with(eff, &extra);
-        if let Some(env) = &delegation {
-            base_prompt = format!("{base_prompt}\n\n{}", delegate::prompt_section(&env.agents));
-        }
+        // `delegate` is offered while a plugin that names it (bundled `subagents`) is on.
+        let delegate_on = composed.as_ref().is_none_or(|c| !c.turn_tools_off.contains(delegate::TOOL));
+        let delegation = workspace_dir
+            .as_deref()
+            .filter(|_| eff.subagents.value && delegate_on)
+            .and_then(|ws| self.delegation_env(&settings.inference, &llm, &plan, ws, &plugin_agents))
+            .map(Arc::new);
+        let chat_prompt = ChatPrompt {
+            plugin_sections: composed.as_ref().map(|c| c.sections.clone()).unwrap_or_default(),
+            plugin_lines: composed.as_ref().map(|c| c.prompt.clone()).unwrap_or_default(),
+            delegation: delegation.as_ref().map(|env| delegate::prompt_section(&env.agents)),
+            hooks: composed.as_ref().map_or_else(|| self.default_hooks.clone(), |c| hooks::Hooks::new(c.hooks.clone())),
+            compaction: composed.as_ref().is_none_or(|c| c.hooks.iter().any(|b| b.id == compact::HOOK)),
+        };
+        self.chat_prompts.insert(chat.clone(), chat_prompt.clone());
         let compaction = self.compact_options(eff);
         let policy = self.policy_for(eff);
         let trust_ask = composed.as_ref().and_then(|c| self.trust_question(c, &policy));
-        let (turn_tools, owners) = match composed {
+        let mut env_plan = settings.env.clone();
+        if let Some(c) = &composed {
+            env_plan.providers = Some(c.env_providers.clone());
+        }
+        let (mut turn_tools, owners) = match composed {
             Some(c) => (c.tools, c.owners),
             None => (self.tools.clone(), BTreeMap::new()),
         };
+        let extra: Vec<Arc<dyn byob_tools::Tool>> =
+            delegation.iter().map(|env| Arc::new(delegate::DelegateTool { env: Arc::clone(env) }) as Arc<dyn byob_tools::Tool>).collect();
+        for t in &extra {
+            turn_tools.register(Arc::clone(t));
+        }
         let tool_set = turn::ToolSet::new(turn_tools);
-        let (history, ids, prior, workspace, first) = {
+        let (history, ids, prior, workspace, first, inputs) = {
             let types = self.artifact_types.clone();
+            let base = self.system_prompt.clone();
             let live = self.live(&chat)?;
-            let system_prompt = system_prompt(&base_prompt, live, &types);
+            let inputs = workspaces::prompt_inputs(&base, &chat, eff, live, &chat_prompt, &types);
+            let system_prompt = chat_prompt.hooks.native_prompt(&inputs);
             let (history, ids) = compact::history(&live.entries, latest(live), Some(&model_text), &system_prompt);
             let prior = live.entries.last().map_or(0, |e| e.id);
-            (history, ids, prior, Arc::clone(&live.workspace), live.entries.is_empty())
+            (history, ids, prior, Arc::clone(&live.workspace), live.entries.is_empty(), inputs)
         };
         let added = self
             .add_message(&chat, &NewMessage::user(text.clone()), attached.clone())
@@ -1592,6 +1623,7 @@ impl Engine {
                 llm: llm.clone(),
                 tools: Arc::clone(&tool_set),
                 owners,
+                turn_tools: extra,
             },
         );
         self.chat_changed(&chat);
@@ -1615,8 +1647,9 @@ impl Engine {
             child: None,
             parent_cancel: None,
             max_calls: limits::MAX_CALLS,
-            delegate: delegation.map(Arc::new),
-            env: Arc::new(settings.env.clone()),
+            env: Arc::new(env_plan),
+            hooks: chat_prompt.hooks.clone(),
+            prompt: Some(inputs),
         };
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });
@@ -1729,11 +1762,13 @@ impl Engine {
         };
         let plan = self.endpoints.plan_with(&settings.inference, settings.effective.tool_mode.value);
         let specs = turn::specs(&self.tools);
-        let base_prompt = self.prompt_with(&settings.effective, self.ext_prompts.get(&chat).map_or("", String::as_str));
         let types = self.artifact_types.clone();
+        let chat_prompt = self.chat_prompt(&chat);
+        let base = self.system_prompt.clone();
         let (messages, through) = match self.live(&chat) {
             Ok(live) => {
-                let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base_prompt, live, &types));
+                let prompt = chat_prompt.hooks.native_prompt(&workspaces::prompt_inputs(&base, &chat, &settings.effective, live, &chat_prompt, &types));
+                let (messages, _) = compact::history(&live.entries, latest(live), None, &prompt);
                 (messages, live.entries.last().map_or(0, |e| e.id))
             }
             Err(e) => return error(e),
@@ -1833,9 +1868,11 @@ impl Engine {
         let settings = self.chat_settings(Some(chat), None);
         let plan = self.endpoints.plan_with(&settings.inference, settings.effective.tool_mode.value);
         let compaction = self.compact_options(&settings.effective);
+        let chat_prompt = self.chat_prompt(chat);
+        let compaction = CompactOptions { auto: compaction.auto && chat_prompt.compaction, ..compaction };
         let (context_used, estimated) = live.tally.context.unwrap_or_else(|| {
-            let base = self.prompt_with(&settings.effective, self.ext_prompts.get(chat).map_or("", String::as_str));
-            let (messages, _) = compact::history(&live.entries, latest(live), None, &system_prompt(&base, live, &self.artifact_types));
+            let prompt = chat_prompt.hooks.native_prompt(&workspaces::prompt_inputs(&self.system_prompt, chat, &settings.effective, live, &chat_prompt, &self.artifact_types));
+            let (messages, _) = compact::history(&live.entries, latest(live), None, &prompt);
             (u64::try_from(plan.raw_tokens(&messages, &turn::specs(&self.tools))).unwrap_or(u64::MAX), true)
         });
         let t = &live.tally;
@@ -2014,11 +2051,6 @@ impl Engine {
     }
 }
 
-/// The system prompt of a chat's turns: later turns must know its artifacts by id.
-fn system_prompt(base: &str, live: &Live, types: &byob_tools::ArtifactTypes) -> String {
-    let listed = artifact::prompt_list(types, &live.artifacts);
-    if listed.is_empty() { base.to_owned() } else { format!("{base}\n\n{listed}") }
-}
 
 /// The compaction the next request builds on: (last entry covered, summary).
 fn latest(live: &Live) -> Option<(u64, &str)> {

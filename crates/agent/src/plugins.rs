@@ -199,7 +199,11 @@ impl Engine {
             if let Some(c) = self.compose_for(Some(&chat), None, false)
                 && let Some(run) = self.turns.get_mut(&entry)
             {
-                run.tools.swap(c.tools);
+                let mut tools = c.tools;
+                for t in &run.turn_tools {
+                    tools.register(Arc::clone(t));
+                }
+                run.tools.swap(tools);
                 run.owners = c.owners;
             }
         }

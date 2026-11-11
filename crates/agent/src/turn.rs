@@ -2,6 +2,7 @@
 //! run them (through the engine's permission gate) and call the model again with the
 //! results. Everything visible is reported back into the engine inbox as [`TurnEvent`]s.
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -17,7 +18,8 @@ use byob_protocol::{Ask, FileChange, Step, StepStatus, ToolAccess, TurnStats};
 use byob_tools::{Access, Answer, Asker, Journal, Question, Registry, Tool, ToolContext, ToolOutput, UndoOp};
 use serde_json::Value;
 
-use crate::{Input, adapt, compact, delegate};
+use crate::hooks::{self, Decision, Flow, Hooks, PromptInputs};
+use crate::{Input, adapt};
 
 use crate::limits::{DETAIL_CHARS, MAX_OUTPUT, MAX_REPEATS, MAX_ROUNDS, REPEAT_QUOTE, TURN_OUTPUT_BUDGET, cap, one_line, prefix};
 
@@ -161,10 +163,13 @@ pub struct Setup {
     pub parent_cancel: Option<Arc<AtomicBool>>,
     /// Most tool calls this turn may make.
     pub max_calls: usize,
-    /// The turn may hand tasks to subagents (top-level turns only: subagents can't delegate).
-    pub delegate: Option<Arc<delegate::Env>>,
     /// Where `run_command` and friends run, as the chat's settings decide.
     pub env: Arc<byob_tools::EnvPlan>,
+    /// The chat's hooks (see [`crate::hooks`]).
+    pub hooks: Hooks,
+    /// What the `before_prompt` hooks build the system prompt from, before the first
+    /// request (`None`: keep `history`'s, as child turns do).
+    pub prompt: Option<PromptInputs>,
 }
 
 /// A turn's tools, swappable between rounds (never during a call: a round works on the
@@ -245,6 +250,20 @@ pub fn spawn(setup: Setup) -> std::io::Result<()> {
         let inbox = setup.inbox.clone();
         let mut turn = Turn::new(setup);
         let result = catch_unwind(AssertUnwindSafe(|| turn.run()));
+        let end = hooks::TurnEndCtx {
+            entry: id,
+            chat: &turn.s.chat,
+            workspace: turn.s.workspace.as_path(),
+            answer: &turn.answer,
+            error: match &result {
+                Ok(Err(End::Error(e))) => Some(e.as_str()),
+                Err(_) => Some("internal error: the turn crashed"),
+                _ => None,
+            },
+            stopped: matches!(result, Ok(Err(End::Stopped))),
+        };
+        let never = AtomicBool::new(false);
+        turn.s.hooks.on_turn_end(&end, &never);
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let stats =
             TurnStats { prompt_tokens: turn.usage.prompt_tokens, completion_tokens: turn.usage.completion_tokens, elapsed_ms, model_calls: turn.model_calls };
@@ -287,11 +306,8 @@ struct Turn {
     journal: Journal,
     /// Model requests made (compactions included).
     model_calls: u64,
-    /// Compactions made, and whether one failed (then this turn stops trying).
-    compactions: usize,
-    compact_failed: bool,
-    /// Estimated request tokens right after this turn's last compaction.
-    compacted_to: usize,
+    /// Native hooks' per-turn state, by hook id.
+    hook_state: BTreeMap<String, Box<dyn Any + Send>>,
     /// The final answer (text of the round that made no tool calls).
     answer: String,
     /// All visible text streamed (kept for child turns' reports).
@@ -300,12 +316,45 @@ struct Turn {
     ran: BTreeMap<String, usize>,
 }
 
-/// A `delegate` call as the tool loop sees it.
-enum Delegated {
-    /// Running in the background; the report arrives on the receiver.
-    Started { key: String, report: Receiver<String> },
-    /// Refused or failed at once; this is the result.
-    Done(String),
+/// A call that passed the checks and the gate, about to run.
+struct Opened {
+    tool: Arc<dyn Tool>,
+    name: String,
+    args: Value,
+    /// For repeated-call detection.
+    key: String,
+    step: Step,
+}
+
+/// A concurrent call running on its own thread.
+struct Started {
+    opened: Opened,
+    done: Receiver<(ToolOutput, Vec<UndoOp>, bool)>,
+}
+
+/// What a running tool can reach of its turn ([`ToolContext::host`]): enough to start a
+/// child turn whose events land on the call's step (see `delegate`).
+pub(crate) struct TurnHost {
+    pub entry: u64,
+    /// The call's step.
+    pub step_id: u64,
+    /// The step's offset in the reply.
+    pub at: usize,
+    pub inbox: Sender<Input>,
+    /// The turn's stop flag.
+    pub cancel: Arc<AtomicBool>,
+    pub workspace: Arc<PathBuf>,
+    pub chat: String,
+    pub step_ids: Arc<AtomicU64>,
+    pub env: Arc<byob_tools::EnvPlan>,
+    /// The round's tools.
+    pub tools: Registry,
+    /// The turn's hooks (a child turn runs the tool hooks too).
+    pub hooks: Hooks,
+    /// This is a child turn (children can't start children).
+    pub child: bool,
+    /// The tool reported the step itself (the turn doesn't finish it).
+    pub owns_step: AtomicBool,
 }
 
 impl Turn {
@@ -329,9 +378,7 @@ impl Turn {
             repeats: 0,
             journal,
             model_calls: 0,
-            compactions: 0,
-            compact_failed: false,
-            compacted_to: 0,
+            hook_state: BTreeMap::new(),
             answer: String::new(),
             content: String::new(),
             ran: BTreeMap::new(),
@@ -347,28 +394,26 @@ impl Turn {
     }
 
     fn tools_on(&self) -> bool {
-        (!self.tools.is_empty() || self.s.delegate.is_some()) && self.calls < self.s.max_calls && self.repeats < MAX_REPEATS
-    }
-
-    /// The tool definitions of a request: the registry's, plus `delegate` if allowed.
-    fn specs(&self) -> Vec<byob_llm::ToolSpec> {
-        let mut out = specs(&self.tools);
-        if let Some(env) = &self.s.delegate {
-            out.push(env.spec());
-        }
-        out
+        !self.tools.is_empty() && self.calls < self.s.max_calls && self.repeats < MAX_REPEATS
     }
 
     fn run(&mut self) -> Result<(), End> {
         if let Some(ask) = self.s.trust_ask.take() {
             self.ask_trust(&ask);
         }
+        // The system prompt: every before_prompt hook, in order (plugins' backends included).
+        if let Some(inputs) = self.s.prompt.take() {
+            let text = self.s.hooks.before_prompt(&inputs, &self.s.cancel);
+            if let Some(first) = self.messages.first_mut().filter(|m| m.role == "system") {
+                *first = ChatMessage::system(text);
+            }
+        }
         for round in 0..MAX_ROUNDS {
             // Plugins may have changed since the last round (the model made a tool).
             self.tools = self.s.tools.snapshot();
             let tools_on = self.tools_on();
-            let specs = if tools_on { self.specs() } else { Vec::new() };
-            self.maybe_compact(&specs, round)?;
+            let mut specs = if tools_on { specs(&self.tools) } else { Vec::new() };
+            self.before_request(&mut specs, round)?;
             let out = self.model_call(&specs)?;
             if out.cancelled {
                 return Err(End::Stopped);
@@ -402,6 +447,36 @@ impl Turn {
             }
         }
         Err(End::Error(format!("stopped after {MAX_ROUNDS} model requests without an answer")))
+    }
+
+    /// The `before_request` hooks (compaction among them) may change the messages and
+    /// the tools of this request, or end the turn.
+    fn before_request(&mut self, specs: &mut Vec<byob_llm::ToolSpec>, round: usize) -> Result<(), End> {
+        let inbox = self.s.inbox.clone();
+        let child = self.s.child;
+        let emit = move |e: TurnEvent| emit_to(&inbox, child, e);
+        let mut ctx = hooks::RequestCtx {
+            entry: self.s.entry,
+            round,
+            child: self.s.child.is_some(),
+            messages: &mut self.messages,
+            specs,
+            llm: &self.s.llm,
+            plan: &self.s.plan,
+            cancel: &self.s.cancel,
+            ids: &self.s.ids,
+            prior: self.s.prior,
+            compact: self.s.compact,
+            usage: &mut self.usage,
+            model_calls: &mut self.model_calls,
+            state: &mut self.hook_state,
+            emit: &emit,
+        };
+        match self.s.hooks.before_request(&mut ctx) {
+            Flow::Continue => Ok(()),
+            Flow::Stop(_) if self.cancelled() => Err(End::Stopped),
+            Flow::Stop(reason) => Err(End::Error(reason)),
+        }
     }
 
     /// Ask once whether the workspace's plugins that came with its folder may run their
@@ -504,109 +579,29 @@ impl Turn {
         self.usage.completion_tokens = self.usage.completion_tokens.saturating_add(completion);
     }
 
-    /// Before a model request: if it would pass the threshold, summarise the conversation
-    /// and continue from the summary. Before the first request the newest turns stay
-    /// verbatim; later (inside the tool loop) everything is summarised and the request is
-    /// repeated after the summary. A failed summary leaves the messages alone (fit_history
-    /// still shortens them) and turns compaction off for the rest of the turn.
-    fn maybe_compact(&mut self, specs: &[byob_llm::ToolSpec], round: usize) -> Result<(), End> {
-        let Some(auto) = self.s.compact else { return Ok(()) };
-        if self.compact_failed || self.compactions >= compact::MAX_PER_TURN {
-            return Ok(());
-        }
-        let before = self.s.plan.raw_tokens(&self.messages, specs);
-        // After a compaction in this turn, wait until the request has grown again by a
-        // quarter of the threshold (a threshold just above the fixed prompt would churn).
-        if before <= auto.at || before < self.compacted_to.saturating_add(auto.at / 4) {
-            return Ok(());
-        }
-        let start = compact::content_start(&self.messages);
-        let (covered, tail, through) = if round == 0 {
-            let end = self.messages.len().saturating_sub(1);
-            let Some(split) = compact::split_point(&self.messages, end, auto.keep_turns, auto.at / 4) else { return Ok(()) };
-            let through = self.s.ids.get(..split).and_then(|ids| ids.iter().rev().find(|id| **id > 0)).copied().unwrap_or(0);
-            (self.messages.get(start..split).unwrap_or_default().to_vec(), self.messages.get(split..).unwrap_or_default().to_vec(), through)
-        } else {
-            let Some(resume) = compact::resume_message(&self.messages) else { return Ok(()) };
-            (self.messages.get(start..).unwrap_or_default().to_vec(), vec![resume], self.s.prior)
-        };
-        // Not worth a model call if little but an earlier summary would be summarised (the
-        // threshold may sit just above the system prompt and tool definitions).
-        if compact::fresh_tokens(&covered) < auto.at / 4 {
-            return Ok(());
-        }
-        log::info!("compacting the context of entry {} (~{before} tokens, threshold {})", self.s.entry, auto.at);
-        let id = self.s.entry;
-        self.emit(TurnEvent::Compacting { id, on: true });
-        let result = compact::summarize(&self.s.llm, &covered, None, &self.s.plan, &self.s.cancel);
-        self.emit(TurnEvent::Compacting { id, on: false });
-        let summary = match result {
-            Ok(s) => s,
-            Err(compact::Failure::Stopped) => return Err(End::Stopped),
-            Err(compact::Failure::Error(e)) => {
-                log::warn!("compaction failed: {e}");
-                self.compact_failed = true;
-                let text = format!("Couldn't summarise the conversation to free context ({e}); older messages were shortened instead.");
-                self.emit(TurnEvent::Notice { id, text });
-                return Ok(());
-            }
-        };
-        self.model_calls = self.model_calls.saturating_add(1);
-        self.compactions = self.compactions.saturating_add(1);
-        let (prompt, completion) = summary.usage.map_or((0, 0), |u| (u.prompt_tokens, u.completion_tokens));
-        self.add_usage(prompt, completion);
-        let mut messages: Vec<ChatMessage> = self.messages.get(..start).unwrap_or_default().to_vec();
-        messages.extend(compact::summary_messages(&summary.text));
-        messages.extend(tail);
-        let after = self.s.plan.raw_tokens(&messages, specs);
-        if after >= before {
-            // A summary longer than what it replaces: keep the messages, stop trying.
-            self.compact_failed = true;
-            self.emit(TurnEvent::Usage { id, prompt, completion, context: to_u64(before), estimated: true });
-            let text = "The conversation summary came out longer than the conversation; older messages were shortened instead.".to_owned();
-            self.emit(TurnEvent::Notice { id, text });
-            return Ok(());
-        }
-        self.messages = messages;
-        self.compacted_to = after;
-        self.emit(TurnEvent::Usage { id, prompt, completion, context: to_u64(after), estimated: true });
-        let made = Compacted {
-            through,
-            summary: summary.text,
-            tokens_before: to_u64(before),
-            tokens_after: to_u64(after),
-            prompt_tokens: prompt,
-            completion_tokens: completion,
-        };
-        self.emit(TurnEvent::Compacted { id, made });
-        Ok(())
-    }
-
-    /// Run one round's calls and return their results in order. Delegations run in the
-    /// background, side by side (as many at once as there are free inference slots); the
+    /// Run one round's calls and return their results in order. Calls of concurrent tools
+    /// (`Tool::concurrent`, e.g. `delegate`) start first, each on a thread of its own; the
     /// other calls run one after another meanwhile, in order.
     fn call_all(&mut self, calls: &[ToolCall]) -> Vec<String> {
         let mut results: Vec<Option<String>> = vec![None; calls.len()];
-        let mut waiting: Vec<(usize, String, Receiver<String>)> = Vec::new();
+        let mut running: Vec<(usize, Started)> = Vec::new();
         for (i, call) in calls.iter().enumerate() {
-            if self.s.delegate.is_some() && call.name.trim() == delegate::TOOL {
-                match self.delegate(call) {
-                    Delegated::Started { key, report } => waiting.push((i, key, report)),
-                    Delegated::Done(text) => results[i] = Some(text),
+            if self.tools.get(call.name.trim()).is_some_and(|t| t.concurrent()) {
+                match self.open(call).and_then(|o| self.start(o)) {
+                    Ok(started) => running.push((i, started)),
+                    Err(text) => results[i] = Some(text),
                 }
             }
         }
         for (i, call) in calls.iter().enumerate() {
-            if results[i].is_none() && !waiting.iter().any(|w| w.0 == i) {
+            if results[i].is_none() && !running.iter().any(|r| r.0 == i) {
                 results[i] = Some(self.call(call));
             }
         }
-        for (i, key, report) in waiting {
-            // The subagent thread always answers; a closed channel means it crashed.
-            let text = report.recv().unwrap_or_else(|_| "Error: the subagent stopped unexpectedly; no report.".to_owned());
-            let text = self.charge(text);
-            self.seen.insert(key, text.clone());
-            results[i] = Some(text);
+        for (i, started) in running {
+            // The call's thread always answers; a closed channel means it crashed.
+            let (output, ops, owned) = started.done.recv().unwrap_or_else(|_| (ToolOutput::err("the tool crashed"), Vec::new(), false));
+            results[i] = Some(self.close(started.opened, output, ops, owned));
         }
         results.into_iter().map(Option::unwrap_or_default).collect()
     }
@@ -627,100 +622,115 @@ impl Turn {
         text
     }
 
-    /// Start a `delegate` call: check it here, then run the subagent on its own thread.
-    fn delegate(&mut self, call: &ToolCall) -> Delegated {
-        if self.cancelled() {
-            return Delegated::Done("Stopped by the user.".into());
-        }
-        if let Some(refused) = self.count_call() {
-            return Delegated::Done(refused);
-        }
-        let Some(env) = self.s.delegate.clone() else { return Delegated::Done("Error: delegation is not available here.".into()) };
-        let args = match parse_arguments(&call.arguments) {
-            Ok(args) => args,
-            Err(e) => {
-                self.failed_step(delegate::TOOL, "delegate: unreadable arguments".into(), ToolAccess::Read, &e);
-                return Delegated::Done(format!("Error: {e}. Call delegate again with a JSON object matching its parameters."));
-            }
+    /// Run one call and return what the model sees.
+    fn call(&mut self, call: &ToolCall) -> String {
+        let opened = match self.open(call) {
+            Ok(o) => o,
+            Err(text) => return text,
         };
-        let key = format!("{}:{args}", delegate::TOOL);
-        if let Some(earlier) = self.seen.get(&key) {
-            self.repeats = self.repeats.saturating_add(1);
-            return Delegated::Done(format!(
-                "You already delegated exactly this in this turn. The report was:\n{}\nDon't repeat it; continue with something else or answer.",
-                prefix(earlier, REPEAT_QUOTE)
-            ));
+        let host = self.host(&opened.step);
+        let asker = self.asker(&opened.name);
+        let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel)
+            .with_journal(&self.journal)
+            .with_chat(&self.s.chat)
+            .with_asker(&asker)
+            .with_env(&self.s.env)
+            .with_host(&host);
+        let output = catch_unwind(AssertUnwindSafe(|| opened.tool.run(&opened.args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
+        let ops = self.journal.take();
+        let owned = host.owns_step.load(Ordering::Relaxed);
+        self.close(opened, output, ops, owned)
+    }
+
+    /// Start a concurrent call on a thread of its own (with its own undo journal).
+    fn start(&mut self, opened: Opened) -> Result<Started, String> {
+        let host = self.host(&opened.step);
+        let asker = self.asker(&opened.name);
+        let (tool, args) = (Arc::clone(&opened.tool), opened.args.clone());
+        let (workspace, cancel, chat, env) = (Arc::clone(&self.s.workspace), Arc::clone(&self.s.cancel), self.s.chat.clone(), Arc::clone(&self.s.env));
+        let tag = format!("{}-c{}", self.s.entry, opened.step.id);
+        let (tx, rx) = channel();
+        let spawned = thread::Builder::new().name("byob-tool".into()).spawn(move || {
+            let journal = Journal::new(workspace.as_path(), &tag);
+            let ctx = ToolContext::new(workspace.as_path(), &cancel).with_journal(&journal).with_chat(&chat).with_asker(&asker).with_env(&env).with_host(&host);
+            let output = catch_unwind(AssertUnwindSafe(|| tool.run(&args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
+            let _ = tx.send((output, journal.take(), host.owns_step.load(Ordering::Relaxed)));
+        });
+        match spawned {
+            Ok(_) => Ok(Started { opened, done: rx }),
+            Err(e) => Ok(Started { done: failed_now(format!("couldn't start the tool: {e}")), opened }),
         }
-        let job = match env.prepare(&args, &self.tools) {
-            Ok(job) => job,
-            Err(e) => {
-                self.failed_step(delegate::TOOL, "delegate: not started".into(), ToolAccess::Read, &e);
-                return Delegated::Done(format!("Error: {e}"));
-            }
-        };
-        let launch = delegate::Launch {
+    }
+
+    fn asker(&self, tool: &str) -> TurnAsker {
+        TurnAsker {
+            inbox: self.s.inbox.clone(),
+            child: self.s.child,
             entry: self.s.entry,
-            step_id: self.s.step_ids.fetch_add(1, Ordering::Relaxed),
+            step_ids: Arc::clone(&self.s.step_ids),
+            cancel: Arc::clone(&self.s.cancel),
+            tool: tool.to_owned(),
             at: self.content_len,
+        }
+    }
+
+    fn host(&self, step: &Step) -> TurnHost {
+        TurnHost {
+            entry: self.s.entry,
+            step_id: step.id,
+            at: step.at,
             inbox: self.s.inbox.clone(),
             cancel: Arc::clone(&self.s.cancel),
             workspace: Arc::clone(&self.s.workspace),
             chat: self.s.chat.clone(),
             step_ids: Arc::clone(&self.s.step_ids),
             env: Arc::clone(&self.s.env),
-        };
-        match delegate::launch(&env, job, launch) {
-            Ok(report) => {
-                *self.ran.entry(delegate::TOOL.to_owned()).or_default() += 1;
-                Delegated::Started { key, report }
-            }
-            Err(e) => Delegated::Done(format!("Error: couldn't start the subagent: {e}")),
+            tools: self.tools.clone(),
+            hooks: self.s.hooks.clone(),
+            child: self.s.child.is_some(),
+            owns_step: AtomicBool::new(false),
         }
     }
 
-    /// Run one call and return what the model sees.
-    fn call(&mut self, call: &ToolCall) -> String {
+    /// Check a call (stop, limit, known tool, arguments, repeats), show its step, run the
+    /// `before_tool_call` hooks and the permission gate. `Err` is the result for the model.
+    fn open(&mut self, call: &ToolCall) -> Result<Opened, String> {
         if self.cancelled() {
-            return "Stopped by the user.".into();
+            return Err("Stopped by the user.".into());
         }
         if let Some(refused) = self.count_call() {
-            return refused;
+            return Err(refused);
         }
-        let name = call.name.trim();
-        let Some(tool) = self.tools.get(name).cloned() else {
-            self.failed_step(name, format!("Unknown tool {name:?}"), ToolAccess::Read, "no such tool");
-            let known: Vec<String> = self.specs().into_iter().map(|s| s.name).collect();
-            return format!("Error: there is no tool called {name:?}. Available tools: {}.", known.join(", "));
+        let name = call.name.trim().to_owned();
+        let Some(tool) = self.tools.get(&name).cloned() else {
+            self.failed_step(&name, format!("Unknown tool {name:?}"), ToolAccess::Read, "no such tool");
+            let known: Vec<String> = specs(&self.tools).into_iter().map(|s| s.name).collect();
+            return Err(format!("Error: there is no tool called {name:?}. Available tools: {}.", known.join(", ")));
         };
-        let args = match parse_arguments(&call.arguments) {
+        let mut args = match parse_arguments(&call.arguments) {
             Ok(args) => args,
             Err(e) => {
-                self.failed_step(name, format!("{name}: unreadable arguments"), ToolAccess::Read, &e);
-                return format!("Error: {e}. Call {name} again with a JSON object matching its parameters.");
+                self.failed_step(&name, format!("{name}: unreadable arguments"), ToolAccess::Read, &e);
+                return Err(format!("Error: {e}. Call {name} again with a JSON object matching its parameters."));
             }
         };
         let key = format!("{name}:{args}");
         if let Some(earlier) = self.seen.get(&key) {
             self.repeats = self.repeats.saturating_add(1);
-            return format!(
+            return Err(format!(
                 "You already called {name} with exactly these arguments in this turn. The result was:\n{}\nDon't repeat it; continue with something else or answer.",
                 prefix(earlier, REPEAT_QUOTE)
-            );
+            ));
         }
-        let text = self.run_tool(tool.as_ref(), name, &args);
-        self.seen.insert(key, text.clone());
-        text
-    }
-
-    fn run_tool(&mut self, tool: &dyn Tool, name: &str, args: &Value) -> String {
+        let tool_ref = tool.as_ref();
         // Tool code is not ours to trust either: a panic in title/access/preview/run fails the call.
-        let title = catch_unwind(AssertUnwindSafe(|| tool.pending_title(args))).unwrap_or_else(|_| name.to_owned());
+        let title = catch_unwind(AssertUnwindSafe(|| tool_ref.pending_title(&args))).unwrap_or_else(|_| name.clone());
         // If access() can't say, assume the most dangerous.
-        let access = catch_unwind(AssertUnwindSafe(|| tool.access(args))).map_or(ToolAccess::Execute, to_protocol);
-        let preview = catch_unwind(AssertUnwindSafe(|| tool.preview(args, self.s.workspace.as_path()))).ok().flatten().map(crate::steps::bound_preview);
+        let access = catch_unwind(AssertUnwindSafe(|| tool_ref.access(&args))).map_or(ToolAccess::Execute, to_protocol);
+        let preview = catch_unwind(AssertUnwindSafe(|| tool_ref.preview(&args, self.s.workspace.as_path()))).ok().flatten().map(crate::steps::bound_preview);
         let mut step = Step {
             id: self.s.step_ids.fetch_add(1, Ordering::Relaxed),
-            tool: name.to_owned(),
+            tool: name.clone(),
             title: one_line(&title, DETAIL_CHARS),
             access,
             status: StepStatus::Running,
@@ -732,57 +742,87 @@ impl Turn {
             artifacts: Vec::new(),
             delegation: None,
             // A call a person must confirm every time (installing system-wide).
-            ask: catch_unwind(AssertUnwindSafe(|| tool.always_ask(args)))
+            ask: catch_unwind(AssertUnwindSafe(|| tool_ref.always_ask(&args)))
                 .unwrap_or_else(|_| Some("this tool must be confirmed".into()))
                 .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true })),
             views: vec![],
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step: step.clone() });
-        if let Some(reason) = self.gate(&step).denied() {
+        // Plugins first (they may change the arguments, decide, or ask), then the gate.
+        let mut hook_ctx = hooks::ToolCallCtx {
+            tool: &name,
+            args: &mut args,
+            access,
+            chat: &self.s.chat,
+            workspace: self.s.workspace.as_path(),
+            child: self.s.child.is_some(),
+        };
+        let decision = self.s.hooks.before_tool_call(&mut hook_ctx, &self.s.cancel);
+        if format!("{name}:{args}") != key {
+            step.detail = one_line(&args.to_string(), DETAIL_CHARS);
+        }
+        let verdict = match decision {
+            Decision::Deny(message) => Verdict::Deny(message),
+            Decision::Allow if step.ask.as_ref().is_none_or(|a| !a.always) => Verdict::Allow,
+            Decision::Ask(message) => {
+                let text = if message.is_empty() { "A plugin asks you to confirm this call.".to_owned() } else { prefix(&message, MAX_ASK_TEXT).to_owned() };
+                let warning = step.ask.take().and_then(|a| a.warning);
+                step.ask = Some(Box::new(Ask { text, warning, always: true }));
+                self.gate(&step)
+            }
+            Decision::Allow | Decision::Continue => self.gate(&step),
+        };
+        if let Some(reason) = verdict.denied() {
             step.status = StepStatus::Denied;
             step.detail = one_line(&reason, DETAIL_CHARS);
             self.emit(TurnEvent::Step { id: self.s.entry, step });
             if self.cancelled() {
-                return "Stopped by the user.".into();
+                return Err("Stopped by the user.".into());
             }
-            return format!("Not run: {reason}. Don't retry this call; tell the user what you would have done.");
+            return Err(format!("Not run: {reason}. Don't retry this call; tell the user what you would have done."));
         }
-        let asker = TurnAsker {
-            inbox: self.s.inbox.clone(),
-            child: self.s.child,
-            entry: self.s.entry,
-            step_ids: Arc::clone(&self.s.step_ids),
-            cancel: Arc::clone(&self.s.cancel),
-            tool: name.to_owned(),
-            at: self.content_len,
-        };
-        let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel)
-            .with_journal(&self.journal)
-            .with_chat(&self.s.chat)
-            .with_asker(&asker)
-            .with_env(&self.s.env);
-        let output = catch_unwind(AssertUnwindSafe(|| tool.run(args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
-        let (ops, complete) = crate::steps::undo_ops(self.journal.take(), &output.changes);
+        Ok(Opened { tool, name, args, key, step })
+    }
+
+    /// After a call: undo information, the `after_tool_call` hooks, the step's final state,
+    /// and the text the model gets. `owned`: the tool reported its step itself.
+    fn close(&mut self, opened: Opened, output: ToolOutput, ops: Vec<UndoOp>, owned: bool) -> String {
+        let Opened { tool, name, args, key, mut step } = opened;
+        let (ops, complete) = crate::steps::undo_ops(ops, &output.changes);
         if !ops.is_empty() || !complete {
             self.emit(TurnEvent::Undo { id: self.s.entry, ops, complete });
         }
-        *self.ran.entry(name.to_owned()).or_default() += 1;
+        *self.ran.entry(name.clone()).or_default() += 1;
         let mut text = self.charge(output.text);
-        step.status = if output.failed { StepStatus::Failed } else { StepStatus::Done };
-        if !output.failed {
-            let done = catch_unwind(AssertUnwindSafe(|| tool.title(args))).unwrap_or_else(|_| name.to_owned());
-            step.title = one_line(&done, DETAIL_CHARS);
+        let mut hook_ctx = hooks::AfterCtx {
+            tool: &name,
+            args: &args,
+            result: &mut text,
+            failed: output.failed,
+            views: &mut step.views,
+            chat: &self.s.chat,
+            workspace: self.s.workspace.as_path(),
+            child: self.s.child.is_some(),
+        };
+        self.s.hooks.after_tool_call(&mut hook_ctx, &self.s.cancel);
+        if !owned {
+            step.status = if output.failed { StepStatus::Failed } else { StepStatus::Done };
+            if !output.failed {
+                let done = catch_unwind(AssertUnwindSafe(|| tool.title(&args))).unwrap_or_else(|_| name.clone());
+                step.title = one_line(&done, DETAIL_CHARS);
+            }
+            step.detail = one_line(&text, DETAIL_CHARS);
+            step.changes = output.changes.iter().map(|c| display_change(c, &self.s.workspace)).collect();
+            step.media = crate::attachments::media_for_changes(&output.changes, &self.s.workspace);
+            if !output.failed {
+                step.artifacts = byob_tools::artifact::for_call(&self.s.workspace, &self.s.chat, &output.changes, &step.media);
+            }
+            self.emit(TurnEvent::Step { id: self.s.entry, step });
         }
-        step.detail = one_line(&text, DETAIL_CHARS);
-        step.changes = output.changes.iter().map(|c| display_change(c, &self.s.workspace)).collect();
-        step.media = crate::attachments::media_for_changes(&output.changes, &self.s.workspace);
-        if !output.failed {
-            step.artifacts = byob_tools::artifact::for_call(&self.s.workspace, &self.s.chat, &output.changes, &step.media);
-        }
-        self.emit(TurnEvent::Step { id: self.s.entry, step });
         if output.failed && !text.starts_with("Error") {
             text.insert_str(0, "Error: ");
         }
+        self.seen.insert(key, text.clone());
         text
     }
 
@@ -813,6 +853,13 @@ impl Turn {
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step });
     }
+}
+
+/// A receiver that already holds a failed output.
+fn failed_now(text: String) -> Receiver<(ToolOutput, Vec<UndoOp>, bool)> {
+    let (tx, rx) = channel();
+    let _ = tx.send((ToolOutput::err(text), Vec::new(), false));
+    rx
 }
 
 /// Most characters of a question's text or warning on an approval card.
@@ -921,8 +968,13 @@ fn to_u64(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
+/// The tool definitions of a request, by name, except that concurrent tools (`delegate`)
+/// come last.
 pub(crate) fn specs(tools: &Registry) -> Vec<byob_llm::ToolSpec> {
-    tools.specs().into_iter().map(|s| byob_llm::ToolSpec { name: s.name, description: s.description, parameters: s.parameters }).collect()
+    let mut out: Vec<byob_llm::ToolSpec> =
+        tools.specs().into_iter().map(|s| byob_llm::ToolSpec { name: s.name, description: s.description, parameters: s.parameters }).collect();
+    out.sort_by_key(|s| tools.get(&s.name).is_some_and(|t| t.concurrent()));
+    out
 }
 
 /// Drop empty slots (gaps from sparse stream indices) and give every call a unique id,

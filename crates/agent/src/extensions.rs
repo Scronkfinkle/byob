@@ -41,6 +41,7 @@ use byob_tools::{ArtifactType, ArtifactTypes, Registry, Tool};
 use byob_types::config::Effective;
 
 use crate::backends::{Backends, Make, SinkFor};
+use crate::hooks::{self, Binding, Event};
 use crate::natives::Natives;
 
 /// Longest system-prompt section a plugin file may add (bytes).
@@ -281,6 +282,13 @@ pub(crate) struct Composed {
     /// The chat's artifact types: the engine's, less those of plugins that are off, with
     /// the switched-on plugins' declarations (and overrides) applied.
     pub artifact_types: ArtifactTypes,
+    /// The chat's hooks (switched-on plugins' and the natives nobody names), unordered.
+    pub hooks: Vec<Binding>,
+    /// Tools the engine makes per turn (`Natives::turn_tools`) that a plugin names but none
+    /// that is on offers: the turn goes without them.
+    pub turn_tools_off: BTreeSet<String>,
+    /// Workspace environment providers: byob's own that are off, the plugins' commands.
+    pub env_providers: byob_tools::EnvProviders,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -333,7 +341,8 @@ fn temp_scratch() -> PathBuf {
 }
 
 impl Extensions {
-    pub(crate) fn new(cfg: PluginsConfig) -> Self {
+    pub(crate) fn new(mut cfg: PluginsConfig) -> Self {
+        cfg.natives = std::mem::take(&mut cfg.natives).with_kernel();
         let scratch_root = cfg.scratch_root.clone().unwrap_or_else(temp_scratch);
         let global = ExtSet::new(
             PluginScope::Global,
@@ -541,6 +550,8 @@ impl Extensions {
                     // Artifact types and the prompt section are data (like the prompt line),
                     // so they apply even before a workspace plugin is trusted.
                     native_problems.extend(native.data(plugin, &cfg.natives, input.types));
+                    // So are native hooks and providers: in-tree code, whoever names it.
+                    native_problems.extend(native.natives_of(plugin, set.scope, &cfg.natives, trusted));
                     if let Some(p) = &plugin.manifest.prompt {
                         prompt_lines.push(p.clone());
                     }
@@ -586,8 +597,9 @@ impl Extensions {
                             python: &python,
                             sink,
                         };
-                        let (bi, tools) = backend_tools(backends, &make, &missing, &mut names);
+                        let (bi, tools, backend) = backend_tools(backends, &make, &missing, &mut names);
                         backend_info = Some(bi);
+                        native.backend_hooks(plugin, set.scope, backend.as_ref());
                         for tool in tools {
                             let name = tool.spec().name;
                             let declared = tool.declared().name.clone();
@@ -675,6 +687,9 @@ impl Extensions {
             skills.push(builtin_skill.clone());
         }
         out.slash = slash_menu(&out.commands, &command_from, &skills, &skill_from);
+        // `/compact` belongs to the compaction hook (bundled plugin `compaction`).
+        let compaction = out.hooks.iter().any(|b| b.id == crate::compact::HOOK);
+        out.slash.retain(|i| compaction || !(i.kind == SlashKind::Builtin && i.name == "compact"));
         out.tools.register(Arc::new(UseSkillTool::new(skills.clone())));
         let mut prompt = prompt_lines.join("\n");
         for part in [byob_plugins::skills_prompt(&skills), AUTHORING_LINE.to_owned()] {
@@ -705,16 +720,27 @@ struct NativeParts {
     offered: BTreeSet<String>,
     declared_types: Vec<ArtifactType>,
     sections: Vec<(usize, String, Section)>,
+    /// Native hooks and environment providers some plugin here names (the others keep
+    /// their default places), what the switched-on ones offer, and the plugins' hooks.
+    claimed_hooks: BTreeSet<String>,
+    claimed_envs: BTreeSet<String>,
+    offered_envs: BTreeSet<String>,
+    external_envs: Vec<byob_tools::CommandEnv>,
+    hooks: Vec<Binding>,
 }
 
 impl NativeParts {
     fn new(order: &[&ExtSet], bundled: &ExtSet) -> Self {
         let mut claimed_tools = BTreeSet::new();
         let mut claimed_types = BTreeSet::new();
+        let mut claimed_hooks = BTreeSet::new();
+        let mut claimed_envs = BTreeSet::new();
         for set in order {
             for p in set.found.active() {
                 claimed_tools.extend(p.native_tools().into_iter().map(str::to_owned));
                 claimed_types.extend(p.manifest.artifact_types.iter().map(|t| t.content_type.clone()));
+                claimed_hooks.extend(p.manifest.hooks.iter().filter_map(|h| h.native.clone()));
+                claimed_envs.extend(p.manifest.environments.iter().filter_map(|e| e.native.clone()));
             }
         }
         Self {
@@ -724,6 +750,73 @@ impl NativeParts {
             offered: BTreeSet::new(),
             declared_types: Vec::new(),
             sections: Vec::new(),
+            claimed_hooks,
+            claimed_envs,
+            offered_envs: BTreeSet::new(),
+            external_envs: Vec::new(),
+            hooks: Vec::new(),
+        }
+    }
+
+    /// A switched-on plugin's native hooks and environment providers, and (if `trusted`
+    /// and it has a folder) its command providers. Returns its problems.
+    fn natives_of(&mut self, plugin: &Plugin, scope: PluginScope, natives: &Natives, trusted: bool) -> Vec<String> {
+        let mut problems = Vec::new();
+        for (i, h) in plugin.manifest.hooks.iter().enumerate() {
+            let Some(id) = &h.native else { continue };
+            let (Some(reg), Some(event)) = (natives.hooks.get(id), Event::parse(&h.event)) else {
+                problems.push(format!("hooks[{i}]: \"{id}\" isn't a hook built into this byob"));
+                continue;
+            };
+            self.hooks.push(Binding {
+                plugin: plugin.id().to_owned(),
+                id: id.clone(),
+                event,
+                priority: h.priority,
+                rank: rank(scope),
+                tools: h.tools.clone(),
+                run: hooks::Runner::Native(Arc::clone(&reg.hook)),
+            });
+        }
+        for (i, e) in plugin.manifest.environments.iter().enumerate() {
+            match &e.native {
+                Some(n) if natives.environments.contains(n) => {
+                    self.offered_envs.insert(n.clone());
+                }
+                Some(n) => problems.push(format!("environments[{i}]: \"{n}\" isn't an environment provider built into this byob")),
+                None if !trusted || !plugin.dir.is_dir() => {}
+                None => self.external_envs.push(byob_tools::CommandEnv {
+                    id: format!("{}-{}", plugin.id(), e.id),
+                    label: e.label.clone(),
+                    detect: e.detect.clone(),
+                    inputs: e.inputs.clone(),
+                    program: e.command.clone().unwrap_or_default().into(),
+                    args: e.args.clone(),
+                    dir: plugin.dir.clone(),
+                }),
+            }
+        }
+        problems
+    }
+
+    /// A switched-on, trusted plugin's hooks its backend answers.
+    fn backend_hooks(&mut self, plugin: &Plugin, scope: PluginScope, backend: Option<&Arc<byob_plugins::Backend>>) {
+        let Some(backend) = backend else { return };
+        for h in plugin.manifest.hooks.iter().filter(|h| h.native.is_none()) {
+            let Some(event) = Event::parse(&h.event) else { continue };
+            self.hooks.push(Binding {
+                plugin: plugin.id().to_owned(),
+                id: "backend".into(),
+                event,
+                priority: h.priority,
+                rank: rank(scope),
+                tools: h.tools.clone(),
+                run: hooks::Runner::Backend {
+                    backend: Arc::clone(backend),
+                    timeout: Duration::from_millis(h.timeout_ms),
+                    fail_closed: h.fail_closed,
+                },
+            });
         }
     }
 
@@ -759,7 +852,7 @@ impl NativeParts {
         let mut problems = Vec::new();
         for t in &plugin.manifest.tools {
             let ToolKind::Native(n) = &t.kind else { continue };
-            if base.get(n).is_some() || natives.typed_tools.contains_key(n) {
+            if base.get(n).is_some() || natives.typed_tools.contains_key(n) || natives.turn_tools.contains(n) {
                 self.offered.insert(n.clone());
                 names.push(n.clone());
             } else if !t.optional {
@@ -771,7 +864,14 @@ impl NativeParts {
 
     /// Into `out`: the chat's artifact types, its native tools, the sections.
     fn finish(self, out: &mut Composed, natives: &Natives, types: &ArtifactTypes) {
-        let Self { claimed_tools, claimed_types, offered, mut declared_types, mut sections, .. } = self;
+        let Self { claimed_tools, claimed_types, offered, mut declared_types, mut sections, claimed_hooks, claimed_envs, offered_envs, external_envs, mut hooks, .. } =
+            self;
+        // Native hooks nobody here names keep their default places.
+        hooks.extend(hooks::default_bindings(&natives.hooks, |id| !claimed_hooks.contains(id)));
+        out.hooks = hooks;
+        out.turn_tools_off = claimed_tools.difference(&offered).filter(|t| natives.turn_tools.contains(*t)).cloned().collect();
+        out.env_providers =
+            byob_tools::EnvProviders { off: claimed_envs.difference(&offered_envs).cloned().collect(), external: external_envs };
         // The engine's order: unclaimed types stay, claimed ones only as a switched-on
         // plugin declares them; new types after.
         let chat_types = ArtifactTypes::empty();
@@ -868,9 +968,14 @@ fn artifact_type(plugin: &Plugin, decl: &ManifestArtifactType, natives: &Natives
 
 /// The backend of `m.plugin` (made if needed) and the tools it serves; off while required
 /// settings are `missing`.
-fn backend_tools(backends: &mut Backends, m: &Make<'_>, missing: &[String], names: &mut ToolNames) -> (BackendInfo, Vec<Arc<BackendTool>>) {
+fn backend_tools(
+    backends: &mut Backends,
+    m: &Make<'_>,
+    missing: &[String],
+    names: &mut ToolNames,
+) -> (BackendInfo, Vec<Arc<BackendTool>>, Option<Arc<byob_plugins::Backend>>) {
     if !missing.is_empty() {
-        return (BackendInfo { state: "off".into(), error: Some(format!("fill in: {}", missing.join(", "))), ..Default::default() }, Vec::new());
+        return (BackendInfo { state: "off".into(), error: Some(format!("fill in: {}", missing.join(", "))), ..Default::default() }, Vec::new(), None);
     }
     let backend = backends.ensure(m);
     let id = m.plugin.id();
@@ -885,7 +990,7 @@ fn backend_tools(backends: &mut Backends, m: &Make<'_>, missing: &[String], name
             Arc::new(BackendTool::new(name, m.plugin_ref.clone(), t.clone(), Arc::clone(&backend)))
         })
         .collect();
-    (crate::backends::info(&backend), tools)
+    (crate::backends::info(&backend), tools, Some(backend))
 }
 
 /// The `/` menu: `/compact`, then commands, then skills; a name only once.
@@ -1048,4 +1153,14 @@ pub(crate) fn agents_md(ws: &Path) -> Option<String> {
     }
     let text = text.trim();
     (!text.is_empty()).then(|| format!("## Workspace instructions (AGENTS.md)\n{text}"))
+}
+
+/// Precedence of a plugin's hooks among those of the same priority (chat first).
+fn rank(scope: PluginScope) -> u8 {
+    match scope {
+        PluginScope::Chat => 0,
+        PluginScope::Workspace => 1,
+        PluginScope::Global => 2,
+        PluginScope::Bundled => 3,
+    }
 }

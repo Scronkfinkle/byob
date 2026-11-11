@@ -13,5 +13,8 @@
   "artifact_types": [
     { "type": "text/plain", "native": "text" }
   ],
-  "system_prompt": { "native": "artifacts" }
+  "system_prompt": { "native": "artifacts" },
+  "hooks": [
+    { "event": "before_prompt", "native": "artifact_list", "priority": 600 }
+  ]
 }

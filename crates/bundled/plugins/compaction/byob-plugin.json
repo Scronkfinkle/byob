@@ -1,0 +1,14 @@
+{
+  "id": "compaction",
+  "name": "Context compaction",
+  "version": "1.0.0",
+  "description": "When a request would pass the threshold of the context window (Settings: compaction), the model first writes a dense summary and the chat continues from it; /compact [focus] does it on demand. A before_request hook: switch it off and long chats are only shortened.",
+  "icon": "fold-vertical",
+  "hooks": [
+    {
+      "event": "before_request",
+      "native": "compaction",
+      "priority": 100
+    }
+  ]
+}

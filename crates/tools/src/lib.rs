@@ -87,8 +87,8 @@ pub struct EnvPlan {
 /// Which workspace environment providers a chat uses.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EnvProviders {
-    /// byob's own, by id (`nix`, `pixi`, `mise`, `container`).
-    pub native: Vec<String>,
+    /// Registered providers left out, by id (byob's own: `nix`, `pixi`, `mise`, `container`).
+    pub off: Vec<String>,
     /// Command providers plugins declare (`environments` in a manifest).
     pub external: Vec<CommandEnv>,
 }

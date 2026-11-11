@@ -1,6 +1,8 @@
 //! Subagents: the `delegate` tool.
 //!
-//! The main model calls `delegate { agent?, task, tools? }`; the turn starts a **child turn**
+//! The main model calls `delegate { agent?, task, tools? }` ([`DelegateTool`], an ordinary
+//! concurrent tool the engine adds to a turn's tools while the bundled `subagents` plugin is
+//! on); through the turn's [`crate::turn::TurnHost`] it starts a **child turn**
 //! with a fresh context (the agent's system prompt and the task, not the chat's history)
 //! that runs the normal tool loop with the same tools (or fewer), and returns the child's
 //! final reply as the tool result. Children share the chat's workspace, artifacts,
@@ -179,6 +181,76 @@ pub struct Launch {
     pub step_ids: Arc<AtomicU64>,
     /// Where the chat's commands run (subagents run theirs there too).
     pub env: Arc<byob_tools::EnvPlan>,
+    /// The parent's hooks (approval policies apply to subagents' calls too).
+    pub hooks: crate::hooks::Hooks,
+}
+
+/// The `delegate` tool of one turn: checks the call, starts the subagent through the turn
+/// (its step becomes the delegation card) and waits for the report. Concurrent, so several
+/// delegations of a round run side by side.
+pub struct DelegateTool {
+    pub env: Arc<Env>,
+}
+
+impl byob_tools::Tool for DelegateTool {
+    fn spec(&self) -> byob_tools::ToolSpec {
+        let s = self.env.spec();
+        byob_tools::ToolSpec { name: s.name, description: s.description, parameters: s.parameters }
+    }
+
+    fn title(&self, args: &Value) -> String {
+        self.pending_title(args)
+    }
+
+    fn pending_title(&self, args: &Value) -> String {
+        let agent = args.get("agent").and_then(Value::as_str).map(str::trim).filter(|a| !a.is_empty()).unwrap_or(DEFAULT_AGENT);
+        let task = args.get("task").and_then(Value::as_str).unwrap_or_default();
+        format!("{agent} · {task}")
+    }
+
+    fn access(&self, _args: &Value) -> byob_tools::Access {
+        byob_tools::Access::Read
+    }
+
+    fn concurrent(&self) -> bool {
+        true
+    }
+
+    fn run(&self, args: &Value, ctx: &byob_tools::ToolContext<'_>) -> byob_tools::ToolOutput {
+        // Only a top-level turn offers what a child turn needs (subagents can't delegate).
+        let Some(host) = ctx.host::<turn::TurnHost>().filter(|h| !h.child) else {
+            return byob_tools::ToolOutput::err("delegation is not available here");
+        };
+        let job = match self.env.prepare(args, &host.tools) {
+            Ok(job) => job,
+            Err(e) => return byob_tools::ToolOutput::err(e),
+        };
+        let launch = Launch {
+            entry: host.entry,
+            step_id: host.step_id,
+            at: host.at,
+            inbox: host.inbox.clone(),
+            cancel: Arc::clone(&host.cancel),
+            workspace: Arc::clone(&host.workspace),
+            chat: host.chat.clone(),
+            step_ids: Arc::clone(&host.step_ids),
+            env: Arc::clone(&host.env),
+            hooks: host.hooks.clone(),
+        };
+        match launch_job(&self.env, job, launch) {
+            Ok(report) => {
+                // The delegation card is the step now; the turn doesn't finish it.
+                host.owns_step.store(true, Ordering::Relaxed);
+                // The subagent thread always answers; a closed channel means it crashed.
+                let text = report.recv().unwrap_or_else(|_| "Error: the subagent stopped unexpectedly; no report.".to_owned());
+                byob_tools::ToolOutput::ok(text)
+            }
+            Err(e) => {
+                host.owns_step.store(true, Ordering::Relaxed);
+                byob_tools::ToolOutput::err(format!("couldn't start the subagent: {e}"))
+            }
+        }
+    }
 }
 
 impl Env {
@@ -325,7 +397,7 @@ delegate calls in one reply run in parallel). Give each subagent everything it n
 
 /// Start `job` on its own thread. The parent step appears at once (queued until a slot is
 /// free); the report arrives on the returned receiver.
-pub fn launch(env: &Env, job: Job, l: Launch) -> std::io::Result<Receiver<String>> {
+pub fn launch_job(env: &Env, job: Job, l: Launch) -> std::io::Result<Receiver<String>> {
     let (tx, rx) = channel();
     let mut step = Step {
         id: l.step_id,
@@ -446,8 +518,9 @@ fn run(job: Job, l: &Launch, step: &mut Step, slots: &Arc<Slots>, opts: Subagent
         child: Some(step.id),
         parent_cancel: Some(Arc::clone(&l.cancel)),
         max_calls: opts.max_calls,
-        delegate: None,
         env: Arc::clone(&l.env),
+        hooks: l.hooks.clone(),
+        prompt: None,
     };
     let out = turn::run_child(setup);
     done.store(true, Ordering::Relaxed);

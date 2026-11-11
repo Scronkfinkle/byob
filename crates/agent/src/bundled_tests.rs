@@ -61,14 +61,17 @@ fn bundled_plugins_load_with_no_files_on_disk() {
     let c = compose(&mut ext, ws.path(), &[]);
     assert!(c.errors.is_empty(), "{:?}", c.errors);
     let ids: Vec<&str> = c.infos.iter().map(|p| p.id.as_str()).collect();
-    assert_eq!(ids, ["artifacts", "charts", "core-tools", "html-apps", "images", "markdown"]);
+    assert_eq!(
+        ids,
+        ["artifacts", "charts", "compaction", "core-tools", "environments", "html-apps", "images", "markdown", "prompt", "subagents", "workspace-instructions"]
+    );
     for p in &c.infos {
         assert_eq!((p.scope, p.origin, p.enabled), (PluginScope::Bundled, PluginOrigin::Bundled, true), "{}", p.id);
         assert!(p.problems.is_empty(), "{}: {:?}", p.id, p.problems);
         assert!(!Path::new(&p.dir).exists(), "{} is in the binary, not at {}", p.id, p.dir);
     }
     let locked: Vec<&str> = c.infos.iter().filter(|p| p.locked).map(|p| p.id.as_str()).collect();
-    assert_eq!(locked, ["artifacts", "core-tools"]);
+    assert_eq!(locked, ["artifacts", "core-tools", "prompt"]);
     let html = c.infos.iter().find(|p| p.id == "html-apps").unwrap();
     assert_eq!((html.renderers[0].content_type.as_str(), html.renderers[0].renderer.as_str()), ("text/html", "web"));
     assert!(!html.starters.is_empty());

@@ -1,0 +1,19 @@
+{
+  "id": "subagents",
+  "name": "Subagents",
+  "version": "1.0.0",
+  "description": "The delegate tool: hand a self-contained task to a subagent with a fresh context (agent definitions from .byob/agents, .claude/agents, your config folder and plugins), several at once, and get its report back. Adds the agents list to the system prompt.",
+  "icon": "users",
+  "tools": [
+    {
+      "native": "delegate"
+    }
+  ],
+  "hooks": [
+    {
+      "event": "before_prompt",
+      "native": "subagents",
+      "priority": 500
+    }
+  ]
+}

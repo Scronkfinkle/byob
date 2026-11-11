@@ -12,14 +12,22 @@
 //!   manifest's overrides (suffixes, label, describe, pick, guidance file).
 //! - **prompt sections** (`system_prompt: {"native": id}`): text an in-tree builder makes
 //!   from the chat's artifact types ([`Natives::prompts`]).
+//! - **hooks** (`hooks[].native`): in-tree code at a turn pipeline hook point
+//!   ([`Natives::hooks`], see [`crate::hooks`]): the prompt contributors, compaction.
+//! - **turn tools** (`tools[].native` naming one of [`Natives::turn_tools`]): tools the engine
+//!   makes per turn (`delegate`, which needs the turn's agents and models).
+//! - **environment providers** (`environments[].native`): `nix`, `pixi`, `mise`, `container`
+//!   (`byob_exec::env::NATIVE_PROVIDERS`, [`Natives::environments`]).
 //!
 //! Clients resolve `renderers[].renderer` (`native:<id>`, `web`) against their own registry
 //! (`byob_ui_egui::renderers::ArtifactRenderers`). An id nobody registered is a problem of the
 //! plugin, never a crash. A base tool, type or section no plugin names is simply always
 //! there (third-party in-tree code, tests without bundled plugins).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+use crate::hooks::{Event, NativeHook, NativeHookReg, PromptPart};
 
 use byob_tools::{ArtifactTypes, Tool};
 
@@ -37,6 +45,12 @@ pub struct Natives {
     pub prompts: BTreeMap<String, PromptBuilder>,
     /// Artifact type ids → content types registered in the engine's [`ArtifactTypes`].
     pub artifact_types: BTreeMap<String, String>,
+    /// Hooks by id, with where each sits when no plugin names it.
+    pub hooks: BTreeMap<String, NativeHookReg>,
+    /// Tools the engine makes for each turn, by name (`delegate`).
+    pub turn_tools: BTreeSet<String>,
+    /// Workspace environment providers built into byob, by id.
+    pub environments: BTreeSet<String>,
 }
 
 impl Natives {
@@ -54,7 +68,32 @@ impl Natives {
         for (id, ct) in ArtifactTypes::native_ids() {
             n.artifact_types.insert(id.to_owned(), ct.to_owned());
         }
+        for (id, priority, pick) in crate::hooks::prompt_parts() {
+            n.hooks.insert(id.to_owned(), NativeHookReg { hook: Arc::new(PromptPart { id, pick }), defaults: vec![(Event::BeforePrompt, priority)] });
+        }
+        n = n.hook(crate::compact::HOOK, Arc::new(crate::compact::CompactionHook), &[(Event::BeforeRequest, crate::compact::HOOK_PRIORITY)]);
+        n.turn_tools.insert(crate::delegate::TOOL.to_owned());
+        n.environments.extend(["nix", "pixi", "mise", "container"].map(str::to_owned));
         n
+    }
+
+    /// These natives plus byob's kernel ones they don't replace: the hooks (prompt
+    /// contributors, compaction), the turn tools and the environment providers, which every
+    /// engine has whatever the app registered.
+    pub fn with_kernel(mut self) -> Self {
+        let kernel = Self::builtin();
+        for (id, reg) in kernel.hooks {
+            self.hooks.entry(id).or_insert(reg);
+        }
+        self.turn_tools.extend(kernel.turn_tools);
+        self.environments.extend(kernel.environments);
+        self
+    }
+
+    /// Add (or replace) hook `id`; `defaults` is where it runs while no plugin names it.
+    pub fn hook(mut self, id: &str, hook: Arc<dyn NativeHook>, defaults: &[(Event, i64)]) -> Self {
+        self.hooks.insert(id.to_owned(), NativeHookReg { hook, defaults: defaults.to_vec() });
+        self
     }
 
     /// Add (or replace) prompt section `id`.
