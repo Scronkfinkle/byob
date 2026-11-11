@@ -94,8 +94,9 @@ impl Rec {
         match v {
             Value::String(s) => {
                 let s = s.replace(&ws, "<ws>");
-                if s.contains("byob-sheets-") && s.starts_with('/') {
-                    let base = s.rsplit('/').next().unwrap_or_default();
+                // An absolute temp path, `/tmp/…` or `C:\…\Temp\…`.
+                if s.contains("byob-sheets-") && (s.starts_with('/') || s.get(1..3) == Some(":\\")) {
+                    let base = s.rsplit(['/', '\\']).next().unwrap_or_default();
                     return json!(format!("<tmp>/{}", base.split_once('-').map_or(base, |(_, b)| b)));
                 }
                 json!(s)
