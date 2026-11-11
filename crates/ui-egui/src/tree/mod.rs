@@ -33,6 +33,8 @@ pub use step::{StepEvent, StepTrees};
 
 /// Events kept from one frame (more are dropped: nobody clicks that fast).
 const MAX_EVENTS_PER_FRAME: usize = 64;
+/// Grids or tables of one name told apart, at most.
+const MAX_SAME_NAME: u32 = 64;
 
 /// Client-side state of one drawn tree.
 #[derive(Default)]
@@ -136,6 +138,27 @@ impl TreeState {
                 self.live.insert(name.to_owned(), self.pass);
             }
         }
+    }
+
+    /// The name a grid or table keeps its state under: `name`, or, when a field already took
+    /// it this pass (two unnamed tables, a grid named like an input), `name-2`, `name-3`, …
+    /// so they don't share (or clobber) each other's value. `explicit`: the tree named it (a
+    /// clash is the tree's mistake, logged).
+    fn claim<'n>(&self, name: &'n str, explicit: bool) -> std::borrow::Cow<'n, str> {
+        let taken = |n: &str| self.live.get(n) == Some(&self.pass);
+        if !taken(name) {
+            return name.into();
+        }
+        for k in 2..=MAX_SAME_NAME {
+            let other = format!("{name}-{k}");
+            if !taken(&other) {
+                if explicit {
+                    log::warn!("view tree: the name {name:?} is used twice; this one goes by {other:?}");
+                }
+                return other.into();
+            }
+        }
+        name.into()
     }
 
     /// Sync a field with the tree's value (taken only if the tree changed it); its current
@@ -376,8 +399,8 @@ fn node(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, n: &Node, id: egui::Id) {
             });
         }
         Kind::Table { name, columns, rows, height, select } => {
-            let name = if name.is_empty() { n.key.as_deref().unwrap_or("table") } else { name };
-            table::show(ui, cx, table::Table { name, columns, rows, height: *height, select: select.as_deref() }, id);
+            let name = cx.st.claim(if name.is_empty() { n.key.as_deref().unwrap_or("table") } else { name }, !name.is_empty());
+            table::show(ui, cx, table::Table { name: &name, columns, rows, height: *height, select: select.as_deref() }, id);
         }
         Kind::Chart { spec } => crate::chart::show(ui, t, spec, id),
         Kind::Separator {} => {
@@ -397,9 +420,9 @@ fn node(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, n: &Node, id: egui::Id) {
         }
         Kind::Canvas { width, height, shapes, action } => canvas::show(ui, cx, *width, *height, shapes, action.as_deref()),
         Kind::Grid { name, rows, cols, blocks, frozen_rows, frozen_cols, widths, default_width, editable, headers, height, selection } => {
-            let name = if name.is_empty() { n.key.as_deref().unwrap_or("grid") } else { name };
+            let name = cx.st.claim(if name.is_empty() { n.key.as_deref().unwrap_or("grid") } else { name }, !name.is_empty());
             let g = grid::Grid {
-                name,
+                name: &name,
                 rows: (*rows).max(1),
                 cols: (*cols).max(1),
                 blocks: grid::Blocks::new(blocks),

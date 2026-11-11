@@ -230,6 +230,20 @@ fn grid(n: usize) -> Node {
     Node::keyed("grid", Kind::Table { name: "grid".into(), columns, rows, height: Some(700.0), select: None })
 }
 
+/// Two unnamed tables (or a grid named like an input) don't share one selection.
+#[test]
+fn unnamed_tables_and_clashing_names_keep_their_own_state() {
+    let col = TableColumn { key: "a".into(), label: String::new(), width: Some(80.0), editable: false };
+    let table = || Node::new(Kind::Table { name: String::new(), columns: vec![col.clone()], rows: vec![vec![json!(1)]], height: Some(100.0), select: None });
+    let tree = Node::new(Kind::Column { children: vec![table(), table()] });
+    let (t, mut st, mut w) = (Tokens::dark(), TreeState::default(), Win::new(800.0));
+    w.frame(vec![], &mut |ui| drop(show_tree(ui, &t, &tree, &mut st)));
+    w.frame(vec![], &mut |ui| drop(show_tree(ui, &t, &tree, &mut st)));
+    let mut names: Vec<&String> = st.values().keys().collect();
+    names.sort();
+    assert_eq!(names, ["table", "table-2"]);
+}
+
 fn median_frame(tree: &Node, frames: usize) -> (Duration, usize) {
     let t = Tokens::dark();
     let mut st = TreeState::default();
