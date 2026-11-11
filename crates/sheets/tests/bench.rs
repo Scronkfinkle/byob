@@ -46,7 +46,7 @@ impl Host {
     fn native() -> Self {
         let make = byob_sheets::factory();
         let (s, views) = sink();
-        let b = Backend::new("sheets", init(), &[], Box::new(move || Ok(Start::Native(make()))), s);
+        let b = Backend::new("sheets", init(), &[], Box::new(move |_: &dyn Fn() -> bool| Ok(Start::Native(make()))), s);
         Self { b, views, ws: tempfile::tempdir().unwrap(), ids: 0 }
     }
 

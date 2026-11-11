@@ -43,7 +43,7 @@ fn native_backends_live_like_processes() {
     });
     let made = Arc::new(Mutex::new(0));
     let m = Arc::clone(&made);
-    let prepare = Box::new(move || {
+    let prepare = Box::new(move |_: &dyn Fn() -> bool| {
         *m.lock().unwrap() += 1;
         Ok(Start::Native(Box::new(Counter { init: Value::Null, n: 0 })))
     });

@@ -9,8 +9,10 @@
 //! (the engine's inbox). A backend that exits is started again after a backoff (0.5 s,
 //! doubling to 30 s), at once when someone uses it, and given up on after [`MAX_CRASHES`]
 //! crashes in a row. [`Backend::stop`] (reload, switched off, removed, dropped) closes stdin
-//! and kills it if it doesn't exit within half a second. Every thread runs under
-//! `catch_unwind`.
+//! and kills it if it doesn't exit within half a second. A waiter thread notices the process
+//! exiting even when something it started still holds its stdout; on Unix it runs in a
+//! process group of its own, killed with it. Faults reach the sink at most once a second
+//! (the rest are counted). Every thread runs under `catch_unwind`.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
@@ -18,7 +20,8 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -40,8 +43,17 @@ pub const STDERR_KEEP: usize = 16 * 1024;
 pub const MAX_FAULTS: usize = 8;
 /// Characters kept of one fault.
 const MAX_FAULT: usize = 2000;
-/// Messages kept while it starts; older ones are dropped.
+/// Messages kept while it starts, and waiting for a running one to read them; older
+/// ones are dropped while it starts, newer ones once it runs.
 const MAX_QUEUED: usize = 256;
+/// Bytes kept while it starts.
+const MAX_QUEUED_BYTES: usize = 16 * 1024 * 1024;
+/// Faults passed to the sink at most this often (the rest are counted in the next one).
+const FAULT_EVERY: Duration = Duration::from_secs(1);
+/// How often the waiter checks whether the process exited.
+const WAIT_POLL: Duration = Duration::from_millis(20);
+/// How long its output gets to be read after it exited.
+const DRAIN_GRACE: Duration = Duration::from_millis(500);
 /// How long a tool call waits for its reply.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Crashes in a row after which it isn't started again (until its plugin reloads).
@@ -79,7 +91,9 @@ impl From<Launch> for Start {
     }
 }
 
-pub type Prepare = Box<dyn Fn() -> Result<Start, String> + Send + Sync>;
+/// Works out how to start it; its argument says the start was called off (the backend
+/// stopped), so a long preparation (a venv build) can give up.
+pub type Prepare = Box<dyn Fn(&dyn Fn() -> bool) -> Result<Start, String> + Send + Sync>;
 
 /// What a backend says that isn't a reply, and its lifecycle.
 #[derive(Debug, Clone, PartialEq)]
@@ -141,8 +155,9 @@ struct Inner {
     phase: Phase,
     /// Bumped for every process started.
     generation: u64,
-    writer: Option<Sender<Vec<u8>>>,
+    writer: Option<SyncSender<Vec<u8>>>,
     queued: VecDeque<Vec<u8>>,
+    queued_bytes: usize,
     child: Option<Child>,
     pid: Option<u32>,
     pending: BTreeMap<u64, Sender<Reply>>,
@@ -154,6 +169,12 @@ struct Inner {
     crashes: u32,
     started_at: Option<Instant>,
     error: Option<String>,
+    /// When a fault last went to the sink.
+    fault_posted: Option<Instant>,
+    /// Faults recorded since, not passed on yet.
+    fault_held: u32,
+    /// A thread will pass them on.
+    fault_flush: bool,
 }
 
 struct Shared {
@@ -184,6 +205,7 @@ impl Backend {
             generation: 0,
             writer: None,
             queued: VecDeque::new(),
+            queued_bytes: 0,
             child: None,
             pid: None,
             pending: BTreeMap::new(),
@@ -195,6 +217,9 @@ impl Backend {
             crashes: 0,
             started_at: None,
             error: None,
+            fault_posted: None,
+            fault_held: 0,
+            fault_flush: false,
         };
         Self { shared: Arc::new(Shared { plugin: plugin.to_owned(), init, prepare, sink, inner: Mutex::new(inner) }) }
     }
@@ -242,7 +267,7 @@ impl Backend {
         if matches!(g.phase, Phase::Idle | Phase::Crashed) {
             begin_start(&self.shared, &mut g);
         }
-        push_line(&self.shared, &mut g, line)
+        push_line(&self.shared, &mut g, line).is_ok()
     }
 
     /// Ask it something and wait for the `reply` (or `timeout`, or `cancelled()`).
@@ -263,9 +288,9 @@ impl Backend {
                 return Err(format!("the request is over {MAX_LINE} bytes"));
             }
             g.pending.insert(id, tx);
-            if !push_line(&self.shared, &mut g, line) {
+            if let Err(why) = push_line(&self.shared, &mut g, line) {
                 g.pending.remove(&id);
-                return Err("the backend isn't running".into());
+                return Err(why.into());
             }
             id
         };
@@ -291,7 +316,7 @@ impl Backend {
                 let mut g = self.shared.lock();
                 g.pending.remove(&id);
                 if let Ok(line) = serde_json::to_vec(&json!({"type": "cancel", "id": id})) {
-                    push_line(&self.shared, &mut g, line);
+                    let _ = push_line(&self.shared, &mut g, line);
                 }
                 return Err(why);
             }
@@ -332,9 +357,9 @@ fn stop(shared: &Arc<Shared>, why: &str) {
     if let Some(tx) = g.writer.take()
         && let Ok(line) = serde_json::to_vec(&json!({"type": "shutdown"}))
     {
-        let _ = tx.send(line);
+        let _ = tx.try_send(line);
     }
-    g.queued.clear();
+    take_queued(&mut g);
     g.pid = None;
     let child = g.child.take();
     for (_, tx) in std::mem::take(&mut g.pending) {
@@ -351,19 +376,25 @@ fn stop(shared: &Arc<Shared>, why: &str) {
     }
 }
 
-/// Wait up to `grace` for `child` to exit, then kill it. Returns how it ended.
+/// Wait up to `grace` for `child` to exit, then kill it; either way kill what is left of
+/// its process group. Returns how it ended.
 fn reap(mut child: Child, grace: Duration) -> String {
+    let pid = child.id();
     let deadline = Instant::now() + grace;
-    loop {
+    let how = loop {
         match child.try_wait() {
-            Ok(Some(status)) => return exit_text(status),
+            Ok(Some(status)) => break exit_text(status),
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
             _ => {
+                // the group before the leader is reaped, so its id can't be reused yet
+                byob_sandbox::kill_group(pid);
                 let _ = child.kill();
-                return child.wait().map_or_else(|e| e.to_string(), exit_text);
+                break child.wait().map_or_else(|e| e.to_string(), exit_text);
             }
         }
-    }
+    };
+    byob_sandbox::kill_group(pid);
+    how
 }
 
 fn exit_text(status: std::process::ExitStatus) -> String {
@@ -373,23 +404,45 @@ fn exit_text(status: std::process::ExitStatus) -> String {
     }
 }
 
-/// Queue one line: to the writer when running, kept while starting.
-fn push_line(shared: &Shared, g: &mut Inner, line: Vec<u8>) -> bool {
+/// Queue one line: to the writer when running (dropped, with a fault, when it isn't
+/// reading), kept while starting (the oldest dropped past [`MAX_QUEUED`] or
+/// [`MAX_QUEUED_BYTES`]).
+fn push_line(shared: &Arc<Shared>, g: &mut Inner, line: Vec<u8>) -> Result<(), &'static str> {
+    const NOT_RUNNING: &str = "the backend isn't running";
     match g.phase {
         Phase::Running => match &g.writer {
-            Some(tx) => tx.send(line).is_ok(),
-            None => false,
+            Some(tx) => match tx.try_send(line) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(_)) => {
+                    record_fault(shared, g, format!("it isn't reading its input: {MAX_QUEUED} messages wait, so one was dropped"), false);
+                    Err("the backend isn't reading its input (too many messages wait); the message was dropped")
+                }
+                Err(TrySendError::Disconnected(_)) => Err(NOT_RUNNING),
+            },
+            None => Err(NOT_RUNNING),
         },
         Phase::Starting => {
-            if g.queued.len() >= MAX_QUEUED {
-                g.queued.pop_front();
+            let mut dropped = false;
+            while g.queued.len() >= MAX_QUEUED || (!g.queued.is_empty() && g.queued_bytes.saturating_add(line.len()) > MAX_QUEUED_BYTES) {
+                let Some(old) = g.queued.pop_front() else { break };
+                g.queued_bytes = g.queued_bytes.saturating_sub(old.len());
+                dropped = true;
+            }
+            if dropped {
                 log::warn!("plugin {}: its backend is slow to start; an old message was dropped", shared.plugin);
             }
+            g.queued_bytes = g.queued_bytes.saturating_add(line.len());
             g.queued.push_back(line);
-            true
+            Ok(())
         }
-        Phase::Idle | Phase::Crashed | Phase::Failed | Phase::Stopped => false,
+        Phase::Idle | Phase::Crashed | Phase::Failed | Phase::Stopped => Err(NOT_RUNNING),
     }
+}
+
+/// Empty the start queue.
+fn take_queued(g: &mut Inner) -> VecDeque<Vec<u8>> {
+    g.queued_bytes = 0;
+    std::mem::take(&mut g.queued)
 }
 
 fn begin_start(shared: &Arc<Shared>, g: &mut Inner) {
@@ -405,7 +458,9 @@ enum Running {
 }
 
 fn start_now(shared: &Arc<Shared>) {
-    let spawned = catch_unwind(AssertUnwindSafe(|| (shared.prepare)())).unwrap_or_else(|_| Err("preparing the backend crashed".into())).and_then(|s| match s {
+    let called_off = || shared.lock().phase != Phase::Starting;
+    let prepared = catch_unwind(AssertUnwindSafe(|| (shared.prepare)(&called_off)));
+    let spawned = prepared.unwrap_or_else(|_| Err("preparing the backend crashed".into())).and_then(|s| match s {
         Start::Process(l) => spawn(&l).map(Running::Process),
         Start::Native(n) => Ok(Running::Native(n)),
     });
@@ -423,7 +478,7 @@ fn start_now(shared: &Arc<Shared>) {
         Err(e) => {
             g.phase = Phase::Failed;
             g.error = Some(e.clone());
-            g.queued.clear();
+            take_queued(&mut g);
             for (_, tx) in std::mem::take(&mut g.pending) {
                 let _ = tx.send(Err(e.clone()));
             }
@@ -435,16 +490,17 @@ fn start_now(shared: &Arc<Shared>) {
     };
     g.generation = g.generation.wrapping_add(1);
     let generation = g.generation;
-    let (tx, rx) = channel::<Vec<u8>>();
+    // room for init, the start queue and a shutdown
+    let (tx, rx) = sync_channel::<Vec<u8>>(MAX_QUEUED + 2);
     let mut init = shared.init.clone();
     if let Some(o) = init.as_object_mut() {
         o.insert("restart".into(), json!(g.starts));
     }
     if let Ok(line) = serde_json::to_vec(&init) {
-        let _ = tx.send(line);
+        let _ = tx.try_send(line);
     }
-    for line in std::mem::take(&mut g.queued) {
-        let _ = tx.send(line);
+    for line in take_queued(&mut g) {
+        let _ = tx.try_send(line);
     }
     g.writer = Some(tx);
     g.phase = Phase::Running;
@@ -459,28 +515,72 @@ fn start_now(shared: &Arc<Shared>) {
             let s = Arc::clone(shared);
             guarded("byob-backend-native", move || {
                 let how = native_loop(&s, backend, &rx);
-                exited(&s, generation, Some(how));
+                exited(&s, generation, &how);
             });
             (shared.sink)(Out::Started);
             return;
         }
     };
-    g.pid = Some(child.id());
+    let pid = child.id();
+    g.pid = Some(pid);
     g.child = Some(child);
     drop(g);
     log::info!("plugin {}: backend started", shared.plugin);
+    let out_done = Arc::new(AtomicBool::new(false));
+    let err_done = Arc::new(AtomicBool::new(false));
     guarded("byob-backend-in", move || write_loop(stdin, &rx));
-    let s = Arc::clone(shared);
-    guarded("byob-backend-err", move || stderr_loop(stderr, &s));
-    let s = Arc::clone(shared);
+    let (s, done) = (Arc::clone(shared), Arc::clone(&err_done));
+    guarded("byob-backend-err", move || {
+        let _ = catch_unwind(AssertUnwindSafe(|| stderr_loop(stderr, &s, generation)));
+        done.store(true, Ordering::SeqCst);
+    });
+    let (s, done) = (Arc::clone(shared), Arc::clone(&out_done));
     guarded("byob-backend-out", move || {
-        let read = catch_unwind(AssertUnwindSafe(|| read_loop(stdout, &s)));
+        let read = catch_unwind(AssertUnwindSafe(|| read_loop(stdout, &s, generation)));
         if read.is_err() {
             log::error!("plugin {}: the backend reader crashed", s.plugin);
         }
-        exited(&s, generation, None);
+        done.store(true, Ordering::SeqCst);
     });
+    let s = Arc::clone(shared);
+    guarded("byob-backend-wait", move || wait_loop(&s, generation, pid, &out_done, &err_done));
     (shared.sink)(Out::Started);
+}
+
+/// Watch the process of `generation` until it exits (or closes its stdout, or is stopped),
+/// then let the readers finish its output and report it [`exited`]. Its process group goes
+/// too, so nothing it started keeps the pipes (and the reader threads) alive.
+fn wait_loop(shared: &Arc<Shared>, generation: u64, pid: u32, out_done: &AtomicBool, err_done: &AtomicBool) {
+    let ended = loop {
+        thread::sleep(WAIT_POLL);
+        let mut g = shared.lock();
+        if g.generation != generation || g.phase != Phase::Running {
+            return; // stopped: stop() reaps it
+        }
+        let Some(child) = g.child.as_mut() else { return };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                g.child = None;
+                break Ok(exit_text(status));
+            }
+            Ok(None) if !out_done.load(Ordering::SeqCst) => {}
+            // it closed stdout (or can't be waited for): a moment to exit, then killed
+            Ok(None) | Err(_) => break Err(g.child.take()),
+        }
+    };
+    let how = match ended {
+        Ok(how) => {
+            byob_sandbox::kill_group(pid);
+            how
+        }
+        Err(Some(child)) => reap(child, Duration::from_secs(2)),
+        Err(None) => "it ended".to_owned(),
+    };
+    let deadline = Instant::now() + DRAIN_GRACE;
+    while !(out_done.load(Ordering::SeqCst) && err_done.load(Ordering::SeqCst)) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    exited(shared, generation, &how);
 }
 
 type Spawned = (Child, ChildStdin, std::process::ChildStdout, std::process::ChildStderr);
@@ -489,6 +589,9 @@ fn spawn(l: &Launch) -> Result<Spawned, String> {
     let Some((program, args)) = l.argv.split_first() else { return Err("no command to start".into()) };
     let mut cmd = Command::new(program);
     cmd.args(args).current_dir(&l.cwd).envs(&l.env).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // a group of its own, so what it starts is stopped with it
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     for k in &l.remove_env {
         cmd.env_remove(k);
     }
@@ -540,23 +643,33 @@ fn write_loop(mut stdin: ChildStdin, rx: &Receiver<Vec<u8>>) {
     }
 }
 
-fn stderr_loop(mut stderr: impl Read, shared: &Shared) {
+fn stderr_loop(mut stderr: impl Read, shared: &Shared, generation: u64) {
     let mut buf = [0u8; 4096];
     loop {
         match stderr.read(&mut buf) {
             Ok(0) => return,
-            Ok(n) => shared.lock().stderr.push(buf.get(..n).unwrap_or_default()),
+            Ok(n) => {
+                let mut g = shared.lock();
+                if g.generation != generation {
+                    return; // a newer process runs
+                }
+                g.stderr.push(buf.get(..n).unwrap_or_default());
+            }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(_) => return,
         }
     }
 }
 
-fn read_loop(stdout: impl Read, shared: &Shared) {
+fn read_loop(stdout: impl Read, shared: &Arc<Shared>, generation: u64) {
     let mut r = BufReader::new(stdout);
     let mut buf = Vec::new();
     loop {
-        match read_line(&mut r, &mut buf, MAX_LINE) {
+        let line = read_line(&mut r, &mut buf, MAX_LINE);
+        if shared.lock().generation != generation {
+            return; // a newer process runs: this one's leftovers are stale
+        }
+        match line {
             Ok(LineRead::Line) => handle_line(shared, &buf),
             Ok(LineRead::TooLong) => fault(shared, format!("a message over {MAX_LINE} bytes was dropped")),
             Ok(LineRead::Eof) | Err(_) => return,
@@ -564,20 +677,62 @@ fn read_loop(stdout: impl Read, shared: &Shared) {
     }
 }
 
-fn fault(shared: &Shared, text: String) {
-    let text: String = text.chars().take(MAX_FAULT).collect();
-    log::warn!("plugin {}: {text}", shared.plugin);
-    {
-        let mut g = shared.lock();
-        if g.faults.len() >= MAX_FAULTS {
-            g.faults.pop_front();
-        }
-        g.faults.push_back(text.clone());
+/// Keep a fault in the status and pass it to the sink, at most once per [`FAULT_EVERY`]:
+/// faults in between are passed on together after it (the newest, with how many more).
+fn fault(shared: &Arc<Shared>, text: String) {
+    let post = record_fault(shared, &mut shared.lock(), text, true);
+    if let Some(text) = post {
+        post_fault(shared, &text);
     }
+}
+
+/// [`fault`] for a caller holding the lock: returns the text to post now (only if
+/// `may_post`; else a thread posts it).
+fn record_fault(shared: &Arc<Shared>, g: &mut Inner, text: String, may_post: bool) -> Option<String> {
+    let text: String = text.chars().take(MAX_FAULT).collect();
+    if g.faults.len() >= MAX_FAULTS {
+        g.faults.pop_front();
+    }
+    g.faults.push_back(text.clone());
+    let wait = g.fault_posted.map_or(Duration::ZERO, |t| FAULT_EVERY.saturating_sub(t.elapsed()));
+    if may_post && wait.is_zero() && !g.fault_flush {
+        g.fault_posted = Some(Instant::now());
+        return Some(text);
+    }
+    g.fault_held = g.fault_held.saturating_add(1);
+    if !g.fault_flush {
+        g.fault_flush = true;
+        let s = Arc::clone(shared);
+        guarded("byob-backend-faults", move || {
+            thread::sleep(wait);
+            flush_faults(&s);
+        });
+    }
+    None
+}
+
+/// Pass on the faults held back: the newest, and how many more there were.
+fn flush_faults(shared: &Shared) {
+    let text = {
+        let mut g = shared.lock();
+        g.fault_flush = false;
+        let held = std::mem::take(&mut g.fault_held);
+        if held == 0 {
+            return;
+        }
+        g.fault_posted = Some(Instant::now());
+        let last = g.faults.back().cloned().unwrap_or_default();
+        if held > 1 { format!("{last} ({} more)", held - 1) } else { last }
+    };
+    post_fault(shared, &text);
+}
+
+fn post_fault(shared: &Shared, text: &str) {
+    log::warn!("plugin {}: {text}", shared.plugin);
     (shared.sink)(Out::Msg(json!({"type": "fault", "text": text})));
 }
 
-fn handle_line(shared: &Shared, line: &[u8]) {
+fn handle_line(shared: &Arc<Shared>, line: &[u8]) {
     if line.iter().all(u8::is_ascii_whitespace) {
         return;
     }
@@ -595,7 +750,7 @@ fn handle_line(shared: &Shared, line: &[u8]) {
 }
 
 /// One message from the backend (a process's line, or a native backend's [`Outbox`]).
-fn handle_msg(shared: &Shared, msg: Value) {
+fn handle_msg(shared: &Arc<Shared>, msg: Value) {
     let kind = msg.get("type").and_then(Value::as_str).unwrap_or_default();
     match kind {
         "reply" => {
@@ -640,26 +795,15 @@ fn handle_msg(shared: &Shared, msg: Value) {
     }
 }
 
-/// The backend of `generation` ended: `how` for a native one (else its process is reaped).
-fn exited(shared: &Arc<Shared>, generation: u64, how: Option<String>) {
-    let child = {
-        let mut g = shared.lock();
-        if g.generation != generation || g.phase != Phase::Running {
-            return;
-        }
-        g.writer = None;
-        g.pid = None;
-        g.child.take()
-    };
-    let how = match (how, child) {
-        (Some(how), _) => how,
-        (None, Some(c)) => reap(c, Duration::from_secs(2)),
-        (None, None) => "it ended".to_owned(),
-    };
+/// The backend of `generation` ended (`how`; its process, if any, is reaped).
+fn exited(shared: &Arc<Shared>, generation: u64, how: &str) {
     let mut g = shared.lock();
     if g.generation != generation || g.phase != Phase::Running {
         return;
     }
+    g.writer = None;
+    g.pid = None;
+    g.child = None;
     let tail = g.stderr.last_lines(15);
     let mut why = format!("the backend exited ({how})");
     if !tail.is_empty() {
@@ -1028,10 +1172,78 @@ mod tests {
     #[test]
     fn a_backend_that_cannot_start_fails_its_requests() {
         let sink: Sink = Arc::new(|_| {});
-        let b = Backend::new("x", json!({"type": "init"}), &[], Box::new(|| Err("no python".into())), sink);
+        let b = Backend::new("x", json!({"type": "init"}), &[], Box::new(|_: &dyn Fn() -> bool| Err("no python".into())), sink);
         let e = b.request("tool", json!({}), Duration::from_secs(5), &|| false).unwrap_err();
         assert_eq!(e, "no python");
         assert_eq!(b.status().phase, Phase::Failed);
         assert!(!b.event(json!({"type": "event"})));
+    }
+
+    #[test]
+    fn faults_reach_the_sink_at_most_once_a_second() {
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let p = Arc::clone(&posted);
+        let sink: Sink = Arc::new(move |o| {
+            if let Out::Msg(m) = o {
+                p.lock().unwrap().push(m["text"].as_str().unwrap_or_default().to_owned());
+            }
+        });
+        let b = Backend::new("x", json!({"type": "init"}), &[], Box::new(|_: &dyn Fn() -> bool| Err("-".into())), sink);
+        for i in 0..100 {
+            b.report_fault(&format!("not json {i}"));
+        }
+        // every one is in the status (the newest), the sink heard of the first only
+        assert_eq!(b.status().faults.last().map(String::as_str), Some("not json 99"));
+        assert_eq!(b.status().faults.len(), MAX_FAULTS);
+        assert_eq!(*posted.lock().unwrap(), ["not json 0"]);
+        // then of the rest, once
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while posted.lock().unwrap().len() < 2 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(*posted.lock().unwrap(), ["not json 0", "not json 99 (98 more)"]);
+    }
+
+    /// A backend that stays starting until stopped; `true` in the flag once its
+    /// preparation saw that.
+    fn never_starts() -> (Backend, Arc<std::sync::atomic::AtomicBool>) {
+        let saw = Arc::new(AtomicBool::new(false));
+        let s = Arc::clone(&saw);
+        let prepare = Box::new(move |called_off: &dyn Fn() -> bool| {
+            while !called_off() {
+                thread::sleep(Duration::from_millis(5));
+            }
+            s.store(true, Ordering::SeqCst);
+            Err("called off".to_owned())
+        });
+        (Backend::new("x", json!({"type": "init"}), &[], prepare, Arc::new(|_| {})), saw)
+    }
+
+    #[test]
+    fn a_stop_calls_off_a_long_preparation() {
+        let (b, saw) = never_starts();
+        b.start();
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(b.status().phase, Phase::Starting);
+        b.stop("reloaded");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !saw.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the preparation went on");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_slow_start_keeps_a_bounded_number_of_bytes() {
+        let (b, _saw) = never_starts();
+        let big = "x".repeat(MAX_LINE - 100);
+        for _ in 0..40 {
+            assert!(b.event(json!({"type": "event", "event": "client", "msg": big})));
+        }
+        let g = b.shared.lock();
+        assert!(g.queued_bytes <= MAX_QUEUED_BYTES, "{}", g.queued_bytes);
+        assert_eq!(g.queued_bytes, g.queued.iter().map(Vec::len).sum::<usize>());
+        assert!(g.queued.len() < 40);
     }
 }

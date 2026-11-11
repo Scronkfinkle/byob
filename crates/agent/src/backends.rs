@@ -184,7 +184,7 @@ fn make(m: &Make<'_>, generation: u64) -> Backend {
     // absolute: it is also the working folder, so a relative one (--plugin DIR) would resolve twice
     let prepare_dir = std::path::absolute(&dir).unwrap_or_else(|_| dir.clone());
     let native = m.native.clone();
-    let prepare = Box::new(move || {
+    let prepare = Box::new(move |_: &dyn Fn() -> bool| {
         if let BackendRun::Native(id) = &decl.run {
             // in-tree code: nothing to prepare, a fresh one on every (re)start
             return native.as_ref().map(|make| Start::Native(make())).ok_or_else(|| format!("\"{id}\" isn't a backend built into this byob"));

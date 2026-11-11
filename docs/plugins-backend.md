@@ -50,12 +50,15 @@ byob_plugin.py` (the Python helper), `crates/plugins/src/pyenv.rs` (Python envir
   a workspace's copy and the global copy are separate processes.
 - **Started lazily** on first use (a UI message, a subscribed event, a tool call), on a
   thread of its own: preparing (the venv) and spawning never block the engine. Messages
-  wait in a queue (≤ 256) while it starts. Working folder: the plugin folder. Environment:
-  byob's, plus the plugin's settings (secret ones too), `BYOB_PLUGIN_DIR`, `PYTHONPATH`,
-  `PYTHONUNBUFFERED=1`, minus `BYOB_API_KEY`. No sandbox: like VS Code extensions, an
+  wait in a queue (≤ 256, ≤ 16 MiB) while it starts; once it runs, at most 256 wait for it
+  to read them (more are dropped, with a fault). Working folder: the plugin folder.
+  Environment: byob's, plus the plugin's settings (secret ones too), `BYOB_PLUGIN_DIR`,
+  `PYTHONPATH`, `PYTHONUNBUFFERED=1`, minus `BYOB_API_KEY`. On Unix it leads a process
+  group of its own, killed with it (so are what it started). No sandbox: like VS Code extensions, an
   installed plugin runs with the user's rights; the trust question for plugins that came
   with a workspace still applies before anything runs.
-- **Crashes**: when stdout closes, pending requests fail with "the backend exited (exit
+- **Crashes**: when it exits (even if something it started still holds its stdout) or
+  closes stdout, pending requests fail with "the backend exited (exit
   code N); its last output: …" (15 lines of stderr), clients get a new plugin list, and it
   is started again after 0.5 s, doubling to 30 s, or at once when used. Five exits in a
   row (a run of 30 s resets the count) and it stays `failed` until the plugin reloads.
@@ -99,7 +102,7 @@ workspace.
 | `notify` | `msg`, `client`? | `msg` forwarded to clients as `ServerMsg::Plugin { plugin, msg }` |
 | `notice` | `text`, `level` (`info`/`error`) | a notice in clients, prefixed with the plugin id |
 | `log` | `text` | into its stderr ring and byob's log |
-| `fault` | `text` | a problem for the model and the user: kept in its status (`faults`) |
+| `fault` | `text` | a problem for the model and the user: kept in its status (`faults`); clients hear of faults at most once a second (the newest, "(N more)") |
 | `subscribe` / `unsubscribe` | `events` | engine events to get from now on (unknown names are a fault) |
 | `artifact` | `chat`, `file`, `id`?, `title`?, `filename`?, `note`?, `draft`? | save `file`'s bytes as a version of the chat's artifact `id` (a new one without it); see Artifacts |
 | `web` | `view`, `key`? (`""`), `msg` (any JSON ≤ 256 KiB), `client`? | to the pages of web view `view` (clients that listed `web_bridge`; a chat plugin's only to those looking at its chat): they get it as a `byob/message` notification |
@@ -281,6 +284,6 @@ in 1.5 s (pip, no network) and is found again instantly by the next engine run.
 
 ## Not yet
 
-Concurrent requests inside the helper, process groups (a backend's own children aren't
-killed with it), per-backend resource limits; a card's
+Concurrent requests inside the helper, killing a backend's own children on Windows (no
+process groups there), per-backend resource limits; a card's
 stored tree isn't updated when the live one changes (the step keeps the first state).

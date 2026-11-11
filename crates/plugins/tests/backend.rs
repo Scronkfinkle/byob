@@ -39,7 +39,7 @@ fn start(f: &Fixture, events: &[&str]) -> (Backend, Receiver<Out>) {
     });
     let py = PluginPython::new(&f.envs, &[], &f.root);
     let cwd = f.root.clone();
-    let prepare = Box::new(move || {
+    let prepare = Box::new(move |_: &dyn Fn() -> bool| {
         let p = py.python()?;
         let mut argv = p.program;
         argv.push("backend.py".into());
@@ -215,6 +215,56 @@ fn a_backend_that_ignores_stdin_closing_is_killed() {
     assert!(t.elapsed() < Duration::from_secs(10));
 }
 
+/// A backend running `sh -c script` (no Python needed).
+#[cfg(unix)]
+fn sh_backend(script: &str) -> (Backend, Receiver<Out>) {
+    let (tx, rx) = channel();
+    let tx = Mutex::new(tx);
+    let sink: Sink = Arc::new(move |o| {
+        let _ = tx.lock().unwrap().send(o);
+    });
+    let argv: Vec<OsString> = vec!["sh".into(), "-c".into(), script.into()];
+    let prepare = Box::new(move |_: &dyn Fn() -> bool| Ok(Launch { argv: argv.clone(), cwd: std::env::temp_dir(), ..Default::default() }.into()));
+    (Backend::new("sh", json!({"type": "init"}), &[], prepare, sink), rx)
+}
+
+#[cfg(unix)]
+#[test]
+fn an_exit_is_seen_while_its_child_holds_stdout_and_the_child_goes_too() {
+    let (b, rx) = sh_backend("sleep 30 & echo child=$! >&2; exit 3");
+    b.start();
+    let why = loop {
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(Out::Exited(why)) => break why,
+            Ok(_) => {}
+            Err(_) => panic!("the exit went unnoticed: {:?}", b.status()),
+        }
+    };
+    assert!(why.contains("exit code 3"), "{why}");
+    let child: u32 = why.split("child=").nth(1).and_then(|s| s.split_whitespace().next()).and_then(|s| s.parse().ok()).unwrap();
+    #[cfg(target_os = "linux")]
+    wait_for("its child to be killed", || !Path::new(&format!("/proc/{child}")).exists() || is_zombie(child));
+    let _ = child;
+    // restarted after the backoff, with a fresh pid
+    wait_for("the restart", || b.status().starts >= 2);
+    drop(b);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_backend_that_never_reads_gets_its_messages_dropped_not_queued_forever() {
+    let (b, _rx) = sh_backend("exec sleep 30");
+    b.start();
+    wait_for("start", || b.status().phase == Phase::Running);
+    let big = "x".repeat(16 * 1024);
+    // pipe buffer (64 KiB here) plus a bounded queue: well under 2000 messages
+    let sent = (0..2000).take_while(|_| b.event(json!({"type": "event", "event": "client", "msg": big}))).count();
+    assert!(sent < 2000, "every message was queued");
+    wait_for("the fault", || b.status().faults.iter().any(|f| f.contains("isn't reading its input")));
+    let e = b.request("tool", json!({}), Duration::from_secs(5), &|| false).unwrap_err();
+    assert!(e.contains("isn't reading its input"), "{e}");
+}
+
 #[test]
 fn oversized_and_garbled_output_are_faults_not_failures() {
     let Some(f) = fixture(ECHO) else { return };
@@ -294,7 +344,7 @@ fn requirements_get_a_cached_venv_used_by_the_backend() {
     eprintln!("venv with one local wheel built in {:?}", t.elapsed());
     assert!(py.env.as_ref().unwrap().ready());
     let cwd = root.to_path_buf();
-    let prepare = Box::new(move || {
+    let prepare = Box::new(move |_: &dyn Fn() -> bool| {
         let mut argv = p.program.clone();
         argv.push("backend.py".into());
         Ok(Launch { argv, cwd: cwd.clone(), env: p.env.clone(), remove_env: vec![] }.into())
