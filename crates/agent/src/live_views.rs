@@ -34,6 +34,11 @@ const VIEW_TIMEOUT: Duration = Duration::from_secs(20);
 const FAULT_CHARS: usize = 1500;
 /// Faults sent to clients with a view.
 const CLIENT_FAULTS: usize = 8;
+/// Views kept while nobody shows them (the most recently used; e.g. cards in a chat's
+/// history, opened again as it scrolls). Older ones are asked of the backend again.
+const MAX_IDLE_VIEWS: usize = 32;
+/// View requests one client may have waiting at a time (each waits on a thread of its own).
+const MAX_ASKED_PER_CLIENT: usize = 4;
 
 type Key = (PathBuf, String, String);
 
@@ -48,16 +53,39 @@ struct Live {
     subs: BTreeSet<ClientId>,
     /// A view request is on its way.
     asked: bool,
+    /// The client whose `OpenView` made that request.
+    asker: Option<ClientId>,
     /// The backend process it came from, and how many times it had started then: a tree
     /// from an earlier process (or another backend object) is stale.
     backend: Weak<Backend>,
     starts: u32,
+    /// When it was last opened or changed (see [`LiveViews::tick`]).
+    used: u64,
+}
+
+impl Live {
+    fn new(plugin: &str, backend: &Arc<Backend>, starts: u32) -> Self {
+        Self {
+            plugin: plugin.to_owned(),
+            tree: None,
+            error: None,
+            faults: Vec::new(),
+            subs: BTreeSet::new(),
+            asked: false,
+            asker: None,
+            backend: Arc::downgrade(backend),
+            starts,
+            used: 0,
+        }
+    }
 }
 
 /// Every live view the engine knows.
 #[derive(Default)]
 pub(crate) struct LiveViews {
     map: BTreeMap<Key, Live>,
+    /// Counts uses, for [`Live::used`].
+    tick: u64,
 }
 
 impl LiveViews {
@@ -66,6 +94,31 @@ impl LiveViews {
         for l in self.map.values_mut() {
             l.subs.remove(&id);
         }
+        self.prune();
+    }
+
+    fn tick(&mut self) -> u64 {
+        self.tick = self.tick.saturating_add(1);
+        self.tick
+    }
+
+    /// Drop the least recently used views that nobody shows and no request waits for,
+    /// beyond [`MAX_IDLE_VIEWS`].
+    fn prune(&mut self) {
+        let mut idle: Vec<(u64, Key)> = self.map.iter().filter(|(_, l)| l.subs.is_empty() && !l.asked).map(|(k, l)| (l.used, k.clone())).collect();
+        let over = idle.len().saturating_sub(MAX_IDLE_VIEWS);
+        if over == 0 {
+            return;
+        }
+        idle.sort();
+        for (_, k) in idle.into_iter().take(over) {
+            self.map.remove(&k);
+        }
+    }
+
+    /// View requests client `id`'s `OpenView`s have waiting.
+    fn asked_by(&self, id: ClientId) -> usize {
+        self.map.values().filter(|l| l.asked && l.asker == Some(id)).count()
     }
 
     /// A view client `id` has open shows the workspace file `path` (an `image` node), so it
@@ -154,18 +207,17 @@ impl Engine {
             _ => None,
         };
         let key = (t.dir.clone(), r.view.clone(), r.key.clone());
-        let fresh = || Live {
-            plugin: r.plugin.clone(),
-            tree: None,
-            error: None,
-            faults: Vec::new(),
-            subs: BTreeSet::new(),
-            asked: false,
-            backend: Arc::downgrade(&t.backend),
-            starts: 0,
-        };
-        let live = self.live_views.map.entry(key.clone()).or_insert_with(fresh);
+        // Each request waits on a thread of its own: a client gets only so many at once.
+        let waits = self.live_views.map.get(&key).is_some_and(|l| l.tree.is_some() || l.asked);
+        if !waits && self.live_views.asked_by(id) >= MAX_ASKED_PER_CLIENT {
+            let e = "Too many views are loading at once; open this one again in a moment.".to_owned();
+            self.send_live(id, LiveView { view: r, error: Some(e), ..Default::default() });
+            return;
+        }
+        let used = self.live_views.tick();
+        let live = self.live_views.map.entry(key.clone()).or_insert_with(|| Live::new(&r.plugin, &t.backend, 0));
         live.subs.insert(id);
+        live.used = used;
         if let Some(tree) = live.tree.clone() {
             let faults = live.faults.clone();
             self.send_live(id, LiveView { view: r, tree: Some(tree), faults, ..Default::default() });
@@ -175,12 +227,14 @@ impl Engine {
             return;
         }
         live.asked = true;
+        live.asker = Some(id);
         let mut params = json!({"site": t.site.label(), "view": r.view, "key": r.key, "client": id, "chat": t.chat});
         if let Some(a) = artifact {
             params["artifact"] = a;
         }
         let inbox = self.inbox.clone();
         let backend = t.backend;
+        let key_again = key.clone();
         let spawned = std::thread::Builder::new().name("byob-view-request".into()).spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| backend.request("view", params, VIEW_TIMEOUT, &|| false)))
                 .unwrap_or_else(|_| Err("the view request crashed".into()));
@@ -189,6 +243,9 @@ impl Engine {
         });
         if let Err(e) = spawned {
             log::error!("could not start a view request: {e}");
+            if let Some(l) = self.live_views.map.get_mut(&key_again) {
+                (l.asked, l.asker) = (false, None);
+            }
         }
     }
 
@@ -199,6 +256,7 @@ impl Engine {
                 l.subs.remove(&id);
             }
         }
+        self.live_views.prune();
     }
 
     /// `ViewEvent`: to the view's backend, as an `event` of kind `view`.
@@ -262,7 +320,7 @@ impl Engine {
     pub(crate) fn view_reply(&mut self, dir: &Path, view: &str, key: &str, starts: u32, result: Result<Value, String>) {
         let k = (dir.to_path_buf(), view.to_owned(), key.to_owned());
         let Some(live) = self.live_views.map.get_mut(&k) else { return };
-        live.asked = false;
+        (live.asked, live.asker) = (false, None);
         match result {
             Ok(v) => {
                 let (reply, faults) = parse_reply(v);
@@ -280,6 +338,7 @@ impl Engine {
                 if let Some(b) = backend {
                     b.report_fault(&cut(&format!("view {view}: the view request failed: {e}")));
                 }
+                self.live_views.prune();
             }
         }
     }
@@ -338,16 +397,11 @@ impl Engine {
         let Some(entry) = self.ext.as_ref().and_then(|e| e.backends.get(dir)) else { return };
         let (plugin, backend) = (entry.plugin.clone(), Arc::clone(&entry.backend));
         let k = (dir.to_path_buf(), view.to_owned(), key.to_owned());
-        let live = self.live_views.map.entry(k).or_insert_with(|| Live {
-            plugin: plugin.clone(),
-            tree: None,
-            error: None,
-            faults: Vec::new(),
-            subs: BTreeSet::new(),
-            asked: false,
-            backend: Arc::downgrade(&backend),
-            starts,
-        });
+        let used = self.live_views.tick();
+        self.live_views.map.entry(k.clone()).or_insert_with(|| Live::new(&plugin, &backend, starts)).used = used;
+        // The newest use: never the one this drops.
+        self.live_views.prune();
+        let Some(live) = self.live_views.map.get_mut(&k) else { return };
         let values = std::mem::take(&mut reply.values);
         if reply.view.is_none() && live.tree.is_none() && !reply.patch.is_empty() {
             faults.push(Fault::new("/patch", format!("patches for view {view:?} before its first view were dropped: send the whole view first")));

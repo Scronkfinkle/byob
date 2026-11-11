@@ -267,3 +267,74 @@ fn the_authoring_guides_views_example_works() {
     let views_md = include_str!("../../../docs/views.md");
     assert!(views_md.contains(&block("## 5. Views", "python")), "docs/views.md and the authoring guide differ");
 }
+
+const COUNTING: &str = r#"
+import time
+import byob_plugin as byob
+
+asked = {}
+
+@byob.view("card")
+def card(key):
+    if key.startswith("slow"):
+        time.sleep(0.5)
+    asked[key] = asked.get(key, 0) + 1
+    return {"type": "text", "text": "%s asked %d" % (key, asked[key])}
+
+byob.run()
+"#;
+
+fn counting(root: &Path) {
+    let dir = root.join("counting");
+    fs::create_dir_all(&dir).unwrap();
+    let manifest = json!({"id": "counting", "name": "Counting", "backend": "backend.py", "views": [{"site": "card", "id": "card"}]});
+    fs::write(dir.join("byob-plugin.json"), manifest.to_string()).unwrap();
+    fs::write(dir.join("backend.py"), COUNTING).unwrap();
+}
+
+#[test]
+fn views_nobody_shows_are_forgotten_beyond_a_few() {
+    if !have_python() {
+        return;
+    }
+    let h = harness(vec![Reply::Text("hi")], counting);
+    let (mut a, _) = hello(&h);
+    let first = ViewRef::new("counting", "card", "k0");
+    assert!(text(&open(&mut a, &first)).contains("k0 asked 1"));
+    a.send(ClientMsg::CloseView { view: first.clone() });
+    // Reopened soon: the cached tree.
+    assert!(text(&open(&mut a, &first)).contains("k0 asked 1"));
+    a.send(ClientMsg::CloseView { view: first.clone() });
+    for i in 1..=40 {
+        let r = ViewRef::new("counting", "card", format!("k{i}"));
+        open(&mut a, &r);
+        a.send(ClientMsg::CloseView { view: r });
+    }
+    // After many others: it was dropped, and is asked for again.
+    assert!(text(&open(&mut a, &first)).contains("k0 asked 2"));
+}
+
+#[test]
+fn a_client_has_only_a_few_view_requests_waiting() {
+    if !have_python() {
+        return;
+    }
+    let h = harness(vec![Reply::Text("hi")], counting);
+    let (mut a, _) = hello(&h);
+    let refs: Vec<ViewRef> = (0..8).map(|i| ViewRef::new("counting", "card", format!("slow{i}"))).collect();
+    for r in &refs {
+        a.send(ClientMsg::OpenView { view: r.clone() });
+    }
+    let (mut trees, mut busy) = (0, 0);
+    while trees + busy < refs.len() {
+        match recv(&mut a) {
+            ServerMsg::LiveView(lv) if lv.tree.is_some() => trees += 1,
+            ServerMsg::LiveView(lv) => {
+                assert!(lv.error.as_deref().is_some_and(|e| e.contains("Too many views")), "{lv:?}");
+                busy += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!((trees, busy), (4, 4));
+}
