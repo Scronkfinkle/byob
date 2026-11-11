@@ -210,20 +210,20 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// Python's `os.path.relpath(path, start)`.
+/// Python's `os.path.relpath(path, start)`, with `/` between components on every platform:
+/// it is shown to the model and kept in artifact notes, so it reads the same everywhere. A
+/// path with nothing in common with `start` (another drive) comes back whole, `/`-separated.
 pub fn relpath(path: &Path, start: &Path) -> String {
     let (p, s) = (normalize(path), normalize(start));
     let pc: Vec<Component> = p.components().collect();
     let sc: Vec<Component> = s.components().collect();
     let common = pc.iter().zip(&sc).take_while(|(a, b)| a == b).count();
-    let mut out = PathBuf::new();
-    for _ in common..sc.len() {
-        out.push("..");
+    if common == 0 {
+        return p.to_string_lossy().replace('\\', "/");
     }
-    for c in &pc[common..] {
-        out.push(c.as_os_str());
-    }
-    if out.as_os_str().is_empty() { ".".into() } else { out.to_string_lossy().into_owned() }
+    let mut out: Vec<String> = vec!["..".to_owned(); sc.len() - common];
+    out.extend(pc[common..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+    if out.is_empty() { ".".into() } else { out.join("/") }
 }
 
 /// The [`Source`] for a tool's `sheet` argument (an artifact id, a workspace path, or an
@@ -481,3 +481,16 @@ impl Store {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relpath_uses_forward_slashes_everywhere() {
+        let ws = std::env::temp_dir().join("ws");
+        assert_eq!(relpath(&ws.join("data").join("sales.csv"), &ws), "data/sales.csv");
+        assert_eq!(relpath(&ws.join("a").join("b").join("c.tsv"), &ws), "a/b/c.tsv");
+        assert_eq!(relpath(&ws.join("x.csv"), &ws.join("sub").join("dir")), "../../x.csv");
+        assert_eq!(relpath(&ws, &ws), ".");
+    }
+}

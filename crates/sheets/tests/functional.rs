@@ -280,6 +280,8 @@ fn csv_workspace_file_becomes_a_new_artifact() {
     assert!(d.contains("C \"zip\": text"), "leading zeros stay text: {d}");
     let out = b.tool("write_cells", json!({"sheet": "data/sales.csv", "cells": {"D1": "double", "D2": "=B2*2"}}));
     assert!(out.contains("Saved as a new spreadsheet artifact (sales.xlsx); data/sales.csv itself is unchanged"), "{out}");
+    // the artifact's note names the file the same way on every platform (no `data\\sales.csv`)
+    assert_eq!(b.meta(&b.last_id)["versions"][0]["note"], "From data/sales.csv");
     let aid = b.last_id.clone();
     assert_eq!(b.meta(&aid)["filename"], "sales.xlsx");
     assert_eq!(b.meta(&aid)["content_type"], XLSX);
