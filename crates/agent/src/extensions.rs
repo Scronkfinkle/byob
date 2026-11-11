@@ -86,6 +86,10 @@ pub struct PluginsConfig {
     /// Plugins inside the binary (scope `bundled`, the least specific; see
     /// [`crate::natives::bundled_plugins`]).
     pub bundled: Vec<Embedded>,
+    /// Where bundled plugins that run code (a backend, script tools) are written out, one
+    /// read-only folder per plugin, byob version and contents (`<data>/bundled-plugins`;
+    /// `None`: a folder in the system's temporary folder).
+    pub bundled_cache: Option<PathBuf>,
     /// What their native ids resolve to.
     pub natives: Natives,
 }
@@ -105,6 +109,8 @@ pub(crate) struct ExtSet {
     plugin_fps: BTreeMap<PathBuf, u64>,
     /// Plugins in the binary instead of folders (the bundled set).
     embedded: Vec<Embedded>,
+    /// Where those that run code are written out.
+    materialize_to: Option<PathBuf>,
 }
 
 /// A fingerprint of an embedded plugin's files.
@@ -130,12 +136,14 @@ impl ExtSet {
             skill_errors: Vec::new(),
             plugin_fps: BTreeMap::new(),
             embedded: Vec::new(),
+            materialize_to: None,
         }
     }
 
-    fn embedded(list: Vec<Embedded>) -> Self {
+    fn embedded(list: Vec<Embedded>, materialize_to: PathBuf) -> Self {
         let mut set = Self::new(PluginScope::Bundled, PluginSources::default(), None);
         set.embedded = list;
+        set.materialize_to = Some(materialize_to);
         set
     }
 
@@ -172,7 +180,7 @@ impl ExtSet {
         self.found = byob_plugins::discover(&self.sources);
         if !self.embedded.is_empty() {
             // The binary's own first, then any `builtin_roots` folders.
-            let mut found = byob_plugins::discover_embedded(&self.embedded);
+            let mut found = byob_plugins::discover_embedded(&self.embedded, self.materialize_to.as_deref());
             for p in std::mem::take(&mut self.found.plugins) {
                 if found.plugins.iter().any(|q| q.id() == p.id()) {
                     found.errors.push(LoadError { path: p.dir.clone(), message: format!("id \"{}\" is already a plugin built into byob", p.id()) });
@@ -349,7 +357,8 @@ impl Extensions {
             PluginSources { roots: cfg.global_roots.clone(), linked: cfg.linked.clone(), ..Default::default() },
             cfg.global_skills.clone(),
         );
-        let mut bundled = ExtSet::embedded(cfg.bundled.clone());
+        let cache = cfg.bundled_cache.clone().unwrap_or_else(|| std::env::temp_dir().join("byob-bundled-plugins"));
+        let mut bundled = ExtSet::embedded(cfg.bundled.clone(), cache);
         bundled.sources.builtin_roots = cfg.builtin_roots.clone();
         let builtin_skill = byob_plugins::skills::parse_skill(AUTHORING_SKILL, Path::new(AUTHORING_SKILL_NAME)).unwrap_or_else(|e| {
             log::error!("the built-in plugin-authoring skill doesn't parse: {e}");
@@ -597,7 +606,7 @@ impl Extensions {
                             python: &python,
                             sink,
                         };
-                        let (bi, tools, backend) = backend_tools(backends, &make, &missing, &mut names);
+                        let (bi, tools, backend) = backend_tools(backends, &make, &missing, &mut names, &native.chat_types);
                         backend_info = Some(bi);
                         native.backend_hooks(plugin, set.scope, backend.as_ref());
                         for tool in tools {
@@ -727,6 +736,9 @@ struct NativeParts {
     offered_envs: BTreeSet<String>,
     external_envs: Vec<byob_tools::CommandEnv>,
     hooks: Vec<Binding>,
+    /// The chat's artifact types, filled in by [`NativeParts::finish`]; backend tools hold a
+    /// clone (registrations are shared) to save the artifact versions they return.
+    chat_types: ArtifactTypes,
 }
 
 impl NativeParts {
@@ -755,6 +767,7 @@ impl NativeParts {
             offered_envs: BTreeSet::new(),
             external_envs: Vec::new(),
             hooks: Vec::new(),
+            chat_types: ArtifactTypes::empty(),
         }
     }
 
@@ -871,6 +884,7 @@ impl NativeParts {
             offered_envs,
             external_envs,
             mut hooks,
+            chat_types,
             ..
         } = self;
         // Native hooks nobody here names keep their default places.
@@ -880,7 +894,6 @@ impl NativeParts {
         out.env_providers = byob_tools::EnvProviders { off: claimed_envs.difference(&offered_envs).cloned().collect(), external: external_envs };
         // The engine's order: unclaimed types stay, claimed ones only as a switched-on
         // plugin declares them; new types after.
-        let chat_types = ArtifactTypes::empty();
         for t in types.all() {
             if let Some(i) = declared_types.iter().position(|d| d.content_type == t.content_type) {
                 chat_types.register(declared_types.remove(i));
@@ -949,6 +962,9 @@ fn artifact_type(plugin: &Plugin, decl: &ManifestArtifactType, natives: &Natives
         None => ArtifactType::new(&decl.content_type, decl.label.as_deref().unwrap_or("file"), byob_protocol::ArtifactKind::Text),
     };
     decl.content_type.clone_into(&mut t.content_type);
+    if decl.binary {
+        t = t.binary();
+    }
     if let Some(s) = &decl.suffixes {
         t.suffixes.clone_from(s);
     }
@@ -979,6 +995,7 @@ fn backend_tools(
     m: &Make<'_>,
     missing: &[String],
     names: &mut ToolNames,
+    types: &ArtifactTypes,
 ) -> (BackendInfo, Vec<Arc<BackendTool>>, Option<Arc<byob_plugins::Backend>>) {
     if !missing.is_empty() {
         return (BackendInfo { state: "off".into(), error: Some(format!("fill in: {}", missing.join(", "))), ..Default::default() }, Vec::new(), None);
@@ -993,7 +1010,7 @@ fn backend_tools(
         .filter(|t| t.kind == ToolKind::Backend)
         .map(|t| {
             let name = names.claim(&t.name, &byob_plugins::names::namespaced(id, &t.name));
-            Arc::new(BackendTool::new(name, m.plugin_ref.clone(), t.clone(), Arc::clone(&backend)))
+            Arc::new(BackendTool::new(name, m.plugin_ref.clone(), t.clone(), Arc::clone(&backend)).with_types(types.clone()))
         })
         .collect();
     (crate::backends::info(&backend), tools, Some(backend))

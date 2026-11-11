@@ -68,6 +68,9 @@ _event_fns = {}  # view id (None: every view) -> [fn(event)]
 _keys = {}  # view id -> keys drawn so far ("" for pane, settings, status; one per card)
 _hooks = {}  # event -> fn(payload)
 _cards = [0]
+_context = {}  # the tool request being served: name, workspace, chat
+_artifacts = {}  # (view id, key) -> the artifact an "artifact" site view shows
+MAX_ARTIFACT_KEYS = 16  # artifact views drawn again after changes (the newest ones)
 
 
 def _send(msg):
@@ -183,6 +186,54 @@ def _site(view_id):
     return None
 
 
+class ToolError(Exception):
+    """Raise from a tool for an expected failure: the model gets the message as the call's
+    error, without a traceback."""
+
+
+def context():
+    """The tool request being served: {"name", "workspace", "chat"} (empty outside one)."""
+    return dict(_context)
+
+
+def artifact(key, view_id=None):
+    """The artifact an "artifact"-site view (a renderer: {"renderer": "view:<id>"}) shows
+    for `key` ("<artifact id>@<version>"): {"id", "version", "latest", "path" (that
+    version's file), "filename", "content_type", "title", "workspace", "chat"}; None if byob
+    hasn't said."""
+    if view_id is None:
+        for (vid, k), a in _artifacts.items():
+            if k == key:
+                return a
+        return None
+    return _artifacts.get((view_id, key))
+
+
+def save_artifact(file, chat, id=None, title=None, filename=None, note="", draft=False):
+    """Save `file` (a path; byob copies it) as a new version of artifact `id` in `chat`
+    (a new artifact when `id` is None: give `title` and `filename`). `draft=True` (edits the
+    user made in a view): consecutive drafts replace one version until the model writes or
+    a turn starts. From a tool, return {"text": ..., "artifact": {...}} instead."""
+    msg = {"type": "artifact", "chat": chat, "file": str(file), "note": str(note), "draft": bool(draft)}
+    for k, v in (("id", id), ("title", title), ("filename", filename)):
+        if v is not None:
+            msg[k] = v
+    _send(msg)
+
+
+def _remember_key(view_id, key, params):
+    keys = _keys.setdefault(view_id, set())
+    keys.add(key)
+    a = params.get("artifact") if isinstance(params, dict) else None
+    if isinstance(a, dict):
+        _artifacts[(view_id, key)] = a
+        mine = [k for (v, k) in _artifacts if v == view_id]
+        while len(mine) > MAX_ARTIFACT_KEYS:
+            old = mine.pop(0)
+            _artifacts.pop((view_id, old), None)
+            keys.discard(old)
+
+
 def _draw(view_id, key):
     fn = _view_fns[view_id]
     try:
@@ -199,7 +250,7 @@ def refresh(view_id=None, values=None, client=None):
         if vid not in _view_fns:
             continue
         keys = set(_keys.get(vid) or ())
-        if _site(vid) != "card":
+        if _site(vid) not in ("card", "artifact"):
             keys.add("")
         for key in sorted(keys):
             try:
@@ -292,7 +343,12 @@ def _request(msg):
             if fn is None:
                 raise LookupError(f"this backend has no tool {params.get('name')!r} (known: {', '.join(_tools) or 'none'})")
             args = params.get("args") or {}
-            result = fn(**args) if isinstance(args, dict) else fn(args)
+            _context.clear()
+            _context.update({k: params.get(k) for k in ("name", "workspace", "chat")})
+            try:
+                result = fn(**args) if isinstance(args, dict) else fn(args)
+            finally:
+                _context.clear()
         elif method == "hook":
             fn = _hooks.get(params.get("event"))
             result = fn(params) if fn is not None else None
@@ -301,7 +357,7 @@ def _request(msg):
         elif method == "view":
             vid, key = params.get("view"), params.get("key") or ""
             if vid in _view_fns:
-                _keys.setdefault(vid, set()).add(key)
+                _remember_key(vid, key, params)
                 result = _draw(vid, key)
             elif _views:
                 result = _views[0](params.get("site"), key, params.get("client"))
@@ -310,6 +366,8 @@ def _request(msg):
         else:
             raise LookupError(f"unknown request {method!r}")
         _send({"type": "reply", "id": rid, "result": result})
+    except ToolError as e:
+        _send({"type": "reply", "id": rid, "error": str(e)})
     except Exception:
         traceback.print_exc()
         _send({"type": "reply", "id": rid, "error": _short_traceback()})
@@ -319,7 +377,7 @@ def _request(msg):
 
 def _view_event(msg):
     vid = msg.get("view")
-    _keys.setdefault(vid, set()).add(msg.get("key") or "")
+    _remember_key(vid, msg.get("key") or "", msg)
     handlers = _event_fns.get(vid, []) + _event_fns.get(None, [])
     if not handlers:
         fault(f"view {vid}: nothing handles its events; add @byob.on_event({vid!r})")

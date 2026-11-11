@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10 (hooks: the turn pipeline as plugin middleware; prompt, compaction, subagents and environments as bundled plugins)
+Last updated: 2026-11-10 (view-backed artifact renderers, the `grid` node, bundled plugins materialized to disk, spreadsheets as a bundled plugin)
 
 ## Shape
 
@@ -76,8 +76,9 @@ the theme tokens, on the desktop and in the browser alike. Authoring guide: `doc
 
 - **Schema** (`byob_protocol::tree`, v1): containers `column`, `row`, `card`; leaves `text`,
   `markdown`, `chip`, `button`, `input`, `toggle`, `select`, `progress`, `table` (virtualized,
-  editable columns), `chart` (`ChartSpec`), `separator`, `image` (media path / artifact id),
-  `canvas` (display list in theme colours). Any node may carry a `key`. Colours are only theme
+  editable columns), `grid` (a spreadsheet: virtualized rows and columns served in windows
+  by its owner, see below), `chart` (`ChartSpec`), `separator`, `image` (media path / artifact
+  id), `canvas` (display list in theme colours). Any node may carry a `key`. Colours are only theme
   roles (tones), never values, except `#hex` on a canvas. An `Event` is an action plus the
   value of every named field (form semantics) and an optional cell edit; a `Reply` is a whole
   `view`, `patch`es, and `values` to force over typed text.
@@ -314,6 +315,25 @@ the same API third parties (and, in P3, bundled plugins) use.
   (fallback), `markdown`, `chart`, `image` (PNG and JPEG), `html_app` (live card, pane with the
   app's reported errors and "Send error to byob", Open). Register more with
   `ByobApp::artifact_renderers_mut` (like `views_mut` for step views).
+- **View-backed renderers** (`renderer: "view:<view id>"`, 13.5): an artifact type drawn by
+  a plugin's own live view at the **artifact** site (`Site::Artifact`), one instance per
+  version, key `"<artifact id>@<version>"` (`sites::artifact_key`). Client:
+  `renderers::view::ViewRenderer` (made by `apply_plugins` for the declaring plugin) draws
+  through `ArtifactViews` (`renderers/view.rs`, owned by the artifact UI, reached via
+  `ArtifactCx`): one engine subscription per view, a `TreeState` per place (card, pane),
+  carried over when a place moves to a newer version of the same artifact (the old tree shows
+  until the new one comes); unused views close after 10 s. Cards are 260 points high and
+  compact. Engine (`live_views.rs`): `OpenView`/`ViewEvent` for an artifact-site view resolve
+  the key against the client's chat (`artifact_param`) and hand the backend `artifact {id,
+  version, latest, path, filename, content_type, title, workspace, chat}`; a key that names
+  no artifact of the chat is an error at the site. Writes come back two ways
+  (`byob_tools::artifact::save_bytes`): a backend tool's result `artifact {id?, title?,
+  filename?, file, note?}` (`BackendTool`, with the chat's types; a file change of the call,
+  so the step and `ArtifactUpdated` follow as for any tool) and a backend `artifact` message
+  (`backends.rs`, the user's edits): with `draft`, consecutive saves replace one version
+  (`Engine::drafts`, frozen when a turn starts in the chat or a write of that artifact
+  arrives). A version saved again makes clients drop their cached bytes of it. Manifest:
+  `artifact_types[].binary` (not text: the artifact tools leave it alone).
 - The HTML-app, chart and markdown pieces live together per side (`artifact_types::html_app` +
   `renderers::html_app`, …) and are switched on by bundled plugins (see Plugins → Bundled
   plugins): a chat gets the engine's types less those of switched-off plugins
@@ -366,6 +386,22 @@ Servo's MPL-2.0 code and tokio never enter byob; see AGENTS.md §3). The helper 
 - **Liveness**: a ping every 500 ms, answered by evaluating a no-op on the page's script
   thread. No pong for 3 s (a runaway script), the process exiting, or Stop on the card:
   the process group is SIGKILLed and the app shows "Stopped" with Reload / Open in browser.
+
+### Spreadsheets (bundled `sheets` plugin)
+
+Spreadsheets dogfood the plugin API: no core code knows them. `crates/bundled/plugins/sheets`
+declares `.xlsx` (binary), `.csv` and `.tsv` artifact types, renders all three with its
+`sheet` view (`view:sheet`, a `grid` node), and serves the model's tools from a Python
+backend on IronCalc (`python.requirements: ["ironcalc==0.9.1"]`, a per-plugin venv):
+`create_sheet`, `describe_sheet` (sheets, used range, header row, a profile per column,
+samples, error cells), `read_cells` (paged TSV, values or formulas), `write_cells` (`start` +
+rows or a cell map; `=` is a formula), `fill` (a first-row formula over a range with relative
+references), `edit_sheet` (sheets, rows/columns, sort, freeze) and `format_cells`. Every write
+recalculates, saves a new version (a tool result's `artifact`) and returns the written
+range's values, every error cell and lints (`IFERROR(…,"")`, typed numbers among formulas,
+cells the user changed since). A CSV becomes an `.xlsx` version on its first write. The
+grid's edits, pastes and clears go to the backend, which saves drafts. Without IronCalc (no
+network for the venv) the backend still starts, says so in every write and reads CSV/TSV.
 
 ## Context compaction and usage
 
@@ -503,13 +539,23 @@ byob's own features ship as plugins on the same manifest and registries third pa
 text, the artifacts prompt section), `html-apps` (`text/html` + `guidance.md` + its check +
 the `web` renderer with Open), `charts` (make_chart, the chart type, `native:chart`),
 `markdown`, `images` and `core-tools` (file tools, run_command/run_python/install_*,
-the code-running section). `artifacts` and `core-tools` are `locked` (always on: their switch
+the code-running section), and `sheets` (spreadsheets: a Python backend on IronCalc, see
+Spreadsheets below). `artifacts` and `core-tools` are `locked` (always on: their switch
 is refused with a notice and the UI shows "always on"; a fork with the same id stays locked);
 the others switch like any plugin. Since the hooks phase they also include `prompt` (locked:
 the base prompt, plugins' prompt parts, the user's instructions), `workspace-instructions`
 (AGENTS.md), `compaction`, `subagents` (`delegate`) and `environments` (nix, pixi, mise,
 containers); see Hooks below. Authoring tools (make_tool & co.) and `use_skill` stay kernel,
 never plugins.
+
+**Materialized to disk.** A bundled plugin that runs code (a `backend`, script tools) gets its
+files written once to `<data>/bundled-plugins/<id>-<byob version>-<content hash>/`
+(`byob_plugins::materialize`, `PluginsConfig::bundled_cache`; a temporary folder without
+one): under a temporary name, then renamed into place, so a folder that exists is complete;
+files read-only (edits go in a fork); other folders of that plugin are removed. That folder
+is the plugin's `dir` (its backend's working folder, `BYOB_PLUGIN_DIR`, its venv's
+`./x.whl` base); reading its files (`Plugin::read`, forks, fingerprints) still uses the
+embedded copy. Without a cache root its scripts and backend stay problems as before.
 
 **Native bindings** (`crates/agent/src/natives.rs`). Manifest fields name in-tree Rust by id;
 no code is loaded at run time (no dlopen: `unsafe` is forbidden):
@@ -524,8 +570,9 @@ no code is loaded at run time (no dlopen: `unsafe` is forbidden):
 - `system_prompt`: a file of the plugin, or `{"native": id}` (`Natives::prompts`: `artifacts`
   builds from the chat's types; the app adds `exec`). Sections go between the base prompt and
   the plugin prompt lines, bundled ones first in bundled order.
-- `renderers [{type, renderer: "web" | "text" | "native:<id>"}]`, sent to clients in
-  `PluginInfo::renderers` and resolved there (`ArtifactRenderers::native`).
+- `renderers [{type, renderer: "web" | "text" | "native:<id>" | "view:<view id>"}]`, sent to
+  clients in `PluginInfo::renderers` and resolved there (`ArtifactRenderers::native`; `view:`
+  is the plugin's own artifact-site view, see Artifacts).
 
 A native tool or type that some plugin the chat sees names is offered only while one of
 those plugins is on (`NativeParts` in `extensions.rs`); one nobody names is always there

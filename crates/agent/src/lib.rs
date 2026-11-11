@@ -17,6 +17,8 @@
 mod adapt;
 #[cfg(test)]
 mod adapt_tests;
+#[cfg(test)]
+mod artifact_view_tests;
 pub mod attachments;
 mod authoring;
 #[cfg(test)]
@@ -552,6 +554,10 @@ struct Engine {
     plugin_values: BTreeMap<String, BTreeMap<String, String>>,
     /// Views (plugin cards) waiting for their step to finish, by chat: (tool, view).
     step_views: BTreeMap<String, (String, View)>,
+    /// Draft versions: (chat, artifact) → the version the user's edits in a plugin's view
+    /// keep replacing (`{"type": "artifact", "draft": true}` from a backend), until the model
+    /// writes the artifact or a turn starts in the chat.
+    drafts: BTreeMap<(String, String), u32>,
     /// Plugins' live views at render sites, by plugin folder, view and key.
     live_views: live_views::LiveViews,
     /// Engine-side handlers of the plugin channel.
@@ -626,6 +632,7 @@ impl Engine {
             }),
             plugin_values,
             step_views: BTreeMap::new(),
+            drafts: BTreeMap::new(),
             live_views: live_views::LiveViews::default(),
             channels: config.channels,
             chat_prompts: BTreeMap::new(),
@@ -1257,6 +1264,10 @@ impl Engine {
 
     /// A step made artifact versions: re-read those artifacts and tell the chat's viewers.
     fn artifacts_changed(&mut self, chat: &str, refs: &[ArtifactRef]) {
+        // A write freezes a draft of that artifact (the next user edit is a new version).
+        for r in refs {
+            self.drafts.remove(&(chat.to_owned(), r.id.clone()));
+        }
         let Some(live) = self.live.get_mut(chat) else { return };
         let mut changed = Vec::new();
         for r in refs {
@@ -1546,6 +1557,8 @@ impl Engine {
     /// turn. Nothing is added if it can't start.
     pub(crate) fn begin_turn_in(&mut self, chat: &str, text: String, attached: Vec<MediaRef>) -> Result<(), String> {
         let chat = chat.to_owned();
+        // A turn freezes the user's drafts: the model sees them as they are.
+        self.drafts.retain(|(c, _), _| *c != chat);
         // The chat's settings: global, then its workspace's, then its own.
         let settings = self.chat_settings(Some(&chat), None);
         let llm = self.llm_for(&settings.inference).map_err(|e| format!("inference URL is invalid: {e}"))?;

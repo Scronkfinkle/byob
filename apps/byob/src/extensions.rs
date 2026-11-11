@@ -71,6 +71,7 @@ pub fn load(tools: &mut Registry, artifact_types: &byob_tools::ArtifactTypes, li
             plugins.global_skills = Some(paths.config_dir.join("skills"));
             plugins.scratch_root = Some(paths.data_dir.join("chats"));
             plugins.python_root = Some(paths.data_dir.join("plugin-python"));
+            plugins.bundled_cache = Some(paths.data_dir.join("bundled-plugins"));
         }
         Err(e) => log::warn!("no config folder ({e}); only --plugin folders are loaded"),
     }

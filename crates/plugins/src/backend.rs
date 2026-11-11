@@ -718,11 +718,19 @@ pub struct BackendTool {
     decl: ManifestTool,
     backend: Arc<Backend>,
     timeout: Duration,
+    /// The chat's artifact types, for the versions its results save.
+    types: byob_tools::ArtifactTypes,
 }
 
 impl BackendTool {
     pub fn new(name: String, plugin: PluginRef, decl: ManifestTool, backend: Arc<Backend>) -> Self {
-        Self { name, plugin, decl, backend, timeout: REQUEST_TIMEOUT }
+        Self { name, plugin, decl, backend, timeout: REQUEST_TIMEOUT, types: byob_tools::ArtifactTypes::builtin() }
+    }
+
+    /// Save the artifact versions its results carry with these types (the chat's).
+    pub fn with_types(mut self, types: byob_tools::ArtifactTypes) -> Self {
+        self.types = types;
+        self
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -770,7 +778,9 @@ impl Tool for BackendTool {
                     }
                     self.backend.post(msg);
                 }
-                tool_output(v, ctx.workspace)
+                let mut out = tool_output(v.clone(), ctx.workspace);
+                save_artifacts(&v, &self.types, ctx, &mut out);
+                out
             }
             Err(e) if e.starts_with("Stopped by the user") => ToolOutput::err(e),
             Err(e) => ToolOutput::err(format!("{} (backend) ran into a problem:\n{e}", self.plugin.name)),
@@ -790,12 +800,67 @@ fn card_of(v: &Value) -> Option<Value> {
     Some(json!({"tree": tree, "view": o.get("card_view").and_then(Value::as_str), "key": o.get("card_key").and_then(Value::as_str)}))
 }
 
+/// Most artifact versions one tool result saves.
+const MAX_SAVED: usize = 4;
+
+/// A tool reply's `artifact` (or `artifacts`, a list): `{"id"?, "title"?, "filename"?,
+/// "file", "note"?}` — `file` is a path (absolute, or in the workspace) whose bytes become a
+/// new version of artifact `id` (a new artifact without one). Each saved version is a file
+/// change of the call (so the step shows the artifact and clients hear of it) and a line
+/// for the model; a failure is a line too.
+fn save_artifacts(v: &Value, types: &byob_tools::ArtifactTypes, ctx: &ToolContext<'_>, out: &mut ToolOutput) {
+    let Some(o) = v.as_object() else { return };
+    let items: Vec<&Value> = match (o.get("artifact"), o.get("artifacts")) {
+        (Some(a), _) if a.is_object() => vec![a],
+        (_, Some(Value::Array(list))) => list.iter().filter(|a| a.is_object()).take(MAX_SAVED).collect(),
+        _ => return,
+    };
+    let chat = ctx.chat().unwrap_or_default();
+    for a in items {
+        let s = |k: &str| a.get(k).and_then(Value::as_str);
+        let result = (|| {
+            let file = s("file").filter(|f| !f.is_empty()).ok_or("the artifact has no \"file\" (the path of its bytes)")?;
+            let path = if Path::new(file).is_absolute() { PathBuf::from(file) } else { ctx.workspace.join(file) };
+            let bytes = std::fs::metadata(&path)
+                .map_err(|e| format!("{file}: {e}"))
+                .and_then(|m| if m.len() > byob_tools::artifact::MAX_FILE_BYTES { Err(format!("{file} is too big")) } else { Ok(()) })
+                .and_then(|()| std::fs::read(&path).map_err(|e| format!("{file}: {e}")))?;
+            let save = byob_tools::artifact::SaveBytes {
+                chat,
+                id: s("id"),
+                title: s("title"),
+                filename: s("filename"),
+                bytes: &bytes,
+                note: s("note").unwrap_or_default(),
+                replace: None,
+            };
+            byob_tools::artifact::save_bytes(types, ctx.workspace, &save)
+        })();
+        match result {
+            Ok(saved) => {
+                out.text.push_str(&format!(
+                    "\nSaved: artifact {}, version {} ({}){}.",
+                    saved.artifact.id,
+                    saved.version,
+                    saved.artifact.filename,
+                    if saved.created { "; a new artifact, use this id from now on" } else { "" }
+                ));
+                out.changes.push(FileChange::Created(saved.file));
+            }
+            Err(e) => {
+                out.text.push_str(&format!("\nThe result couldn't be saved as an artifact: {e}"));
+                out.failed = true;
+            }
+        }
+    }
+}
+
 /// A tool reply as tool output: text, `{"text": …, "files": […]}`, or any JSON.
 fn tool_output(v: Value, workspace: &Path) -> ToolOutput {
     let (text, files) = match v {
         Value::String(s) => (s, Vec::new()),
         Value::Null => (String::new(), Vec::new()),
-        Value::Object(o) if o.contains_key("text") || o.contains_key("files") || o.contains_key("card") => {
+        Value::Object(o) if ["text", "files", "card", "artifact", "artifacts"].iter().any(|k| o.contains_key(*k)) => {
             let text = o.get("text").map(|t| t.as_str().map_or_else(|| t.to_string(), str::to_owned)).unwrap_or_default();
             let files = o.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
             (text, files)

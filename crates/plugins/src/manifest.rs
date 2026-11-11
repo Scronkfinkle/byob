@@ -137,9 +137,13 @@ pub struct ManifestArtifactType {
     pub pick: Option<String>,
     /// A file of the plugin with the type's system-prompt guidance.
     pub guidance: Option<String>,
+    /// `"binary": true`: its versions aren't text (`create_artifact` / `update_artifact` /
+    /// `read_artifact` don't take them; the plugin's own tools write them).
+    pub binary: bool,
 }
 
-/// `{"type": "text/html", "renderer": "web" | "text" | "native:<id>"}`.
+/// `{"type": "text/html", "renderer": "web" | "text" | "native:<id>" | "view:<view id>"}`
+/// (`view:` names one of the plugin's views with `"site": "artifact"`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ManifestRenderer {
     pub content_type: String,
@@ -156,7 +160,7 @@ pub enum PromptSource {
 }
 
 /// Render sites a view may declare.
-pub const VIEW_SITES: [&str; 4] = ["pane", "settings", "status", "card"];
+pub const VIEW_SITES: [&str; 5] = ["pane", "settings", "status", "card", "artifact"];
 /// Most views one plugin declares.
 pub const MAX_VIEWS: usize = 16;
 
@@ -506,6 +510,14 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
     if backend.is_none() && !views.is_empty() {
         return Err("views are drawn by the plugin's backend: add \"backend\": \"backend.py\"".into());
     }
+    let renderers = parse_renderers(r.get("renderers"))?;
+    for (i, d) in renderers.iter().enumerate() {
+        if let Some(v) = d.renderer.strip_prefix("view:")
+            && !views.iter().any(|x| x.id == v && x.site == "artifact")
+        {
+            return Err(format!("renderers[{i}].renderer: {:?} needs a view {{\"site\": \"artifact\", \"id\": \"{v}\"}} in \"views\"", d.renderer));
+        }
+    }
     Ok(Manifest {
         id,
         name,
@@ -525,7 +537,7 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
         views,
         locked: r.get("locked") == Some(&Value::Bool(true)),
         artifact_types: parse_artifact_types(r.get("artifact_types").or_else(|| r.get("content_types")))?,
-        renderers: parse_renderers(r.get("renderers"))?,
+        renderers,
         system_prompt: parse_prompt_source(r.get("system_prompt"))?,
         hooks,
         environments: parse_environments(r.get("environments"))?,
@@ -688,7 +700,21 @@ fn parse_artifact_types(v: Option<&Value>) -> R<Vec<ManifestArtifactType>> {
             return Err(format!("{f}.guidance must be a file inside the plugin folder, like \"guidance.md\""));
         }
         let short = |key: &str| -> R<Option<String>> { Ok(opt_str(o.get(key), &format!("{f}.{key}"))?.map(|s| truncate_chars(&s, 400))) };
-        out.push(ManifestArtifactType { content_type, native, suffixes, label: short("label")?, describe: short("describe")?, pick: short("pick")?, guidance });
+        let binary = match o.get("binary") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err(format!("{f}.binary must be true or false")),
+        };
+        out.push(ManifestArtifactType {
+            content_type,
+            native,
+            suffixes,
+            label: short("label")?,
+            describe: short("describe")?,
+            pick: short("pick")?,
+            guidance,
+            binary,
+        });
     }
     Ok(out)
 }
@@ -709,9 +735,11 @@ fn parse_renderers(v: Option<&Value>) -> R<Vec<ManifestRenderer>> {
                 return Err(format!("{f}.type must be a content type like \"text/csv\" (or \"image/*\")"));
             }
             let renderer = req_str(o.get("renderer"), &format!("{f}.renderer"))?;
-            let ok = matches!(renderer.as_str(), "web" | "text") || renderer.strip_prefix("native:").is_some_and(native_id_ok);
+            let ok = matches!(renderer.as_str(), "web" | "text")
+                || renderer.strip_prefix("native:").is_some_and(native_id_ok)
+                || renderer.strip_prefix("view:").is_some_and(byob_view_id_ok);
             if !ok {
-                return Err(format!("{f}.renderer must be \"web\", \"text\" or \"native:<id>\""));
+                return Err(format!("{f}.renderer must be \"web\", \"text\", \"native:<id>\" or \"view:<view id>\""));
             }
             Ok(ManifestRenderer { content_type, renderer })
         })
@@ -740,6 +768,11 @@ fn parse_prompt_source(v: Option<&Value>) -> R<Option<PromptSource>> {
     }
 }
 
+/// A view id: `[a-z0-9_-]{1,48}`.
+fn byob_view_id_ok(id: &str) -> bool {
+    (1..=48).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+}
+
 /// `"views": [{"site": "pane", "id": "todo", "title": "To do", "icon": "list"}]`.
 fn parse_views(v: Option<&Value>, plugin_name: &str) -> R<Vec<ManifestView>> {
     let items = list(v, "views")?;
@@ -758,8 +791,7 @@ fn parse_views(v: Option<&Value>, plugin_name: &str) -> R<Vec<ManifestView>> {
             None => site.clone(),
             v => req_str(v, &format!("{f}.id"))?,
         };
-        let id_ok = (1..=48).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'));
-        if !id_ok {
+        if !byob_view_id_ok(&id) {
             return Err(format!("{f}.id must be lowercase letters, digits, _ or -, like \"todo\""));
         }
         if out.iter().any(|x| x.id == id) {
@@ -1013,7 +1045,7 @@ mod tests {
             ),
             (
                 json!({"id": "a", "name": "x", "renderers": [{"type": "text/csv", "renderer": "wasm"}]}),
-                "byob-plugin.json: renderers[0].renderer must be \"web\", \"text\" or \"native:<id>\"",
+                "byob-plugin.json: renderers[0].renderer must be \"web\", \"text\", \"native:<id>\" or \"view:<view id>\"",
             ),
             (
                 json!({"id": "a", "name": "x", "system_prompt": "../p.md"}),
@@ -1112,7 +1144,7 @@ mod tests {
             ),
             (
                 json!({"id": "a", "name": "x", "backend": "b.py", "views": [{"site": "sidebar"}]}),
-                "byob-plugin.json: views[0].site must be one of pane, settings, status, card",
+                "byob-plugin.json: views[0].site must be one of pane, settings, status, card, artifact",
             ),
             (
                 json!({"id": "a", "name": "x", "backend": "b.py", "views": [{"site": "pane", "id": "My View"}]}),

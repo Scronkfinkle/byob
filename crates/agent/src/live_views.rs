@@ -141,6 +141,18 @@ impl Engine {
                 return;
             }
         };
+        // An artifact's view: the backend gets the version it shows (checked first, so a
+        // key for no artifact of this chat never reaches it).
+        let artifact = match t.site {
+            Site::Artifact => match self.artifact_param(t.chat.as_deref(), &r.key) {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    self.send_live(id, LiveView { view: r, error: Some(e), ..Default::default() });
+                    return;
+                }
+            },
+            _ => None,
+        };
         let key = (t.dir.clone(), r.view.clone(), r.key.clone());
         let fresh = || Live {
             plugin: r.plugin.clone(),
@@ -163,7 +175,10 @@ impl Engine {
             return;
         }
         live.asked = true;
-        let params = json!({"site": t.site.label(), "view": r.view, "key": r.key, "client": id, "chat": t.chat});
+        let mut params = json!({"site": t.site.label(), "view": r.view, "key": r.key, "client": id, "chat": t.chat});
+        if let Some(a) = artifact {
+            params["artifact"] = a;
+        }
         let inbox = self.inbox.clone();
         let backend = t.backend;
         let spawned = std::thread::Builder::new().name("byob-view-request".into()).spawn(move || {
@@ -200,14 +215,47 @@ impl Engine {
                 return;
             }
         };
-        let msg = json!({
+        let mut msg = json!({
             "type": "event", "event": "view", "view": r.view, "site": t.site.label(), "key": r.key, "client": id, "chat": t.chat,
             "action": event.action, "values": event.values, "edit": event.edit,
         });
+        // Whatever else the event carries (a grid's op, fields a newer client adds).
+        if let (Ok(Value::Object(extra)), Some(m)) = (serde_json::to_value(&event), msg.as_object_mut()) {
+            for (k, v) in extra {
+                m.entry(k).or_insert(v);
+            }
+        }
+        if t.site == Site::Artifact {
+            match self.artifact_param(t.chat.as_deref(), &r.key) {
+                Ok(a) => msg["artifact"] = a,
+                Err(e) => {
+                    self.send_live(id, LiveView { view: r, error: Some(e), ..Default::default() });
+                    return;
+                }
+            }
+        }
         if !t.backend.event(msg) {
             let why = t.backend.status().error.unwrap_or_else(|| "stopped".into());
             self.send_live(id, LiveView { view: r, error: Some(format!("{}'s backend isn't running: {why}", t.backend.plugin())), ..Default::default() });
         }
+    }
+
+    /// What an artifact-site view with `key` (`"<id>@<version>"`) shows, for its backend:
+    /// `{id, version, latest, path (the version's file), filename, content_type, title,
+    /// workspace, chat}`.
+    fn artifact_param(&mut self, chat: Option<&str>, key: &str) -> Result<Value, String> {
+        let (id, version) =
+            byob_protocol::sites::parse_artifact_key(key).ok_or_else(|| format!("{key:?} isn't an artifact view key (\"<artifact id>@<version>\")"))?;
+        let chat = chat.ok_or("no chat is open")?;
+        let workspace = self.chat_workspace(chat).ok_or("this chat has no workspace")?;
+        let meta = byob_tools::artifact::load_in_chat(&workspace, chat, id)?;
+        let v = meta.artifact.version(version).ok_or_else(|| format!("artifact {id} has no version {version}"))?;
+        let path = byob_sandbox_path(&workspace, &v.path);
+        Ok(json!({
+            "id": id, "version": version, "latest": meta.artifact.latest().map_or(version, |l| l.n),
+            "path": path, "filename": meta.artifact.filename, "content_type": meta.artifact.content_type(),
+            "title": meta.artifact.title, "workspace": workspace.display().to_string(), "chat": chat,
+        }))
     }
 
     /// `Input::ViewReply`: the backend answered a view request.
@@ -407,6 +455,12 @@ fn parse_reply(v: Value) -> (Reply, Vec<Fault>) {
         }
         Err(f) => (Reply::default(), vec![f]),
     }
+}
+
+/// A version's workspace-relative path as an absolute one.
+fn byob_sandbox_path(workspace: &Path, rel: &str) -> String {
+    let p = Path::new(rel);
+    if p.is_absolute() { p.display().to_string() } else { workspace.join(p).display().to_string() }
 }
 
 fn cut(s: &str) -> String {

@@ -1,5 +1,5 @@
 //! Embed every file under `plugins/<id>/` (the bundled plugins' sources) so the binary needs
-//! nothing on disk. Text files only; hidden files are skipped.
+//! nothing on disk. Text files only; hidden files and Python's caches are skipped.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) {
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
+        if name.starts_with('.') || name == "__pycache__" || name.ends_with(".pyc") {
             continue;
         }
         let path = e.path();

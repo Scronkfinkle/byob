@@ -142,10 +142,12 @@ pub fn load_plugin(dir: &Path, builtin: bool) -> Option<Result<Plugin, LoadError
 }
 
 /// Load a plugin whose files are in the binary (see [`Embedded`]). Its `dir` is
-/// `(built into byob)/<id>`, for display only. Scripts and backends need files on disk, so
-/// they are problems here (fork the plugin to give it some).
-pub fn load_embedded(e: &Embedded) -> Result<Plugin, LoadError> {
-    let dir = Path::new(BUNDLED_DIR).join(&e.id);
+/// `(built into byob)/<id>`, for display only, unless it runs processes (a backend or script
+/// tools) and `materialize_to` is given: then its files are written to a versioned,
+/// read-only folder there ([`crate::materialize`]) and `dir` is that folder. Without one,
+/// scripts and backends are problems (fork the plugin to give them files).
+pub fn load_embedded(e: &Embedded, materialize_to: Option<&Path>) -> Result<Plugin, LoadError> {
+    let mut dir = Path::new(BUNDLED_DIR).join(&e.id);
     let err = |message: String| LoadError { path: dir.clone(), message };
     let text = e.files.get(MANIFEST).ok_or_else(|| err(format!("{MANIFEST} is missing")))?;
     let manifest = parse_manifest_str(text, ParseOptions { builtin: true, file: Some(MANIFEST) }).map_err(|x| err(x.to_string()))?;
@@ -153,13 +155,48 @@ pub fn load_embedded(e: &Embedded) -> Result<Plugin, LoadError> {
         return Err(err(format!("{MANIFEST}: id {:?} isn't the folder's name {:?}", manifest.id, e.id)));
     }
     let mut problems = Vec::new();
-    for t in &manifest.tools {
-        if let ToolKind::Script(run) = &t.kind {
-            problems.push(format!("{MANIFEST}: {run}: scripts of built-in plugins don't run; fork the plugin to use them"));
+    let scripts: Vec<&str> = manifest
+        .tools
+        .iter()
+        .filter_map(|t| match &t.kind {
+            ToolKind::Script(run) => Some(run.as_str()),
+            _ => None,
+        })
+        .collect();
+    let runs = !scripts.is_empty() || manifest.backend.is_some();
+    let on_disk = match materialize_to {
+        Some(root) if runs => match crate::materialize::materialize(root, &e.id, env!("CARGO_PKG_VERSION"), &e.files) {
+            Ok(d) => Some(d),
+            Err(x) => {
+                problems.push(format!("its files couldn't be written to disk, so its code can't run: {x}"));
+                None
+            }
+        },
+        _ => None,
+    };
+    match on_disk {
+        Some(d) => {
+            for run in &scripts {
+                if !d.join(run).is_file() {
+                    problems.push(format!("{MANIFEST}: {run} is missing"));
+                }
+            }
+            if let Some(crate::manifest::BackendDecl { run: crate::manifest::BackendRun::Python(script), .. }) = &manifest.backend
+                && !d.join(script).is_file()
+            {
+                problems.push(format!("{MANIFEST}: backend {script} is missing"));
+            }
+            dir = d;
         }
-    }
-    if manifest.backend.is_some() {
-        problems.push(format!("{MANIFEST}: built-in plugins can't have a backend; fork the plugin to use one"));
+        None if materialize_to.is_none() => {
+            for run in &scripts {
+                problems.push(format!("{MANIFEST}: {run}: scripts of built-in plugins don't run here; fork the plugin to use them"));
+            }
+            if manifest.backend.is_some() {
+                problems.push(format!("{MANIFEST}: this byob has nowhere to put built-in plugins' code, so the backend can't run; fork the plugin to use one"));
+            }
+        }
+        None => {}
     }
     let (mut skills, mut agents, mut commands) = (Vec::new(), Vec::new(), Vec::new());
     for (path, text) in &e.files {
@@ -177,11 +214,12 @@ pub fn load_embedded(e: &Embedded) -> Result<Plugin, LoadError> {
     Ok(Plugin { manifest, dir, builtin: true, skills, agents, commands, problems, embedded: Some(Arc::new(e.files.clone())) })
 }
 
-/// Load every embedded plugin; ids are unique.
-pub fn discover_embedded(list: &[Embedded]) -> Discovery {
+/// Load every embedded plugin; ids are unique. Those that run code are written out under
+/// `materialize_to` (see [`load_embedded`]).
+pub fn discover_embedded(list: &[Embedded], materialize_to: Option<&Path>) -> Discovery {
     let mut d = Discovery::default();
     for e in list {
-        match load_embedded(e) {
+        match load_embedded(e, materialize_to) {
             Err(x) => d.errors.push(x),
             Ok(p) if d.plugins.iter().any(|q| q.id() == p.id()) => {
                 d.errors.push(LoadError { path: p.dir.clone(), message: format!("id \"{}\" is already used", p.id()) });

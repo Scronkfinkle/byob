@@ -37,6 +37,10 @@ byob_plugin.py` (the Python helper), `crates/plugins/src/pyenv.rs` (Python envir
 
 ## Lifecycle
 
+- **Bundled plugins** with a backend (or script tools) run from a copy of their files that
+  byob writes once to `<data>/bundled-plugins/<id>-<byob version>-<content hash>/` (read-only
+  files; a new byob version or new contents make a new folder and remove the old one). That
+  folder is the plugin's `dir`.
 - **Made** when a composition (a turn, the plugin list) sees the plugin switched on, trusted
   and with its required settings; until then its `backend` state is `off` (missing
   settings) or absent. One backend per plugin copy (its folder): a chat's scratch plugin,
@@ -76,7 +80,7 @@ unknown fields are ignored by both sides, so either can be newer.
 |---|---|---|
 | `init` | `v` (1), `plugin`, `name`, `version`, `byob` (app version), `caps` (message types the engine handles), `events` (the engine events there are), `settings` (non-secret values; secret ones only as environment variables), `dir`, `scope` (`chat`/`workspace`/`global`), `chat`, `workspace`, `views` (the declared views: `{id, site, title}`), `restart` (0 on the first start) | always the first line of every process |
 | `event` | `event`, plus its fields | `client`: a UI message — `client` (the client's id), `chat` (the chat it looks at), `msg` (any JSON ≤ 256 KiB). `view`: the user did something in one of its views — `view` (id), `site`, `key`, `client`, `chat`, `action`, `values`, `edit`? (see `docs/views.md`); answer with a `view` message. Engine events (only those subscribed), all with `chat`: `chat_opened` {`client`}, `turn_started` {`entry`}, `turn_finished` {`entry`, `error`, `stopped`}, `step_done` {`entry`, `step`, `tool`, `status`, `title`}, `artifact_updated` {`artifact`, `title`, `content_type`, `version`} |
-| `request` | `id` (number), `method`, `params` | answer with a `reply` of the same `id`. `tool`: `params` {`name` (as declared), `args` (the model's arguments), `workspace`, `chat`}; the result is text, `{"text", "files"}` (files relative to the workspace), `{"text", "card": <tree>, "card_view"?, "card_key"?}` (a live card on the tool's step, see below) or any JSON (shown as JSON). `view`: {`site`, `view` (id), `key`, `client`, `chat`}: a client opened the view and the engine has no tree for it; the result is the tree (or `{"view": tree}`). `hook`: a declared hook point (see Hooks) |
+| `request` | `id` (number), `method`, `params` | answer with a `reply` of the same `id`. `tool`: `params` {`name` (as declared), `args` (the model's arguments), `workspace`, `chat`}; the result is text, `{"text", "files"}` (files relative to the workspace), `{"text", "card": <tree>, "card_view"?, "card_key"?}` (a live card on the tool's step, see below), `{"text", "artifact": {…}}` (saves an artifact version, see Artifacts) or any JSON (shown as JSON). `view`: {`site`, `view` (id), `key`, `client`, `chat`}: a client opened the view and the engine has no tree for it; the result is the tree (or `{"view": tree}`). `hook`: a declared hook point (see Hooks) |
 | `cancel` | `id` | the caller gave up (stopped by the user, or 60 s passed); a late reply is dropped |
 | `shutdown` | | exit now (stdin closes next) |
 
@@ -94,6 +98,7 @@ workspace.
 | `log` | `text` | into its stderr ring and byob's log |
 | `fault` | `text` | a problem for the model and the user: kept in its status (`faults`) |
 | `subscribe` / `unsubscribe` | `events` | engine events to get from now on (unknown names are a fault) |
+| `artifact` | `chat`, `file`, `id`?, `title`?, `filename`?, `note`?, `draft`? | save `file`'s bytes as a version of the chat's artifact `id` (a new one without it); see Artifacts |
 
 Without `client`, messages go to every client that listed the `plugin_channel` cap (for a
 chat plugin: those looking at its chat). Messages to clients are capped at 256 KiB.
@@ -131,6 +136,33 @@ A backend tool shows a card on its step by returning `{"text": …, "card": <tre
 "card_view"?: id, "card_key"?: key}` (the first `card` view when `card_view` is left out;
 a fresh key when `card_key` is). The step keeps the tree it had then; clients show the live
 one, and the user's clicks on it are `view` events with that key.
+
+## Artifacts
+
+A plugin can own artifact types end to end: declare them (`artifact_types`, `"binary": true`
+for files that aren't text, which `create_artifact` & co. then leave alone), draw them with
+one of its views (`"renderers": [{"type": …, "renderer": "view:<view id>"}]` naming a view
+with `"site": "artifact"`), and write their versions from its backend.
+
+- **The view.** An artifact-site view is drawn in the artifact's card in the chat and in the
+  pane, one instance per version: its key is `"<artifact id>@<version>"`. `request view` and
+  its `view` events carry `artifact`: `{id, version, latest, path (that version's file,
+  absolute), filename, content_type, title, workspace, chat}` (`byob.artifact(key)` in the
+  helper). A key that isn't an artifact of the client's chat never reaches the backend.
+  Clients keep a place's selection and scroll when it moves on to a newer version.
+- **Versions from a tool**: return `{"text": …, "artifact": {"id"?, "title"?, "filename"?,
+  "file", "note"?}}` (or `"artifacts": [...]`, ≤ 4). `file` is a path (absolute or in the
+  workspace) whose bytes byob copies into `.byob/artifacts/<id>/v<n>.<ext>`; without `id` it
+  is a new artifact (`title` and `filename` needed). A `filename` on an existing artifact
+  renames it and its type follows the new name (a `.csv` table that becomes an `.xlsx`
+  workbook). byob appends `Saved: artifact <id>, version <n> (<file name>).` to the text, and
+  the step shows the artifact like any other.
+- **Versions from the user** (edits in the view): send `{"type": "artifact", "chat", "id",
+  "file", "note"?, "draft": true}` (`byob.save_artifact(file, chat, id=…, draft=True)`).
+  Consecutive drafts replace one version until the model writes the artifact or a turn
+  starts in the chat; then the next edit makes a new one. Clients get `ArtifactUpdated`
+  (the pane moves to the new version); subscribers get `artifact_updated`. A chat plugin
+  may only save in its own chat; problems are faults.
 
 ## Hooks
 
@@ -189,6 +221,9 @@ def bump(by: int = 1): ...
                               # byob.modify(add=[...], args={...}, result=..., card=tree, ...)
 
 byob.card(text, "item", key)  # a tool result with a card (drawn by @view("item"))
+byob.context()                # in a tool: {"name", "workspace", "chat"} of the call
+byob.artifact(key)            # an artifact-site view's artifact (see Artifacts)
+byob.save_artifact(file, chat, id=None, title=None, filename=None, note="", draft=False)
 byob.refresh(view_id=None)    # draw views again and send them (after changing state elsewhere)
 byob.send_view(tree, id, key="", values=None, client=None)
 byob.send(msg, client=None); byob.notice(text, level="info"); byob.log(*parts)

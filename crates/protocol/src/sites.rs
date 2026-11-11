@@ -49,13 +49,17 @@ pub enum Site {
     Status,
     /// A card on a step (a backend tool attaches it).
     Card,
+    /// An artifact's body (13.5): the view a renderer `{"renderer": "view:<id>"}` names,
+    /// drawn in the artifact's card and pane, one instance per version (key
+    /// `"<artifact id>@<version>"`, see [`artifact_key`]).
+    Artifact,
     /// A site a newer engine knows (not shown).
     #[serde(other)]
     Other,
 }
 
 impl Site {
-    pub const ALL: [Site; 4] = [Site::Pane, Site::Settings, Site::Status, Site::Card];
+    pub const ALL: [Site; 5] = [Site::Pane, Site::Settings, Site::Status, Site::Card, Site::Artifact];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -63,6 +67,7 @@ impl Site {
             Self::Settings => "settings",
             Self::Status => "status",
             Self::Card => "card",
+            Self::Artifact => "artifact",
             Self::Other => "other",
         }
     }
@@ -114,6 +119,18 @@ impl ViewRef {
         }
         Ok(())
     }
+}
+
+/// The key of an artifact-site view showing version `version` of artifact `id`.
+pub fn artifact_key(id: &str, version: u32) -> String {
+    format!("{id}@{version}")
+}
+
+/// An artifact-site view key back to (artifact id, version).
+pub fn parse_artifact_key(key: &str) -> Option<(&str, u32)> {
+    let (id, v) = key.rsplit_once('@')?;
+    let v: u32 = v.parse().ok()?;
+    (crate::artifact::valid_id(id) && v > 0).then_some((id, v))
 }
 
 /// A view id: `[a-z0-9_-]{1,48}`.

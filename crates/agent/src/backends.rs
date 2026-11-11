@@ -241,9 +241,69 @@ impl Engine {
                         }
                     }
                     "fault" => self.extensions_changed(),
+                    "artifact" => self.backend_artifact(dir, chat.as_deref(), plugin, &msg),
                     other => log::debug!("plugin {plugin}: backend message {other:?} ignored"),
                 }
             }
+        }
+    }
+
+    /// A backend's `artifact` message: `{chat, id?, title?, filename?, file, note?, draft?}`
+    /// saves `file`'s bytes as a version of the chat's artifact `id` (a new artifact without
+    /// one). `draft` (the user's edits in its view): consecutive drafts replace one version
+    /// until the model writes the artifact or a turn starts. Problems are faults.
+    fn backend_artifact(&mut self, dir: &Path, own_chat: Option<&str>, plugin: &str, msg: &Value) {
+        let fault = |me: &Self, text: String| {
+            if let Some(e) = me.ext.as_ref().and_then(|e| e.backends.get(dir)) {
+                e.backend.report_fault(&format!("artifact: {text}"));
+            }
+            log::warn!("plugin {plugin}: artifact: {text}");
+        };
+        let s = |k: &str| msg.get(k).and_then(Value::as_str).filter(|v| !v.is_empty());
+        let Some(chat) = s("chat").map(str::to_owned) else { return fault(self, "a message without \"chat\"".into()) };
+        if own_chat.is_some_and(|c| c != chat) {
+            return fault(self, format!("a chat plugin can only save artifacts of its own chat, not {chat:?}"));
+        }
+        let Some(file) = s("file") else { return fault(self, "a message without \"file\" (the path of the bytes to save)".into()) };
+        let Some(workspace) = self.chat_workspace(&chat) else { return fault(self, format!("no chat {chat:?}")) };
+        let bytes = match std::fs::metadata(file) {
+            Ok(m) if m.len() <= byob_tools::artifact::MAX_FILE_BYTES => std::fs::read(file).map_err(|e| e.to_string()),
+            Ok(_) => Err("too big".into()),
+            Err(e) => Err(e.to_string()),
+        };
+        let bytes = match bytes {
+            Ok(b) => b,
+            Err(e) => return fault(self, format!("{file}: {e}")),
+        };
+        let types = self.compose_for(Some(&chat), None, false).map(|c| c.artifact_types).unwrap_or_else(|| self.artifact_types.clone());
+        let draft = msg.get("draft").and_then(Value::as_bool).unwrap_or(false);
+        let id = s("id").map(str::to_owned);
+        let replace = match (&id, draft) {
+            (Some(id), true) => self.drafts.get(&(chat.clone(), id.clone())).copied(),
+            _ => None,
+        };
+        let save = byob_tools::artifact::SaveBytes {
+            chat: &chat,
+            id: id.as_deref(),
+            title: s("title"),
+            filename: s("filename"),
+            bytes: &bytes,
+            note: s("note").unwrap_or_default(),
+            replace,
+        };
+        match byob_tools::artifact::save_bytes(&types, &workspace, &save) {
+            Ok(saved) => {
+                let r = byob_protocol::ArtifactRef { id: saved.artifact.id.clone(), version: saved.version };
+                let live = self.live.contains_key(&chat);
+                self.artifacts_changed(&chat, std::slice::from_ref(&r));
+                if !live {
+                    self.send_viewers(&chat, ServerMsg::ArtifactUpdated(saved.artifact.clone()));
+                }
+                if draft {
+                    self.drafts.insert((chat, r.id), r.version);
+                }
+            }
+            Err(e) => fault(self, e),
         }
     }
 

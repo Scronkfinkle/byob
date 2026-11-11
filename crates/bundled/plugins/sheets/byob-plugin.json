@@ -1,0 +1,154 @@
+{
+  "id": "sheets",
+  "name": "Spreadsheets",
+  "version": "1.0.0",
+  "description": "Spreadsheets with formulas (IronCalc): .xlsx artifacts, .csv/.tsv tables, an editable grid, and tools to describe, read, write, fill, restructure and format sheets.",
+  "icon": "sheet",
+  "backend": "backend.py",
+  "python": { "requirements": ["ironcalc==0.9.1"] },
+  "artifact_types": [
+    {
+      "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "suffixes": [".xlsx"],
+      "label": "spreadsheet",
+      "binary": true,
+      "describe": "",
+      "pick": "tables of numbers, budgets, anything with formulas → a spreadsheet (create_sheet)"
+    },
+    { "type": "text/csv", "suffixes": [".csv"], "label": "table", "describe": ".csv (a plain table of values)" },
+    { "type": "text/tab-separated-values", "suffixes": [".tsv"], "label": "table" }
+  ],
+  "renderers": [
+    { "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "renderer": "view:sheet" },
+    { "type": "text/csv", "renderer": "view:sheet" },
+    { "type": "text/tab-separated-values", "renderer": "view:sheet" }
+  ],
+  "views": [{ "site": "artifact", "id": "sheet", "title": "Spreadsheet" }],
+  "tools": [
+    {
+      "name": "create_sheet",
+      "title": "Create spreadsheet",
+      "description": "Make a new spreadsheet artifact (.xlsx), empty or imported from a workspace .csv/.tsv/.xlsx file (`from`). Then fill it with write_cells, using the id byob reports.",
+      "run": "backend",
+      "params": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "description": "Title, e.g. \"Monthly budget\"." },
+          "filename": { "type": "string", "description": "File name ending in .xlsx (default: from the title)." },
+          "from": { "type": "string", "description": "Optional workspace path of a .csv, .tsv or .xlsx file to import." }
+        },
+        "required": ["title"]
+      }
+    },
+    {
+      "name": "describe_sheet",
+      "title": "Describe spreadsheet",
+      "description": "Overview of a spreadsheet: sheets, used range, header row, each column's type, count, min/max/sum or distinct values, sample formulas, first rows and error cells. Use it before reading or writing a big sheet.",
+      "run": "backend",
+      "params": {
+        "type": "object",
+        "properties": {
+          "sheet": { "type": "string", "description": "Artifact id, or a workspace path of a .xlsx/.csv/.tsv file." }
+        },
+        "required": ["sheet"]
+      }
+    },
+    {
+      "name": "read_cells",
+      "title": "Read cells",
+      "description": "Read cells as a table: column letters on top, row numbers on the left. Up to 2000 cells per call; the reply says how to get the next page.",
+      "run": "backend",
+      "params": {
+        "type": "object",
+        "properties": {
+          "sheet": { "type": "string", "description": "Artifact id, or a workspace path of a .xlsx/.csv/.tsv file." },
+          "range": { "type": "string", "description": "A1 range like A1:D20, B:B, 2:2 or Sheet2!A1:C5 (default: the used range)." },
+          "what": { "type": "string", "enum": ["values", "formulas"], "description": "values (default) or formulas (shows =... where a cell has one)." },
+          "sheet_name": { "type": "string", "description": "Sheet (tab) name; default the first sheet." }
+        },
+        "required": ["sheet"]
+      }
+    },
+    {
+      "name": "write_cells",
+      "title": "Write cells",
+      "description": "Write values and formulas, then recalculate. Give `rows` (a 2D list written from `start`) or `cells` ({\"B2\": \"=SUM(B3:B9)\", \"C1\": 5}). Text starting with = is a formula. Returns the new values, every error cell and warnings. For a formula repeated down a column use fill instead.",
+      "run": "backend",
+      "params": {
+        "type": "object",
+        "properties": {
+          "sheet": { "type": "string", "description": "Artifact id, or a workspace path of a .xlsx/.csv/.tsv file." },
+          "start": { "type": "string", "description": "Top-left cell for `rows`, like A1 (default) or Summary!A1." },
+          "rows": { "type": "array", "items": { "type": "array" }, "description": "Rows of values from `start`, e.g. [[\"Item\",\"Cost\"],[\"Rent\",1200]]. null skips a cell, \"\" clears it." },
+          "cells": { "type": "object", "description": "Single cells by A1 address, e.g. {\"B14\": \"=SUM(B2:B13)\"}." },
+          "sheet_name": { "type": "string", "description": "Sheet (tab) name; default the first sheet. A new name makes a new sheet." }
+        },
+        "required": ["sheet"]
+      }
+    },
+    {
+      "name": "fill",
+      "title": "Fill formula",
+      "description": "Fill a range with one formula, written for the range's first cell; the other cells get it with relative references moved like Excel's fill-down ($ parts stay). E.g. range D2:D13, formula =B2*C2 gives D13 =B13*C13. Use D2:D to fill down to the last used row.",
+      "run": "backend",
+      "params": {
+        "type": "object",
+        "properties": {
+          "sheet": { "type": "string", "description": "Artifact id, or a workspace path of a .xlsx/.csv/.tsv file." },
+          "range": { "type": "string", "description": "Range to fill, like D2:D13." },
+          "formula": { "type": "string", "description": "Formula for the first cell of the range, like =B2*C2." },
+          "sheet_name": { "type": "string", "description": "Sheet (tab) name; default the first sheet." }
+        },
+        "required": ["sheet", "range", "formula"]
+      }
+    },
+    {
+      "name": "edit_sheet",
+      "title": "Edit sheet structure",
+      "description": "Change structure: add_sheet(name), rename_sheet(name, new_name), delete_sheet(name), insert_rows(at, count), delete_rows(at, count), insert_cols(at letter, count), delete_cols(at letter, count), sort(range, by column letter, descending, header), freeze(rows, cols). Formulas are adjusted.",
+      "run": "backend",
+      "params": {
+        "type": "object",
+        "properties": {
+          "sheet": { "type": "string", "description": "Artifact id, or a workspace path of a .xlsx/.csv/.tsv file." },
+          "op": { "type": "string", "enum": ["add_sheet", "rename_sheet", "delete_sheet", "insert_rows", "delete_rows", "insert_cols", "delete_cols", "sort", "freeze"] },
+          "name": { "type": "string", "description": "Sheet name for add_sheet, rename_sheet, delete_sheet." },
+          "new_name": { "type": "string", "description": "New name for rename_sheet." },
+          "at": { "type": "string", "description": "Row number (rows) or column letter (cols) where to insert or delete." },
+          "count": { "type": "integer", "description": "How many rows or columns (default 1)." },
+          "range": { "type": "string", "description": "sort: the range to sort, like A1:D50 (default the used range)." },
+          "by": { "type": "string", "description": "sort: column letter to sort by, like C." },
+          "descending": { "type": "boolean", "description": "sort: largest first." },
+          "header": { "type": "boolean", "description": "sort: true if the range's first row is a header to keep in place (default: guessed)." },
+          "rows": { "type": "integer", "description": "freeze: rows to keep on top (0 for none)." },
+          "cols": { "type": "integer", "description": "freeze: columns to keep at the left (0 for none)." },
+          "sheet_name": { "type": "string", "description": "Sheet (tab) for row, column, sort and freeze ops; default the first sheet." }
+        },
+        "required": ["sheet", "op"]
+      }
+    },
+    {
+      "name": "format_cells",
+      "title": "Format cells",
+      "description": "Format a range: number format (\"#,##0.00\", \"0%\", \"$#,##0\", \"yyyy-mm-dd\"), bold, fill colour, alignment, column width.",
+      "run": "backend",
+      "params": {
+        "type": "object",
+        "properties": {
+          "sheet": { "type": "string", "description": "Artifact id, or a workspace path of a .xlsx/.csv/.tsv file." },
+          "range": { "type": "string", "description": "Range like B2:B13, 1:1 or C:C." },
+          "number_format": { "type": "string", "description": "Excel number format, e.g. #,##0.00 or 0% or yyyy-mm-dd." },
+          "bold": { "type": "boolean" },
+          "fill": { "type": "string", "description": "Background colour like #ffe599, or none." },
+          "align": { "type": "string", "enum": ["left", "center", "right"] },
+          "width": { "type": "number", "description": "Column width in characters (default about 12), for every column in the range." },
+          "sheet_name": { "type": "string", "description": "Sheet (tab) name; default the first sheet." }
+        },
+        "required": ["sheet", "range"]
+      }
+    }
+  ],
+  "starters": [
+    { "title": "Make a budget", "prompt": "Build a monthly budget spreadsheet with categories, amounts and a summary by category." }
+  ]
+}

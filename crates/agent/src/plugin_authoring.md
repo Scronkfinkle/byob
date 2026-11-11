@@ -293,6 +293,15 @@ type `{"type": "text/csv", "suffixes": [".csv"], "label": "table", "pick": "a ta
 drawn by an existing renderer (`"renderer": "native:markdown"`, `"text"`). Removing the fork
 (`remove_plugin`) brings the built-in one back.
 
+A type can also be drawn by your own backend view: declare `"views": [{"site": "artifact",
+"id": "show"}]` and `"renderers": [{"type": "text/csv", "renderer": "view:show"}]`. Then
+`@byob.view("show")` gets `key` = `"<artifact id>@<version>"` and `byob.artifact(key)` gives
+`{"id", "version", "path", …}` (the version's file to read). To save what the user changed
+in it, write a file and call `byob.save_artifact(path, a["chat"], id=a["id"], draft=True)`;
+a backend tool saves a new version by returning `{"text": "…", "artifact": {"id": …, "file":
+path}}`. The bundled `sheets` plugin (spreadsheets, `fork` it to read) works this way, with a
+`grid` node.
+
 ## 9. Hooks: changing how turns run
 
 A plugin with a backend can sit in the turn pipeline. Declare the hook points in the manifest

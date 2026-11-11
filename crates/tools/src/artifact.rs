@@ -286,9 +286,13 @@ fn clean_filename(types: &ArtifactTypes, raw: &str, title: &str) -> Result<(Stri
 
 /// Write a version file exclusively (never through a link, never over another file).
 fn write_version(dir: &Path, n: u32, ext: &str, content: &str) -> Result<PathBuf, String> {
+    write_version_bytes(dir, n, ext, content.as_bytes())
+}
+
+fn write_version_bytes(dir: &Path, n: u32, ext: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     let path = dir.join(format!("v{n}.{ext}"));
     let mut f = OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e| format!("can't write version {n}: {e}"))?;
-    f.write_all(content.as_bytes()).map_err(|e| format!("can't write version {n}: {e}"))?;
+    f.write_all(bytes).map_err(|e| format!("can't write version {n}: {e}"))?;
     Ok(path)
 }
 
@@ -352,6 +356,125 @@ pub fn for_call(workspace: &Path, chat: &str, changes: &[FileChange], media: &[M
         return made;
     }
     adopt(workspace, chat, media)
+}
+
+/// A version to save from bytes someone else made (a plugin backend's tool or view).
+#[derive(Debug, Clone, Default)]
+pub struct SaveBytes<'a> {
+    pub chat: &'a str,
+    /// An artifact of `chat`; `None` makes a new one (then `title` and `filename` are needed).
+    pub id: Option<&'a str>,
+    pub title: Option<&'a str>,
+    /// A new file name for an existing artifact renames it (and its type follows the name,
+    /// e.g. a `.csv` table that becomes an `.xlsx` workbook).
+    pub filename: Option<&'a str>,
+    pub bytes: &'a [u8],
+    pub note: &'a str,
+    /// Overwrite version `n` instead of adding one, if it is still the latest (a draft the
+    /// user keeps editing). Ignored otherwise.
+    pub replace: Option<u32>,
+}
+
+/// What [`save_bytes`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Saved {
+    pub artifact: Artifact,
+    pub version: u32,
+    /// The version's file.
+    pub file: PathBuf,
+    /// A new artifact.
+    pub created: bool,
+    /// An existing version was overwritten (`SaveBytes::replace`).
+    pub replaced: bool,
+}
+
+/// Write `s.bytes` as a new version (or over a draft, see [`SaveBytes::replace`]) of an
+/// artifact, or as a new artifact. Same layout and rules as the artifact tools: files only
+/// inside `.byob/artifacts`, never through links, version numbers never reused.
+pub fn save_bytes(types: &ArtifactTypes, workspace: &Path, s: &SaveBytes<'_>) -> Result<Saved, String> {
+    if s.chat.is_empty() {
+        return Err("artifacts are only available in a chat".into());
+    }
+    if s.bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(format!("the file is too big ({} bytes; at most {MAX_FILE_BYTES})", s.bytes.len()));
+    }
+    if s.bytes.is_empty() {
+        return Err("the file is empty".into());
+    }
+    let note = clip(s.note, MAX_NOTE_CHARS);
+    let root = sandbox::root(workspace)?;
+    let Some(id) = s.id.map(str::trim).filter(|i| !i.is_empty()) else {
+        let title = clip(s.title.unwrap_or_default(), MAX_TITLE_CHARS);
+        if title.is_empty() {
+            return Err("a new artifact needs a title".into());
+        }
+        let (filename, ext) = clean_filename(types, s.filename.unwrap_or_default(), &title)?;
+        let ty = types.for_filename(&filename);
+        let (id, dir) = new_artifact_dir(workspace, &title)?;
+        let result = (|| {
+            let file = write_version_bytes(&dir, 1, &ext, s.bytes)?;
+            let version = ArtifactVersion { n: 1, path: rel(&root, &file), created_at: now_ms(), note: note.clone(), size: s.bytes.len() as u64 };
+            let artifact =
+                Artifact { id: id.clone(), kind: ty.kind, content_type: ty.content_type.clone(), title: title.clone(), filename, versions: vec![version] };
+            save(&dir, &Meta { chat: s.chat.to_owned(), artifact: artifact.clone() })?;
+            Ok::<_, String>(Saved { artifact, version: 1, file, created: true, replaced: false })
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        return result;
+    };
+    let mut meta = load_in_chat(workspace, s.chat, id)?;
+    let id = meta.artifact.id.clone();
+    let (root, dir) = artifact_dir(workspace, &id)?;
+    // Every version, also those whose file is gone (numbers are never reused).
+    let all = serde_json::from_slice::<Meta>(&read_capped(&dir.join(META_FILE), MAX_META_BYTES)?).map_err(|e| e.to_string())?;
+    if let Some(name) = s.filename.map(str::trim).filter(|n| !n.is_empty() && *n != meta.artifact.filename) {
+        let (filename, _) = clean_filename(types, name, &meta.artifact.title)?;
+        let ty = types.for_filename(&filename);
+        meta.artifact.filename = filename;
+        meta.artifact.content_type = ty.content_type.clone();
+        meta.artifact.kind = ty.kind;
+    }
+    if let Some(t) = s.title.map(|t| clip(t, MAX_TITLE_CHARS)).filter(|t| !t.is_empty()) {
+        meta.artifact.title = t;
+    }
+    let lower = meta.artifact.filename.to_ascii_lowercase();
+    let ext = types.compound_extension(&lower).unwrap_or_else(|| lower.rsplit_once('.').map_or("bin".to_owned(), |(_, e)| e.to_owned()));
+    let latest = meta.artifact.latest().map(|v| v.n);
+    let top = all.artifact.versions.iter().map(|v| v.n).max().unwrap_or(0);
+    meta.artifact.versions = all.artifact.versions;
+    if let Some(n) = s.replace.filter(|n| Some(*n) == latest && *n == top)
+        && let Some(v) = meta.artifact.versions.iter_mut().find(|v| v.n == n)
+        && v.path.ends_with(&format!("/v{n}.{ext}"))
+    {
+        let file = dir.join(format!("v{n}.{ext}"));
+        let tmp = dir.join(format!("v{n}.{ext}.tmp"));
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| format!("can't write version {n}: {e}"))?;
+        f.write_all(s.bytes).map_err(|e| format!("can't write version {n}: {e}"))?;
+        drop(f);
+        std::fs::rename(&tmp, &file).map_err(|e| format!("can't write version {n}: {e}"))?;
+        v.size = s.bytes.len() as u64;
+        v.created_at = now_ms();
+        if !note.is_empty() {
+            v.note = note;
+        }
+        save(&dir, &meta)?;
+        return Ok(Saved { artifact: meta.artifact, version: n, file, created: false, replaced: true });
+    }
+    if meta.artifact.versions.len() >= MAX_VERSIONS {
+        return Err(format!("{id} has too many versions; create a new artifact"));
+    }
+    let n = top.saturating_add(1);
+    let file = write_version_bytes(&dir, n, &ext, s.bytes)?;
+    meta.artifact.versions.push(ArtifactVersion { n, path: rel(&root, &file), created_at: now_ms(), note, size: s.bytes.len() as u64 });
+    if let Err(e) = save(&dir, &meta) {
+        let _ = std::fs::remove_file(&file);
+        return Err(e);
+    }
+    meta.artifact.versions.retain(|v| version_file(workspace, &v.path).is_some());
+    Ok(Saved { artifact: meta.artifact, version: n, file, created: false, replaced: false })
 }
 
 /// Lines for the system prompt naming the chat's artifacts, so later turns can update them.
@@ -942,5 +1065,39 @@ mod tests {
         let p = prompt_list(&ArtifactTypes::builtin(), &list(d.path(), "c"));
         assert!(p.contains(&format!("{id}: \"Calc\" (app, v1, calc.html)")), "{p}");
         assert_eq!(prompt_list(&ArtifactTypes::builtin(), &[]), "");
+    }
+
+    #[test]
+    fn bytes_from_a_plugin_become_versions_and_drafts_replace_one() {
+        let d = tempfile::tempdir().unwrap();
+        let types = ArtifactTypes::builtin();
+        types.register(ArtifactType::new("application/x-sheet", "spreadsheet", ArtifactKind::Text).suffixes(&[".xlsx"]).binary());
+        types.register(ArtifactType::new("text/csv", "table", ArtifactKind::Text).suffixes(&[".csv"]));
+        let save = |s: SaveBytes<'_>| save_bytes(&types, d.path(), &s);
+        // New: needs a title.
+        assert!(save(SaveBytes { chat: "c", bytes: b"a,b\n1,2\n", ..Default::default() }).unwrap_err().contains("title"));
+        let a = save(SaveBytes { chat: "c", title: Some("Sales"), filename: Some("sales.csv"), bytes: b"a,b\n1,2\n", ..Default::default() }).unwrap();
+        assert!(a.created && a.version == 1 && a.artifact.content_type == "text/csv", "{a:?}");
+        let id = a.artifact.id.clone();
+        assert_eq!(parse_version_path(&a.file.to_string_lossy()), Some(ArtifactRef { id: id.clone(), version: 1 }));
+        // A new file name re-types it; binary bytes are kept as they are.
+        let bin = [0u8, 159, 146, 150, 1, 2];
+        let b = save(SaveBytes { chat: "c", id: Some(&id), filename: Some("sales.xlsx"), bytes: &bin, note: "imported", ..Default::default() }).unwrap();
+        assert_eq!((b.version, b.created, b.replaced), (2, false, false));
+        assert_eq!((b.artifact.filename.as_str(), b.artifact.content_type.as_str()), ("sales.xlsx", "application/x-sheet"));
+        assert!(b.file.ends_with("v2.xlsx"));
+        assert_eq!(std::fs::read(&b.file).unwrap(), bin);
+        // A draft over the latest replaces it; over an older one it is a new version.
+        let c = save(SaveBytes { chat: "c", id: Some(&id), bytes: b"draft", replace: Some(2), ..Default::default() }).unwrap();
+        assert_eq!((c.version, c.replaced), (2, true));
+        assert_eq!(std::fs::read(&c.file).unwrap(), b"draft");
+        assert_eq!(load(d.path(), &id).unwrap().artifact.version(2).unwrap().size, 5);
+        let e = save(SaveBytes { chat: "c", id: Some(&id), bytes: b"again", replace: Some(1), ..Default::default() }).unwrap();
+        assert_eq!((e.version, e.replaced), (3, false));
+        assert_eq!(e.artifact.versions.iter().map(|v| v.n).collect::<Vec<_>>(), [1, 2, 3]);
+        // Another chat's artifact, or nothing to save: refused.
+        assert!(save(SaveBytes { chat: "other", id: Some(&id), bytes: b"x", ..Default::default() }).is_err());
+        assert!(save(SaveBytes { chat: "c", id: Some(&id), bytes: b"", ..Default::default() }).is_err());
+        assert!(save(SaveBytes { chat: "c", id: Some("nope"), bytes: b"x", ..Default::default() }).is_err());
     }
 }

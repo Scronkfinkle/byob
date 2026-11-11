@@ -23,6 +23,7 @@ pub mod commands;
 pub mod connectors;
 pub mod discover;
 pub mod manifest;
+pub mod materialize;
 pub mod mcp;
 pub mod names;
 pub mod pyenv;

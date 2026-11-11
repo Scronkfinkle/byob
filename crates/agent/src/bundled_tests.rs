@@ -26,8 +26,17 @@ fn natives() -> Natives {
     Natives::builtin().prompt("exec", |_| EXEC.to_owned())
 }
 
+/// The bundled plugins byob had before spreadsheets (P5): with them the prompt and tools must
+/// be what they were. `sheets` adds its own (tested in `all_bundled_plugins_load`).
 fn config(home: &Path, bundled: bool) -> PluginsConfig {
+    let mut c = config_all(home, bundled);
+    c.bundled.retain(|e| e.id != "sheets");
+    c
+}
+
+fn config_all(home: &Path, bundled: bool) -> PluginsConfig {
     PluginsConfig {
+        bundled_cache: Some(home.join("bundled-plugins")),
         global_roots: vec![home.join("plugins")],
         global_skills: Some(home.join("skills")),
         scratch_root: Some(home.join("chats")),
@@ -57,19 +66,42 @@ fn compose(ext: &mut Ext, ws: &Path, switches: &[(&str, bool)]) -> Composed {
 fn bundled_plugins_load_with_no_files_on_disk() {
     let home = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();
-    let mut ext = Ext::new(config(home.path(), true));
+    let mut ext = Ext::new(config_all(home.path(), true));
     let c = compose(&mut ext, ws.path(), &[]);
     assert!(c.errors.is_empty(), "{:?}", c.errors);
     let ids: Vec<&str> = c.infos.iter().map(|p| p.id.as_str()).collect();
     assert_eq!(
         ids,
-        ["artifacts", "charts", "compaction", "core-tools", "environments", "html-apps", "images", "markdown", "prompt", "subagents", "workspace-instructions"]
+        [
+            "artifacts",
+            "charts",
+            "compaction",
+            "core-tools",
+            "environments",
+            "html-apps",
+            "images",
+            "markdown",
+            "prompt",
+            "sheets",
+            "subagents",
+            "workspace-instructions"
+        ]
     );
     for p in &c.infos {
         assert_eq!((p.scope, p.origin, p.enabled), (PluginScope::Bundled, PluginOrigin::Bundled, true), "{}", p.id);
         assert!(p.problems.is_empty(), "{}: {:?}", p.id, p.problems);
-        assert!(!Path::new(&p.dir).exists(), "{} is in the binary, not at {}", p.id, p.dir);
+        if p.id == "sheets" {
+            // It runs code: its files are written out (read-only) and that is its folder.
+            assert!(p.dir.starts_with(&home.path().join("bundled-plugins").display().to_string()), "{}", p.dir);
+            assert!(Path::new(&p.dir).join("backend.py").is_file());
+        } else {
+            assert!(!Path::new(&p.dir).exists(), "{} is in the binary, not at {}", p.id, p.dir);
+        }
     }
+    let sheets = c.infos.iter().find(|p| p.id == "sheets").unwrap();
+    assert!(sheets.renderers.iter().all(|r| r.renderer == "view:sheet") && sheets.renderers.len() == 3, "{:?}", sheets.renderers);
+    assert!(c.sections.contains("a spreadsheet (create_sheet)"), "{}", c.sections);
+    assert!(c.artifact_types.for_filename("budget.xlsx").label == "spreadsheet" && !c.artifact_types.for_filename("budget.xlsx").text);
     let locked: Vec<&str> = c.infos.iter().filter(|p| p.locked).map(|p| p.id.as_str()).collect();
     assert_eq!(locked, ["artifacts", "core-tools", "prompt"]);
     let html = c.infos.iter().find(|p| p.id == "html-apps").unwrap();

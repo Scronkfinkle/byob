@@ -57,6 +57,7 @@ mod tests {
                 "images",
                 "markdown",
                 "prompt",
+                "sheets",
                 "subagents",
                 "workspace-instructions"
             ]
