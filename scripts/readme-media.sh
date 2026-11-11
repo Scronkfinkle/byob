@@ -47,18 +47,23 @@ clip() {
   local name="$1"; shift
   local mp4="$root/$name.mp4"
   HEADLESS_RECORD="$mp4" run "$name" "$@"
-  # Skip the black before the window maps and after it closes.
-  local black from=0 to
-  black="$(env -u LD_LIBRARY_PATH "$ffbin/ffmpeg" -i "$mp4" -vf blackdetect=d=0.05:pix_th=0.05 -f null - 2>&1 | grep -o 'black_start:[0-9.]* black_end:[0-9.]*' || true)"
-  to="$(env -u LD_LIBRARY_PATH "$ffbin/ffprobe" -v error -show_entries format=duration -of csv=p=0 "$mp4")"
+  # Skip the black before the window maps, and stop at the black when it closes (it can be
+  # shorter than a frame, so any length counts; black in between is left alone).
+  local black from=0 dur to
+  dur="$(env -u LD_LIBRARY_PATH "$ffbin/ffprobe" -v error -show_entries format=duration -of csv=p=0 "$mp4")"
+  to="$dur"
+  black="$(env -u LD_LIBRARY_PATH "$ffbin/ffmpeg" -i "$mp4" -vf blackdetect=d=0:pix_th=0.05 -f null - 2>&1 | grep -o 'black_start:[0-9.]* black_end:[0-9.]*' || true)"
   while read -r start end; do
     [[ -z "$start" ]] && continue
-    if [[ "$start" == 0 ]]; then from="$end"; else to="$start"; fi
+    if [[ "$start" == 0 ]]; then from="$end"
+    elif awk -v e="$end" -v d="$dur" 'BEGIN { exit !(e >= d - 0.3) }'; then to="$start"; fi
   done < <(sed -E 's/black_start:([0-9.]*) black_end:([0-9.]*)/\1 \2/' <<<"$black")
-  # Crop to the window; drop frames that barely changed (the model thinking) and play the rest
-  # a little faster; hold the end; a GIF that only stores what changed between frames (smaller
-  # than an animated WebP of the same thing here).
-  ff -ss "$from" -to "$to" -i "$mp4" -filter_complex "crop=$W:$H:0:0,mpdecimate=hi=64*12:lo=64*5:frac=0.33,setpts=N/18/TB,fps=8,tpad=stop_mode=clone:stop_duration=3,scale=1100:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" \
+  # Crop to the window; drop frames that barely changed (the model thinking) and play the rest a
+  # little faster; then end on the app's own final screenshot for 3 s (the recording's last
+  # frames can be mid-close). A GIF that only stores what changed between frames is smaller
+  # than an animated WebP of the same thing here.
+  ff -ss "$from" -to "$to" -i "$mp4" -loop 1 -framerate 8 -t 3 -i "$out/$name.png" -filter_complex \
+    "[0:v]crop=$W:$H:0:0,mpdecimate=hi=64*12:lo=64*5:frac=0.33,setpts=N/18/TB,fps=8,scale=1100:-2:flags=lanczos,setsar=1,format=rgb24[v];[1:v]scale=1100:-2:flags=lanczos,setsar=1,format=rgb24[s];[v][s]concat=n=2:v=1:a=0,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" \
     -loop 0 "$out/$name.gif"
   rm -f "$out/$name.png"
 }
