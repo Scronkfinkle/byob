@@ -149,8 +149,8 @@ pub fn register(reg: &mut Registry, exec: Exec) {
     }
 }
 
-/// One sandboxed invocation.
-pub(crate) struct Job {
+/// One sandboxed invocation (what an [`env::EnvProvider`] hands its [`env::Runner`]).
+pub struct Job {
     pub program: OsString,
     pub args: Vec<OsString>,
     pub network: bool,
@@ -1150,5 +1150,48 @@ mod tests {
         for s in reg.specs() {
             assert_eq!(s.parameters["type"], "object");
         }
+    }
+    /// A plugin's command provider (`environments` in its manifest): detected by its file,
+    /// asked once like byob's own, its printed variables reach the command.
+    #[cfg(unix)]
+    #[test]
+    fn a_plugins_command_provider_loads_the_workspace_environment() {
+        let d = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        std::fs::write(plugin.path().join("env.sh"), "#!/bin/sh\nprintf '{\"DEMO_GREETING\": \"hello from %s\"}' \"$(cat demo.env)\"\n").unwrap();
+        let envs = Arc::new(Envs::new(Some(d.path()), env::Found::default(), env::ProjectMode::Ask));
+        let mut reg = Registry::default();
+        register(&mut reg, Exec { mode: Mode::Unsandboxed, data_dir: Some(d.path().to_path_buf()), envs });
+        let ws = tempfile::tempdir().unwrap();
+        let ws = ws.path().canonicalize().unwrap();
+        let plan = byob_tools::EnvPlan {
+            providers: Some(byob_tools::EnvProviders {
+                native: vec![],
+                external: vec![byob_tools::CommandEnv {
+                    id: "demo-env".into(),
+                    label: "demo environment".into(),
+                    detect: vec!["demo.env".into()],
+                    inputs: vec![],
+                    program: "sh".into(),
+                    args: vec!["env.sh".into()],
+                    dir: plugin.path().to_path_buf(),
+                }],
+            }),
+            ..Default::default()
+        };
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let says = Says(byob_tools::Answer::Yes);
+        let ctx = ToolContext::new(&ws, &cancel).with_asker(&says).with_env(&plan);
+        let run = |ctx: &ToolContext<'_>| reg.get("run_command").unwrap().run(&json!({"command": "echo \"[$DEMO_GREETING]\""}), ctx);
+        let out = run(&ctx);
+        assert!(out.text.contains("[]"), "no demo.env, nothing loaded: {}", out.text);
+        std::fs::write(ws.join("demo.env"), "the workspace").unwrap();
+        let out = run(&ctx);
+        assert!(out.text.contains("[hello from the workspace]"), "{}", out.text);
+        assert!(out.text.contains("Loaded the workspace's demo environment from demo.env"), "{}", out.text);
+        // Without the provider in the chat's plan it isn't there.
+        let off = byob_tools::EnvPlan { providers: Some(byob_tools::EnvProviders::default()), ..Default::default() };
+        let out = run(&ToolContext::new(&ws, &cancel).with_asker(&says).with_env(&off));
+        assert!(out.text.contains("[]"), "{}", out.text);
     }
 }

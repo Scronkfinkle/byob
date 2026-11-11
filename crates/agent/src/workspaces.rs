@@ -32,7 +32,7 @@ pub(crate) struct ChatSettings {
 const MAX_KEY_CHARS: usize = byob_protocol::connect::MAX_KEY_CHARS;
 
 fn env_plan(e: &Effective) -> EnvPlan {
-    EnvPlan { container: e.container(), project: e.load_project, image: e.image.clone() }
+    EnvPlan { container: e.container(), project: e.load_project, image: e.image.clone(), providers: None }
 }
 
 /// The key a level keeps after its settings change: a new one if given (`""` removes it),

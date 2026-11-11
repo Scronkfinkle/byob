@@ -56,6 +56,7 @@ impl Pixi {
             name: "pixi",
             cwd: dir,
             write: vec![dir.to_path_buf(), self.state.clone()],
+            read: Vec::new(),
             env: vec![("PIXI_CACHE_DIR".into(), cache.clone()), ("RATTLER_CACHE_DIR".into(), cache), ("PIXI_NO_UPDATE_CHECK".into(), "1".into())],
         }
     }

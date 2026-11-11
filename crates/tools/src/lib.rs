@@ -63,6 +63,7 @@ pub struct ToolContext<'a> {
     chat: Option<&'a str>,
     asker: Option<&'a dyn Asker>,
     env: Option<&'a EnvPlan>,
+    host: Option<&'a (dyn std::any::Any + Sync)>,
 }
 
 /// Where a chat's commands run, as its workspace and chat settings decide (the engine
@@ -78,11 +79,55 @@ pub struct EnvPlan {
     pub project: Option<bool>,
     /// The container's image; `None`: the folder's devcontainer.json, else the default.
     pub image: Option<String>,
+    /// The environment providers the chat's plugins switch on (`None`: every one byob has;
+    /// see `byob_exec::env::EnvProvider`).
+    pub providers: Option<EnvProviders>,
+}
+
+/// Which workspace environment providers a chat uses.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnvProviders {
+    /// byob's own, by id (`nix`, `pixi`, `mise`, `container`).
+    pub native: Vec<String>,
+    /// Command providers plugins declare (`environments` in a manifest).
+    pub external: Vec<CommandEnv>,
+}
+
+/// A plugin's environment provider: when the workspace has one of `detect`, run `program`
+/// with `args` in it (sandboxed, with network) and read the environment it prints as JSON
+/// (`{"PATH": "...", "NAME": "value"}`, or pixi's `{"environment_variables": {...}}`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommandEnv {
+    /// Unique among providers (names the cache file): `<plugin>-<id>`.
+    pub id: String,
+    /// For messages: "conda environment".
+    pub label: String,
+    pub detect: Vec<String>,
+    /// Files whose contents key the cache (besides `detect`).
+    pub inputs: Vec<String>,
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    /// The plugin's folder (readable by the run).
+    pub dir: PathBuf,
 }
 
 impl<'a> ToolContext<'a> {
     pub fn new(workspace: &'a Path, cancel: &'a AtomicBool) -> Self {
-        Self { workspace, cancel, journal: None, chat: None, asker: None, env: None }
+        Self { workspace, cancel, journal: None, chat: None, asker: None, env: None, host: None }
+    }
+
+    /// What the program running the tool offers beyond this context (the engine's turn
+    /// offers a handle to start child turns; see `byob_agent`'s `delegate`). Tools that need
+    /// it look it up by type with [`ToolContext::host`].
+    #[must_use]
+    pub fn with_host(mut self, host: &'a (dyn std::any::Any + Sync)) -> Self {
+        self.host = Some(host);
+        self
+    }
+
+    /// The host capability of type `T`, if the caller offered one.
+    pub fn host<T: 'static>(&self) -> Option<&'a T> {
+        self.host.and_then(|h| (h as &dyn std::any::Any).downcast_ref::<T>())
     }
 
     /// Run commands where `plan` says (see [`EnvPlan`]).
@@ -277,6 +322,13 @@ pub trait Tool: Send + Sync {
 
     /// Do it. `args` is untrusted model output: validate everything, never panic.
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput;
+
+    /// Calls of this tool start before the other calls of the same round and run side by
+    /// side, each on a thread of its own (results still go back in call order). For tools
+    /// that mostly wait, like `delegate`.
+    fn concurrent(&self) -> bool {
+        false
+    }
 }
 
 /// Parse tool arguments into a typed struct, with a model-readable error.

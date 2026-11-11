@@ -58,6 +58,65 @@ pub struct Manifest {
     /// A section of the system prompt (`system_prompt`): a file of the plugin, or text an
     /// in-tree builder makes.
     pub system_prompt: Option<PromptSource>,
+    /// Places in the turn pipeline it sits in (`hooks`), see [`ManifestHook`].
+    pub hooks: Vec<ManifestHook>,
+    /// Workspace environment providers it adds (`environments`), see [`ManifestEnv`].
+    pub environments: Vec<ManifestEnv>,
+}
+
+/// The turn pipeline's hook points, in the order a turn reaches them.
+pub const HOOK_EVENTS: [&str; 5] = ["before_prompt", "before_request", "before_tool_call", "after_tool_call", "on_turn_end"];
+/// Most hooks one plugin declares.
+pub const MAX_HOOKS: usize = 16;
+/// A backend hook's default and longest timeout (milliseconds).
+pub const HOOK_TIMEOUT_MS: u64 = 2000;
+pub const MAX_HOOK_TIMEOUT_MS: u64 = 60_000;
+/// Hooks run by priority, lowest first; this when left out.
+pub const DEFAULT_HOOK_PRIORITY: i64 = 100;
+
+/// A place in the turn pipeline (`hooks[]`): `{"event": "before_tool_call", "priority": 50,
+/// "backend": true, "timeout_ms": 2000, "fail": "closed", "tools": ["delete_file"]}`, or
+/// `{"event": "before_request", "native": "compaction"}` (in-tree code by id).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ManifestHook {
+    /// One of [`HOOK_EVENTS`].
+    pub event: String,
+    /// Lower runs first ([`DEFAULT_HOOK_PRIORITY`] when left out).
+    pub priority: i64,
+    /// In-tree code by id (`None`: the plugin's backend answers a `hook` request).
+    pub native: Option<String>,
+    /// How long a backend may take (ms).
+    pub timeout_ms: u64,
+    /// `"fail": "closed"`: a backend that faults or times out stops the stage (a tool call is
+    /// denied, a request isn't made); the default (open) carries on as if it said continue.
+    pub fail_closed: bool,
+    /// `before_tool_call` / `after_tool_call` only for these tools (empty: every tool).
+    pub tools: Vec<String>,
+}
+
+/// Most environment providers one plugin declares.
+pub const MAX_ENVIRONMENTS: usize = 8;
+
+/// A workspace environment provider (`environments[]`): in-tree (`{"native": "nix"}`), or a
+/// command that prints the environment as JSON when the workspace has one of `detect`:
+/// `{"id": "conda", "label": "conda environment", "detect": ["environment.yml"], "inputs":
+/// ["environment.yml"], "command": "python3", "args": ["conda_env.py"]}`. Loading it is asked
+/// once per workspace, like the built-in ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ManifestEnv {
+    /// `[a-z0-9_-]{1,32}` (the native id when native).
+    pub id: String,
+    pub native: Option<String>,
+    /// For messages: "conda environment".
+    pub label: String,
+    /// Files that make a workspace use it (the first one found is named).
+    pub detect: Vec<String>,
+    /// Files whose contents key its cache (`detect` too).
+    pub inputs: Vec<String>,
+    /// The program (on `PATH`, or a file of the plugin) and its arguments (a file of the
+    /// plugin is passed as its full path). It runs in the workspace, sandboxed, with network.
+    pub command: Option<String>,
+    pub args: Vec<String>,
 }
 
 /// Most artifact types or renderers one plugin declares.
@@ -441,6 +500,7 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
         return Err(format!("tools[{i}].run is \"backend\" but the plugin has no \"backend\""));
     }
     let requirements = parse_requirements(r.get("python"))?;
+    let hooks = parse_hooks(r.get("hooks"), backend.is_some())?;
     let name = req_str(r.get("name"), "name")?;
     let views = parse_views(r.get("views"), &name)?;
     if backend.is_none() && !views.is_empty() {
@@ -467,7 +527,107 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
         artifact_types: parse_artifact_types(r.get("artifact_types").or_else(|| r.get("content_types")))?,
         renderers: parse_renderers(r.get("renderers"))?,
         system_prompt: parse_prompt_source(r.get("system_prompt"))?,
+        hooks,
+        environments: parse_environments(r.get("environments"))?,
     })
+}
+
+/// `"hooks": [{"event", "priority"?, "native"? | "backend": true, "timeout_ms"?, "fail"?, "tools"?}]`.
+fn parse_hooks(v: Option<&Value>, has_backend: bool) -> R<Vec<ManifestHook>> {
+    let items = list(v, "hooks")?;
+    if items.len() > MAX_HOOKS {
+        return Err(format!("hooks: at most {MAX_HOOKS}"));
+    }
+    let mut out = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let f = format!("hooks[{i}]");
+        let o = obj(item, &f)?;
+        let event = req_str(o.get("event"), &format!("{f}.event"))?;
+        if !HOOK_EVENTS.contains(&event.as_str()) {
+            return Err(format!("{f}.event must be one of {}", HOOK_EVENTS.join(", ")));
+        }
+        let priority = match o.get("priority") {
+            None | Some(Value::Null) => DEFAULT_HOOK_PRIORITY,
+            Some(p) => p.as_i64().filter(|p| p.abs() <= 1_000_000).ok_or_else(|| format!("{f}.priority must be a whole number"))?,
+        };
+        let native = opt_str(o.get("native"), &format!("{f}.native"))?;
+        if let Some(n) = &native
+            && !native_id_ok(n)
+        {
+            return Err(format!("{f}.native must be an id like \"compaction\""));
+        }
+        if native.is_none() && !has_backend {
+            return Err(format!("{f} is answered by the plugin's backend: add \"backend\": \"backend.py\" (or name in-tree code with \"native\")"));
+        }
+        let timeout_ms = match o.get("timeout_ms") {
+            None | Some(Value::Null) => HOOK_TIMEOUT_MS,
+            Some(t) => t.as_u64().filter(|t| (1..=MAX_HOOK_TIMEOUT_MS).contains(t)).ok_or_else(|| format!("{f}.timeout_ms must be 1 to {MAX_HOOK_TIMEOUT_MS}"))?,
+        };
+        let fail_closed = match opt_str(o.get("fail"), &format!("{f}.fail"))?.as_deref() {
+            None | Some("open") => false,
+            Some("closed") => true,
+            Some(_) => return Err(format!("{f}.fail must be \"open\" or \"closed\"")),
+        };
+        let tools = list(o.get("tools"), &format!("{f}.tools"))?
+            .iter()
+            .enumerate()
+            .map(|(j, t)| t.as_str().map(str::trim).filter(|t| tool_name_ok(t)).map(str::to_owned).ok_or_else(|| format!("{f}.tools[{j}] must be a tool name")))
+            .collect::<R<Vec<_>>>()?;
+        if !tools.is_empty() && !matches!(event.as_str(), "before_tool_call" | "after_tool_call") {
+            return Err(format!("{f}.tools only applies to before_tool_call and after_tool_call"));
+        }
+        out.push(ManifestHook { event, priority, native, timeout_ms, fail_closed, tools });
+    }
+    Ok(out)
+}
+
+/// `"environments": [{"native": "nix"}, {"id", "label", "detect", "inputs"?, "command", "args"?}]`.
+fn parse_environments(v: Option<&Value>) -> R<Vec<ManifestEnv>> {
+    let items = list(v, "environments")?;
+    if items.len() > MAX_ENVIRONMENTS {
+        return Err(format!("environments: at most {MAX_ENVIRONMENTS}"));
+    }
+    let mut out: Vec<ManifestEnv> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let f = format!("environments[{i}]");
+        let o = obj(item, &f)?;
+        let native = opt_str(o.get("native"), &format!("{f}.native"))?;
+        let id = match (&native, o.get("id")) {
+            (Some(n), None) => n.clone(),
+            (_, v) => req_str(v, &format!("{f}.id"))?,
+        };
+        let id_ok = (1..=32).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'));
+        if !id_ok || native.as_deref().is_some_and(|n| !native_id_ok(n)) {
+            return Err(format!("{f}.id must be lowercase letters, digits, _ or -, like \"conda\""));
+        }
+        if out.iter().any(|e| e.id == id) {
+            return Err(format!("{f}.id {id:?} is used twice"));
+        }
+        let files = |key: &str| -> R<Vec<String>> {
+            list(o.get(key), &format!("{f}.{key}"))?
+                .iter()
+                .enumerate()
+                .map(|(j, p)| match p.as_str().map(str::trim) {
+                    Some(p) if !p.is_empty() && path_inside(p) => Ok(p.to_owned()),
+                    _ => Err(format!("{f}.{key}[{j}] must be a file name inside the workspace, like \"environment.yml\"")),
+                })
+                .collect()
+        };
+        let detect = files("detect")?;
+        let inputs = files("inputs")?;
+        let command = opt_str(o.get("command"), &format!("{f}.command"))?.filter(|c| !c.is_empty());
+        let args = list(o.get("args"), &format!("{f}.args"))?
+            .iter()
+            .enumerate()
+            .map(|(j, a)| a.as_str().map(str::to_owned).ok_or_else(|| format!("{f}.args[{j}] must be text")))
+            .collect::<R<Vec<_>>>()?;
+        if native.is_none() && (detect.is_empty() || command.is_none()) {
+            return Err(format!("{f} needs \"native\" (built into byob) or \"detect\" (the workspace files) and \"command\" (prints the environment as JSON)"));
+        }
+        let label = truncate_chars(&opt_str(o.get("label"), &format!("{f}.label"))?.filter(|l| !l.is_empty()).unwrap_or_else(|| format!("{id} environment")), 60);
+        out.push(ManifestEnv { id, native, label, detect, inputs, command, args });
+    }
+    Ok(out)
 }
 
 /// `type/subtype`, lowercase (what `byob_protocol::artifact::valid_content_type` takes).

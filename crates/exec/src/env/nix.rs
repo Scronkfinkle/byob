@@ -319,20 +319,20 @@ impl Nix {
 pub struct NixShell(pub Nix);
 
 impl Project for NixShell {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "devshell"
     }
 
-    fn label(&self) -> &'static str {
+    fn label(&self) -> &str {
         "Nix dev shell"
     }
 
-    fn file(&self, ws: &Path) -> Option<&'static str> {
-        ShellKind::find(ws).map(ShellKind::file)
+    fn file(&self, ws: &Path) -> Option<String> {
+        ShellKind::find(ws).map(|k| k.file().to_owned())
     }
 
-    fn inputs(&self) -> &'static [&'static str] {
-        &["flake.nix", "flake.lock", "shell.nix", "default.nix"]
+    fn inputs(&self) -> Vec<String> {
+        ["flake.nix", "flake.lock", "shell.nix", "default.nix"].map(str::to_owned).to_vec()
     }
 
     fn load(&self, ws: &Path, dir: &Path, run: &dyn Runner) -> Result<Layer, String> {

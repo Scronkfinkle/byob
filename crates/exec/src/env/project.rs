@@ -72,7 +72,7 @@ impl JsonEnvTool {
     fn run_tool(&self, args: &[&str], ws: &Path, run: &dyn Runner, capture: bool) -> Result<Option<String>, String> {
         let mut write = vec![ws.to_path_buf()];
         write.extend(self.state.clone());
-        let t = ToolRun { program: &self.program, name: self.label_cmd(), cwd: ws, write, env: self.vars(ws) };
+        let t = ToolRun { program: &self.program, name: self.label_cmd(), cwd: ws, write, read: Vec::new(), env: self.vars(ws) };
         run_tool(&t, args, run, capture)
     }
 
@@ -92,6 +92,8 @@ pub(crate) struct ToolRun<'a> {
     pub cwd: &'a Path,
     /// Folders it may write (created if missing).
     pub write: Vec<PathBuf>,
+    /// Folders it may read besides the usual (a plugin's own files).
+    pub read: Vec<PathBuf>,
     pub env: Vec<(String, OsString)>,
 }
 
@@ -111,6 +113,7 @@ pub(crate) fn run_tool(t: &ToolRun<'_>, args: &[&str], run: &dyn Runner, capture
         std::fs::create_dir_all(w).map_err(|e| format!("can't create {}: {e}", w.display()))?;
         job.layer.write.push(w.clone());
     }
+    job.layer.read.extend(t.read.iter().cloned());
     job.env.clone_from(&t.env);
     job.env.push(("BYOB_OUT".into(), out_file.clone().into_os_string()));
     let out = run.run(job, t.cwd, tmp.path())?;
@@ -132,26 +135,27 @@ pub(crate) fn run_tool(t: &ToolRun<'_>, args: &[&str], run: &dyn Runner, capture
 }
 
 impl Project for JsonEnvTool {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         self.label_cmd()
     }
 
-    fn label(&self) -> &'static str {
+    fn label(&self) -> &str {
         match self.kind {
             Kind::Pixi => "pixi environment",
             Kind::Mise => "mise tools",
         }
     }
 
-    fn file(&self, ws: &Path) -> Option<&'static str> {
-        project_file(self.kind, ws)
+    fn file(&self, ws: &Path) -> Option<String> {
+        project_file(self.kind, ws).map(str::to_owned)
     }
 
-    fn inputs(&self) -> &'static [&'static str] {
-        match self.kind {
+    fn inputs(&self) -> Vec<String> {
+        let files: &[&str] = match self.kind {
             Kind::Pixi => &["pixi.toml", "pixi.lock", "pyproject.toml"],
             Kind::Mise => &["mise.toml", ".mise.toml", ".tool-versions", "mise.lock"],
-        }
+        };
+        files.iter().map(|f| (*f).to_owned()).collect()
     }
 
     fn load(&self, ws: &Path, _dir: &Path, run: &dyn Runner) -> Result<Layer, String> {

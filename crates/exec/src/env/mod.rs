@@ -25,6 +25,7 @@
 //! `docs/environments.md`.
 
 pub mod choices;
+pub mod command;
 pub mod container;
 pub mod devcontainer;
 pub mod hints;
@@ -44,6 +45,22 @@ use byob_tools::{Access, Answer, EnvControl, EnvPlan, Question};
 use serde::{Deserialize, Serialize};
 
 use crate::Job;
+pub use command::CommandProvider;
+
+/// A provider a run uses: a registered one, or a plugin's command provider made for it.
+enum Provider<'a> {
+    Native(&'a dyn Project),
+    Command(CommandProvider),
+}
+
+impl Provider<'_> {
+    fn get(&self) -> &dyn Project {
+        match self {
+            Self::Native(p) => *p,
+            Self::Command(c) => c,
+        }
+    }
+}
 
 /// Changes a run gets: `PATH` entries in front of the host's, variables, and sandbox access.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,7 +153,7 @@ pub fn keep_var(name: &str) -> bool {
 }
 
 /// Runs a sandboxed job for a provider (the tool's own sandbox, with the support layer).
-pub(crate) trait Runner {
+pub trait Runner {
     /// Run `job` in `cwd` with `tmp` as its private temp folder.
     fn run(&self, job: Job, cwd: &Path, tmp: &Path) -> Result<Outcome, String>;
     /// Ask the user (see [`byob_tools::ToolContext::ask`]).
@@ -202,23 +219,35 @@ impl ProjectMode {
 
 /// An environment a workspace declares in a project file (`flake.nix`, `pixi.toml`,
 /// `mise.toml`, …): loaded once (slow, may download), then cached until its files change.
-pub(crate) trait Project: Send + Sync + std::fmt::Debug {
+///
+/// The providers form a registry: byob's own (Nix dev shells, pixi, mise; ids
+/// [`NATIVE_PROVIDERS`]) are made from what [`Found`] lists, more can be added with
+/// [`Envs::register`], and plugins declare command providers in their manifest
+/// (`environments`, see [`CommandProvider`]). Which ones a chat uses is
+/// [`EnvPlan::providers`] (`None`: every registered one).
+pub trait EnvProvider: Send + Sync + std::fmt::Debug {
     /// Names the cache file.
-    fn id(&self) -> &'static str;
+    fn id(&self) -> &str;
     /// For messages: "Nix dev shell".
-    fn label(&self) -> &'static str;
+    fn label(&self) -> &str;
     /// The file in `ws` that declares it, if any.
-    fn file(&self, ws: &Path) -> Option<&'static str>;
+    fn file(&self, ws: &Path) -> Option<String>;
     /// Files whose contents key the cache (lock files included).
-    fn inputs(&self) -> &'static [&'static str];
+    fn inputs(&self) -> Vec<String>;
     /// Load it now: a sandboxed run with network that may write the workspace and `dir`.
     fn load(&self, ws: &Path, dir: &Path, run: &dyn Runner) -> Result<Layer, String>;
 }
 
+pub(crate) use EnvProvider as Project;
+
+/// byob's own providers, by the id plugin manifests name them with (`environments[].native`),
+/// and `container` (dev containers, which aren't an [`EnvProvider`] but switch the same way).
+pub const NATIVE_PROVIDERS: [&str; 4] = ["nix", "pixi", "mise", "container"];
+
 /// The result of [`load_project`].
 #[derive(Debug)]
 pub(crate) struct ProjectEnv {
-    pub file: &'static str,
+    pub file: String,
     pub result: Result<Layer, String>,
     /// Loaded just now (else from the cache).
     pub fresh: bool,
@@ -337,8 +366,8 @@ pub struct Envs {
     nix: Option<nix::Nix>,
     /// The installer where there's no Nix.
     pixi: Option<pixi::Pixi>,
-    /// Project environments, in order of precedence.
-    projects: Vec<Box<dyn Project>>,
+    /// Project environments, in order of precedence, by the id a plugin switches them with.
+    projects: Vec<(String, Box<dyn Project>)>,
     /// `<data>/envs`, holding one folder per workspace.
     state: Option<PathBuf>,
     mode: ProjectMode,
@@ -369,15 +398,15 @@ impl Envs {
 
     /// Use exactly what `found` lists.
     pub fn new(data_dir: Option<&Path>, found: Found, mode: ProjectMode) -> Self {
-        let mut projects: Vec<Box<dyn Project>> = Vec::new();
+        let mut projects: Vec<(String, Box<dyn Project>)> = Vec::new();
         if let Some(n) = &found.nix {
-            projects.push(Box::new(nix::NixShell(n.clone())));
+            projects.push(("nix".into(), Box::new(nix::NixShell(n.clone()))));
         }
         // Loading these goes through `sh`, which Windows lacks (like run_command itself).
         if !cfg!(windows) {
-            for (kind, program) in [(project::Kind::Pixi, &found.pixi), (project::Kind::Mise, &found.mise)] {
+            for (id, kind, program) in [("pixi", project::Kind::Pixi, &found.pixi), ("mise", project::Kind::Mise, &found.mise)] {
                 if let Some(program) = program {
-                    projects.push(Box::new(project::JsonEnvTool::new(kind, program.clone(), data_dir)));
+                    projects.push((id.into(), Box::new(project::JsonEnvTool::new(kind, program.clone(), data_dir))));
                 }
             }
         }
@@ -396,6 +425,35 @@ impl Envs {
     /// No package managers (tests, or a machine without any).
     pub fn none() -> Self {
         Self::default()
+    }
+
+    /// Add a provider (after byob's own), switched on and off in chats by `id` like theirs
+    /// (an [`EnvPlan::providers`] that doesn't list it leaves it out).
+    pub fn register(&mut self, id: &str, provider: Box<dyn EnvProvider>) {
+        self.projects.retain(|(have, _)| have != id);
+        self.projects.push((id.to_owned(), provider));
+    }
+
+    /// The providers a run with `plan` uses: the registered ones its plan switches on (all
+    /// without a list), then the plugins' command providers.
+    fn providers(&self, plan: &EnvPlan) -> Vec<Provider<'_>> {
+        let mut out = Vec::new();
+        for (id, p) in &self.projects {
+            if plan.providers.as_ref().is_none_or(|on| on.native.iter().any(|n| n == id)) {
+                out.push(Provider::Native(p.as_ref()));
+            }
+        }
+        if !cfg!(windows) {
+            for decl in plan.providers.iter().flat_map(|p| &p.external) {
+                out.push(Provider::Command(CommandProvider::new(decl.clone())));
+            }
+        }
+        out
+    }
+
+    /// Dev containers are switched on for runs with `plan` (see [`NATIVE_PROVIDERS`]).
+    fn containers_on(&self, plan: &EnvPlan) -> bool {
+        plan.providers.as_ref().is_none_or(|on| on.native.iter().any(|n| n == "container"))
     }
 
     /// The package manager `install_packages` uses here, if any.
@@ -484,8 +542,9 @@ impl Envs {
             out.layer.stack(&l);
         }
         let Some(dir) = dir.filter(|_| load) else { return out };
-        for p in &self.projects {
-            let Some(env) = load_project(p.as_ref(), ws, &dir, run) else { continue };
+        for p in self.providers(&run.plan()) {
+            let p = p.get();
+            let Some(env) = load_project(p, ws, &dir, run) else { continue };
             match env.result {
                 Ok(l) => {
                     out.layer.stack(&l);
@@ -505,8 +564,11 @@ impl Envs {
     /// devcontainer.json; without one, only the user's setting turns it on. `notes` gets
     /// what the model should hear once.
     pub(crate) fn container(&self, ws: &Path, run: &dyn Runner, notes: &mut Vec<String>) -> Option<Result<container::Ready, String>> {
-        let devcontainer = devcontainer::find(ws);
         let plan = run.plan();
+        if !self.containers_on(&plan) {
+            return None;
+        }
+        let devcontainer = devcontainer::find(ws);
         // The workspace's (or chat's) environment setting decides; else the folder's answer.
         let choice = plan.container.or_else(|| self.choices.get(ws).container);
         let Some(c) = &self.containers else {
@@ -583,15 +645,15 @@ impl Envs {
     }
 
     /// The project files of `ws` byob can load an environment from, with their labels.
-    fn project_files(&self, ws: &Path) -> Vec<(&'static str, &'static str)> {
-        self.projects.iter().filter_map(|p| p.file(ws).map(|f| (f, p.label()))).collect()
+    fn project_files(&self, ws: &Path, plan: &EnvPlan) -> Vec<(String, String)> {
+        self.providers(plan).iter().filter_map(|p| p.get().file(ws).map(|f| (f, p.get().label().to_owned()))).collect()
     }
 
     /// May `ws`'s project environment be loaded? Asks the user the first time (once per
     /// workspace; a person's answer is saved, the policy's lasts for this process). When
     /// it may not, the model is told once.
     fn project_consent(&self, ws: &Path, run: &dyn Runner, notes: &mut Vec<String>) -> bool {
-        let files = self.project_files(ws);
+        let files = self.project_files(ws, &run.plan());
         if files.is_empty() || self.state.is_none() {
             return false;
         }
@@ -670,7 +732,7 @@ impl EnvControl for Envs {
         let c = self.choices.get(&ws);
         WorkspaceEnv {
             workspace: ws.display().to_string(),
-            project_files: self.project_files(&ws).into_iter().map(|(f, _)| f.to_owned()).collect(),
+            project_files: self.project_files(&ws, plan).into_iter().map(|(f, _)| f).collect(),
             project_env: c.project,
             project_env_forced: match (self.mode, plan.project) {
                 (ProjectMode::Always, _) => Some(true),
@@ -782,9 +844,9 @@ fn container_question(file: &str, runtime: &str) -> Question {
 }
 
 /// "Load this workspace's environment?", asked once per workspace.
-fn project_question(files: &[(&str, &str)]) -> Question {
-    let labels: Vec<&str> = files.iter().map(|(_, l)| *l).collect();
-    let names: Vec<&str> = files.iter().map(|(f, _)| *f).collect();
+fn project_question(files: &[(String, String)]) -> Question {
+    let labels: Vec<&str> = files.iter().map(|(_, l)| l.as_str()).collect();
+    let names: Vec<&str> = files.iter().map(|(f, _)| f.as_str()).collect();
     Question {
         title: format!("Load this workspace's {} ({})", labels.join(" and "), names.join(", ")),
         text: format!(
@@ -893,17 +955,17 @@ mod tests {
     struct Fake(std::sync::atomic::AtomicUsize);
 
     impl Project for Fake {
-        fn id(&self) -> &'static str {
+        fn id(&self) -> &str {
             "fake"
         }
-        fn label(&self) -> &'static str {
+        fn label(&self) -> &str {
             "fake env"
         }
-        fn file(&self, ws: &Path) -> Option<&'static str> {
-            ws.join("fake.toml").is_file().then_some("fake.toml")
+        fn file(&self, ws: &Path) -> Option<String> {
+            ws.join("fake.toml").is_file().then(|| "fake.toml".to_owned())
         }
-        fn inputs(&self) -> &'static [&'static str] {
-            &["fake.toml", "fake.lock"]
+        fn inputs(&self) -> Vec<String> {
+            vec!["fake.toml".into(), "fake.lock".into()]
         }
         fn load(&self, ws: &Path, _dir: &Path, _run: &dyn Runner) -> Result<Layer, String> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -945,16 +1007,16 @@ mod tests {
     }
 
     impl Project for std::sync::Arc<Fake> {
-        fn id(&self) -> &'static str {
+        fn id(&self) -> &str {
             self.as_ref().id()
         }
-        fn label(&self) -> &'static str {
+        fn label(&self) -> &str {
             self.as_ref().label()
         }
-        fn file(&self, ws: &Path) -> Option<&'static str> {
+        fn file(&self, ws: &Path) -> Option<String> {
             self.as_ref().file(ws)
         }
-        fn inputs(&self) -> &'static [&'static str] {
+        fn inputs(&self) -> Vec<String> {
             self.as_ref().inputs()
         }
         fn load(&self, ws: &Path, dir: &Path, run: &dyn Runner) -> Result<Layer, String> {
@@ -966,7 +1028,7 @@ mod tests {
         let fake = std::sync::Arc::new(Fake::default());
         let state = data.join("envs");
         let e = Envs {
-            projects: vec![Box::new(std::sync::Arc::clone(&fake))],
+            projects: vec![("fake".into(), Box::new(std::sync::Arc::clone(&fake)))],
             choices: choices::Choices::new(Some(state.join("workspaces.json"))),
             state: Some(state),
             mode,
