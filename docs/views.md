@@ -139,6 +139,7 @@ under it. Unknown fields are ignored.
 | `separator` | (no fields) — a line |
 | `image` | `media?: str` (a workspace path) or `artifact?: str` (an artifact id), `alt?: str`, `width?: num`, `height?: num` |
 | `canvas` | `width: num`, `height: num`, `shapes: [shape]`, `action?: str` — a drawing (see below) |
+| `grid` | `name: str`, `rows: int`, `cols: int`, `blocks: [{"row", "col", "cells": [[cell, ...]]}]`, `frozen_rows?`, `frozen_cols?`, `widths?`, `default_width?`, `editable?`, `headers?`, `height?`, `selection?` — a spreadsheet (see below) |
 
 `tone` is one of `"normal"`, `"dim"`, `"accent"`, `"success"`, `"warning"`, `"danger"`.
 These are colour *roles*: the theme picks the actual colours. There is no way to give a
@@ -157,6 +158,57 @@ scrolls (300 by default). Columns without a `width` share the space left.
   `{"action": "edit", "edit": {"table": name, "row": i, "column": key, "value": "text"}}`;
   Escape cancels. `value` is always text: convert it yourself. The new text shows until your
   reply arrives; reply with the corrected row (or the whole view).
+
+### Grids
+
+A grid is a spreadsheet: a `rows` × `cols` sheet (up to 1,048,576 × 16,384) of which you send
+only the part around what shows, as `blocks`. Only the cells on screen are drawn, so a sheet
+that size costs what a small one does.
+
+```json
+{"type": "grid", "key": "g", "name": "sheet", "rows": 1000, "cols": 26, "editable": true,
+ "frozen_rows": 1, "widths": {"0": 140}, "height": 400,
+ "blocks": [{"row": 0, "col": 0, "cells": [
+   [{"v": "Item", "b": true}, {"v": "Cost", "b": true}],
+   ["Rent", 1200],
+   [{"v": "Total", "b": true}, {"v": "1200", "i": "=SUM(B2:B2)", "t": "n"}]]}]}
+```
+
+- `blocks`: rectangles of known cells, `cells` row by row from (`row`, `col`), 0-based. At
+  most 16 blocks and 50,000 cells in all. Cells in no block aren't loaded (drawn blank).
+- A cell is null, a string, a number (right-aligned), a bool (`TRUE`/`FALSE`, centred), or
+  `{"v": shown text, "i"?: input (what the formula bar shows and editing starts with, e.g.
+  "=SUM(B2:B9)"), "t"?: "s" | "n" | "b" | "e" (an error, drawn in the danger colour), "b"?:
+  bold, "it"?: italic, "fill"?: colour, "color"?: colour, "align"?: "left" | "center" |
+  "right"}`. Colours as on a canvas. Text is cut to 4,096 characters.
+- `frozen_rows` / `frozen_cols`: rows from the top and columns from the left that stay while
+  the rest scrolls. `headers` (default true): column letters and row numbers.
+- `widths`: column index → points (`{"0": 140}`); other columns are `default_width` (90).
+- `height`: the most the grid takes; without it, what the place it is in gives.
+- `selection`: `{"row", "col", "to_row"?, "to_col"?}`, taken like a field's `value` (only when
+  your view changes it). `values[name]` always holds the current selection in that shape;
+  `row`, `col` is the active cell.
+- `editable` (default false): typing, F2 or double-click edits a cell; Enter (down), Tab
+  (right) or clicking away commits, Escape cancels; the formula bar edits too. Delete clears
+  the selection, Ctrl+V pastes. Read-only grids still select, scroll and copy (Ctrl+C copies
+  the selection as tab-separated text).
+
+Grid events have `"action"` set to the operation and a `"grid"` object
+`{"name", "op", "row", "col", ...}`:
+
+| op | when | fields |
+|---|---|---|
+| `edit` | a cell edit was committed | `row`, `col`, `value` (the typed text; `=…` is a formula: work it out yourself) |
+| `select` | the selection changed | `row`, `col` (the active cell), `to_row`, `to_col` (the other corner) |
+| `window` | cells that show aren't loaded | `row`, `col`, `rows`, `cols`: what to send |
+| `paste` | Ctrl+V | `row`, `col` (the selection's top left), `text` (tab-separated rows) |
+| `clear` | Delete on the selection | `row`, `col`, `to_row`, `to_col` |
+
+**The window protocol.** When the user scrolls to cells no block has, the grid sends one
+`window` event: the visible range plus about a screen (at least 50 rows and 10 columns) each
+way. Answer with the grid's blocks covering it, plus the frozen rows and columns (e.g. one
+block for the header row, one for the window). It doesn't ask again for that range until
+your view changes or the user scrolls past it. An edit's new text shows until your reply.
 
 ### Canvas
 
@@ -181,7 +233,8 @@ an `action` sends it with the point in `values._x` / `values._y` (canvas units).
 ```
 
 - `action` is the button's `action`, an input's `submit`, a toggle's or select's `action`,
-  a table's `select`, a canvas's `action`, or `"edit"` for a table cell edit.
+  a table's `select`, a canvas's `action`, `"edit"` for a table cell edit, or a grid's
+  operation (with a `grid` object, see Grids).
 - `values` holds every named field: input text (string), toggle (bool), select (string),
   table selection (row index or null). Typing sends nothing: the text arrives with the next
   event.
@@ -228,8 +281,9 @@ byob never rejects a view. It draws what it can and reports what it had to fix, 
   (`{"type": "slider", "fallback": "Volume: 7"}`). A node missing a required field is
   treated the same way.
 - At most 32 levels of nesting and 20,000 nodes; table rows (100,000), columns (64), select
-  options (1,000) and canvas shapes (20,000) are capped; text longer than 65,536 characters
-  is cut.
+  options (1,000), canvas shapes (20,000), grid blocks (16) and cells (50,000), and a grid's
+  size (1,048,576 rows × 16,384 columns) are capped; text longer than 65,536 characters (4,096
+  in a grid cell) is cut.
 - Unknown tones and styles are the defaults.
 
 ## On steps
