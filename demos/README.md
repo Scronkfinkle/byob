@@ -17,7 +17,9 @@ demos/screenshots.sh [shot...]  # regenerate demos/screenshots/*.png headlessly 
   `~/.config/byob` and `~/.local/share/byob` are never read or written (the window state goes
   to `$BYOB_HOME/window.ron` too).
 - **Model.** `BYOB_DEMO_URL` (default `http://silicon:9931/v1`) and `BYOB_DEMO_MODEL` (default
-  `local`); `BYOB_API_KEY` for hosted APIs. run.sh prints the suggested prompts for each demo.
+  `local`); `BYOB_API_KEY` for hosted APIs. run.sh prints the suggested prompts for each demo
+  and types the first one into the composer (press Enter to send it; the window does nothing
+  until you do).
 - **Builds.** run.sh builds `target/release/byob` (a no-op when it's current; enters
   `nix develop` if `cargo` isn't on PATH). For `--serve`/`--browser` it first runs
   `cargo xtask web` if the browser UI hasn't been built (it's compiled into the binary).

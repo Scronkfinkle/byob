@@ -60,6 +60,9 @@ echo "model:      $DEMO_MODEL at $DEMO_URL"
 echo "web helper: ${BYOB_ARTIFACT_HOST:-none (HTML views fall back to Open in browser on the desktop)}"
 echo "try:"
 demo_prompts "$demo" | sed 's/^/  > /'
+# Desktop: the first prompt is already typed into the composer, so the window isn't a blank chat.
+first="$(demo_prompts "$demo" | head -n 1)"
+[[ "$mode" != browser && -n "$first" ]] && DEMO_ARGS+=(--draft "$first") && echo "(the first one is typed into the composer: press Enter to send it)"
 echo "(demos/README.md has what to click and what to look for)"
 echo
 
