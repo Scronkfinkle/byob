@@ -1,7 +1,6 @@
 //! Native plugin backends (`"backend": {"native": id}`, `byob_plugins::native`): hosted like
 //! process backends (init, requests, views, a panic is a crash and a restart, switch-off
-//! drops them), and the two spreadsheet plugins (`sheets` in Python, `sheets-native` in
-//! Rust) switching at runtime. No Python needed.
+//! drops them), and the bundled `sheets` plugin, whose backend is native (`byob-sheets`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -191,7 +190,7 @@ fn sheets_natives() -> Natives {
 }
 
 #[test]
-fn the_python_and_native_sheets_plugins_switch_at_runtime() {
+fn the_sheets_plugin_is_native_and_on_by_default() {
     let script = vec![
         call("create_sheet", r#"{"title": "Budget"}"#),
         call("write_cells", r#"{"sheet": "budget.xlsx", "rows": [["Rent", 1200], ["Food", "=B1/4"]]}"#),
@@ -199,22 +198,14 @@ fn the_python_and_native_sheets_plugins_switch_at_runtime() {
     ];
     let h = harness(script, bundled_plugins(), sheets_natives());
     let mut c = connect(&h);
-    // Shipped: the Python one on, the native one off.
+    // Shipped on, in use, nothing on disk.
     let e = wait_ext(&mut c, |e| !e.plugins.is_empty());
-    let (py, rs) = (info(&e, "sheets"), info(&e, "sheets-native"));
-    assert!(py.enabled && py.in_use() && !py.tools.is_empty(), "{py:?}");
-    assert!(!rs.enabled && rs.tools.is_empty() && rs.superseded_by.is_none(), "{rs:?}");
-    assert!(rs.problems.is_empty(), "{:?}", rs.problems);
+    let p = info(&e, "sheets");
+    assert!(p.enabled && p.in_use() && p.tools.contains(&"create_sheet".to_owned()), "{p:?}");
+    assert!(p.problems.is_empty() && p.superseded_by.is_none(), "{p:?}");
+    assert!(!Path::new(&p.dir).exists(), "in the binary, not at {}", p.dir);
 
-    // Switched on: it wins over the default-on Python one, which stays on but unused.
-    c.send(ClientMsg::SetPluginEnabled { scope: ConfigScope::Global, plugin: "sheets-native".into(), enabled: Some(true) });
-    let e = wait_ext(&mut c, |e| info(e, "sheets-native").enabled);
-    let (py, rs) = (info(&e, "sheets"), info(&e, "sheets-native"));
-    assert_eq!(py.superseded_by.as_deref(), Some("sheets-native"));
-    assert!(py.enabled && py.tools.is_empty() && py.backend.is_none(), "{py:?}");
-    assert!(rs.in_use() && rs.tools.contains(&"create_sheet".to_owned()), "{rs:?}");
-
-    // The model gets one set of sheet tools, served in-process.
+    // The model gets the sheet tools, served in-process.
     let (entry, _) = turn(&mut c, "make a budget", |_, _| {});
     let made = step(&entry, "create_sheet");
     assert_eq!(made.status, StepStatus::Done, "{}", made.detail);
@@ -228,7 +219,7 @@ fn the_python_and_native_sheets_plugins_switch_at_runtime() {
     assert_eq!(meta.artifact.versions.len(), 2);
 
     // Its grid draws the artifact.
-    let v = ViewRef::new("sheets-native", "sheet", artifact_key(&id, 2));
+    let v = ViewRef::new("sheets", "sheet", artifact_key(&id, 2));
     c.send(ClientMsg::OpenView { view: v.clone() });
     loop {
         if let ServerMsg::LiveView(lv) = recv(&mut c)
@@ -241,8 +232,8 @@ fn the_python_and_native_sheets_plugins_switch_at_runtime() {
         }
     }
 
-    // Switched off again: the Python one is back, the native view resets.
-    c.send(ClientMsg::SetPluginEnabled { scope: ConfigScope::Global, plugin: "sheets-native".into(), enabled: Some(false) });
+    // Switched off: its view resets, its tools go, and the view can't be opened now.
+    c.send(ClientMsg::SetPluginEnabled { scope: ConfigScope::Global, plugin: "sheets".into(), enabled: Some(false) });
     let (mut reset, mut ext) = (false, None);
     while !reset || ext.is_none() {
         match recv(&mut c) {
@@ -250,13 +241,11 @@ fn the_python_and_native_sheets_plugins_switch_at_runtime() {
                 assert!(lv.reset || lv.error.is_some(), "{lv:?}");
                 reset = true;
             }
-            ServerMsg::Extensions(e) if !info(&e, "sheets-native").enabled => ext = Some(*e),
+            ServerMsg::Extensions(e) if !info(&e, "sheets").enabled => ext = Some(*e),
             _ => {}
         }
     }
-    let e = ext.unwrap();
-    assert!(info(&e, "sheets").in_use() && !info(&e, "sheets").tools.is_empty());
-    // A view of the native one can't be opened now.
+    assert!(info(ext.as_ref().unwrap(), "sheets").tools.is_empty());
     c.send(ClientMsg::OpenView { view: v.clone() });
     loop {
         if let ServerMsg::LiveView(lv) = recv(&mut c)
@@ -266,34 +255,29 @@ fn the_python_and_native_sheets_plugins_switch_at_runtime() {
             break;
         }
     }
-
-    // Both switched on in settings: decided by id, the same every time.
-    c.send(ClientMsg::SetPluginEnabled { scope: ConfigScope::Global, plugin: "sheets".into(), enabled: Some(true) });
-    c.send(ClientMsg::SetPluginEnabled { scope: ConfigScope::Global, plugin: "sheets-native".into(), enabled: Some(true) });
-    let e = wait_ext(&mut c, |e| info(e, "sheets-native").enabled && info(e, "sheets").enabled_from != byob_types::config::Level::Default);
-    assert_eq!(info(&e, "sheets-native").superseded_by.as_deref(), Some("sheets"));
-    assert!(info(&e, "sheets").in_use());
 }
 
 #[test]
-fn the_native_sheets_manifest_matches_the_python_one() {
-    // Both plugins offer the same tools, prompt, types, renderers and view, so the model and
-    // the user can't tell which one runs; only how they run differs.
-    let parse = |id: &str| {
-        let text = byob_bundled::file(id, "byob-plugin.json").unwrap();
-        byob_plugins::manifest::parse_manifest_str(text, byob_plugins::manifest::ParseOptions { builtin: true, file: None }).unwrap()
-    };
-    let (py, rs) = (parse("sheets"), parse("sheets-native"));
-    assert_eq!(py.tools, rs.tools);
-    assert_eq!(py.prompt, rs.prompt);
-    assert_eq!(py.artifact_types, rs.artifact_types);
-    assert_eq!(py.renderers, rs.renderers);
-    assert_eq!(py.views, rs.views);
-    assert_eq!(py.starters, rs.starters);
-    assert_eq!((py.provides.as_deref(), rs.provides.as_deref()), (Some("spreadsheets"), Some("spreadsheets")));
-    assert!(py.on_by_default && !rs.on_by_default);
-    assert_eq!(rs.backend.unwrap().run, byob_plugins::manifest::BackendRun::Native(byob_sheets::ID.into()));
-    assert!(rs.requirements.is_empty() && py.requirements == ["ironcalc==0.9.1"]);
-    let names: Vec<&str> = py.tools.iter().map(|t| t.name.as_str()).collect();
+fn without_its_backend_built_in_sheets_reports_a_problem() {
+    // A byob built without the `native-sheets` feature: the plugin is listed, with a problem.
+    let h = harness(vec![], bundled_plugins(), Natives::builtin());
+    let mut c = connect(&h);
+    let e = wait_ext(&mut c, |e| !e.plugins.is_empty());
+    let p = info(&e, "sheets");
+    assert!(p.problems.iter().any(|m| m.contains("\"sheets\" isn't a backend built into this byob")), "{:?}", p.problems);
+}
+
+#[test]
+fn the_sheets_manifest_names_the_native_backend() {
+    let text = byob_bundled::file("sheets", "byob-plugin.json").unwrap();
+    let m = byob_plugins::manifest::parse_manifest_str(text, byob_plugins::manifest::ParseOptions { builtin: true, file: None }).unwrap();
+    assert_eq!(m.id, "sheets");
+    // `provides` lets a third-party spreadsheets plugin replace it.
+    assert_eq!(m.provides.as_deref(), Some("spreadsheets"));
+    assert!(m.on_by_default);
+    assert_eq!(m.backend.unwrap().run, byob_plugins::manifest::BackendRun::Native(byob_sheets::ID.into()));
+    assert!(m.requirements.is_empty());
+    let names: Vec<&str> = m.tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, byob_sheets::TOOLS);
+    assert_eq!(m.views.len(), 1);
 }

@@ -8,7 +8,7 @@ REPO="$(cd "$DEMOS_DIR/.." && pwd)"
 DEMO_ROOT="${BYOB_DEMO_ROOT:-/tmp/byob-demo}"
 DEMO_URL="${BYOB_DEMO_URL:-http://silicon:9931/v1}"
 DEMO_MODEL="${BYOB_DEMO_MODEL:-local}"
-DEMO_LIST="todo self-plugin hooks env-provider mcp-app sheets sheets-native fork"
+DEMO_LIST="todo self-plugin hooks env-provider mcp-app sheets fork"
 
 # The Servo helper (HTML apps, MCP App cards and plugin web views inline on the desktop).
 demo_helper() {
@@ -22,14 +22,13 @@ demo_helper() {
 # writes the profile's settings.json, seeds the workspace and sets DEMO_HOME, DEMO_WS, DEMO_ARGS.
 demo_setup() {
   local name="$1" keep="${2:-0}" dir="$DEMO_ROOT/$1"
-  case " $DEMO_LIST " in *" $name "*) ;; *) echo "unknown demo: $name (one of: $DEMO_LIST, sheets-compare)" >&2; return 1 ;; esac
+  case " $DEMO_LIST " in *" $name "*) ;; *) echo "unknown demo: $name (one of: $DEMO_LIST)" >&2; return 1 ;; esac
   [[ "$keep" == 1 ]] || rm -rf "$dir"
   DEMO_HOME="$dir/home"
   DEMO_WS="$dir/workspace"
   mkdir -p "$DEMO_HOME" "$DEMO_WS" "$dir/workspaces"
   # Plugin switches per demo (Settings → Plugins changes them later; that's the point).
   local switches='{}'
-  [[ "$name" == sheets-native ]] && switches='{"sheets-native": true}'
   if [[ "$keep" != 1 || ! -f "$DEMO_HOME/settings.json" ]]; then
     cat >"$DEMO_HOME/settings.json" <<EOF
 {
@@ -53,7 +52,7 @@ EOF
       cp -n "$DEMOS_DIR/seed/env-provider/tools.txt" "$DEMO_WS/"
       ;;
     mcp-app) DEMO_ARGS+=(--plugin "$DEMOS_DIR/plugins/weather" --plugin "$DEMOS_DIR/plugins/notes") ;;
-    sheets | sheets-native) cp -n "$DEMOS_DIR/seed/sheets/sales.csv" "$DEMO_WS/" ;;
+    sheets) cp -n "$DEMOS_DIR/seed/sheets/sales.csv" "$DEMO_WS/" ;;
   esac
   export BYOB_HOME="$DEMO_HOME"
   local helper
@@ -74,7 +73,7 @@ demo_prompts() {
     hooks) echo "Read notes.txt, then write a copy of it to backup.txt, then delete notes.txt." ;;
     env-provider) echo "Run the greet and deploy-check commands and tell me what they print." ;;
     mcp-app) echo "Show me the weather in Lisbon." ;;
-    sheets | sheets-native)
+    sheets)
       echo "Build a monthly budget spreadsheet with categories, amounts and a summary by category."
       echo "Open sales.csv as a spreadsheet and add a column with the month-over-month growth % of revenue for each region."
       ;;

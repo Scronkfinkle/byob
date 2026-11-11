@@ -1,26 +1,18 @@
-//! The comparison bench of docs/sheets-comparison.md: the Python `sheets` backend (a
-//! process) and the native one (in-process), hosted the way byob hosts them
-//! (`byob_plugins::backend::Backend`), doing the same work. Ignored by default; run with
+//! A benchmark of the sheets backend hosted the way byob hosts it
+//! (`byob_plugins::backend::Backend`, in-process): writes, recalculation, the grid view.
+//! Ignored by default; run with
 //!
-//!     BYOB_SHEETS_PYTHON=/path/to/venv/bin/python \
-//!       cargo test -p byob-sheets --release --test bench -- --ignored --nocapture
-//!
-//! (`BYOB_SHEETS_COLD=1` also times building a fresh venv with pip, which needs the network
-//! or a warm pip cache.)
+//!     cargo test -p byob-sheets --release --test bench -- --ignored --nocapture
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use byob_plugins::backend::{Backend, Launch, Out, Sink, Start};
+use byob_plugins::backend::{Backend, Out, Sink, Start};
 use serde_json::{Value, json};
 
 const T: Duration = Duration::from_secs(120);
-
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
-}
 
 /// A fake byob around one backend: an artifact store in a temp workspace (like byob's).
 struct Host {
@@ -51,25 +43,10 @@ fn init() -> Value {
 }
 
 impl Host {
-    fn python(python: &str) -> Self {
-        let plugin = root().join("crates/bundled/plugins/sheets");
-        let helper = root().join("crates/plugins/src");
-        let python = python.to_owned();
-        let prepare = Box::new(move || {
-            let mut env = std::collections::BTreeMap::new();
-            env.insert("PYTHONPATH".to_owned(), helper.display().to_string());
-            env.insert("PYTHONUNBUFFERED".to_owned(), "1".to_owned());
-            env.insert("PYTHONDONTWRITEBYTECODE".to_owned(), "1".to_owned());
-            Ok(Start::from(Launch { argv: vec![python.clone().into(), "-B".into(), "backend.py".into()], cwd: plugin.clone(), env, remove_env: vec![] }))
-        });
-        let (s, views) = sink();
-        Self { b: Backend::new("sheets", init(), &[], prepare, s), views, ws: tempfile::tempdir().unwrap(), ids: 0 }
-    }
-
     fn native() -> Self {
         let make = byob_sheets::factory();
         let (s, views) = sink();
-        let b = Backend::new("sheets-native", init(), &[], Box::new(move || Ok(Start::Native(make()))), s);
+        let b = Backend::new("sheets", init(), &[], Box::new(move || Ok(Start::Native(make()))), s);
         Self { b, views, ws: tempfile::tempdir().unwrap(), ids: 0 }
     }
 
@@ -118,10 +95,6 @@ impl Host {
         json!({"id": id, "version": v["n"], "latest": v["n"], "path": self.ws.path().join(v["path"].as_str().unwrap()), "filename": meta["filename"],
                "content_type": meta["content_type"], "title": meta["title"], "workspace": self.ws.path(), "chat": "c1"})
     }
-
-    fn rss_kb(&self) -> Option<u64> {
-        self.b.status().pid.and_then(rss_of)
-    }
 }
 
 fn rss_of(pid: u32) -> Option<u64> {
@@ -146,7 +119,6 @@ struct Row {
     write_100k_ms: f64,
     open_view_ms: f64,
     window_ms: f64,
-    rss_kb: u64,
     xlsx: PathBuf,
 }
 
@@ -232,15 +204,8 @@ fn self_rss() -> u64 {
     rss_of(std::process::id()).unwrap_or(0)
 }
 
-/// Full recalculation of the 100k-formula workbook: (Python ms, native ms), median of 5.
-fn recalc(python: &str, xlsx: &Path) -> (f64, f64) {
-    let script = format!(
-        "import sys, time; sys.path.insert(0, {plugin:?}); import sheets_book as bk\nb = bk.Book.load({xlsx:?})\nts = []\nfor _ in range(5):\n    t = time.perf_counter(); b.evaluate(); ts.append(time.perf_counter() - t)\nts.sort(); print(ts[2] * 1000)\n",
-        plugin = root().join("crates/bundled/plugins/sheets").display().to_string(),
-        xlsx = xlsx.display().to_string()
-    );
-    let out = std::process::Command::new(python).args(["-B", "-c", &script]).output().unwrap();
-    let py: f64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(f64::NAN);
+/// Full recalculation of the 100k-formula workbook (ms, median of 5).
+fn recalc(xlsx: &Path) -> f64 {
     let mut b = byob_sheets::book::Book::load(xlsx, None).unwrap();
     let mut ts = Vec::new();
     for _ in 0..5 {
@@ -248,62 +213,25 @@ fn recalc(python: &str, xlsx: &Path) -> (f64, f64) {
         b.evaluate();
         ts.push(ms(t.elapsed()));
     }
-    (py, median(ts))
-}
-
-fn cold(python_base: &str) -> Option<(f64, f64)> {
-    std::env::var_os("BYOB_SHEETS_COLD")?;
-    let dir = tempfile::tempdir().unwrap();
-    let venv = dir.path().join("venv");
-    let t = Instant::now();
-    let ok = std::process::Command::new(python_base).args(["-m", "venv"]).arg(&venv).status().unwrap().success()
-        && std::process::Command::new(venv.join("bin/pip")).args(["install", "-q", "ironcalc==0.9.1"]).status().unwrap().success();
-    let build = ms(t.elapsed());
-    assert!(ok, "the venv didn't build");
-    let t = Instant::now();
-    std::process::Command::new(venv.join("bin/python")).args(["-c", "import ironcalc"]).status().unwrap();
-    Some((build, ms(t.elapsed())))
+    median(ts)
 }
 
 #[test]
-#[ignore = "a benchmark: needs BYOB_SHEETS_PYTHON (a Python with ironcalc); see the module docs"]
-fn compare_python_and_native_backends() {
-    let python = std::env::var("BYOB_SHEETS_PYTHON").expect("BYOB_SHEETS_PYTHON: a Python with ironcalc==0.9.1");
-    // native first, so this process's RSS growth is the native backend's alone
+#[ignore = "a benchmark; see the module docs"]
+fn bench_the_sheets_backend() {
     let before = self_rss();
-    let mut n = Host::native();
-    let rn = workload(&mut n);
-    let native_rss = self_rss().saturating_sub(before);
-    let mut p = Host::python(&python);
-    let mut rp = workload(&mut p);
-    rp.rss_kb = p.rss_kb().unwrap_or(0);
-    // the native one as a process too (same code, its own address space)
-    let bin = env!("CARGO_BIN_EXE_byob-sheets-backend").to_owned();
-    let prepare = Box::new(move || Ok(Start::from(Launch { argv: vec![bin.clone().into()], cwd: std::env::temp_dir(), ..Default::default() })));
-    let (s, views) = sink();
-    let mut np = Host { b: Backend::new("sheets-native", init(), &[], prepare, s), views, ws: tempfile::tempdir().unwrap(), ids: 0 };
-    let rnp = workload(&mut np);
-    let np_rss = np.rss_kb().unwrap_or(0);
-    let (py_recalc, rs_recalc) = recalc(&python, &rp.xlsx);
-    println!("\n| measure | Python backend | native (in-process) | native as a process |");
-    println!("|---|---:|---:|---:|");
-    println!("| backend start → first reply | {:.1} ms | {:.2} ms | {:.1} ms |", rp.start_ms, rn.start_ms, rnp.start_ms);
-    println!("| write_cells 1,000 rows × 5 (one call) | {:.1} ms | {:.1} ms | {:.1} ms |", rp.write_1k_rows_ms, rn.write_1k_rows_ms, rnp.write_1k_rows_ms);
-    println!(
-        "| write_cells 1 cell on the 1k-row sheet (median of 15) | {:.1} ms | {:.1} ms | {:.1} ms |",
-        rp.write_cell_1k_ms, rn.write_cell_1k_ms, rnp.write_cell_1k_ms
-    );
-    println!("| write_cells 100k formulas (4 calls of 25k) | {:.0} ms | {:.0} ms | {:.0} ms |", rp.write_100k_ms, rn.write_100k_ms, rnp.write_100k_ms);
-    println!("| full recalc of 100k formulas (median of 5) | {py_recalc:.1} ms | {rs_recalc:.1} ms | — |");
-    println!("| open the grid view (first draw) | {:.1} ms | {:.1} ms | {:.1} ms |", rp.open_view_ms, rn.open_view_ms, rnp.open_view_ms);
-    println!("| page the grid (window event → redraw, median of 20) | {:.2} ms | {:.2} ms | {:.2} ms |", rp.window_ms, rn.window_ms, rnp.window_ms);
-    println!(
-        "| steady RSS after the workload | {} MB (process) | +{} MB (byob's process) | {} MB (process) |",
-        rp.rss_kb / 1024,
-        native_rss / 1024,
-        np_rss / 1024
-    );
-    if let Some((build, import)) = cold("python3") {
-        println!("| cold first use: python -m venv + pip install ironcalc==0.9.1 | {build:.0} ms (+ import {import:.0} ms) | 0 | 0 |");
-    }
+    let mut h = Host::native();
+    let r = workload(&mut h);
+    let rss = self_rss().saturating_sub(before);
+    let recalc = recalc(&r.xlsx);
+    println!("\n| measure | sheets (in-process) |");
+    println!("|---|---:|");
+    println!("| backend start → first reply | {:.2} ms |", r.start_ms);
+    println!("| write_cells 1,000 rows × 5 (one call) | {:.1} ms |", r.write_1k_rows_ms);
+    println!("| write_cells 1 cell on the 1k-row sheet (median of 15) | {:.1} ms |", r.write_cell_1k_ms);
+    println!("| write_cells 100k formulas (4 calls of 25k) | {:.0} ms |", r.write_100k_ms);
+    println!("| full recalc of 100k formulas (median of 5) | {recalc:.1} ms |");
+    println!("| open the grid view (first draw) | {:.1} ms |", r.open_view_ms);
+    println!("| page the grid (window event → redraw, median of 20) | {:.2} ms |", r.window_ms);
+    println!("| RSS growth after the workload | +{} MB |", rss / 1024);
 }

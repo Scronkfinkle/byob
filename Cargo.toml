@@ -34,8 +34,8 @@ byob-ui-egui = { path = "crates/ui-egui", version = "0.2.1" }
 byob-artifact-wire = { path = "crates/artifact-wire", version = "0.2.1" }
 byob-sheets = { path = "crates/sheets", version = "0.2.1" }
 
-# Spreadsheets (byob-sheets): pinned to the version the bundled Python plugin installs
-# (`ironcalc==0.9.1`), so the two implementations compute the same. MIT OR Apache-2.0.
+# Spreadsheets (byob-sheets): pinned so a bump (and its formula results) is deliberate.
+# MIT OR Apache-2.0.
 ironcalc = "=0.9.1"
 
 # Foundation.

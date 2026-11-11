@@ -1,5 +1,5 @@
 //! The sheet tools (describe_sheet, read_cells, write_cells, fill, edit_sheet, format_cells,
-//! create_sheet): the Python plugin's `backend.py` tool for tool, text for text.
+//! create_sheet).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -8,9 +8,9 @@ use serde_json::{Map, Value, json};
 
 use crate::SheetError;
 use crate::book::{Book, Kind, num_text};
-use crate::py::{json_dumps, pystr, repr, repr_str, strip_lower};
 use crate::refs::{MAX_COLS, MAX_ROWS, cell_name, col_name, parse_cell, parse_col, parse_range, parse_row, quote_sheet, range_name, shift_formula};
 use crate::store::{Entry, Source, Store, resolve, truthy, xlsx_name};
+use crate::text::{json_dumps, pystr, repr, repr_str, strip_lower};
 
 pub const MAX_WRITE_CELLS: i64 = 100_000;
 const READ_CELLS: i64 = 2000;

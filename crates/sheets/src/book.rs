@@ -1,5 +1,4 @@
-//! Workbooks: IronCalc's raw `Model` behind the small interface the tools use (the Python
-//! plugin's `sheets_book.Book`, call for call: the Python package wraps this same model).
+//! Workbooks: IronCalc's raw `Model` behind the small interface the tools use.
 //! Sheets are 0-based indices, rows and columns 1-based (IronCalc's convention).
 
 use std::path::Path;
@@ -11,7 +10,7 @@ use ironcalc::base::types::{CellType, Style};
 use serde_json::Value;
 
 use crate::SheetError;
-use crate::py::fmt_g;
+use crate::text::fmt_g;
 
 pub const MAX_IMPORT_CELLS: usize = 2_000_000;
 const LOCALE: &str = "en";
@@ -443,7 +442,7 @@ impl Book {
         self.m.get_formatted_cell_value(s, idx64(r), idx64(c)).unwrap_or_default()
     }
 
-    /// The cell's style as the Python package hands it out (its serde form).
+    /// The cell's style (IronCalc's serde form).
     pub fn style(&self, s: u32, r: i64, c: i64) -> Value {
         self.m.get_style_for_cell(s, idx64(r), idx64(c)).ok().and_then(|st| serde_json::to_value(st).ok()).unwrap_or(Value::Null)
     }
@@ -474,7 +473,7 @@ impl Book {
         match self.value(s, r, c) {
             CellValue::None => "None".into(),
             CellValue::String(t) => t,
-            CellValue::Number(n) => crate::py::float_repr(n),
+            CellValue::Number(n) => crate::text::float_repr(n),
             CellValue::Boolean(b) => if b { "True" } else { "False" }.into(),
         }
     }
@@ -488,7 +487,7 @@ impl Book {
             (Kind::N | Kind::B, CellValue::Boolean(b)) => bool_text(b),
             (_, CellValue::None) => String::new(),
             (_, CellValue::String(t)) => t,
-            (_, CellValue::Number(n)) => crate::py::float_repr(n),
+            (_, CellValue::Number(n)) => crate::text::float_repr(n),
             (_, CellValue::Boolean(b)) => if b { "True" } else { "False" }.into(),
         }
     }
@@ -503,7 +502,7 @@ impl Book {
             Value::Bool(b) => self.m.update_cell_with_bool(s, row, col, *b).map_err(engine),
             Value::Number(n) => self.m.update_cell_with_number(s, row, col, n.as_f64().unwrap_or(0.0)).map_err(engine),
             Value::String(t) => self.m.set_user_input(s, row, col, t.clone()).map_err(engine),
-            other => self.m.set_user_input(s, row, col, crate::py::pystr(other)).map_err(engine),
+            other => self.m.set_user_input(s, row, col, crate::text::pystr(other)).map_err(engine),
         }
     }
 

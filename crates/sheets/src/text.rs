@@ -1,5 +1,6 @@
-//! Text the way the Python plugin writes it (`repr`, `str`, `json.dumps`, `%.10g`), so the
-//! native backend's replies match the Python one's character for character.
+//! How replies spell values: Python's conventions (`repr`, `str`, `json.dumps`, `%.10g`), the
+//! format the tools' replies have had since the backend was a Python plugin (and that models
+//! read well: `'Sheet1'`, `True`, `5.0`), kept so they stay stable.
 
 use serde_json::Value;
 

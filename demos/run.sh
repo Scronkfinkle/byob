@@ -3,8 +3,7 @@
 #
 #   demos/run.sh <demo> [--browser | --serve] [--keep]
 #
-#   <demo>     todo, self-plugin, hooks, env-provider, mcp-app, sheets, sheets-native, fork,
-#              or sheets-compare (runs sheets and sheets-native headlessly, back to back)
+#   <demo>     todo, self-plugin, hooks, env-provider, mcp-app, sheets or fork
 #   (default)  the desktop window
 #   --serve    the desktop window and the browser UI at http://127.0.0.1:7470
 #   --browser  the browser UI only (byob --headless); open the printed URL
@@ -25,14 +24,14 @@ for a in "$@"; do
     --browser) mode=browser ;;
     --serve) mode=serve ;;
     --keep) keep=1 ;;
-    -h | --help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "unknown option $a (try --help)" >&2; exit 2 ;;
     *) demo="$a" ;;
   esac
 done
-[[ -n "$demo" ]] || { echo "usage: demos/run.sh <demo> [--browser | --serve] [--keep]; demos: $DEMO_LIST sheets-compare" >&2; exit 2; }
+[[ -n "$demo" ]] || { echo "usage: demos/run.sh <demo> [--browser | --serve] [--keep]; demos: $DEMO_LIST" >&2; exit 2; }
 
-case " $DEMO_LIST sheets-compare " in *" $demo "*) ;; *) echo "unknown demo $demo; one of: $DEMO_LIST sheets-compare" >&2; exit 2 ;; esac
+case " $DEMO_LIST " in *" $demo "*) ;; *) echo "unknown demo $demo; one of: $DEMO_LIST" >&2; exit 2 ;; esac
 
 # The browser UI is compiled into the release binary from `cargo xtask web`'s output.
 if [[ "$mode" != desktop && ! -f crates/web-assets/assets/index.html ]]; then
@@ -42,10 +41,6 @@ fi
 echo "== building byob (release) ==" >&2
 cargo build --release -q -p byob
 BYOB=target/release/byob
-
-if [[ "$demo" == sheets-compare ]]; then
-  exec bash demos/sheets-compare.sh
-fi
 
 demo_setup "$demo" "$keep"
 if ! curl -s -m 5 -o /dev/null "${DEMO_URL%/}/models"; then

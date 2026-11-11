@@ -1,19 +1,17 @@
-//! byob's spreadsheets as a native plugin backend: the twin of the bundled Python `sheets`
-//! plugin (`crates/bundled/plugins/sheets`), on the same IronCalc engine (the `ironcalc`
-//! crate the Python package wraps, same version), with the same tools, results, lints,
-//! artifact versions, drafts and grid view. The bundled plugin `sheets-native` names it with
-//! `"backend": {"native": "sheets"}`; the app registers [`factory`] under [`ID`].
+//! byob's spreadsheets: the bundled `sheets` plugin's backend, in-process, on the IronCalc
+//! engine: tools to create, describe, read, write, fill, restructure and format sheets, with
+//! lints, artifact versions, drafts and an editable grid view. The plugin's manifest
+//! (`crates/bundled/plugins/sheets`) names it with `"backend": {"native": "sheets"}`; the app
+//! registers [`factory`] under [`ID`].
 //!
 //! It implements [`byob_plugins::native::NativeBackend`], so the engine hosts it like a
-//! process backend (its own thread, restarted after a panic). [`serve_stdio`] runs it as a
-//! JSON-lines process instead (the `byob-sheets-backend` binary), which is how the Python
-//! plugin's test suite and the comparison bench drive both implementations the same way.
+//! process backend (its own thread, restarted after a panic).
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod book;
-pub mod py;
 pub mod refs;
 pub mod store;
+pub mod text;
 pub mod tools;
 pub mod view;
 
@@ -22,8 +20,8 @@ use std::sync::Arc;
 use byob_plugins::native::{NativeBackend, NativeFactory, Outbox};
 use serde_json::{Value, json};
 
-use crate::py::repr_str;
 use crate::store::Store;
+use crate::text::repr_str;
 use crate::tools::Ctx;
 use crate::view::Views;
 
@@ -31,7 +29,7 @@ use crate::view::Views;
 pub const ID: &str = "sheets";
 /// The artifact-site view it draws.
 const VIEW: &str = "sheet";
-/// Artifact views drawn again after changes (the newest ones), as the Python helper.
+/// Artifact views drawn again after changes (the newest ones).
 const MAX_ARTIFACT_KEYS: usize = 16;
 
 /// A problem the model can act on (its text is a plain sentence).
@@ -69,11 +67,6 @@ pub struct Sheets {
 /// Makes a fresh backend (registered as [`ID`]).
 pub fn factory() -> NativeFactory {
     Arc::new(|| Box::new(Sheets::default()) as Box<dyn NativeBackend>)
-}
-
-/// Run it as a JSON-lines process on stdin/stdout.
-pub fn serve_stdio() -> std::io::Result<()> {
-    byob_plugins::native::serve_stdio(Box::new(Sheets::default()))
 }
 
 impl Sheets {
@@ -158,7 +151,7 @@ impl NativeBackend for Sheets {
             }
             "client" => self.refresh(out),
             "web" => {
-                out.fault(&format!("web view {}: nothing handles its messages", ev.get("view").map(py::repr).unwrap_or_default()));
+                out.fault(&format!("web view {}: nothing handles its messages", ev.get("view").map(text::repr).unwrap_or_default()));
                 self.refresh(out);
             }
             _ => {}

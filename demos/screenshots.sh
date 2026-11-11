@@ -15,7 +15,7 @@ logs="$DEMO_ROOT/shot-logs"
 mkdir -p "$out" "$logs"
 export HEADLESS_TIMEOUT="${HEADLESS_TIMEOUT:-900}" BYOB_SETTLE_SECS="${BYOB_SETTLE_SECS:-600}"
 
-ALL="todo todo-settings self-plugin hooks env-provider env-provider-consent mcp-app sheets sheets-native sheets-switch fork-settings fork"
+ALL="todo todo-settings self-plugin hooks env-provider env-provider-consent mcp-app sheets fork-settings fork"
 
 # shot NAME: the demo it belongs to and the extra flags for it.
 shot() {
@@ -32,12 +32,11 @@ shot() {
     env-provider) demo=env-provider; extra=(--auto-approve --send "$(demo_prompts env-provider)") ;;
     env-provider-consent) demo=env-provider; extra=(--send "$(demo_prompts env-provider)") ;;
     mcp-app) demo=mcp-app; extra=(--auto-approve --send "$(demo_prompts mcp-app)" --open-panel plugin-pane:notes/notes) ;;
-    sheets | sheets-native)
-      demo="$name"
+    sheets)
+      demo=sheets
       mapfile -t p < <(demo_prompts sheets)
       extra=(--auto-approve --send "${p[1]}" --window-size 1500x850)
       ;;
-    sheets-switch) demo=sheets-native; extra=(--open-panel plugin:sheets) ;;
     fork-settings) demo=fork; extra=(--open-panel plugin:html-apps) ;;
     fork)
       # Forking always asks a person (even with --auto-approve), so this shot starts from what

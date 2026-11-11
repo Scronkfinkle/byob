@@ -1,6 +1,5 @@
 //! Artifacts on disk (`.byob/artifacts/<id>/artifact.json` + version files, as byob writes
-//! them), what a tool's `sheet` argument names, and the live workbooks in memory (the Python
-//! plugin's `Source`, `resolve`, `Entry`, `artifact_entry` and caches).
+//! them), what a tool's `sheet` argument names, and the live workbooks in memory.
 
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
@@ -11,7 +10,7 @@ use serde_json::Value;
 
 use crate::SheetError;
 use crate::book::{Book, file_format};
-use crate::py::{pystr, repr_str};
+use crate::text::{pystr, repr_str};
 
 pub const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 pub const CSV: &str = "text/csv";
@@ -481,3 +480,4 @@ impl Store {
         }
     }
 }
+

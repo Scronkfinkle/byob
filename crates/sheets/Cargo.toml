@@ -1,6 +1,6 @@
 [package]
 name = "byob-sheets"
-description = "Spreadsheets as a native plugin backend (IronCalc): the in-tree twin of the bundled Python sheets plugin (L4)"
+description = "Spreadsheets as a native plugin backend (IronCalc): the bundled sheets plugin's backend (L4)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,17 +11,11 @@ homepage.workspace = true
 [dependencies]
 byob-plugins.workspace = true
 serde_json.workspace = true
-# The same engine (and version) the Python plugin's `ironcalc==0.9.1` wraps. MIT OR Apache-2.0.
+# The spreadsheet engine. MIT OR Apache-2.0.
 ironcalc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-
-[[bin]]
-# The backend as a JSON-lines process (tests and the comparison bench drive it like the
-# Python one); byob itself runs it in-process.
-name = "byob-sheets-backend"
-path = "src/bin/backend.rs"
 
 [lints]
 workspace = true

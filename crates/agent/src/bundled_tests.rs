@@ -23,15 +23,15 @@ use crate::{EngineConfig, EngineHandle, LocalConnection, Policy};
 const EXEC: &str = "Running code: run_command and run_python run in a sandbox.";
 
 fn natives() -> Natives {
-    Natives::builtin().prompt("exec", |_| EXEC.to_owned())
+    Natives::builtin().prompt("exec", |_| EXEC.to_owned()).backend(byob_sheets::ID, byob_sheets::factory())
 }
 
 /// The bundled plugins byob had before spreadsheets (P5): with them the prompt and tools must
-/// be what they were. `sheets` (and its native twin) add their own (tested in
+/// be what they were. `sheets` adds its own (tested in
 /// `bundled_plugins_load_with_no_files_on_disk` and `native_backend_tests`).
 fn config(home: &Path, bundled: bool) -> PluginsConfig {
     let mut c = config_all(home, bundled);
-    c.bundled.retain(|e| e.id != "sheets" && e.id != "sheets-native");
+    c.bundled.retain(|e| e.id != "sheets");
     c
 }
 
@@ -84,22 +84,14 @@ fn bundled_plugins_load_with_no_files_on_disk() {
             "markdown",
             "prompt",
             "sheets",
-            "sheets-native",
             "subagents",
             "workspace-instructions"
         ]
     );
     for p in &c.infos {
-        // the native spreadsheets twin ships switched off
-        assert_eq!((p.scope, p.origin, p.enabled), (PluginScope::Bundled, PluginOrigin::Bundled, p.id != "sheets-native"), "{}", p.id);
+        assert_eq!((p.scope, p.origin, p.enabled), (PluginScope::Bundled, PluginOrigin::Bundled, true), "{}", p.id);
         assert!(p.problems.is_empty(), "{}: {:?}", p.id, p.problems);
-        if p.id == "sheets" {
-            // It runs code: its files are written out (read-only) and that is its folder.
-            assert!(p.dir.starts_with(&home.path().join("bundled-plugins").display().to_string()), "{}", p.dir);
-            assert!(Path::new(&p.dir).join("backend.py").is_file());
-        } else {
-            assert!(!Path::new(&p.dir).exists(), "{} is in the binary, not at {}", p.id, p.dir);
-        }
+        assert!(!Path::new(&p.dir).exists(), "{} is in the binary, not at {}", p.id, p.dir);
     }
     let sheets = c.infos.iter().find(|p| p.id == "sheets").unwrap();
     assert!(sheets.renderers.iter().all(|r| r.renderer == "view:sheet") && sheets.renderers.len() == 3, "{:?}", sheets.renderers);
