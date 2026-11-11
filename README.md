@@ -2,7 +2,7 @@
 > Heads up: this project, README included, is influenced heavily by AI agents. If LLM-flavoured
 > prose isn't your thing, fair warning. Human-written docs will come once things settle.
 
-# byob — bring your own brain
+# bring your own brain
 
 **A native desktop AI coworker for the model you already run.** Point byob at any
 OpenAI-compatible endpoint (llama-server, Ollama, LM Studio, vLLM or a hosted API) and it works
