@@ -133,7 +133,7 @@ impl ArtifactRenderers {
                 self.from_plugins.entry(d.content_type.to_ascii_lowercase()).or_insert(None);
             }
         }
-        for p in plugins.iter().filter(|p| p.enabled && p.shadowed_by.is_none()) {
+        for p in plugins.iter().filter(|p| p.enabled && p.in_use()) {
             for d in &p.renderers {
                 let renderer = if let Some(file) = d.renderer.strip_prefix("web:").map(str::trim).filter(|f| !f.is_empty()) {
                     // `web:<file>`: the plugin's own page draws it, on a web surface.

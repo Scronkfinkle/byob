@@ -27,6 +27,8 @@ image.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 byob-exec.workspace = true
+# native_backend_tests: the native sheets backend in a real engine (dev only: layers allow it)
+byob-sheets.workspace = true
 
 [lints]
 workspace = true

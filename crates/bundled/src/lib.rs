@@ -58,6 +58,7 @@ mod tests {
                 "markdown",
                 "prompt",
                 "sheets",
+                "sheets-native",
                 "subagents",
                 "workspace-instructions"
             ]

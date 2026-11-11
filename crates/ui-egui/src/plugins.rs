@@ -81,7 +81,7 @@ impl PluginsUi {
     /// Prompt suggestions for an empty chat: the starters of switched-on plugins (at most 6).
     pub fn starters(&self) -> Vec<byob_protocol::StarterDecl> {
         let Some(e) = self.ext.as_ref() else { return Vec::new() };
-        e.plugins.iter().filter(|p| p.enabled && p.shadowed_by.is_none()).flat_map(|p| p.starters.iter().cloned()).take(6).collect()
+        e.plugins.iter().filter(|p| p.enabled && p.in_use()).flat_map(|p| p.starters.iter().cloned()).take(6).collect()
     }
 
     /// What the composer's `/` menu offers.
@@ -365,6 +365,8 @@ impl PluginsUi {
                 }
                 if let Some(by) = p.shadowed_by {
                     ui.label(RichText::new(format!("replaced by the copy in {}", by.label())).small().color(t.text_faint));
+                } else if let Some(winner) = &p.superseded_by {
+                    self.superseded_note(ui, t, p, winner, switch_at.as_ref());
                 } else if p.origin == PluginOrigin::Repo && !p.trusted {
                     let text = if p.declined { "code off" } else { "waiting for your OK" };
                     ui.label(RichText::new(text).small().color(t.warning));
@@ -373,6 +375,22 @@ impl PluginsUi {
                 }
             })
             .body(|ui| self.plugin_details(ui, t, p, workspace));
+    }
+
+    /// On a switched-on plugin another one supersedes (both `provides` the same thing): which
+    /// is used, and a button that switches over to this one.
+    fn superseded_note(&mut self, ui: &mut egui::Ui, t: &Tokens, p: &PluginInfo, winner: &str, at: Option<&ConfigScope>) {
+        let winner_name =
+            self.ext.as_ref().and_then(|e| e.plugins.iter().find(|q| q.id == winner && q.in_use())).map_or_else(|| winner.to_owned(), |q| q.name.clone());
+        ui.label(RichText::new(format!("not used: {winner_name} is")).small().color(t.warning)).on_hover_text(format!(
+            "Both provide the same thing; only one is used. {winner_name} wins (a more specific scope, or switched on in settings, then by id)."
+        ));
+        if let Some(scope) = at.cloned()
+            && ui.small_button("Use this one").on_hover_text(format!("Switch {winner_name} off and use {} instead", p.name)).clicked()
+        {
+            self.out.push(ClientMsg::SetPluginEnabled { scope: scope.clone(), plugin: winner.to_owned(), enabled: Some(false) });
+            self.out.push(ClientMsg::SetPluginEnabled { scope, plugin: p.id.clone(), enabled: Some(true) });
+        }
     }
 
     fn plugin_details(&mut self, ui: &mut egui::Ui, t: &Tokens, p: &PluginInfo, workspace: Option<&str>) {

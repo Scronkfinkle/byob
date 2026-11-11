@@ -51,6 +51,11 @@ pub struct Manifest {
     pub views: Vec<ManifestView>,
     /// Can't be switched off (`locked`; honoured for bundled plugins and their forks).
     pub locked: bool,
+    /// On until someone switches it (`"enabled": false` ships it switched off).
+    pub on_by_default: bool,
+    /// What it offers that another plugin may offer too (`provides`, e.g. `"spreadsheets"`):
+    /// of the switched-on plugins providing the same thing only one is used.
+    pub provides: Option<String>,
     /// Artifact content types it adds (`artifact_types`, also `content_types`).
     pub artifact_types: Vec<ManifestArtifactType>,
     /// Which renderer draws a content type on clients (`renderers`).
@@ -201,6 +206,9 @@ pub enum BackendRun {
     Python(String),
     /// Any program (on `PATH`, or relative to the plugin folder), run in the plugin folder.
     Command(String),
+    /// In-tree Rust registered by id (`{"native": "sheets"}`), run in byob's own process on
+    /// a thread of its own ([`crate::native`]).
+    Native(String),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -539,6 +547,11 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
         requirements,
         views,
         locked: r.get("locked") == Some(&Value::Bool(true)),
+        on_by_default: r.get("enabled") != Some(&Value::Bool(false)),
+        provides: match opt_str(r.get("provides"), "provides")?.map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()) {
+            Some(p) if !plugin_id_ok(&p) => return Err("provides must be lowercase letters, digits and dashes, like \"spreadsheets\"".into()),
+            p => p,
+        },
         artifact_types: parse_artifact_types(r.get("artifact_types").or_else(|| r.get("content_types")))?,
         renderers,
         system_prompt: parse_prompt_source(r.get("system_prompt"))?,
@@ -831,10 +844,11 @@ fn parse_backend(v: Option<&Value>) -> R<Option<BackendDecl>> {
         Some(Value::String(s)) => return Ok(Some(BackendDecl { run: script(s.trim().to_string())?, args: Vec::new(), events: Vec::new() })),
         Some(v) => obj(v, f)?,
     };
-    let run = match (o.get("run"), o.get("command")) {
-        (Some(r), None) => script(req_str(Some(r), &format!("{f}.run"))?)?,
-        (None, Some(c)) => BackendRun::Command(req_str(Some(c), &format!("{f}.command"))?),
-        _ => return Err(format!("{f} needs \"run\" (a Python script) or \"command\" (a program), one of them")),
+    let run = match (o.get("run"), o.get("command"), o.get("native")) {
+        (Some(r), None, None) => script(req_str(Some(r), &format!("{f}.run"))?)?,
+        (None, Some(c), None) => BackendRun::Command(req_str(Some(c), &format!("{f}.command"))?),
+        (None, None, Some(n)) => BackendRun::Native(req_str(Some(n), &format!("{f}.native"))?),
+        _ => return Err(format!("{f} needs \"run\" (a Python script), \"command\" (a program) or \"native\" (a backend built into byob), one of them")),
     };
     let strings = |key: &str| -> R<Vec<String>> {
         list(o.get(key), &format!("{f}.{key}"))?
@@ -1126,7 +1140,11 @@ mod tests {
             ),
             (
                 json!({"id": "a", "name": "x", "backend": {"run": "b.py", "command": "node"}}),
-                "byob-plugin.json: backend needs \"run\" (a Python script) or \"command\" (a program), one of them",
+                "byob-plugin.json: backend needs \"run\" (a Python script), \"command\" (a program) or \"native\" (a backend built into byob), one of them",
+            ),
+            (
+                json!({"id": "a", "name": "x", "provides": "Spread Sheets"}),
+                "byob-plugin.json: provides must be lowercase letters, digits and dashes, like \"spreadsheets\"",
             ),
             (
                 json!({"id": "a", "name": "x", "backend": {"run": "b.py", "events": ["tick"]}}),
@@ -1140,6 +1158,16 @@ mod tests {
         for (raw, want) in cases {
             assert_eq!(parse_user(raw.clone()).unwrap_err(), want, "for {raw}");
         }
+    }
+
+    #[test]
+    fn native_backends_default_switches_and_provides() {
+        let m = parse_user(json!({"id": "a", "name": "x", "backend": {"native": "sheets"}, "enabled": false, "provides": "spreadsheets"})).unwrap();
+        assert_eq!(m.backend.unwrap().run, BackendRun::Native("sheets".into()));
+        assert!(!m.on_by_default);
+        assert_eq!(m.provides.as_deref(), Some("spreadsheets"));
+        let m = parse_user(json!({"id": "a", "name": "x"})).unwrap();
+        assert!(m.on_by_default && m.provides.is_none());
     }
 
     #[test]

@@ -200,6 +200,19 @@ pub struct PluginInfo {
     /// Prompt suggestions for an empty chat (13.4+).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub starters: Vec<StarterDecl>,
+    /// Switched on, but another switched-on plugin providing the same thing (its id) is used
+    /// instead (13.7+; manifest `provides`): this one contributes nothing until one of them
+    /// is switched off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+}
+
+impl PluginInfo {
+    /// This copy is the one in use when switched on: not shadowed by a more specific copy,
+    /// not superseded by another plugin providing the same thing.
+    pub fn in_use(&self) -> bool {
+        self.shadowed_by.is_none() && self.superseded_by.is_none()
+    }
 }
 
 /// A plugin's renderer for one content type: `renderer` is `web` (the web surface), `text`
@@ -432,6 +445,7 @@ mod tests {
             locked: false,
             renderers: vec![],
             starters: vec![],
+            superseded_by: None,
         }
     }
 

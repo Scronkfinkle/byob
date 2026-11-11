@@ -18,6 +18,8 @@
 //!   makes per turn (`delegate`, which needs the turn's agents and models).
 //! - **environment providers** (`environments[].native`): `nix`, `pixi`, `mise`, `container`
 //!   (`byob_exec::env::NATIVE_PROVIDERS`, [`Natives::environments`]).
+//! - **backends** (`"backend": {"native": id}`): a plugin backend in byob's process
+//!   ([`Natives::backends`], `byob_plugins::native`), hosted like a process backend.
 //!
 //! Clients resolve `renderers[].renderer` (`native:<id>`, `web`) against their own registry
 //! (`byob_ui_egui::renderers::ArtifactRenderers`). An id nobody registered is a problem of the
@@ -29,6 +31,7 @@ use std::sync::Arc;
 
 use crate::hooks::{Event, NativeHook, NativeHookReg, PromptPart};
 
+use byob_plugins::native::NativeFactory;
 use byob_tools::{ArtifactTypes, Tool};
 
 /// Makes a tool for a chat's artifact types.
@@ -51,6 +54,9 @@ pub struct Natives {
     pub turn_tools: BTreeSet<String>,
     /// Workspace environment providers built into byob, by id.
     pub environments: BTreeSet<String>,
+    /// Plugin backends in-tree Rust implements (`"backend": {"native": id}`, see
+    /// `byob_plugins::native`), by id.
+    pub backends: BTreeMap<String, NativeFactory>,
 }
 
 impl Natives {
@@ -93,6 +99,12 @@ impl Natives {
     /// Add (or replace) hook `id`; `defaults` is where it runs while no plugin names it.
     pub fn hook(mut self, id: &str, hook: Arc<dyn NativeHook>, defaults: &[(Event, i64)]) -> Self {
         self.hooks.insert(id.to_owned(), NativeHookReg { hook, defaults: defaults.to_vec() });
+        self
+    }
+
+    /// Add (or replace) native backend `id` (a manifest's `"backend": {"native": id}`).
+    pub fn backend(mut self, id: &str, make: NativeFactory) -> Self {
+        self.backends.insert(id.to_owned(), make);
         self
     }
 

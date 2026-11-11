@@ -21,6 +21,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("byob-exec", 3),
     ("byob-plugins", 3),
     ("byob-agent", 4),
+    // the native sheets backend: engine-side, registered by the app (never in the UI or wasm)
+    ("byob-sheets", 4),
     ("byob-server", 5),
     ("byob-ui-egui", 5),
     ("byob", 6),

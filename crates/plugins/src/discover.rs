@@ -163,7 +163,9 @@ pub fn load_embedded(e: &Embedded, materialize_to: Option<&Path>) -> Result<Plug
             _ => None,
         })
         .collect();
-    let runs = !scripts.is_empty() || manifest.backend.is_some();
+    // a native backend is in-tree code: it needs no files on disk
+    let process_backend = manifest.backend.as_ref().is_some_and(|b| !matches!(b.run, crate::manifest::BackendRun::Native(_)));
+    let runs = !scripts.is_empty() || process_backend;
     let on_disk = match materialize_to {
         Some(root) if runs => match crate::materialize::materialize(root, &e.id, env!("CARGO_PKG_VERSION"), &e.files) {
             Ok(d) => Some(d),
@@ -192,7 +194,7 @@ pub fn load_embedded(e: &Embedded, materialize_to: Option<&Path>) -> Result<Plug
             for run in &scripts {
                 problems.push(format!("{MANIFEST}: {run}: scripts of built-in plugins don't run here; fork the plugin to use them"));
             }
-            if manifest.backend.is_some() {
+            if process_backend {
                 problems.push(format!("{MANIFEST}: this byob has nowhere to put built-in plugins' code, so the backend can't run; fork the plugin to use one"));
             }
         }

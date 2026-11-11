@@ -36,6 +36,7 @@ pub(crate) fn info(id: &str, scope: PluginScope, origin: PluginOrigin) -> Plugin
         locked: false,
         renderers: vec![],
         starters: vec![],
+        superseded_by: None,
     }
 }
 

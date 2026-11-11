@@ -526,6 +526,7 @@ impl Extensions {
         // Bundled plugins marked locked stay on, and so do their forks (by id).
         let locked: BTreeSet<String> = bundled.found.plugins.iter().filter(|p| p.manifest.locked).map(|p| p.id().to_owned()).collect();
         let mut native = NativeParts::new(&order, bundled);
+        let superseded = superseded(&order, &locked, input);
         let mut winners: BTreeMap<String, PluginScope> = BTreeMap::new();
         let mut prompt_lines = Vec::new();
         let mut skills: Vec<Skill> = Vec::new();
@@ -552,7 +553,8 @@ impl Extensions {
                 winners.insert(id.clone(), set.scope);
                 let (_, trusted, _) = origin_of(plugin, set.scope, input.trust);
                 let is_locked = locked.contains(&id);
-                let on = is_locked || input.effective.plugin_on(&id).value;
+                let superseded_by = superseded.get(&id).cloned();
+                let on = (is_locked || switch_of(plugin, input).value) && superseded_by.is_none();
                 let mut tool_names = Vec::new();
                 let mut servers = Vec::new();
                 let mut native_problems = Vec::new();
@@ -599,6 +601,7 @@ impl Extensions {
                     if let (Some(decl), Some(sink)) = (&plugin.manifest.backend, sink.as_ref()) {
                         let make = Make {
                             plugin,
+                            native: native_backend(decl, &cfg.natives, &mut native_problems),
                             decl,
                             scope: set.scope,
                             chat: input.chat,
@@ -689,6 +692,7 @@ impl Extensions {
                 info.problems.extend(native_problems);
                 info.locked = is_locked;
                 info.enabled |= is_locked;
+                info.superseded_by = superseded_by;
                 out.infos.push(info);
             }
         }
@@ -1088,7 +1092,7 @@ fn info(plugin: &Plugin, scope: PluginScope, input: &ComposeIn<'_>, tools: &[Str
     let (origin, trusted, declined) = origin_of(plugin, scope, input.trust);
     let empty = BTreeMap::new();
     let values = input.values.get(plugin.id()).unwrap_or(&empty);
-    let switch = input.effective.plugin_on(plugin.id());
+    let switch = switch_of(plugin, input);
     let mut problems = plugin.problems.clone();
     let missing = PluginRef::missing_settings(plugin, values);
     if !missing.is_empty() {
@@ -1142,6 +1146,7 @@ fn info(plugin: &Plugin, scope: PluginScope, input: &ComposeIn<'_>, tools: &[Str
             locked: false,
             renderers: m.renderers.iter().map(|r| RendererDecl { content_type: r.content_type.clone(), renderer: r.renderer.clone() }).collect(),
             starters: m.starters.iter().map(|s| StarterDecl { title: s.title.clone(), prompt: s.prompt.clone() }).collect(),
+            superseded_by: None,
         }
     }
 }
@@ -1186,6 +1191,55 @@ pub(crate) fn agents_md(ws: &Path) -> Option<String> {
     }
     let text = text.trim();
     (!text.is_empty()).then(|| format!("## Workspace instructions (AGENTS.md)\n{text}"))
+}
+
+/// A native backend's factory (`"backend": {"native": id}`); an id nobody registered is a
+/// problem of the plugin.
+fn native_backend(decl: &byob_plugins::manifest::BackendDecl, natives: &Natives, problems: &mut Vec<String>) -> Option<byob_plugins::native::NativeFactory> {
+    let byob_plugins::manifest::BackendRun::Native(n) = &decl.run else { return None };
+    let f = natives.backends.get(n).cloned();
+    if f.is_none() {
+        problems.push(format!("backend: \"{n}\" isn't a backend built into this byob"));
+    }
+    f
+}
+
+/// A plugin's switch: the settings' (global → workspace → chat), else its manifest default
+/// (`"enabled": false` ships it off).
+fn switch_of(plugin: &Plugin, input: &ComposeIn<'_>) -> byob_types::config::Sourced<bool> {
+    let s = input.effective.plugin_on(plugin.id());
+    if s.from == byob_types::config::Level::Default { byob_types::config::Sourced { value: plugin.manifest.on_by_default, from: s.from } } else { s }
+}
+
+/// Switched-on plugins that `provides` the same thing as another switched-on one that wins:
+/// loser id → winner id. The winner: the more specific scope; then the one switched on in
+/// settings over one on by default; then the smaller id. Deterministic for given settings.
+fn superseded(order: &[&ExtSet], locked: &BTreeSet<String>, input: &ComposeIn<'_>) -> BTreeMap<String, String> {
+    let mut seen = BTreeSet::new();
+    // provides → [(rank, default-on, id)]
+    let mut groups: BTreeMap<String, Vec<(usize, bool, String)>> = BTreeMap::new();
+    for (rank, set) in order.iter().enumerate() {
+        for p in set.found.active() {
+            if !seen.insert(p.id().to_owned()) {
+                continue; // a shadowed copy
+            }
+            let Some(what) = &p.manifest.provides else { continue };
+            let s = switch_of(p, input);
+            if locked.contains(p.id()) || s.value {
+                groups.entry(what.clone()).or_default().push((rank, s.from == byob_types::config::Level::Default, p.id().to_owned()));
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (_, mut list) in groups {
+        list.sort();
+        let mut it = list.into_iter();
+        let Some((_, _, winner)) = it.next() else { continue };
+        for (_, _, id) in it {
+            out.insert(id, winner.clone());
+        }
+    }
+    out
 }
 
 /// Precedence of a plugin's hooks among those of the same priority (chat first).

@@ -636,6 +636,7 @@ fn new_info(id: &str, dir: &Path) -> PluginInfo {
         locked: false,
         renderers: Vec::new(),
         starters: Vec::new(),
+        superseded_by: None,
     }
 }
 
@@ -672,6 +673,9 @@ fn describe(p: &PluginInfo, detail: bool, bundled: &std::collections::BTreeMap<S
     let state = match (p.shadowed_by, p.enabled, p.trusted) {
         (Some(s), _, _) => format!("not used: the copy in {} wins", s.label()),
         (None, false, _) => format!("switched off ({})", p.enabled_from.label()),
+        (None, true, _) if p.superseded_by.is_some() => {
+            format!("switched on but not used: {} provides the same and wins; switch one of them off", p.superseded_by.as_deref().unwrap_or_default())
+        }
         (None, true, false) if p.declined => "its code is off: the user declined it".into(),
         (None, true, false) => "its code waits for the user's OK (it came with the workspace)".into(),
         (None, true, true) if p.locked => "on (part of byob's core: always on)".into(),

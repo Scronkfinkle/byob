@@ -27,10 +27,11 @@ fn natives() -> Natives {
 }
 
 /// The bundled plugins byob had before spreadsheets (P5): with them the prompt and tools must
-/// be what they were. `sheets` adds its own (tested in `all_bundled_plugins_load`).
+/// be what they were. `sheets` (and its native twin) add their own (tested in
+/// `bundled_plugins_load_with_no_files_on_disk` and `native_backend_tests`).
 fn config(home: &Path, bundled: bool) -> PluginsConfig {
     let mut c = config_all(home, bundled);
-    c.bundled.retain(|e| e.id != "sheets");
+    c.bundled.retain(|e| e.id != "sheets" && e.id != "sheets-native");
     c
 }
 
@@ -83,12 +84,14 @@ fn bundled_plugins_load_with_no_files_on_disk() {
             "markdown",
             "prompt",
             "sheets",
+            "sheets-native",
             "subagents",
             "workspace-instructions"
         ]
     );
     for p in &c.infos {
-        assert_eq!((p.scope, p.origin, p.enabled), (PluginScope::Bundled, PluginOrigin::Bundled, true), "{}", p.id);
+        // the native spreadsheets twin ships switched off
+        assert_eq!((p.scope, p.origin, p.enabled), (PluginScope::Bundled, PluginOrigin::Bundled, p.id != "sheets-native"), "{}", p.id);
         assert!(p.problems.is_empty(), "{}: {:?}", p.id, p.problems);
         if p.id == "sheets" {
             // It runs code: its files are written out (read-only) and that is its folder.

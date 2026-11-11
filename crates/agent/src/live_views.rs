@@ -110,7 +110,7 @@ impl Engine {
         let chat = self.client_chat(id);
         let none = || format!("no plugin {:?} in this chat", r.plugin);
         let c = self.compose_for(chat.as_deref(), Some(id), false).ok_or_else(none)?;
-        let info = c.infos.iter().find(|p| p.id == r.plugin && p.shadowed_by.is_none()).ok_or_else(none)?;
+        let info = c.infos.iter().find(|p| p.id == r.plugin && p.in_use()).ok_or_else(none)?;
         let Some(decl) = info.views.iter().find(|v| v.id == r.view) else {
             let ids: Vec<&str> = info.views.iter().map(|v| v.id.as_str()).collect();
             return Err(format!("plugin {} has no view {:?} (its views: {})", r.plugin, r.view, if ids.is_empty() { "none".into() } else { ids.join(", ") }));

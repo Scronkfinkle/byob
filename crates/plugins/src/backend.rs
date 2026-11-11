@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 
 use crate::PluginRef;
 use crate::manifest::{ManifestTool, path_inside};
+use crate::native::{NativeBackend, Outbox, dispatch, panic_text};
 
 /// The wire format's version (`init.v`).
 pub const WIRE_VERSION: u32 = 1;
@@ -66,7 +67,19 @@ pub struct Launch {
     pub remove_env: Vec<String>,
 }
 
-pub type Prepare = Box<dyn Fn() -> Result<Launch, String> + Send + Sync>;
+/// What a backend runs as: a process, or in-tree code on a thread ([`crate::native`]).
+pub enum Start {
+    Process(Launch),
+    Native(Box<dyn NativeBackend>),
+}
+
+impl From<Launch> for Start {
+    fn from(l: Launch) -> Self {
+        Self::Process(l)
+    }
+}
+
+pub type Prepare = Box<dyn Fn() -> Result<Start, String> + Send + Sync>;
 
 /// What a backend says that isn't a reply, and its lifecycle.
 #[derive(Debug, Clone, PartialEq)]
@@ -385,18 +398,27 @@ fn begin_start(shared: &Arc<Shared>, g: &mut Inner) {
     guarded("byob-backend-start", move || start_now(&shared));
 }
 
+/// What [`start_now`] got going.
+enum Running {
+    Process(Spawned),
+    Native(Box<dyn NativeBackend>),
+}
+
 fn start_now(shared: &Arc<Shared>) {
-    let spawned = catch_unwind(AssertUnwindSafe(|| (shared.prepare)())).unwrap_or_else(|_| Err("preparing the backend crashed".into())).and_then(|l| spawn(&l));
+    let spawned = catch_unwind(AssertUnwindSafe(|| (shared.prepare)())).unwrap_or_else(|_| Err("preparing the backend crashed".into())).and_then(|s| match s {
+        Start::Process(l) => spawn(&l).map(Running::Process),
+        Start::Native(n) => Ok(Running::Native(n)),
+    });
     let mut g = shared.lock();
     if g.phase != Phase::Starting {
         // stopped while it started
-        if let Ok((child, ..)) = spawned {
+        if let Ok(Running::Process((child, ..))) = spawned {
             drop(g);
             reap(child, Duration::ZERO);
         }
         return;
     }
-    let (child, stdin, stdout, stderr) = match spawned {
+    let running = match spawned {
         Ok(parts) => parts,
         Err(e) => {
             g.phase = Phase::Failed;
@@ -425,12 +447,26 @@ fn start_now(shared: &Arc<Shared>) {
         let _ = tx.send(line);
     }
     g.writer = Some(tx);
-    g.pid = Some(child.id());
-    g.child = Some(child);
     g.phase = Phase::Running;
     g.starts = g.starts.saturating_add(1);
     g.started_at = Some(Instant::now());
     g.error = None;
+    let (child, stdin, stdout, stderr) = match running {
+        Running::Process(parts) => parts,
+        Running::Native(backend) => {
+            drop(g);
+            log::info!("plugin {}: native backend started", shared.plugin);
+            let s = Arc::clone(shared);
+            guarded("byob-backend-native", move || {
+                let how = native_loop(&s, backend, &rx);
+                exited(&s, generation, Some(how));
+            });
+            (shared.sink)(Out::Started);
+            return;
+        }
+    };
+    g.pid = Some(child.id());
+    g.child = Some(child);
     drop(g);
     log::info!("plugin {}: backend started", shared.plugin);
     guarded("byob-backend-in", move || write_loop(stdin, &rx));
@@ -442,7 +478,7 @@ fn start_now(shared: &Arc<Shared>) {
         if read.is_err() {
             log::error!("plugin {}: the backend reader crashed", s.plugin);
         }
-        exited(&s, generation);
+        exited(&s, generation, None);
     });
     (shared.sink)(Out::Started);
 }
@@ -464,6 +500,35 @@ fn spawn(l: &Launch) -> Result<Spawned, String> {
             Err("no pipes to the backend".into())
         }
     }
+}
+
+/// Run a native backend on the lines byob sends until `shutdown` (or the channel closes on
+/// a stop), each call under `catch_unwind`; returns how it ended. Its messages go through
+/// the same handling as a process's stdout lines.
+fn native_loop(shared: &Arc<Shared>, mut backend: Box<dyn NativeBackend>, rx: &Receiver<Vec<u8>>) -> String {
+    let s = Arc::clone(shared);
+    let out = Outbox::new(move |msg: Value| {
+        let size = serde_json::to_vec(&msg).map_or(0, |v| v.len());
+        if size > MAX_LINE {
+            fault(&s, format!("a message over {MAX_LINE} bytes was dropped"));
+        } else if msg.is_object() {
+            handle_msg(&s, msg);
+        }
+    });
+    for line in rx {
+        let Ok(msg) = serde_json::from_slice::<Value>(&line) else { continue };
+        match catch_unwind(AssertUnwindSafe(|| dispatch(backend.as_mut(), &msg, &out))) {
+            Ok(true) => {}
+            Ok(false) => return "it shut down".into(),
+            Err(p) => {
+                let text = panic_text(p.as_ref());
+                shared.lock().stderr.push(format!("(panic) {text}\n").as_bytes());
+                fault(shared, format!("the native backend panicked: {text}"));
+                return format!("it panicked: {text}");
+            }
+        }
+    }
+    "it ended".into()
 }
 
 fn write_loop(mut stdin: ChildStdin, rx: &Receiver<Vec<u8>>) {
@@ -526,6 +591,11 @@ fn handle_line(shared: &Shared, line: &[u8]) {
             return;
         }
     };
+    handle_msg(shared, msg);
+}
+
+/// One message from the backend (a process's line, or a native backend's [`Outbox`]).
+fn handle_msg(shared: &Shared, msg: Value) {
     let kind = msg.get("type").and_then(Value::as_str).unwrap_or_default();
     match kind {
         "reply" => {
@@ -570,7 +640,8 @@ fn handle_line(shared: &Shared, line: &[u8]) {
     }
 }
 
-fn exited(shared: &Arc<Shared>, generation: u64) {
+/// The backend of `generation` ended: `how` for a native one (else its process is reaped).
+fn exited(shared: &Arc<Shared>, generation: u64, how: Option<String>) {
     let child = {
         let mut g = shared.lock();
         if g.generation != generation || g.phase != Phase::Running {
@@ -580,7 +651,11 @@ fn exited(shared: &Arc<Shared>, generation: u64) {
         g.pid = None;
         g.child.take()
     };
-    let how = child.map_or_else(|| "it ended".to_owned(), |c| reap(c, Duration::from_secs(2)));
+    let how = match (how, child) {
+        (Some(how), _) => how,
+        (None, Some(c)) => reap(c, Duration::from_secs(2)),
+        (None, None) => "it ended".to_owned(),
+    };
     let mut g = shared.lock();
     if g.generation != generation || g.phase != Phase::Running {
         return;

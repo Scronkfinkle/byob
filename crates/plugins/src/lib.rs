@@ -26,6 +26,7 @@ pub mod manifest;
 pub mod materialize;
 pub mod mcp;
 pub mod names;
+pub mod native;
 pub mod pyenv;
 pub mod python;
 pub mod skills;

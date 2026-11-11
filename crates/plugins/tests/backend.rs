@@ -43,7 +43,7 @@ fn start(f: &Fixture, events: &[&str]) -> (Backend, Receiver<Out>) {
         let p = py.python()?;
         let mut argv = p.program;
         argv.push("backend.py".into());
-        Ok(Launch { argv, cwd: cwd.clone(), env: p.env, remove_env: vec!["BYOB_API_KEY".into()] })
+        Ok(Launch { argv, cwd: cwd.clone(), env: p.env, remove_env: vec!["BYOB_API_KEY".into()] }.into())
     });
     let events: Vec<String> = events.iter().map(|s| (*s).to_owned()).collect();
     (Backend::new("demo", json!({"type": "init", "v": 1, "plugin": "demo", "settings": {"CITY": "Oslo"}}), &events, prepare, sink), rx)
@@ -297,7 +297,7 @@ fn requirements_get_a_cached_venv_used_by_the_backend() {
     let prepare = Box::new(move || {
         let mut argv = p.program.clone();
         argv.push("backend.py".into());
-        Ok(Launch { argv, cwd: cwd.clone(), env: p.env.clone(), remove_env: vec![] })
+        Ok(Launch { argv, cwd: cwd.clone(), env: p.env.clone(), remove_env: vec![] }.into())
     });
     let b = Backend::new("venv", json!({"type": "init"}), &[], prepare, Arc::new(|_| {}));
     assert_eq!(b.request("tool", json!({"name": "answer"}), Duration::from_secs(20), &|| false).unwrap(), json!("42"));

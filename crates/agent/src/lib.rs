@@ -50,6 +50,8 @@ mod limits;
 mod live_views;
 #[cfg(test)]
 mod loop_tests;
+#[cfg(test)]
+mod native_backend_tests;
 pub mod natives;
 pub mod permissions;
 mod plugins;

@@ -110,7 +110,7 @@ impl Sites {
         self.declared = e
             .plugins
             .iter()
-            .filter(|p| p.shadowed_by.is_none() && p.enabled && p.trusted)
+            .filter(|p| p.in_use() && p.enabled && p.trusted)
             .flat_map(|p| {
                 // Tree views need the backend; web views (`html`) run without one.
                 let backend = p.backend.as_ref().is_some_and(|b| b.state != "off");

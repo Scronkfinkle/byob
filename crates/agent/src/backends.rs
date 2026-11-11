@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use byob_plugins::backend::{Backend, CAPS, Launch, Out, Phase, Sink, WIRE_VERSION};
+use byob_plugins::backend::{Backend, CAPS, Launch, Out, Phase, Sink, Start, WIRE_VERSION};
 use byob_plugins::manifest::{BACKEND_EVENTS, BackendDecl, BackendRun};
+use byob_plugins::native::NativeFactory;
 use byob_plugins::{Plugin, PluginPython, PluginRef};
 use byob_protocol::{BackendInfo, NoticeLevel, PluginScope, ServerMsg};
 use serde_json::{Value, json};
@@ -48,6 +49,8 @@ pub(crate) struct Backends {
 /// What [`Backends::ensure`] needs to make one.
 pub(crate) struct Make<'a> {
     pub plugin: &'a Plugin,
+    /// A native backend's factory (`"backend": {"native": id}`; `None` if nobody registered it).
+    pub native: Option<NativeFactory>,
     pub decl: &'a BackendDecl,
     pub scope: PluginScope,
     pub chat: Option<&'a str>,
@@ -172,7 +175,12 @@ fn make(m: &Make<'_>) -> Backend {
     let python = m.python.clone();
     // absolute: it is also the working folder, so a relative one (--plugin DIR) would resolve twice
     let prepare_dir = std::path::absolute(&dir).unwrap_or_else(|_| dir.clone());
+    let native = m.native.clone();
     let prepare = Box::new(move || {
+        if let BackendRun::Native(id) = &decl.run {
+            // in-tree code: nothing to prepare, a fresh one on every (re)start
+            return native.as_ref().map(|make| Start::Native(make())).ok_or_else(|| format!("\"{id}\" isn't a backend built into this byob"));
+        }
         let mut env = env.clone();
         let mut argv = match &decl.run {
             BackendRun::Python(script) => {
@@ -186,6 +194,7 @@ fn make(m: &Make<'_>) -> Backend {
                 argv.push(file.into_os_string());
                 argv
             }
+            BackendRun::Native(_) => Vec::new(),
             BackendRun::Command(cmd) => {
                 // byob's helper is on PYTHONPATH for Python run any other way too
                 if let Ok(py) = python.python() {
@@ -198,7 +207,7 @@ fn make(m: &Make<'_>) -> Backend {
             }
         };
         argv.extend(decl.args.iter().map(Into::into));
-        Ok(Launch { argv, cwd: prepare_dir.clone(), env, remove_env: vec!["BYOB_API_KEY".into()] })
+        Ok(Launch { argv, cwd: prepare_dir.clone(), env, remove_env: vec!["BYOB_API_KEY".into()] }.into())
     });
     let sink = (m.sink)(&dir, plugin.id());
     Backend::new(plugin.id(), init, &m.decl.events, prepare, sink)
@@ -353,7 +362,7 @@ impl Engine {
     pub(crate) fn backend_message(&mut self, client: ClientId, plugin: &str, msg: Value) -> Result<(), String> {
         let chat = self.client_chat(client);
         let Some(c) = self.compose_for(chat.as_deref(), Some(client), false) else { return Err(format!("no plugin {plugin:?} takes messages in this engine")) };
-        let Some(info) = c.infos.iter().find(|p| p.id == plugin && p.shadowed_by.is_none()) else {
+        let Some(info) = c.infos.iter().find(|p| p.id == plugin && p.in_use()) else {
             return Err(format!("no plugin {plugin:?} takes messages in this engine"));
         };
         let dir = PathBuf::from(&info.dir);

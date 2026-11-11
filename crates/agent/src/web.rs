@@ -288,7 +288,7 @@ impl Engine {
         let Some(c) = self.compose_for(chat.as_deref(), Some(client), false) else {
             return self.send_to(client, reply(call, Err(WebError::new(REFUSED, "plugins are turned off"))));
         };
-        let Some(info) = c.infos.iter().find(|p| p.id == *plugin && p.shadowed_by.is_none() && p.enabled && p.trusted) else {
+        let Some(info) = c.infos.iter().find(|p| p.id == *plugin && p.in_use() && p.enabled && p.trusted) else {
             return self.send_to(client, reply(call, Err(WebError::new(REFUSED, format!("plugin {plugin} isn't switched on here")))));
         };
         let dir = PathBuf::from(&info.dir);

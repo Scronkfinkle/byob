@@ -5,6 +5,8 @@ Run (with a Python that has ironcalc, or the ironcalc tests are skipped):
     python3 -B -m unittest discover -s crates/bundled/sheets_tests -v
     BYOB_SHEETS_PYTHON=/path/to/venv/bin/python python3 -B -m unittest ...  (the backend's Python)
 BYOB_SHEETS_BENCH=1 also prints timings (recalc, view drawing, xlsx save).
+BYOB_SHEETS_BACKEND=/path/to/byob-sheets-backend runs the same tests against the native
+twin (crates/sheets, the `sheets-native` plugin) instead of backend.py.
 """
 
 import json
@@ -23,11 +25,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 PLUGIN = os.path.join(ROOT, "crates", "bundled", "plugins", "sheets")
 HELPER = os.path.join(ROOT, "crates", "plugins", "src")
 PYTHON = os.environ.get("BYOB_SHEETS_PYTHON") or sys.executable
+NATIVE = os.environ.get("BYOB_SHEETS_BACKEND")  # the native backend's binary, if testing that
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 TYPES = {".xlsx": XLSX, ".csv": "text/csv", ".tsv": "text/tab-separated-values"}
 
 
 def _has_ironcalc():
+    if NATIVE:
+        return True
     try:
         r = subprocess.run([PYTHON, "-B", "-c", "import ironcalc"], capture_output=True, timeout=30)
         return r.returncode == 0
@@ -42,7 +47,7 @@ needs_ic = unittest.skipUnless(HAS_IC, f"{PYTHON} can't import ironcalc")
 class Byob:
     """A fake byob: one backend process, a temp workspace and an artifact store."""
 
-    def __init__(self, no_ironcalc=False):
+    def __init__(self, no_ironcalc=False, native=None):
         self.ws = tempfile.mkdtemp(prefix="sheets-ws-")
         self.chat = "chat-1"
         env = dict(os.environ, PYTHONPATH=HELPER, PYTHONUNBUFFERED="1", PYTHONDONTWRITEBYTECODE="1",
@@ -51,7 +56,9 @@ class Byob:
         if no_ironcalc:
             env["BYOB_SHEETS_NO_IRONCALC"] = "1"
         self.err = tempfile.TemporaryFile()
-        self.p = subprocess.Popen([PYTHON, "-B", "backend.py"], cwd=PLUGIN, env=env, stdin=subprocess.PIPE,
+        native = native or NATIVE
+        argv = [native] if native else [PYTHON, "-B", "backend.py"]
+        self.p = subprocess.Popen(argv, cwd=PLUGIN, env=env, stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=self.err, text=True, bufsize=1)
         self.next_id = 0
         self.msgs = []  # every non-reply message
@@ -529,6 +536,7 @@ class WriteTests(Base):
         self.assertEqual(wide.splitlines()[1], "\tA\tB")
 
 
+@unittest.skipIf(NATIVE, "the native backend always has IronCalc")
 class NoIronCalcTests(Base):
     no_ironcalc = True
 
@@ -561,6 +569,7 @@ class NoIronCalcTests(Base):
 
 
 @needs_ic
+@unittest.skipIf(NATIVE, "times the Python workbook directly")
 @unittest.skipUnless(os.environ.get("BYOB_SHEETS_BENCH"), "set BYOB_SHEETS_BENCH=1 for timings")
 class Bench(Base):
     def test_timings(self):

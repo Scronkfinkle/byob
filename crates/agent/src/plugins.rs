@@ -423,6 +423,16 @@ impl Engine {
             // where it is still on, it starts again on first use
             ext.backends.stop_plugin(plugin, "it was switched off");
         }
+        // A plugin another one now supersedes (`provides`) stops like a switched-off one.
+        let chat = self.client_chat(client);
+        if let Some(c) = self.compose_for(chat.as_deref(), Some(client), false) {
+            let losers: Vec<(String, String)> = c.infos.iter().filter_map(|p| p.superseded_by.clone().map(|w| (p.id.clone(), w))).collect();
+            if let Some(ext) = self.ext.as_mut() {
+                for (id, winner) in losers {
+                    ext.backends.stop_plugin(&id, &format!("{winner} is used instead"));
+                }
+            }
+        }
         self.extensions_changed();
     }
 
