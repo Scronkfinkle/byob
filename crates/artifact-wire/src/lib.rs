@@ -18,6 +18,9 @@ use std::io::{self, Read, Write};
 pub const MAX_FRAME: usize = 64 << 20;
 /// Largest HTML document byob sends.
 pub const MAX_HTML: usize = 16 << 20;
+/// Largest bridge message either side sends ([`Request::Message`], [`Event::Message`]): the
+/// JSON text of one JSON-RPC message between the page and byob.
+pub const MAX_MESSAGE: usize = 256 << 10;
 
 /// Size of the rendering surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -121,6 +124,10 @@ pub enum Request {
     /// painting and reading back frames; `true`: show it again (a frame follows). Only sent
     /// to helpers that announced [`Features::VISIBILITY`] (older ones would refuse the tag).
     Visible(bool),
+    /// A bridge message for the page (JSON text, at most [`MAX_MESSAGE`] bytes): delivered as
+    /// a `message` event on its window, as if its parent had posted it. Only sent to helpers
+    /// that announced [`Features::BRIDGE`].
+    Message(String),
 }
 
 /// What a helper supports beyond the base protocol, as bits (see [`Event::Features`]).
@@ -130,8 +137,11 @@ pub struct Features(pub u32);
 impl Features {
     /// Understands [`Request::Visible`].
     pub const VISIBILITY: u32 = 1;
+    /// The page bridge: understands [`Request::Message`] and sends [`Event::Message`] for
+    /// what the page posts to its parent.
+    pub const BRIDGE: u32 = 2;
     /// Everything this version of the protocol knows.
-    pub const ALL: Self = Self(Self::VISIBILITY);
+    pub const ALL: Self = Self(Self::VISIBILITY | Self::BRIDGE);
 
     pub fn has(self, bit: u32) -> bool {
         self.0 & bit != 0
@@ -186,6 +196,9 @@ pub enum Event {
     /// Sent right after [`Event::Ready`] by helpers that support more than the base
     /// protocol (a helper that never sends it supports none of it).
     Features(Features),
+    /// A bridge message the page posted to its parent (untrusted JSON text, at most
+    /// [`MAX_MESSAGE`] bytes; only from helpers with [`Features::BRIDGE`]).
+    Message(String),
 }
 
 /// A malformed frame.
@@ -345,6 +358,15 @@ impl Dec<'_> {
     }
 }
 
+/// A bridge message: a string of at most [`MAX_MESSAGE`] bytes.
+fn message(d: &mut Dec<'_>) -> Result<String, WireError> {
+    let m = d.str()?;
+    if m.len() > MAX_MESSAGE {
+        return Err(WireError(format!("bridge message of {} bytes is over the limit", m.len())));
+    }
+    Ok(m)
+}
+
 fn bad_tag<T>(what: &str, tag: u8) -> Result<T, WireError> {
     Err(WireError(format!("unknown {what} tag {tag}")))
 }
@@ -480,6 +502,10 @@ impl Message for Request {
                 e.u8(7);
                 e.bool(*v);
             }
+            Self::Message(m) => {
+                e.u8(8);
+                e.str(m);
+            }
         }
     }
 
@@ -493,6 +519,7 @@ impl Message for Request {
             5 => Self::Ping(d.u64()?),
             6 => Self::Shutdown,
             7 => Self::Visible(d.bool()?),
+            8 => Self::Message(message(d)?),
             t => return bad_tag("request", t),
         })
     }
@@ -536,6 +563,10 @@ impl Message for Event {
                 e.u8(7);
                 e.u32(f.0);
             }
+            Self::Message(m) => {
+                e.u8(8);
+                e.str(m);
+            }
         }
     }
 
@@ -560,6 +591,7 @@ impl Message for Event {
             }
             // Unknown bits are kept (and ignored): a newer helper may know more.
             7 => Self::Features(Features(d.u32()?)),
+            8 => Self::Message(message(d)?),
             t => return bad_tag("event", t),
         })
     }
@@ -592,6 +624,7 @@ mod tests {
         round_trip(Request::Shutdown);
         round_trip(Request::Visible(false));
         round_trip(Request::Visible(true));
+        round_trip(Request::Message(r#"{"jsonrpc":"2.0","method":"ui/notifications/tool-input","params":{"arguments":{"q":"é"}}}"#.into()));
         for input in [
             Input::MouseMove { x: 1.5, y: -2.0 },
             Input::MouseButton { button: Button::Secondary, down: true, x: 3.0, y: 4.0 },
@@ -614,6 +647,7 @@ mod tests {
         round_trip(Event::Title("Loan".into()));
         round_trip(Event::Features(Features::ALL));
         round_trip(Event::Features(Features(u32::MAX)));
+        round_trip(Event::Message(r#"{"jsonrpc":"2.0","id":1,"method":"ui/initialize","params":{}}"#.into()));
         for c in CURSORS {
             round_trip(Event::Cursor(c));
         }
@@ -649,11 +683,27 @@ mod tests {
     fn visibility_is_additive() {
         assert_eq!(Request::Shutdown.to_bytes(), vec![6]);
         assert_eq!(Request::Visible(true).to_bytes(), vec![7, 1]);
-        assert_eq!(Event::Features(Features::ALL).to_bytes(), vec![7, 1, 0, 0, 0]);
+        assert_eq!(Event::Features(Features(Features::VISIBILITY)).to_bytes(), vec![7, 1, 0, 0, 0]);
+        assert_eq!(Event::Features(Features::ALL).to_bytes(), vec![7, 3, 0, 0, 0]);
         assert!(Request::from_bytes(&[7]).is_err(), "Visible needs its flag");
         assert!(Request::from_bytes(&[7, 2]).is_err(), "bad bool");
         assert!(Event::from_bytes(&[7, 1, 0]).is_err(), "short features");
         assert!(Features(Features::VISIBILITY | 8).has(Features::VISIBILITY) && !Features::default().has(Features::VISIBILITY));
+    }
+
+    /// The bridge is new tags only, negotiated by its feature bit; messages are capped.
+    #[test]
+    fn bridge_is_additive_and_capped() {
+        assert_eq!(Request::Message("{}".into()).to_bytes(), vec![8, 2, 0, 0, 0, b'{', b'}']);
+        assert_eq!(Event::Message("{}".into()).to_bytes(), vec![8, 2, 0, 0, 0, b'{', b'}']);
+        // An older helper announced only VISIBILITY: no bridge.
+        assert!(!Features(Features::VISIBILITY).has(Features::BRIDGE) && Features::ALL.has(Features::BRIDGE));
+        let big = "x".repeat(MAX_MESSAGE + 1);
+        assert!(Event::from_bytes(&Event::Message(big.clone()).to_bytes()).is_err(), "over the cap");
+        assert!(Request::from_bytes(&Request::Message(big).to_bytes()).is_err());
+        let fits = "x".repeat(MAX_MESSAGE);
+        assert!(Event::from_bytes(&Event::Message(fits).to_bytes()).is_ok());
+        assert!(Event::from_bytes(&[8, 1, 0, 0, 0, 0xff]).is_err(), "invalid UTF-8");
     }
 
     #[test]

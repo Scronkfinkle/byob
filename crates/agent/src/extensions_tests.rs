@@ -18,10 +18,10 @@ use crate::extensions::{ComposeIn, Extensions as Ext, PluginsConfig};
 use crate::loop_tests::{Reply, Requests, call, fake_llm};
 use crate::{EngineConfig, EngineHandle, LocalConnection, Policy};
 
-struct H {
-    engine: EngineHandle,
-    requests: Requests,
-    home: tempfile::TempDir,
+pub(crate) struct H {
+    pub engine: EngineHandle,
+    pub requests: Requests,
+    pub home: tempfile::TempDir,
     ws: PathBuf,
     _ws_dir: tempfile::TempDir,
 }
@@ -38,7 +38,7 @@ fn plugins_config(home: &Path) -> PluginsConfig {
 
 /// An engine with plugins, the built-in file tools, a home folder and a workspace. `setup`
 /// may write plugin folders before it starts: `(home, workspace)`.
-fn harness(script: Vec<Reply>, policy: Option<Policy>, setup: impl FnOnce(&Path, &Path)) -> H {
+pub(crate) fn harness(script: Vec<Reply>, policy: Option<Policy>, setup: impl FnOnce(&Path, &Path)) -> H {
     let (url, requests) = fake_llm(script, "final answer");
     let home = tempfile::tempdir().unwrap();
     let ws_dir = tempfile::tempdir().unwrap();
@@ -67,7 +67,7 @@ pub(crate) fn recv(c: &mut LocalConnection) -> ServerMsg {
 }
 
 /// Connect; returns the connection and the first plugin list.
-fn hello(h: &H) -> (LocalConnection, Extensions) {
+pub(crate) fn hello(h: &H) -> (LocalConnection, Extensions) {
     let mut c = h.engine.connect(Arc::new(|| {}));
     c.send(ClientMsg::hello("test"));
     let mut ext = None;

@@ -17,6 +17,7 @@ pub mod tree;
 pub mod usage;
 pub mod version;
 pub mod view;
+pub mod web;
 pub mod workspace;
 
 use serde::{Deserialize, Serialize};
@@ -293,6 +294,19 @@ pub enum ClientMsg {
         view: ViewRef,
         event: tree::Event,
     },
+    /// A call from a web surface for the engine (13.5+, only when the engine lists
+    /// [`web::CAP_WEB_BRIDGE`]): JSON-RPC `method` + `params` from the page whose calls
+    /// `owner` answers. Answered with one [`ServerMsg::WebReply`] of the same `call` number.
+    /// `approved`: the user allowed it after a reply asked ([`web::WebError::approval`]).
+    WebCall {
+        call: u64,
+        owner: web::WebOwner,
+        method: String,
+        #[serde(default)]
+        params: serde_json::Value,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        approved: bool,
+    },
     /// A message from a newer client this engine doesn't know (answered with a notice).
     #[serde(other)]
     Unknown,
@@ -383,6 +397,18 @@ pub enum ServerMsg {
     /// A live view's tree, a change to it, or why it can't be shown (13.3+; only to clients
     /// that listed [`sites::CAP_VIEW_SITES`] and opened it, see [`sites`]).
     LiveView(LiveView),
+    /// The answer to [`ClientMsg::WebCall`] `call` (only to the client that called): a
+    /// JSON-RPC `result` or an `error`.
+    WebReply {
+        call: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<web::WebError>,
+    },
+    /// A JSON-RPC message (a notification) for the web surfaces `owner` answers, from the
+    /// owner (a plugin's backend; only to clients that listed [`web::CAP_WEB_BRIDGE`]).
+    WebPush { owner: web::WebOwner, msg: serde_json::Value },
     /// A message from a newer engine this client doesn't know: skip it.
     #[serde(other)]
     Unknown,

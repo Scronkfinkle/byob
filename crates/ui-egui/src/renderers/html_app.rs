@@ -43,7 +43,7 @@ impl ArtifactRenderer for HtmlApp {
             && let Some(source) = source(cx)
         {
             ui.add_space(4.0);
-            let doc = AppDoc { id: &a.id, url: None, title: &a.title, version, size, source: Some(&source) };
+            let doc = AppDoc { id: &a.id, url: None, title: &a.title, version, size, source: Some(&source), web: false, height: None };
             if let Some(resp) = cx.web().card(ui, t, &doc) {
                 if resp.open {
                     cx.open_in_browser();
@@ -74,7 +74,7 @@ impl ArtifactRenderer for HtmlApp {
             });
             ui.add_space(4.0);
         }
-        let doc = AppDoc { id: &a.id, url: url.as_deref(), title: &a.title, version, size, source: source.as_deref() };
+        let doc = AppDoc { id: &a.id, url: url.as_deref(), title: &a.title, version, size, source: source.as_deref(), web: false, height: None };
         if cx.web().show(ui, t, &doc).open {
             cx.open_in_browser();
         }

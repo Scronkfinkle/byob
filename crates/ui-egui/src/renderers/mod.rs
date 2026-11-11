@@ -138,7 +138,14 @@ impl ArtifactRenderers {
                     "web" | "text" => Some(d.renderer.as_str()),
                     other => other.strip_prefix("native:"),
                 };
-                let renderer = id.and_then(|id| self.natives.get(id)).cloned();
+                // `web:<file>`: the plugin's own page draws it, on a web surface.
+                let web_page = d
+                    .renderer
+                    .strip_prefix("web:")
+                    .map(str::trim)
+                    .filter(|f| !f.is_empty())
+                    .map(|file| Rc::new(crate::web::WebArtifact { plugin: p.id.clone(), file: file.to_owned() }) as Rc<dyn ArtifactRenderer>);
+                let renderer = web_page.or_else(|| id.and_then(|id| self.natives.get(id)).cloned());
                 if renderer.is_none() {
                     log::warn!("plugin {}: no renderer {:?} in this client; {} shows as text", p.id, d.renderer, d.content_type);
                 }
@@ -275,7 +282,7 @@ pub struct ArtifactCx<'a> {
     pub id: egui::Id,
     pub(crate) files: &'a mut Files,
     pub(crate) outbox: &'a mut Vec<ClientMsg>,
-    pub(crate) web: &'a mut dyn AppView,
+    pub(crate) web: &'a mut crate::web::Web,
     pub(crate) requests: &'a mut Vec<Request>,
     pub(crate) links: Links<'a>,
 }
@@ -316,6 +323,11 @@ impl ArtifactCx<'_> {
 
     /// The web surface: where HTML runs (Servo helper, iframe, or a placeholder).
     pub fn web(&mut self) -> &mut dyn AppView {
+        &mut *self.web.view
+    }
+
+    /// Web surfaces with the bridge (a plugin's `web:<file>` renderer).
+    pub fn bridge(&mut self) -> &mut crate::web::Web {
         &mut *self.web
     }
 

@@ -120,6 +120,10 @@ impl Connector for McpConnector {
         let result = self.client.call_tool_cancellable(name, args.clone(), self.call_timeout, ctx.cancel_flag()).map_err(|e| e.to_string())?;
         Ok(result_of(result))
     }
+
+    fn read_resource(&self, uri: &str) -> Result<Value, String> {
+        self.client.read_resource(uri, Duration::from_secs(30)).map_err(|e| e.to_string())
+    }
 }
 
 fn tool(t: McpTool) -> ConnectorTool {
@@ -129,6 +133,10 @@ fn tool(t: McpTool) -> ConnectorTool {
         input_schema: t.input_schema,
         read_only_hint: t.annotations.read_only_hint,
         destructive_hint: t.annotations.destructive_hint,
+        resource_uri: t.ui.as_ref().and_then(|u| u.resource_uri.clone()),
+        app_only: t.ui.as_ref().is_some_and(|u| !u.model),
+        model_only: t.ui.as_ref().is_some_and(|u| !u.app),
+        raw: t.raw,
         name: t.name,
     }
 }
@@ -148,7 +156,7 @@ fn result_of(r: CallResult) -> ConnectorResult {
         .collect::<Vec<_>>();
     // A server that only sent structured output (or nothing) still gets its text seen.
     let content = if content.is_empty() { vec![ConnectorContent::Text(r.text)] } else { content };
-    ConnectorResult { content, is_error: r.is_error }
+    ConnectorResult { content, is_error: r.is_error, raw: r.raw }
 }
 
 #[cfg(test)]
@@ -164,6 +172,8 @@ mod tests {
             description: String::new(),
             input_schema: serde_json::json!({"type":"object"}),
             annotations: ToolAnnotations { read_only_hint: Some(true), ..Default::default() },
+            ui: None,
+            raw: serde_json::Value::Null,
         };
         let c = tool(t);
         assert_eq!((c.name.as_str(), c.title.as_deref(), c.description, c.read_only_hint), ("search", Some("Search"), None, Some(true)));
@@ -171,8 +181,8 @@ mod tests {
 
     #[test]
     fn empty_content_falls_back_to_text() {
-        let r = CallResult { text: "(no result)".into(), is_error: true, content: Vec::new(), structured: None };
-        assert_eq!(result_of(r), ConnectorResult { content: vec![ConnectorContent::Text("(no result)".into())], is_error: true });
+        let r = CallResult { text: "(no result)".into(), is_error: true, content: Vec::new(), structured: None, raw: serde_json::json!({}) };
+        assert_eq!(result_of(r), ConnectorResult { content: vec![ConnectorContent::Text("(no result)".into())], is_error: true, raw: serde_json::json!({}) });
     }
 
     #[test]

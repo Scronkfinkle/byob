@@ -691,6 +691,7 @@ name = "byob-plugins"
 version = "0.2.1"
 dependencies = [
  "byob-mcp",
+ "byob-protocol",
  "byob-sandbox",
  "byob-tools",
  "log",

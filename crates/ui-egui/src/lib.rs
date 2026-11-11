@@ -27,6 +27,7 @@ pub mod tree;
 pub mod upload;
 pub mod usage;
 pub mod views;
+pub mod web;
 pub mod workspace;
 pub mod ws;
 
@@ -247,6 +248,8 @@ impl ByobApp {
                 ServerMsg::Unknown => self.skip("messages of a type this client doesn't know".into()),
                 // Handled by the plugins' sites above.
                 ServerMsg::LiveView(_) => {}
+                // Handled by the web surfaces (in the artifacts) above.
+                ServerMsg::WebReply { .. } | ServerMsg::WebPush { .. } => {}
                 ServerMsg::State(state) => {
                     self.connect.sync(&state);
                     self.state = Some(state);
@@ -599,13 +602,19 @@ impl ByobApp {
         }
         if narrow && self.plugins.sites.pane_is_open() {
             // Phones: a plugin's pane takes the whole screen; "← Chat" goes back.
-            egui::CentralPanel::default().show(ui, |ui| self.plugins.sites.pane(ui, &t, true));
+            egui::CentralPanel::default().show(ui, |ui| self.plugins.sites.pane(ui, &t, true, self.artifacts.web_mut()));
             self.end_frame(ui.ctx());
             return;
         }
         if narrow && self.artifacts.is_open() {
             // Phones: the artifact takes the whole screen; "← Chat" goes back.
             egui::CentralPanel::default().show(ui, |ui| self.artifacts.pane(ui, &t, true));
+            self.end_frame(ui.ctx());
+            return;
+        }
+        if self.artifacts.web_mut().maximized().is_some() {
+            // An app (MCP App, a plugin's web card) maximized over the window.
+            egui::CentralPanel::default().show(ui, |ui| self.artifacts.web_mut().show_maximized(ui, &t));
             self.end_frame(ui.ctx());
             return;
         }
@@ -632,7 +641,7 @@ impl ByobApp {
         if !narrow {
             // The pane, or its rail when collapsed; then the plugins' pane beside it.
             self.artifacts.side_panel(ui, &t);
-            self.plugins.sites.side_panel(ui, &t);
+            self.plugins.sites.side_panel(ui, &t, self.artifacts.web_mut());
         }
         egui::Panel::bottom("composer").show(ui, |ui| self.composer(ui));
         egui::CentralPanel::default().show(ui, |ui| {
@@ -943,7 +952,7 @@ fn entry_view(
                     EntryRole::Assistant => {
                         answer = steps::body(ui, t, entry, markdown, &mut |ui, step| {
                             artifacts.cards(ui, t, &step.artifacts);
-                            views.show_step(ui, t, step, latest, plugins);
+                            views.show_step_with(ui, t, step, latest, plugins, artifacts.web_mut());
                         });
                     }
                     EntryRole::User if !entry.content.is_empty() => {
@@ -1365,7 +1374,7 @@ mod app_tests {
         let fake = Fake::default();
         let mut app = ByobApp::new(Box::new(fake.clone()), "test");
         let mut p = plugins::tests::info("todo", PluginScope::Global, PluginOrigin::User);
-        p.views = vec![ViewDecl { id: "count".into(), site: Site::Status, title: "Count".into(), icon: String::new() }];
+        p.views = vec![ViewDecl { id: "count".into(), site: Site::Status, title: "Count".into(), icon: String::new(), html: String::new() }];
         p.backend = Some(BackendInfo { state: "running".into(), ..Default::default() });
         fake.inbox.lock().unwrap().extend([
             ServerMsg::Welcome(Welcome::current()),

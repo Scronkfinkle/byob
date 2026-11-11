@@ -61,6 +61,9 @@ mod test_store;
 mod turn;
 #[cfg(test)]
 mod view_tests;
+mod web;
+#[cfg(test)]
+mod web_tests;
 #[cfg(test)]
 mod workspace_tests;
 mod workspaces;
@@ -435,6 +438,9 @@ struct Live {
     compactions: Vec<byob_store::Compaction>,
     /// Token use, for the header meter.
     tally: compact::Tally,
+    /// What web surfaces (MCP Apps, plugin web views) told the model with
+    /// `ui/update-model-context`, by surface: in the chat's next system prompt.
+    app_context: BTreeMap<String, String>,
 }
 
 /// A running turn, keyed by its reply entry.
@@ -740,7 +746,8 @@ impl Engine {
             chats::attach_runs(&mut entries, links, runs, &self.step_ids);
             let artifacts = artifact::list(&row.workspace, chat);
             chats::restore_step_files(&mut entries, &artifacts);
-            self.live.insert(chat.to_owned(), Live { entries, workspace: Arc::new(row.workspace), artifacts, compactions, tally });
+            self.live
+                .insert(chat.to_owned(), Live { entries, workspace: Arc::new(row.workspace), artifacts, compactions, tally, app_context: BTreeMap::new() });
         }
         self.live.get_mut(chat).ok_or_else(|| "that chat no longer exists".to_owned())
     }
@@ -837,6 +844,7 @@ impl Engine {
             artifacts: Vec::new(),
             compactions: Vec::new(),
             tally: compact::Tally::default(),
+            app_context: BTreeMap::new(),
         };
         self.live.insert(chat.id.clone(), live);
         self.adopt_new_chat_settings(client, &chat.id);
@@ -1125,6 +1133,7 @@ impl Engine {
             ClientMsg::OpenView { view } => self.open_view(id, view),
             ClientMsg::CloseView { view } => self.close_view(id, &view),
             ClientMsg::ViewEvent { view, event } => self.view_event(id, view, event),
+            ClientMsg::WebCall { call, owner, method, params, approved } => self.web_call(id, call, owner, &method, params, approved),
             ClientMsg::Unknown => self.notice(id, "this engine doesn't know that request (is the client newer than the engine?)".into()),
         }
     }

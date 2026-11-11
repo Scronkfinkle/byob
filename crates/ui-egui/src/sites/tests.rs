@@ -16,7 +16,7 @@ fn ext(views: Vec<ViewDecl>) -> ServerMsg {
 }
 
 fn decl(site: Site, id: &str, title: &str) -> ViewDecl {
-    ViewDecl { id: id.into(), site, title: title.into(), icon: String::new() }
+    ViewDecl { id: id.into(), site, title: title.into(), icon: String::new(), html: String::new() }
 }
 
 fn tree(json: serde_json::Value) -> Node {
@@ -64,38 +64,38 @@ fn a_pane_opens_once_shows_the_live_tree_and_sends_events() {
     let ctx = egui::Context::default();
     let t = Tokens::dark();
     let r = ViewRef::new("todo", "list", "");
-    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
+    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false, &mut crate::web::Web::new(Box::new(crate::appview::Placeholder))));
     assert!(has(&found, "Loading…") && has(&found, "To-do"));
     assert_eq!(s.take(), vec![ClientMsg::OpenView { view: r.clone() }]);
-    texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
+    texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false, &mut crate::web::Web::new(Box::new(crate::appview::Placeholder))));
     assert!(s.take().is_empty(), "opened once");
     let t0 = tree(json!({"type": "column", "children": [
         {"type": "text", "key": "n", "text": "0 left"},
         {"type": "button", "label": "Add", "action": "add"}]}));
     assert!(s.apply(&ServerMsg::LiveView(LiveView { view: r.clone(), tree: Some(t0), ..Default::default() })));
-    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
+    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false, &mut crate::web::Web::new(Box::new(crate::appview::Placeholder))));
     assert!(has(&found, "0 left"));
     let add = at(&found, "Add");
-    click(&ctx, add, &mut |ui| s.pane(ui, &t, false));
+    click(&ctx, add, &mut |ui| s.pane(ui, &t, false, &mut crate::web::Web::new(Box::new(crate::appview::Placeholder))));
     let sent = s.take();
     assert!(matches!(&sent[..], [ClientMsg::ViewEvent { view, event }] if *view == r && event.action == "add"), "{sent:?}");
     // a patch from the engine
     let patch = vec![Patch::Set { at: Target::key("n"), fields: json!({"text": "1 left"}).as_object().cloned().unwrap_or_default() }];
     s.apply(&ServerMsg::LiveView(LiveView { view: r.clone(), patch, faults: vec!["/children/3: unknown node type \"slider\"".into()], ..Default::default() }));
-    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
+    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false, &mut crate::web::Web::new(Box::new(crate::appview::Placeholder))));
     assert!(has(&found, "1 left") && !has(&found, "0 left"));
     assert!(has(&found, "1 problem in this view"), "faults show at the site");
     // reset: forgotten, opened again on the next draw
     s.apply(&ServerMsg::LiveView(LiveView { view: r.clone(), reset: true, ..Default::default() }));
-    texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
+    texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false, &mut crate::web::Web::new(Box::new(crate::appview::Placeholder))));
     assert_eq!(s.take(), vec![ClientMsg::OpenView { view: r.clone() }]);
     // an error at the site
     s.apply(&ServerMsg::LiveView(LiveView { view: r.clone(), error: Some("Todo can't show To-do: its backend is failed".into()), ..Default::default() }));
-    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
+    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false, &mut crate::web::Web::new(Box::new(crate::appview::Placeholder))));
     assert!(has(&found, "its backend is failed"));
     // another chat: everything resolves anew
     s.peek(&ServerMsg::ChatOpened { chat: None, workspace: None });
-    texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
+    texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false, &mut crate::web::Web::new(Box::new(crate::appview::Placeholder))));
     assert_eq!(s.take(), vec![ClientMsg::OpenView { view: r }]);
     // the plugin switched off: its views go, the pane closes
     let mut off = ext(vec![decl(Site::Pane, "list", "To-do")]);
@@ -177,7 +177,7 @@ fn image_nodes_load_through_media_and_artifacts() {
     s.apply(&ServerMsg::LiveView(LiveView { view: r.clone(), tree: Some(t0), ..Default::default() }));
     let ctx = egui::Context::default();
     let t = Tokens::dark();
-    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
+    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false, &mut crate::web::Web::new(Box::new(crate::appview::Placeholder))));
     assert!(has(&found, "Loading…") && has(&found, "no artifact \"nope\""), "{:?}", found.iter().map(|f| &f.0).collect::<Vec<_>>());
     let sent = s.take();
     assert!(sent.contains(&ClientMsg::GetMedia { path: "plots/a.png".into() }), "{sent:?}");
@@ -189,7 +189,7 @@ fn image_nodes_load_through_media_and_artifacts() {
     // others see these too (not consumed)
     s.peek(&ServerMsg::Media { path: "plots/a.png".into(), content: MediaContent::Image { mime: "image/png".into(), data: data.clone() } });
     s.peek(&ServerMsg::ArtifactFile { id: "logo".into(), version: 2, data: Some(data), error: None });
-    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
+    let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false, &mut crate::web::Web::new(Box::new(crate::appview::Placeholder))));
     assert!(!has(&found, "Loading…"));
     assert!(!s.loading());
     assert!(s.take().is_empty(), "fetched once");

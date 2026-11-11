@@ -110,8 +110,16 @@ impl Sites {
         self.declared = e
             .plugins
             .iter()
-            .filter(|p| p.shadowed_by.is_none() && p.enabled && p.trusted && p.backend.as_ref().is_some_and(|b| b.state != "off"))
-            .flat_map(|p| p.views.iter().map(|d| Declared { plugin: p.id.clone(), plugin_name: p.name.clone(), decl: d.clone() }))
+            .filter(|p| p.shadowed_by.is_none() && p.enabled && p.trusted)
+            .flat_map(|p| {
+                // Tree views need the backend; web views (`html`) run without one.
+                let backend = p.backend.as_ref().is_some_and(|b| b.state != "off");
+                p.views.iter().filter(move |d| backend || !d.html.is_empty()).map(|d| Declared {
+                    plugin: p.id.clone(),
+                    plugin_name: p.name.clone(),
+                    decl: d.clone(),
+                })
+            })
             .collect();
         let declared = &self.declared;
         let gone: Vec<ViewRef> = self.slots.keys().filter(|r| !declared.iter().any(|d| d.plugin == r.plugin && d.decl.id == r.view)).cloned().collect();
@@ -309,16 +317,17 @@ impl Sites {
     // ---- the pane --------------------------------------------------------------------
 
     /// The pane on the right (wide windows; call before the central panel).
-    pub fn side_panel(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+    pub fn side_panel(&mut self, ui: &mut egui::Ui, t: &Tokens, web: &mut crate::web::Web) {
         if !self.pane_is_open() {
             return;
         }
         let max = (ui.available_width() * 0.6).max(280.0);
-        egui::Panel::right("plugin-pane").resizable(true).default_size(PANE_WIDTH.min(max)).size_range(240.0..=max).show(ui, |ui| self.pane(ui, t, false));
+        egui::Panel::right("plugin-pane").resizable(true).default_size(PANE_WIDTH.min(max)).size_range(240.0..=max).show(ui, |ui| self.pane(ui, t, false, web));
     }
 
-    /// The pane's contents: its views as tabs, the one in front, × to close.
-    pub fn pane(&mut self, ui: &mut egui::Ui, t: &Tokens, narrow: bool) {
+    /// The pane's contents: its views as tabs, the one in front, × to close. Web views
+    /// (`html` in the manifest) run on a web surface instead of a tree.
+    pub fn pane(&mut self, ui: &mut egui::Ui, t: &Tokens, narrow: bool, web: &mut crate::web::Web) {
         let Some(active) = self.active.clone() else { return };
         let panes: Vec<Declared> = self.panes().cloned().collect();
         ui.add_space(4.0);
@@ -357,6 +366,13 @@ impl Sites {
         });
         ui.separator();
         let Some(active) = self.active.clone() else { return };
+        if let Some(d) = self.declared.iter().find(|d| d.view_ref() == active && !d.decl.html.is_empty()) {
+            let owner = byob_protocol::web::WebOwner::Plugin { plugin: d.plugin.clone(), view: d.decl.id.clone(), key: String::new() };
+            let key = format!("web:pane:{}/{}", d.plugin, d.decl.id);
+            let title = d.title().to_owned();
+            web.fill(ui, t, crate::web::Spec { key: &key, owner: &owner, kind: crate::web::Kind::Byob, title: &title, init: crate::web::Init::default() });
+            return;
+        }
         egui::ScrollArea::vertical().id_salt(("plugin-pane-scroll", &active)).auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(4.0);
             self.draw(ui, t, &active, None);

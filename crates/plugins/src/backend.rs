@@ -52,7 +52,7 @@ const STABLE: Duration = Duration::from_secs(30);
 /// How long a stopped backend gets to exit before it is killed.
 const STOP_GRACE: Duration = Duration::from_millis(500);
 /// What the engine supports, sent in `init.caps`.
-pub const CAPS: [&str; 8] = ["event", "request", "reply", "view", "notify", "notice", "log", "fault"];
+pub const CAPS: [&str; 9] = ["event", "request", "reply", "view", "notify", "notice", "log", "fault", "web"];
 
 /// How to start the process (worked out on the start thread: it may build a venv).
 #[derive(Debug, Clone, Default)]
@@ -787,7 +787,9 @@ pub const CARD_MSG: &str = "_tool_card";
 fn card_of(v: &Value) -> Option<Value> {
     let o = v.as_object()?;
     let tree = o.get("card").filter(|c| c.is_object())?;
-    Some(json!({"tree": tree, "view": o.get("card_view").and_then(Value::as_str), "key": o.get("card_key").and_then(Value::as_str)}))
+    Some(
+        json!({"tree": tree, "view": o.get("card_view").and_then(Value::as_str), "key": o.get("card_key").and_then(Value::as_str), "text": o.get("text").and_then(Value::as_str)}),
+    )
 }
 
 /// A tool reply as tool output: text, `{"text": …, "files": […]}`, or any JSON.

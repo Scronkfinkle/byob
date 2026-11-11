@@ -102,7 +102,7 @@ pub struct Artifacts {
     reveal: Option<String>,
     /// Exports waiting for their file.
     pending_export: Vec<(String, u32)>,
-    view: Box<dyn AppView>,
+    pub(crate) web: crate::web::Web,
     exports: Exports,
     link_base: Option<LinkBase>,
     theme: Vec<(&'static str, String)>,
@@ -131,7 +131,7 @@ impl Default for Artifacts {
             source: false,
             reveal: None,
             pending_export: Vec::new(),
-            view: appview::default_view(),
+            web: crate::web::Web::new(appview::default_view()),
             exports: Exports::default(),
             link_base: None,
             theme: Vec::new(),
@@ -146,7 +146,7 @@ impl Default for Artifacts {
 
 impl Artifacts {
     pub fn set_app_view(&mut self, view: Box<dyn AppView>) {
-        self.view = view;
+        self.web.view = view;
     }
 
     pub fn set_link_base(&mut self, base: LinkBase) {
@@ -206,6 +206,9 @@ impl Artifacts {
 
     /// Apply a server message; returns whether it was one of ours.
     pub fn apply(&mut self, msg: &ServerMsg) -> bool {
+        if self.web.apply(msg) {
+            return true;
+        }
         match msg {
             ServerMsg::Artifacts { chat, artifacts } => {
                 if *chat != self.chat {
@@ -277,7 +280,14 @@ impl Artifacts {
                 Err(text) => self.notices.push((NoticeLevel::Error, text)),
             }
         }
-        (std::mem::take(&mut self.outbox), std::mem::take(&mut self.notices))
+        let mut out = std::mem::take(&mut self.outbox);
+        out.extend(self.web.take());
+        (out, std::mem::take(&mut self.notices))
+    }
+
+    /// Web surfaces (MCP Apps, plugin web views) and their bridge.
+    pub fn web_mut(&mut self) -> &mut crate::web::Web {
+        &mut self.web
     }
 
     fn get(&self, id: &str) -> Option<&Artifact> {
@@ -304,7 +314,7 @@ impl Artifacts {
 
     /// Running / paused, for artifacts on the web surface.
     fn app_status(&self, a: &Artifact, version: u32) -> AppStatus {
-        if self.renderer(a).1.web_surface { self.view.status(&a.id, version) } else { AppStatus::Unknown }
+        if self.renderer(a).1.web_surface { self.web.view.status(&a.id, version) } else { AppStatus::Unknown }
     }
 
     /// The file of a version, asking for it the first time.
@@ -330,7 +340,7 @@ impl Artifacts {
             id,
             files: &mut self.files,
             outbox: &mut self.outbox,
-            web: &mut *self.view,
+            web: &mut self.web,
             requests: &mut self.requests,
             links: Links { chat: self.chat.as_deref(), base: self.link_base.as_ref(), theme: &self.theme },
         };
@@ -398,7 +408,7 @@ impl Artifacts {
         self.drawn_app = None;
         let theme = appview::theme_vars(t);
         if theme != self.theme {
-            self.view.set_theme(&theme);
+            self.web.set_theme(&theme);
             self.theme = theme;
         }
         if let Some(id) = self.reveal.take() {
@@ -444,10 +454,14 @@ impl Artifacts {
                 continue;
             }
             if let Some((a, v)) = self.tab_artifact(&id).filter(|(a, _)| self.renderer(a).1.web_surface) {
-                self.view.hold(&a.id, v);
+                self.web.view.hold(&a.id, v);
             }
         }
-        self.view.end_frame(ctx);
+        self.web.view.end_frame(ctx);
+        self.web.pump(ctx.input(|i| i.time));
+        for url in self.web.take_links() {
+            self.exports.open(ctx, &url);
+        }
         self.focus_held = ctx.memory(|m| m.focused().is_some());
     }
 
@@ -650,7 +664,7 @@ impl Artifacts {
     fn chip(&mut self, ui: &mut egui::Ui, t: &Tokens, a: &Artifact, version: u32, selected: bool, in_chat: bool) {
         let caps = self.renderer(a).1;
         if caps.web_surface {
-            self.view.hold(&a.id, version);
+            self.web.view.hold(&a.id, version);
         }
         let status = self.app_status(a, version);
         let stroke = if selected { t.accent } else { t.border };

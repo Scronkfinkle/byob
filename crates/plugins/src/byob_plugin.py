@@ -68,6 +68,7 @@ _event_fns = {}  # view id (None: every view) -> [fn(event)]
 _keys = {}  # view id -> keys drawn so far ("" for pane, settings, status; one per card)
 _hooks = {}  # event -> fn(payload)
 _cards = [0]
+_web_fns = {}  # web view id (None: every one) -> fn(msg, event)
 
 
 def _send(msg):
@@ -269,6 +270,37 @@ def subscribe(*events):
     _send({"type": "subscribe", "events": list(events)})
 
 
+def on_web(view_id=None):
+    """A web view's messages: fn(msg, event). `msg` is what the page sent with
+    byob.send(msg) or byob.call(msg); `event` has "view", "key", "client", "chat". For
+    byob.call the return value is the page's answer (an exception becomes its error).
+    Use as @byob.on_web("panel") (or @byob.on_web for every web view)."""
+    if callable(view_id):
+        _web_fns[None] = view_id
+        return view_id
+    def register(f):
+        _web_fns[view_id] = f
+        return f
+    return register
+
+
+def web_send(view_id, msg, key="", client=None):
+    """Send `msg` (any JSON) to the pages of web view `view_id` (all clients showing it, or
+    only `client`); the page gets it in byob.on(fn)."""
+    out = {"type": "web", "view": view_id, "key": key, "msg": msg}
+    if client is not None:
+        out["client"] = client
+    _send(out)
+
+
+def _web_handler(msg):
+    fn = _web_fns.get(msg.get("view")) or _web_fns.get(None)
+    if fn is None:
+        raise LookupError(f"web view {msg.get('view')!r}: nothing handles its messages; add @byob.on_web({msg.get('view')!r})")
+    params = msg.get("msg") or {}
+    return fn(params.get("msg", params) if isinstance(params, dict) else params, msg)
+
+
 def _short_traceback():
     return "".join(traceback.format_exc().splitlines(True)[-12:]).strip()
 
@@ -298,6 +330,8 @@ def _request(msg):
             result = fn(params) if fn is not None else None
             if result is None:
                 result = {"action": "continue"}
+        elif method == "web":
+            result = _web_handler(params)
         elif method == "view":
             vid, key = params.get("view"), params.get("key") or ""
             if vid in _view_fns:
@@ -375,6 +409,13 @@ def run(handlers=None):
                 refresh()
             elif msg.get("event") == "view":
                 _view_event(msg)
+            elif msg.get("event") == "web":
+                try:
+                    _web_handler(msg)
+                except Exception:
+                    traceback.print_exc()
+                    fault(_short_traceback())
+                refresh()
             else:
                 _call(_events.get(msg.get("event"), []), msg)
         elif kind == "request":

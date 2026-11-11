@@ -28,6 +28,12 @@ pub struct AppDoc<'a> {
     pub size: u64,
     /// The HTML, when loaded and the view [wants it](AppView::wants_source).
     pub source: Option<&'a str>,
+    /// A web surface (`crate::web`): `source` is the whole document, ready to run as it is
+    /// (bridge script included), and the page's messages flow ([`AppView::post`],
+    /// [`AppView::take_messages`]). `false`: an HTML app artifact.
+    pub web: bool,
+    /// How tall a card should be (points), when the page said (web surfaces).
+    pub height: Option<f32>,
 }
 
 /// What the user did in an app view.
@@ -100,6 +106,27 @@ pub trait AppView {
     fn status(&self, _id: &str, _version: u32) -> AppStatus {
         AppStatus::Unknown
     }
+    /// Send the page of `id`/`version` a bridge message (JSON text; web surfaces). Dropped
+    /// when it isn't running.
+    fn post(&mut self, _id: &str, _version: u32, _msg: &str) {}
+    /// What pages posted since the last call: (id, version, JSON text), untrusted.
+    fn take_messages(&mut self) -> Vec<(String, u32, String)> {
+        Vec::new()
+    }
+    /// Whether the page of `id`/`version` can talk to byob: `None` not known (yet), `Some(false)`
+    /// its runtime has no bridge (an older Servo helper).
+    fn bridged(&self, _id: &str, _version: u32) -> Option<bool> {
+        None
+    }
+    /// Stop `id`/`version` now and forget it (a web surface torn down).
+    fn close(&mut self, _id: &str, _version: u32) {}
+}
+
+/// 0..1 for `#rrggbb` (0.5 when it isn't one).
+pub fn luminance(hex: &str) -> f32 {
+    let Some(h) = hex.strip_prefix('#').filter(|h| h.len() == 6) else { return 0.5 };
+    let c = |i: usize| h.get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok()).map_or(0.5, |v| f32::from(v) / 255.0);
+    0.2126 * c(0) + 0.7152 * c(2) + 0.0722 * c(4)
 }
 
 /// The default view for this platform.
@@ -226,6 +253,64 @@ mod web {
     const MAX_PAUSED: usize = 32;
     /// Out of view: `display:none` (the document stays loaded and keeps its state).
     const HIDDEN: &str = "display:none";
+    /// Largest message a page may post (its JSON).
+    const MAX_MESSAGE: usize = 1024 * 1024;
+    /// Messages kept until taken.
+    const MAX_INBOX: usize = 1024;
+
+    type Key = (String, u32);
+
+    /// A web surface's iframe (`srcdoc`: the document comes with the bridge script).
+    struct WebFrame {
+        el: web_sys::HtmlIFrameElement,
+        rect: Option<(egui::Rect, egui::Rect)>,
+        last_style: String,
+    }
+
+    /// Where an overlay goes this frame: position, size and the holes egui layers above it
+    /// cut out (`None`: not visible).
+    fn overlay_style(ctx: &egui::Context, rect: egui::Rect, clip: egui::Rect) -> Option<String> {
+        let visible = clip.intersect(rect);
+        if visible.width() <= 0.5 || visible.height() <= 0.5 {
+            return None;
+        }
+        // Every visible egui layer above the background (windows, menus, tooltips) is cut
+        // out of the iframe.
+        let holes: Vec<egui::Rect> = ctx
+            .memory(|m| m.areas().visible_layer_ids().into_iter().filter(|l| l.order != egui::Order::Background).filter_map(|l| m.area_rect(l.id)).collect());
+        let r = visible.translate(-rect.min.to_vec2());
+        let mut path = format!("M{} {}H{}V{}H{}Z", r.min.x, r.min.y, r.max.x, r.max.y, r.min.x);
+        for h in holes {
+            let h = h.intersect(visible);
+            if h.width() > 0.0 && h.height() > 0.0 {
+                let h = h.translate(-rect.min.to_vec2());
+                path.push_str(&format!("M{} {}H{}V{}H{}Z", h.min.x, h.min.y, h.max.x, h.max.y, h.min.x));
+            }
+        }
+        Some(format!(
+            "position:fixed;left:{}px;top:{}px;width:{}px;height:{}px;border:0;clip-path:path(evenodd,'{path}');z-index:1",
+            rect.min.x,
+            rect.min.y,
+            rect.width(),
+            rect.height()
+        ))
+    }
+
+    /// A sandboxed iframe: scripts and forms only (opaque origin, no top navigation, popups
+    /// or modals), no powerful features.
+    fn sandboxed_iframe() -> Option<web_sys::HtmlIFrameElement> {
+        let document = web_sys::window()?.document()?;
+        let f = document.create_element("iframe").ok()?.dyn_into::<web_sys::HtmlIFrameElement>().ok()?;
+        let _ = f.set_attribute("sandbox", "allow-scripts allow-forms");
+        let _ = f.set_attribute("referrerpolicy", "no-referrer");
+        let _ = f.set_attribute(
+            "allow",
+            "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; display-capture 'none'; fullscreen 'none'; payment 'none'; usb 'none'; serial 'none'; bluetooth 'none'",
+        );
+        let _ = f.set_attribute("style", HIDDEN);
+        document.body()?.append_child(&f).ok()?;
+        Some(f)
+    }
 
     /// A sandboxed iframe over the canvas.
     #[derive(Default)]
@@ -243,11 +328,59 @@ mod web {
         paused: Vec<(String, u32)>,
         errors: Rc<RefCell<Vec<String>>>,
         _on_message: Option<Closure<dyn FnMut(web_sys::MessageEvent)>>,
+        /// Web surfaces, one iframe each.
+        webs: std::collections::HashMap<Key, WebFrame>,
+        /// Their windows' iframes, for telling whose message it is.
+        web_list: Rc<RefCell<Vec<(Key, web_sys::HtmlIFrameElement)>>>,
+        inbox: Rc<RefCell<Vec<(String, u32, String)>>>,
+        _on_web_message: Option<Closure<dyn FnMut(web_sys::MessageEvent)>>,
     }
 
     impl IframeView {
         pub fn new() -> Self {
             Self::default()
+        }
+
+        /// Listen for web surfaces' messages (once).
+        fn listen_web(&mut self) {
+            if self._on_web_message.is_some() {
+                return;
+            }
+            let (list, inbox) = (Rc::clone(&self.web_list), Rc::clone(&self.inbox));
+            let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
+                let Some(src) = e.source() else { return };
+                let key = list.borrow().iter().find(|(_, f)| f.content_window().is_some_and(|w| js_sys::Object::is(&src, &w))).map(|(k, _)| k.clone());
+                let Some((id, version)) = key else { return };
+                let Ok(text) = js_sys::JSON::stringify(&e.data()) else { return };
+                let text: String = text.into();
+                let mut inbox = inbox.borrow_mut();
+                if text.len() <= MAX_MESSAGE && inbox.len() < MAX_INBOX {
+                    inbox.push((id, version, text));
+                }
+            });
+            if let Some(w) = web_sys::window() {
+                let _ = w.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref());
+            }
+            self._on_web_message = Some(on_message);
+        }
+
+        /// Draw web surface `doc` into `rect` (made and loaded the first time).
+        fn web_surface(&mut self, ui: &mut egui::Ui, t: &Tokens, doc: &AppDoc<'_>, size: egui::Vec2) {
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            ui.painter().rect_filled(rect, 6.0, t.app_bg);
+            let key: Key = (doc.id.to_owned(), doc.version);
+            if !self.webs.contains_key(&key) {
+                let Some(source) = doc.source else { return };
+                self.listen_web();
+                let Some(el) = sandboxed_iframe() else { return };
+                let _ = el.set_attribute("title", doc.title);
+                el.set_srcdoc(source);
+                self.web_list.borrow_mut().push((key.clone(), el.clone()));
+                self.webs.insert(key.clone(), WebFrame { el, rect: None, last_style: HIDDEN.to_owned() });
+            }
+            if let Some(w) = self.webs.get_mut(&key) {
+                w.rect = Some((rect, ui.clip_rect()));
+            }
         }
 
         fn pause_mark(&mut self, key: (String, u32)) {
@@ -309,6 +442,11 @@ mod web {
 
     impl AppView for IframeView {
         fn show(&mut self, ui: &mut egui::Ui, t: &Tokens, doc: &AppDoc<'_>) -> AppViewResponse {
+            if doc.web {
+                let size = ui.available_size_before_wrap().max(egui::vec2(1.0, 1.0));
+                self.web_surface(ui, t, doc, size);
+                return AppViewResponse::default();
+            }
             let rect = ui.available_rect_before_wrap();
             ui.allocate_rect(rect, egui::Sense::hover());
             ui.painter().rect_filled(rect, 0.0, t.app_bg);
@@ -343,7 +481,46 @@ mod web {
             }
         }
 
+        fn card(&mut self, ui: &mut egui::Ui, t: &Tokens, doc: &AppDoc<'_>) -> Option<AppViewResponse> {
+            // Live cards only for web surfaces: artifacts run in the pane's one iframe.
+            if !doc.web {
+                return None;
+            }
+            self.web_surface(ui, t, doc, egui::vec2(ui.available_width(), doc.height.unwrap_or(300.0)));
+            Some(AppViewResponse::default())
+        }
+
+        fn post(&mut self, id: &str, version: u32, msg: &str) {
+            let Some(w) = self.webs.get(&(id.to_owned(), version)).and_then(|w| w.el.content_window()) else { return };
+            if let Ok(v) = js_sys::JSON::parse(msg) {
+                let _ = w.post_message(&v, "*");
+            }
+        }
+
+        fn take_messages(&mut self) -> Vec<(String, u32, String)> {
+            std::mem::take(&mut *self.inbox.borrow_mut())
+        }
+
+        fn bridged(&self, id: &str, version: u32) -> Option<bool> {
+            self.webs.contains_key(&(id.to_owned(), version)).then_some(true)
+        }
+
+        fn close(&mut self, id: &str, version: u32) {
+            let key: Key = (id.to_owned(), version);
+            if let Some(w) = self.webs.remove(&key) {
+                w.el.remove();
+            }
+            self.web_list.borrow_mut().retain(|(k, _)| *k != key);
+        }
+
         fn end_frame(&mut self, ctx: &egui::Context) {
+            for w in self.webs.values_mut() {
+                let style = w.rect.take().and_then(|(rect, clip)| overlay_style(ctx, rect, clip)).unwrap_or_else(|| HIDDEN.to_owned());
+                if style != w.last_style {
+                    let _ = w.el.set_attribute("style", &style);
+                    w.last_style = style;
+                }
+            }
             let Some(f) = self.frame.clone() else { return };
             if self.rect.is_none() && self.loaded.is_some() && ctx.input(|i| i.time) - self.last_shown > PAUSE_AFTER {
                 f.set_src("about:blank");
@@ -353,37 +530,7 @@ mod web {
                     self.pause_mark(old);
                 }
             }
-            let style = match self.rect.take() {
-                Some((rect, clip)) => {
-                    let visible = clip.intersect(rect);
-                    if visible.width() <= 0.5 || visible.height() <= 0.5 {
-                        None
-                    } else {
-                        // Every visible egui layer above the background (windows, menus,
-                        // tooltips) is cut out of the iframe.
-                        let holes: Vec<egui::Rect> = ctx.memory(|m| {
-                            m.areas().visible_layer_ids().into_iter().filter(|l| l.order != egui::Order::Background).filter_map(|l| m.area_rect(l.id)).collect()
-                        });
-                        let r = visible.translate(-rect.min.to_vec2());
-                        let mut path = format!("M{} {}H{}V{}H{}Z", r.min.x, r.min.y, r.max.x, r.max.y, r.min.x);
-                        for h in holes {
-                            let h = h.intersect(visible);
-                            if h.width() > 0.0 && h.height() > 0.0 {
-                                let h = h.translate(-rect.min.to_vec2());
-                                path.push_str(&format!("M{} {}H{}V{}H{}Z", h.min.x, h.min.y, h.max.x, h.max.y, h.min.x));
-                            }
-                        }
-                        Some(format!(
-                            "position:fixed;left:{}px;top:{}px;width:{}px;height:{}px;border:0;clip-path:path(evenodd,'{path}');z-index:1",
-                            rect.min.x,
-                            rect.min.y,
-                            rect.width(),
-                            rect.height()
-                        ))
-                    }
-                }
-                None => None,
-            };
+            let style = self.rect.take().and_then(|(rect, clip)| overlay_style(ctx, rect, clip));
             let style = style.unwrap_or_else(|| HIDDEN.to_owned());
             if style != self.last_style {
                 let _ = f.set_attribute("style", &style);
@@ -453,7 +600,7 @@ mod tests {
     fn placeholder_draws_and_offers_open() {
         let ctx = egui::Context::default();
         let mut view = Placeholder;
-        let doc = AppDoc { id: "calc", url: None, title: "Calc", version: 2, size: 1200, source: Some("<title>Calc</title>") };
+        let doc = AppDoc { id: "calc", url: None, title: "Calc", version: 2, size: 1200, source: Some("<title>Calc</title>"), web: false, height: None };
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             assert!(!view.show(ui, &Tokens::dark(), &doc).open);
             assert!(view.card(ui, &Tokens::dark(), &doc).is_none());

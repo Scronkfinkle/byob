@@ -37,7 +37,8 @@ pub use agents::{AgentDef, load_agents_dir, merge_agents, parse_agent};
 pub use backend::{Backend, BackendTool};
 pub use commands::{Command, load_commands_dir, split_slash};
 pub use connectors::{
-    Connector, ConnectorContent, ConnectorDraft, ConnectorResult, ConnectorTool, ConnectorToolAdapter, connector_tools, connector_tools_from, parse_connector,
+    Connector, ConnectorContent, ConnectorDraft, ConnectorResult, ConnectorTool, ConnectorToolAdapter, base64_decode, connector_tools, connector_tools_from,
+    connector_tools_on, parse_connector,
 };
 pub use discover::{BUNDLED_DIR, Discovery, Embedded, Plugin, PluginSources, discover, discover_embedded, load_embedded, load_plugin};
 pub use manifest::{MANIFEST, Manifest, ManifestError, McpServerConfig, OLD_MANIFEST, parse_manifest};
