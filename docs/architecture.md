@@ -174,7 +174,7 @@ cheap. `cargo xtask layers` fails if one of our crates depends directly on `toki
 ```
 L6  apps/byob (desktop, --serve, --headless) · apps/byob-web (wasm)
 L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
-L4  agent: engine, turns, tool loop, permissions, approvals
+L4  agent: engine, turns, tool loop, permissions, approvals · sheets (native spreadsheets backend)
 L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python, install_packages, workspace environments)
 L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
 L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store (SQLite or folder) · artifact-wire (helper protocol)
@@ -409,6 +409,18 @@ cells the user changed since). A CSV becomes an `.xlsx` version on its first wri
 grid's edits, pastes and clears go to the backend, which saves drafts. Without IronCalc (no
 network for the venv) the backend still starts, says so in every write and reads CSV/TSV.
 
+**Native twin (`sheets-native`, `crates/sheets` → `byob-sheets`, L4).** The same backend in
+Rust on the `ironcalc` crate (pinned `=0.9.1`, the version the Python package wraps, so both
+compute the same), registered by the app as native backend `sheets` (default feature
+`native-sheets`; not linked into `ui-egui` or the wasm build). Its manifest is the Python
+one's with `"backend": {"native": "sheets"}` and no Python requirements; a test keeps the
+tools, prompt, types, renderers and view identical (`native_backend_tests.rs`). It ships
+switched off (`"enabled": false`); both declare `"provides": "spreadsheets"` (see Plugins).
+Parity: the Python plugin's own test suite runs against the native binary
+(`BYOB_SHEETS_BACKEND`), and `test_parity.py` sends both backends the same calls and compares
+every reply, tree and message (`crates/sheets/tests/parity.rs`). Measured differences:
+`docs/sheets-comparison.md`.
+
 ### Web surfaces: the bridge, MCP Apps, plugin web views
 
 A web surface is HTML that talks to byob: an **MCP App** (an MCP tool whose `_meta.ui.
@@ -618,8 +630,8 @@ byob's own features ship as plugins on the same manifest and registries third pa
 text, the artifacts prompt section), `html-apps` (`text/html` + `guidance.md` + its check +
 the `web` renderer with Open), `charts` (make_chart, the chart type, `native:chart`),
 `markdown`, `images` and `core-tools` (file tools, run_command/run_python/install_*,
-the code-running section), and `sheets` (spreadsheets: a Python backend on IronCalc, see
-Spreadsheets below). `artifacts` and `core-tools` are `locked` (always on: their switch
+the code-running section), `sheets` (spreadsheets: a Python backend on IronCalc, see
+Spreadsheets below) and its native twin `sheets-native` (off by default). `artifacts` and `core-tools` are `locked` (always on: their switch
 is refused with a notice and the UI shows "always on"; a fork with the same id stays locked);
 the others switch like any plugin. Since the hooks phase they also include `prompt` (locked:
 the base prompt, plugins' prompt parts, the user's instructions), `workspace-instructions`
@@ -665,6 +677,32 @@ write its files to that folder (`authoring::fork_files`); the copy wins by id, i
 keep pointing at the same code, and edits to its manifest, `guidance.md` or prompt file apply
 from the next turn. `edit_plugin` on the bundled copy says to fork first; `plugin_status(plugin,
 file)` reads bundled files from memory. Removing the fork brings the built-in back.
+
+**Native backends** (`"backend": {"native": id}`, `byob_plugins::native`,
+`Natives::backends`). In-tree Rust can play a plugin backend's part: a `NativeBackend` gets
+the wire format's messages (`init`, `event` incl. view/client/web/engine events, `request`
+tool/view/hook/web; `after_request`, `shutdown`) as JSON values and answers through an
+`Outbox` with the same `reply`/`view`/`notify`/`notice`/`log`/`fault`/`subscribe`/`artifact`/
+`web` messages. The engine's backend host treats it like a process (`backend::Start::
+Native`): made by its `NativeFactory` on first use, on a thread of its own (tool calls and
+view requests never run on the engine thread), its messages through the same handling as
+stdout lines (size cap, faults, subscriptions, replies to waiting requests); each call runs
+under `catch_unwind`, and a panic is a crash (a fault, pending calls fail, a fresh backend
+from the factory after the process backends' backoff, the same crash limit). Switching off,
+reloading, removal and supersession drop it (`shutdown`). `PluginInfo::backend` shows it like
+any backend (no pid). A plugin with only a native backend isn't materialized to disk. An id
+the app didn't register is a plugin problem. `native::serve_stdio` runs one as a JSON-lines
+process, for tests and benches.
+
+**Default off, and alternatives.** `"enabled": false` ships a plugin switched off (its switch
+in settings overrides that, as for any plugin). Plugins that declare the same `"provides":
+"<thing>"` are alternatives: of the switched-on ones only one is used, decided per
+composition by (the more specific scope, then switched on in settings over on by default,
+then the smaller id); the others stay switched on but contribute nothing and carry
+`PluginInfo::superseded_by` (protocol 13.7). Settings → Plugins shows "not used: X is" with a
+"Use this one" button (switches the other off and this one on); `plugin_status` says so to
+the model; a switch that makes a plugin lose stops its backend (its views reset and clients
+reopen them on the winner).
 
 **Starters.** Manifest `starters [{title, prompt}]` reach clients as `PluginInfo::starters`;
 an empty chat lists the switched-on plugins' starters (up to 6), and a click puts the prompt

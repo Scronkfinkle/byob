@@ -19,6 +19,9 @@ byob_plugin.py` (the Python helper), `crates/plugins/src/pyenv.rs` (Python envir
 }
 ```
 
+- `"backend": {"native": "<id>"}` is in-tree Rust the app registered (`byob_plugins::native`,
+  see `docs/architecture.md`, Native backends): same messages, same lifecycle, run in byob's
+  process on a thread of its own.
 - `"backend": "backend.py"` is a Python script in the plugin folder, run with the plugin's
   Python. The long form is `{"run": "backend.py", "args": [], "events": []}`, or
   `{"command": "node", "args": ["server.js"]}` for any other program (on `PATH`, or a path
@@ -279,5 +282,5 @@ in 1.5 s (pip, no network) and is found again instantly by the next engine run.
 ## Not yet
 
 Concurrent requests inside the helper, process groups (a backend's own children aren't
-killed with it), backends for native built-ins, per-backend resource limits; a card's
+killed with it), per-backend resource limits; a card's
 stored tree isn't updated when the live one changes (the step keeps the first state).

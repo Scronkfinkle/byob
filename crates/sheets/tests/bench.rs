@@ -155,21 +155,16 @@ const CATS: [&str; 3] = ["Food", "Rent", "Fun"];
 fn rows_1k() -> Value {
     let mut rows = vec![json!(["Date", "Category", "Qty", "Price", "Note"])];
     for r in 0..1000 {
-        rows.push(json!([
-            format!("2024-{:02}-{:02}", 1 + r % 12, 1 + r % 28),
-            CATS[r % 3],
-            r % 17 + 1,
-            (r % 50) as f64 + 0.25,
-            format!("row {r}")
-        ]));
+        rows.push(json!([format!("2024-{:02}-{:02}", 1 + r % 12, 1 + r % 28), CATS[r % 3], r % 17 + 1, (r % 50) as f64 + 0.25, format!("row {r}")]));
     }
     Value::Array(rows)
 }
 
-fn rows_100k() -> Value {
+/// Rows `from..=to` of a 1000 × 100 sheet of formulas (each cell = the one to its left + 1).
+fn rows_100k(from: usize, to: usize) -> Value {
     let col = |n: usize| byob_sheets::refs::col_name(n as i64);
     Value::Array(
-        (1..=1000).map(|r| Value::Array(std::iter::once(json!(r)).chain((2..=100).map(|c| json!(format!("={}{r}+1", col(c - 1))))).collect())).collect(),
+        (from..=to).map(|r| Value::Array(std::iter::once(json!(r)).chain((2..=100).map(|c| json!(format!("={}{r}+1", col(c - 1))))).collect())).collect(),
     )
 }
 
@@ -218,13 +213,17 @@ fn workload(h: &mut Host) -> Row {
     }
     row.window_ms = median(times);
 
-    // 100k formulas in one call (the report, error scan, lints and xlsx save included)
+    // 100k formulas in four calls (a request is at most 1 MiB): the report, error scan,
+    // lints and xlsx save of a growing sheet included
     let (_, big) = h.tool("create_sheet", json!({"title": "Big"}));
     let big = big.unwrap();
     let t = Instant::now();
-    let (text, _) = h.tool("write_cells", json!({"sheet": big, "rows": rows_100k()}));
+    for k in 0..4 {
+        let from = 250 * k + 1;
+        let (text, _) = h.tool("write_cells", json!({"sheet": big, "start": format!("A{from}"), "rows": rows_100k(from, from + 249)}));
+        assert!(text.contains("Wrote 25000 cells"), "{}", &text[..200.min(text.len())]);
+    }
     row.write_100k_ms = ms(t.elapsed());
-    assert!(text.contains("Wrote 100000 cells"), "{}", &text[..200.min(text.len())]);
     row.xlsx = PathBuf::from(h.artifact(&big)["path"].as_str().unwrap());
     row
 }
@@ -294,7 +293,7 @@ fn compare_python_and_native_backends() {
         "| write_cells 1 cell on the 1k-row sheet (median of 15) | {:.1} ms | {:.1} ms | {:.1} ms |",
         rp.write_cell_1k_ms, rn.write_cell_1k_ms, rnp.write_cell_1k_ms
     );
-    println!("| write_cells 100k formulas (one call) | {:.0} ms | {:.0} ms | {:.0} ms |", rp.write_100k_ms, rn.write_100k_ms, rnp.write_100k_ms);
+    println!("| write_cells 100k formulas (4 calls of 25k) | {:.0} ms | {:.0} ms | {:.0} ms |", rp.write_100k_ms, rn.write_100k_ms, rnp.write_100k_ms);
     println!("| full recalc of 100k formulas (median of 5) | {py_recalc:.1} ms | {rs_recalc:.1} ms | — |");
     println!("| open the grid view (first draw) | {:.1} ms | {:.1} ms | {:.1} ms |", rp.open_view_ms, rn.open_view_ms, rnp.open_view_ms);
     println!("| page the grid (window event → redraw, median of 20) | {:.2} ms | {:.2} ms | {:.2} ms |", rp.window_ms, rn.window_ms, rnp.window_ms);

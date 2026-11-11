@@ -346,6 +346,13 @@ a backend tool saves a new version by returning `{"text": "…", "artifact": {"i
 path}}`. The bundled `sheets` plugin (spreadsheets, `fork` it to read) works this way, with a
 `grid` node.
 
+Some built-in plugins have a **native twin**: `sheets-native` offers exactly the same tools
+and grid as `sheets`, but its backend is Rust inside byob (`"backend": {"native": "sheets"}`)
+instead of `backend.py`. It ships switched off; both `"provides": "spreadsheets"`, so when
+both are on only one is used (the one switched on in settings wins, then by id) and the other
+shows "not used". To change how spreadsheets work, fork the Python one (`sheets`) and edit
+`backend.py` (no rebuild); the native one changes only with byob's source.
+
 ## 9. Hooks: changing how turns run
 
 A plugin with a backend can sit in the turn pipeline. Declare the hook points in the manifest
