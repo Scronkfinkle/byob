@@ -241,6 +241,7 @@ impl ByobApp {
                     self.engine = Some(w);
                     let sites = self.engine_has(byob_protocol::sites::CAP_VIEW_SITES);
                     self.plugins.sites.set_enabled(sites);
+                    self.artifacts.set_views_enabled(sites);
                 }
                 // No client-side plugin handlers yet.
                 ServerMsg::Plugin { plugin, .. } => self.skip(format!("messages from plugin {plugin:?}")),

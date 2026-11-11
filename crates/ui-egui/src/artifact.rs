@@ -103,6 +103,8 @@ pub struct Artifacts {
     /// Exports waiting for their file.
     pending_export: Vec<(String, u32)>,
     view: Box<dyn AppView>,
+    /// Plugins' live views drawing artifacts (`view:` renderers).
+    views: crate::renderers::view::ArtifactViews,
     exports: Exports,
     link_base: Option<LinkBase>,
     theme: Vec<(&'static str, String)>,
@@ -132,6 +134,7 @@ impl Default for Artifacts {
             reveal: None,
             pending_export: Vec::new(),
             view: appview::default_view(),
+            views: Default::default(),
             exports: Exports::default(),
             link_base: None,
             theme: Vec::new(),
@@ -211,6 +214,7 @@ impl Artifacts {
                 if *chat != self.chat {
                     self.chat.clone_from(chat);
                     self.files.clear();
+                    self.views.clear();
                     self.versions.clear();
                     self.pane.switch_chat(chat.as_deref());
                     self.pending_export.clear();
@@ -221,11 +225,22 @@ impl Artifacts {
             }
             ServerMsg::ArtifactUpdated(a) => {
                 match self.list.iter_mut().find(|x| x.id == a.id) {
-                    Some(x) => *x = a.clone(),
+                    Some(x) => {
+                        // A version saved again (a draft the user keeps editing): fetch it anew.
+                        for v in &a.versions {
+                            if x.version(v.n).is_some_and(|old| old.size != v.size || old.created_at != v.created_at) {
+                                let key = (a.id.clone(), v.n);
+                                self.files.map.remove(&key);
+                                self.files.order.retain(|k| *k != key);
+                            }
+                        }
+                        *x = a.clone();
+                    }
                     None => self.list.push(a.clone()),
                 }
                 self.reveal = Some(a.id.clone());
             }
+            ServerMsg::LiveView(lv) => return self.views.live(lv),
             ServerMsg::ArtifactFile { id, version, data, error } => {
                 let key = (id.clone(), *version);
                 if !matches!(self.files.map.get(&key), Some(File::Requested)) {
@@ -251,7 +266,12 @@ impl Artifacts {
 
     /// Something is still being fetched (for scripted screenshots).
     pub fn loading(&self) -> bool {
-        self.files.map.values().any(|f| matches!(f, File::Requested))
+        self.files.map.values().any(|f| matches!(f, File::Requested)) || self.views.loading()
+    }
+
+    /// The engine handles live views (artifacts drawn by plugins' views need it).
+    pub fn set_views_enabled(&mut self, on: bool) {
+        self.views.set_enabled(on);
     }
 
     /// The chat in view has no artifacts.
@@ -277,7 +297,9 @@ impl Artifacts {
                 Err(text) => self.notices.push((NoticeLevel::Error, text)),
             }
         }
-        (std::mem::take(&mut self.outbox), std::mem::take(&mut self.notices))
+        let mut out = std::mem::take(&mut self.outbox);
+        out.extend(self.views.take());
+        (out, std::mem::take(&mut self.notices))
     }
 
     fn get(&self, id: &str) -> Option<&Artifact> {
@@ -331,6 +353,7 @@ impl Artifacts {
             files: &mut self.files,
             outbox: &mut self.outbox,
             web: &mut *self.view,
+            views: &mut self.views,
             requests: &mut self.requests,
             links: Links { chat: self.chat.as_deref(), base: self.link_base.as_ref(), theme: &self.theme },
         };

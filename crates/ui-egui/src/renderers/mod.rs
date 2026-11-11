@@ -30,6 +30,7 @@ pub mod html_app;
 pub mod image;
 pub mod markdown;
 pub mod text;
+pub mod view;
 
 /// Versions kept in memory before old ones are dropped (they are fetched again if needed).
 const MAX_FILES: usize = 64;
@@ -134,11 +135,18 @@ impl ArtifactRenderers {
         }
         for p in plugins.iter().filter(|p| p.enabled && p.shadowed_by.is_none()) {
             for d in &p.renderers {
-                let id = match d.renderer.as_str() {
-                    "web" | "text" => Some(d.renderer.as_str()),
-                    other => other.strip_prefix("native:"),
+                let renderer = if let Some(view) = d.renderer.strip_prefix("view:") {
+                    // The plugin's own live view, labelled with the view's title.
+                    let title = p.views.iter().find(|v| v.id == view).map(|v| v.title.to_lowercase()).filter(|t| !t.is_empty());
+                    let label = title.unwrap_or_else(|| p.name.to_lowercase());
+                    Some(Rc::new(view::ViewRenderer { plugin: p.id.clone(), view: view.to_owned(), label }) as Rc<dyn ArtifactRenderer>)
+                } else {
+                    let id = match d.renderer.as_str() {
+                        "web" | "text" => Some(d.renderer.as_str()),
+                        other => other.strip_prefix("native:"),
+                    };
+                    id.and_then(|id| self.natives.get(id)).cloned()
                 };
-                let renderer = id.and_then(|id| self.natives.get(id)).cloned();
                 if renderer.is_none() {
                     log::warn!("plugin {}: no renderer {:?} in this client; {} shows as text", p.id, d.renderer, d.content_type);
                 }
@@ -276,6 +284,7 @@ pub struct ArtifactCx<'a> {
     pub(crate) files: &'a mut Files,
     pub(crate) outbox: &'a mut Vec<ClientMsg>,
     pub(crate) web: &'a mut dyn AppView,
+    pub(crate) views: &'a mut view::ArtifactViews,
     pub(crate) requests: &'a mut Vec<Request>,
     pub(crate) links: Links<'a>,
 }
