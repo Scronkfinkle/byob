@@ -7,18 +7,24 @@
 //!   place (two byob processes racing both end up with the same folder).
 //! - Its files are made read-only: edits belong in a fork (`keep_plugin`), not here. Python
 //!   may still add `__pycache__`.
-//! - Older folders of the same plugin are removed when a new one is made (best effort; a
-//!   folder another running byob still uses is left alone if it can't be removed).
+//! - Older folders of the same plugin are removed when a new one is made, once nothing has
+//!   used them for [`PRUNE_AFTER`] (another byob, of another version, may be running from
+//!   one): every use stamps the folder ([`USED`]).
 
 use std::collections::BTreeMap;
 use std::hash::Hasher as _;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use crate::manifest::{path_inside, plugin_id_ok};
 
 /// What marks a materialized folder (and holds its hash).
 pub const MARKER: &str = ".byob-bundled";
+/// Touched whenever a byob uses the folder.
+pub const USED: &str = ".byob-used";
+/// An older folder unused this long is removed.
+pub const PRUNE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Most bytes one materialized plugin may hold.
 const MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -60,6 +66,7 @@ pub fn materialize(root: &Path, id: &str, version: &str, files: &BTreeMap<String
     }
     let dir = folder(root, id, version, files);
     if dir.join(MARKER).is_file() {
+        stamp(&dir);
         return Ok(dir);
     }
     let total: usize = files.values().map(String::len).sum();
@@ -83,8 +90,22 @@ pub fn materialize(root: &Path, id: &str, version: &str, files: &BTreeMap<String
             return Err(format!("can't write {}: {e}", dir.display()));
         }
     }
-    prune(root, id, &dir);
+    stamp(&dir);
+    prune(root, id, &dir, PRUNE_AFTER);
     Ok(dir)
+}
+
+/// Say `dir` is in use (best effort).
+fn stamp(dir: &Path) {
+    if let Err(e) = std::fs::write(dir.join(USED), b"") {
+        log::debug!("couldn't stamp {}: {e}", dir.display());
+    }
+}
+
+/// How long ago a materialized folder was last used.
+fn unused_for(dir: &Path) -> Option<Duration> {
+    let when = std::fs::metadata(dir.join(USED)).or_else(|_| std::fs::metadata(dir.join(MARKER))).and_then(|m| m.modified()).ok()?;
+    Some(SystemTime::now().duration_since(when).unwrap_or_default())
 }
 
 fn write_all(tmp: &Path, files: &BTreeMap<String, String>) -> Result<(), String> {
@@ -134,8 +155,8 @@ fn remove_tree(dir: &Path) {
     }
 }
 
-/// Remove `id`'s other materialized folders (older versions or contents).
-fn prune(root: &Path, id: &str, keep: &Path) {
+/// Remove `id`'s other materialized folders (older versions or contents) unused for `after`.
+fn prune(root: &Path, id: &str, keep: &Path, after: Duration) {
     let Ok(rd) = std::fs::read_dir(root) else { return };
     let prefix = format!("{id}-");
     for e in rd.flatten() {
@@ -145,7 +166,7 @@ fn prune(root: &Path, id: &str, keep: &Path) {
         // check the shape after the prefix (a version, a dash, the hash).
         let Some(rest) = name.strip_prefix(&prefix) else { continue };
         let ours = rest.rsplit_once('-').is_some_and(|(v, h)| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()) && !v.contains('-'));
-        if ours && p != keep && p.join(MARKER).is_file() {
+        if ours && p != keep && p.join(MARKER).is_file() && unused_for(&p).is_some_and(|d| d >= after) {
             remove_tree(&p);
         }
     }
@@ -169,7 +190,8 @@ mod tests {
         let mtime = std::fs::metadata(a.join(MARKER)).unwrap().modified().unwrap();
         assert_eq!(materialize(root.path(), "sheets", "0.2.1", &files("print(1)")).unwrap(), a);
         assert_eq!(std::fs::metadata(a.join(MARKER)).unwrap().modified().unwrap(), mtime);
-        // A new byob version or new contents: a new folder; the old one is pruned.
+        // A new byob version or new contents: a new folder; the old one, unused for long, is pruned.
+        age(&a);
         let b = materialize(root.path(), "sheets", "0.3.0", &files("print(1)")).unwrap();
         assert_ne!(a, b);
         assert!(!a.exists(), "old folder pruned");
@@ -178,10 +200,30 @@ mod tests {
         assert!(c.file_name().unwrap().to_string_lossy().starts_with("sheets-0.3.0-"));
         // Another plugin whose id starts with ours keeps its folder.
         let d = materialize(root.path(), "sheets-extra", "0.3.0", &files("x")).unwrap();
+        age(&d);
         let _ = materialize(root.path(), "sheets", "0.3.0", &files("print(3)")).unwrap();
         assert!(d.exists());
         // No temporary folders left behind.
         assert!(std::fs::read_dir(root.path()).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".tmp")));
+    }
+
+    /// Make `dir` look unused for longer than [`PRUNE_AFTER`].
+    fn age(dir: &Path) {
+        let f = std::fs::File::options().write(true).open(dir.join(USED)).unwrap();
+        f.set_modified(SystemTime::now() - PRUNE_AFTER - Duration::from_secs(60)).unwrap();
+    }
+
+    #[test]
+    fn a_folder_in_recent_use_is_kept() {
+        let root = tempfile::tempdir().unwrap();
+        // another byob (the older version) runs from this one
+        let a = materialize(root.path(), "sheets", "0.2.1", &files("print(1)")).unwrap();
+        let b = materialize(root.path(), "sheets", "0.3.0", &files("print(1)")).unwrap();
+        assert!(a.join(MARKER).is_file() && b.join(MARKER).is_file());
+        // it uses it again later: still recent
+        assert_eq!(materialize(root.path(), "sheets", "0.2.1", &files("print(1)")).unwrap(), a);
+        let _ = materialize(root.path(), "sheets", "0.3.0", &files("print(2)")).unwrap();
+        assert!(a.join(MARKER).is_file());
     }
 
     #[test]
