@@ -1,6 +1,6 @@
 # byob extensibility demos
 
-Hands-on tours of what the `exp/extensibility` branch added: view trees at render sites, long-lived
+Hands-on tours of what 0.3.0 added: view trees at render sites, long-lived
 plugin backends, bundled plugins (fork to edit), turn hooks, environment providers, web
 views and MCP Apps, spreadsheets.
 
