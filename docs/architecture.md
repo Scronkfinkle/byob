@@ -77,7 +77,7 @@ the theme tokens, on the desktop and in the browser alike. Authoring guide: `doc
 - **Schema** (`byob_protocol::tree`, v1): containers `column`, `row`, `card`; leaves `text`,
   `markdown`, `chip`, `button`, `input`, `toggle`, `select`, `progress`, `table` (virtualized,
   editable columns), `grid` (a spreadsheet: virtualized rows and columns served in windows
-  by its owner, see below), `chart` (`ChartSpec`), `separator`, `image` (media path / artifact
+  by its owner; `tree/grid.rs`, Grids in `docs/views.md`), `chart` (`ChartSpec`), `separator`, `image` (media path / artifact
   id), `canvas` (display list in theme colours). Any node may carry a `key`. Colours are only theme
   roles (tones), never values, except `#hex` on a canvas. An `Event` is an action plus the
   value of every named field (form semantics) and an optional cell edit; a `Reply` is a whole

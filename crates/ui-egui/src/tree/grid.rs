@@ -993,7 +993,14 @@ impl Cells<'_> {
                     (Some(CellAlign::Right), _) | (None, CellType::Number) => Align2::RIGHT_CENTER,
                     _ => Align2::LEFT_CENTER,
                 };
-                let default = if ty == CellType::Error { t.danger } else { t.text };
+                // On a cell's own fill the theme's text colour may not read (a light fill in a
+                // dark theme): dark or light text by the fill's lightness.
+                let fill = cell.and_then(|c| c.fill.as_deref()).map(|f| canvas::color(t, Some(f), Color32::TRANSPARENT)).filter(|c| c.a() > 0);
+                let default = match (ty, fill) {
+                    (CellType::Error, _) => t.danger,
+                    (_, Some(f)) => contrast_text(f),
+                    _ => t.text,
+                };
                 let color = canvas::color(t, cell.and_then(|c| c.color.as_deref()), default);
                 let bold = cell.is_some_and(|c| c.bold);
                 let font = if bold { FontId::new(self.font.size, self.bold.clone()) } else { self.font.clone() };
@@ -1085,4 +1092,21 @@ fn paint_text(p: &egui::Painter, cell: Rect, text: &str, look: Look, pad: f32) {
     };
     let at = align.anchor_size(Pos2::new(x, cell.center().y), galley.size()).min;
     p.with_clip_rect(cell.intersect(p.clip_rect())).galley(at, galley, color);
+}
+
+/// Text that reads on `fill`: near-black on light fills, near-white on dark ones.
+fn contrast_text(fill: Color32) -> Color32 {
+    let lum = 0.2126 * f32::from(fill.r()) + 0.7152 * f32::from(fill.g()) + 0.0722 * f32::from(fill.b());
+    if lum > 140.0 { Color32::from_rgb(0x1a, 0x1a, 0x1a) } else { Color32::from_rgb(0xf2, 0xf2, 0xf2) }
+}
+
+#[cfg(test)]
+mod contrast_tests {
+    use super::*;
+
+    #[test]
+    fn text_on_a_fill_reads_in_any_theme() {
+        assert_eq!(contrast_text(Color32::from_rgb(0xdd, 0xeb, 0xf7)), Color32::from_rgb(0x1a, 0x1a, 0x1a));
+        assert_eq!(contrast_text(Color32::from_rgb(0x1f, 0x3a, 0x5f)), Color32::from_rgb(0xf2, 0xf2, 0xf2));
+    }
 }

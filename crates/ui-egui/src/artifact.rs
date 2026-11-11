@@ -269,6 +269,20 @@ impl Artifacts {
         self.files.map.values().any(|f| matches!(f, File::Requested)) || self.views.loading()
     }
 
+    /// Scripted runs: show the newest artifact whose id, title or file name starts with
+    /// `prefix` (case-insensitive) in the pane.
+    pub fn show_matching(&mut self, prefix: &str) -> bool {
+        let p = prefix.to_lowercase();
+        let found = self.list.iter().rev().find(|a| [&a.id, &a.title, &a.filename].iter().any(|s| s.to_lowercase().starts_with(&p))).map(|a| a.id.clone());
+        match found {
+            Some(id) => {
+                self.actions.push(Action::Select { id, version: None });
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The engine handles live views (artifacts drawn by plugins' views need it).
     pub fn set_views_enabled(&mut self, on: bool) {
         self.views.set_enabled(on);

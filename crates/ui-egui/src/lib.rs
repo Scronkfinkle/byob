@@ -413,6 +413,7 @@ impl ByobApp {
             }
             "plugin-pane" => return self.plugins.sites.open_pane(""),
             _ if name.starts_with("plugin-pane:") => return self.plugins.sites.open_pane(name.trim_start_matches("plugin-pane:")),
+            _ if name.starts_with("artifact:") => return self.artifacts.show_matching(name.trim_start_matches("artifact:")),
             _ if name.starts_with("plugin:") => {
                 self.plugins.open(Some(name.trim_start_matches("plugin:")));
                 self.show_settings = true;
@@ -448,7 +449,7 @@ impl ByobApp {
     /// Names [`ByobApp::open_panel`] takes once plugins are known: `plugin-pane` (the first
     /// plugin pane), `plugin-pane:<plugin>[/<view>]`, `plugin:<id>` (Settings → Plugins, open
     /// on that plugin).
-    pub const PLUGIN_PANELS: &'static str = "plugin-pane, plugin-pane:<plugin>[/<view>], plugin:<id>";
+    pub const PLUGIN_PANELS: &'static str = "plugin-pane, plugin-pane:<plugin>[/<view>], plugin:<id>, artifact:<prefix>";
 
     /// Scripted runs: open the settings at an appearance section (`knobs`, `advanced`).
     pub fn reveal_settings(&mut self, section: &str) {

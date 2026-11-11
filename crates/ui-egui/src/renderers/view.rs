@@ -42,7 +42,10 @@ impl ViewRenderer {
 
     fn draw(&self, ui: &mut egui::Ui, cx: &mut ArtifactCx<'_>, place: Place) {
         let r = self.view_ref(cx);
-        let salt = egui::Id::unique(("artifact-view", place == Place::Card, &cx.artifact.id, &self.plugin, &self.view));
+        // The pane's state follows the artifact across versions; each card (one per step,
+        // each pinned to its version) has its own.
+        let version = if place == Place::Card { cx.version } else { 0 };
+        let salt = egui::Id::unique(("artifact-view", place == Place::Card, &cx.artifact.id, version, &self.plugin, &self.view));
         let t = cx.t;
         match place {
             Place::Card => {

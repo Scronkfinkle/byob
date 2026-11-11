@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Spreadsheets with formulas (IronCalc): .xlsx artifacts, .csv/.tsv tables, an editable grid, and tools to describe, read, write, fill, restructure and format sheets.",
   "icon": "sheet",
+  "prompt": "Spreadsheets: for a .csv, .tsv or .xlsx file in the workspace (or a spreadsheet artifact), use the sheet tools with its path or id as `sheet`: describe_sheet to look, write_cells/fill to add columns or formulas (the file is opened as a spreadsheet beside the chat; the original stays as it is). Prefer them over editing such files with code.",
   "backend": "backend.py",
   "python": { "requirements": ["ironcalc==0.9.1"] },
   "artifact_types": [
