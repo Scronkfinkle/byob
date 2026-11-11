@@ -19,6 +19,9 @@ mod adapt;
 mod adapt_tests;
 pub mod attachments;
 mod authoring;
+#[cfg(test)]
+mod backend_tests;
+mod backends;
 mod channel;
 mod chats;
 mod compact;
@@ -244,6 +247,12 @@ enum Input {
     Connected {
         key: String,
         result: Result<(Arc<dyn byob_plugins::Connector>, Vec<byob_plugins::ConnectorTool>), String>,
+    },
+    /// The backend of the plugin in `dir` said something, started or exited.
+    Backend {
+        dir: PathBuf,
+        plugin: String,
+        out: byob_plugins::backend::Out,
     },
 }
 
@@ -564,8 +573,19 @@ impl Engine {
             authoring::register(&mut tools, &env);
         }
         let plugin_values = Self::load_plugin_values(config.paths.as_ref());
+        let sink_inbox = inbox.clone();
+        let sink: backends::SinkFor = Arc::new(move |dir, plugin| {
+            let (inbox, dir, plugin) = (sink_inbox.clone(), dir.to_path_buf(), plugin.to_owned());
+            Arc::new(move |out| {
+                let _ = inbox.send(Input::Backend { dir: dir.clone(), plugin: plugin.clone(), out });
+            })
+        });
         let mut engine = Self {
-            ext: config.plugins.map(extensions::Extensions::new),
+            ext: config.plugins.map(|p| {
+                let mut ext = extensions::Extensions::new(p);
+                ext.sink = Some(sink);
+                ext
+            }),
             plugin_values,
             step_views: BTreeMap::new(),
             channels: config.channels,
@@ -728,6 +748,9 @@ impl Engine {
         }
         self.send_to(id, ServerMsg::Queue(self.queue_view(chat.as_deref())));
         self.send_extensions(id, true);
+        if let Some(c) = &chat {
+            self.emit(c, "chat_opened", serde_json::json!({"client": id}));
+        }
         // Artifacts come last: clients take it as the end of opening a chat.
         self.send_to(id, ServerMsg::Artifacts { chat, artifacts });
         self.gc();
@@ -968,6 +991,7 @@ impl Engine {
                 self.step_views.insert(chat, (tool, view));
             }
             Input::Connected { key, result } => self.server_connected(&key, result),
+            Input::Backend { dir, plugin, out } => self.backend_out(&dir, &plugin, out),
         }
     }
 
@@ -1201,7 +1225,9 @@ impl Engine {
             }
         }
         for a in changed {
+            let event = serde_json::json!({"artifact": a.id, "title": a.title, "content_type": a.content_type(), "version": a.latest().map(|v| v.n)});
             self.send_viewers(chat, ServerMsg::ArtifactUpdated(a));
+            self.emit(chat, "artifact_updated", event);
         }
     }
 
@@ -1538,6 +1564,7 @@ impl Engine {
         );
         self.chat_changed(&chat);
         self.viewer_states(&chat);
+        self.emit(&chat, "turn_started", serde_json::json!({"entry": reply}));
         let setup = turn::Setup {
             llm,
             history,
@@ -1845,6 +1872,7 @@ impl Engine {
             live.tally.elapsed_ms = live.tally.elapsed_ms.saturating_add(stats.map_or(0, |s| s.elapsed_ms));
         }
         self.send_viewers(&run.chat, ServerMsg::EntryFinished { id, error: error.clone(), stats });
+        self.emit(&run.chat, "turn_finished", serde_json::json!({"entry": id, "error": error, "stopped": run.cancel.load(Ordering::Relaxed)}));
         self.chat_changed(&run.chat);
         self.viewer_states(&run.chat);
         self.send_usage(&run.chat);
@@ -1911,7 +1939,10 @@ impl Engine {
     /// Client `id` sent plugin `plugin` a message: hand it to the plugin's handler.
     fn plugin_message(&mut self, id: ClientId, plugin: &str, msg: serde_json::Value) {
         let Some(handler) = self.channels.get(plugin) else {
-            self.notice(id, format!("no plugin {plugin:?} takes messages in this engine"));
+            // not a native one: the plugin's backend, if it has one
+            if let Err(e) = self.backend_message(id, plugin, msg) {
+                self.notice(id, e);
+            }
             return;
         };
         for out in handler.handle(id, msg) {

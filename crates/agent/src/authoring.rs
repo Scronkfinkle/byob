@@ -586,6 +586,7 @@ fn new_info(id: &str, dir: &Path) -> PluginInfo {
         agents: Vec::new(),
         commands: Vec::new(),
         servers: Vec::new(),
+        backend: None,
         settings: Vec::new(),
         network: false,
         problems: Vec::new(),
@@ -660,6 +661,28 @@ fn describe(p: &PluginInfo, detail: bool) -> String {
     }
     if let Some(e) = &p.last_error {
         s.push_str(&format!("\n  last error: {}", clip(e, 600)));
+    }
+    if let Some(b) = &p.backend {
+        let starts = if b.starts > 1 { format!(", started {} times", b.starts) } else { String::new() };
+        s.push_str(&format!("\n  backend: {}{starts}", b.state));
+        if let Some(e) = &b.error {
+            s.push_str(&format!("\n  backend error: {}", clip(e, 1500)));
+        }
+        for f in &b.faults {
+            s.push_str(&format!("\n  backend fault: {}", clip(f, 800)));
+        }
+        let trouble = matches!(b.state.as_str(), "crashed" | "failed") || !b.faults.is_empty();
+        let lines = if detail {
+            25
+        } else if trouble {
+            8
+        } else {
+            0
+        };
+        let tail = byob_plugins::backend::last_lines(&b.stderr, lines);
+        if lines > 0 && !tail.is_empty() {
+            s.push_str(&format!("\n  backend stderr (last lines):\n    {}", tail.replace('\n', "\n    ")));
+        }
     }
     if detail {
         s.push_str(&format!("\n  folder: {}\n  files: {}", p.dir, list(&file_list(Path::new(&p.dir)).into_iter().take(MAX_LISTED).collect::<Vec<_>>())));

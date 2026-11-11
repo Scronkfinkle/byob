@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10 (artifact types and renderers are registrations)
+Last updated: 2026-11-10 (plugin backends: long-lived processes, Python requirements)
 
 ## Shape
 
@@ -35,7 +35,7 @@ bumps (`crates/protocol/src/version.rs`, `view.rs`).
   minor is informational.
 - **Caps** are feature strings (`[a-z0-9_.-]`, ≤ 64 of ≤ 64 chars). A feature both sides must
   understand is used only when both list its cap (`version::shared`); unknown caps are
-  ignored. Today: `views`, `plugin_channel`. Minors so far: 1 — `Artifact::content_type`.
+  ignored. Today: `views`, `plugin_channel`. Minors so far: 1 — `Artifact::content_type`; 2 — `PluginInfo::backend`.
 - **Compatibility rules.** Bump the major only for changes an older peer can't survive (a
   renamed/removed field, a changed meaning). Everything else is additive: new fields are
   `#[serde(default)]` (and skipped when empty); new messages and features go behind a cap
@@ -60,9 +60,10 @@ bumps (`crates/protocol/src/version.rs`, `view.rs`).
   carry free-form JSON (≤ 256 KiB, `plugin` a plugin id) behind `plugin_channel`. The engine
   routes a client's message to the handler registered for that plugin
   (`EngineConfig::channels`, `PluginHandler::handle` → `PluginOut::Reply`/`Broadcast`); there
-  are none built in yet, and a plugin without one gets "no plugin "x" takes messages in this
-  engine". Plugin messages only go to clients that listed the cap; the UI sends them only
-  when the engine did (`ByobApp::send_plugin`). Long-lived plugin backends will register here.
+  are none built in yet). A plugin without a native handler gets the message in its backend
+  process (see Plugins: backends); one without either gets "plugin x can't take messages:
+  …". Plugin messages only go to clients that listed the cap; the UI sends them only
+  when the engine did (`ByobApp::send_plugin`).
 - **Stale browser UIs.** `cargo xtask web` stamps the major into `index.html`; byob refuses to
   serve a UI built for another major (`byob-server`'s `webui.rs`) and explains how to rebuild.
 
@@ -423,8 +424,23 @@ answers yes), and `TrustPlugins` decides from the UI. When a plugin's files chan
 
 **Settings and secrets.** Values come from `settings.json` `plugin_settings.<id>` and, for
 settings marked `secret`, `secrets.json` `plugin_settings."plugin:<id>"`. They reach only the
-plugin's own processes (environment variables of its scripts, `${KEY}` in MCP server
-configs). Clients and the model only see whether each is set.
+plugin's own processes (environment variables of its scripts and backend, `${KEY}` in MCP
+server configs). Clients and the model only see whether each is set.
+
+**Backends.** A plugin may declare a `backend` (a Python script, or any command): one
+long-lived process per plugin copy speaking JSON lines (`docs/plugins-backend.md`). The
+engine makes it when a composition sees the plugin on and trusted, starts it on first use on
+a thread of its own (`byob_plugins::backend::Backend`: reader, writer and stderr threads,
+bounded lines, restart with backoff, give-up after 5 crashes in a row), and stops it when the
+plugin changes, is switched off, distrusted, removed, its settings change, or on Reload. It
+gets the plugin channel's client messages and the engine events it subscribed to
+(`chat_opened`, `turn_started`, `turn_finished`, `step_done`, `artifact_updated`;
+`Engine::emit`); tools declared `"run": "backend"` are requests to it (`BackendTool`). What it
+sends (`view`, `notify`, `notice`) goes to clients as `ServerMsg::Plugin`/notices; its state,
+faults and stderr tail are `PluginInfo::backend` and part of `plugin_status`.
+`python.requirements` get a cached venv per requirements hash under `<data>/plugin-python`
+(uv, else venv + pip; `byob_plugins::pyenv`), used by the backend and the plugin's script
+tools, which all have byob's `byob_plugin.py` helper on `PYTHONPATH`.
 
 ### For clients (protocol 13)
 

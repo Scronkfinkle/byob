@@ -24,15 +24,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use byob_plugins::authoring::{Fnv, fingerprint, fingerprint_into};
+use byob_plugins::manifest::ToolKind;
 use byob_plugins::mcp::McpSandbox;
 use byob_plugins::{
-    AgentDef, Command, Connector, ConnectorTool, Discovery, LoadError, McpServerConfig, Plugin, PluginRef, PluginSources, Skill, ToolNames, UseSkillTool,
+    AgentDef, BackendTool, Command, Connector, ConnectorTool, Discovery, LoadError, McpServerConfig, Plugin, PluginPython, PluginRef, PluginSources, PyEnvs,
+    Skill, ToolNames, UseSkillTool,
 };
-use byob_protocol::{PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, ServerInfo, ServerState, SlashItem, SlashKind};
+use byob_protocol::{BackendInfo, PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, ServerInfo, ServerState, SlashItem, SlashKind};
 use byob_sandbox::Sandbox;
 use byob_store::PluginTrust;
 use byob_tools::{Registry, Tool};
 use byob_types::config::Effective;
+
+use crate::backends::{Backends, Make, SinkFor};
 
 /// The built-in skill on writing plugins.
 pub const AUTHORING_SKILL: &str = include_str!("plugin_authoring.md");
@@ -67,6 +71,9 @@ pub struct PluginsConfig {
     pub python: Vec<OsString>,
     /// Plugin scripts and local MCP servers run in this sandbox (`None`: unconfined).
     pub sandbox: Option<Sandbox>,
+    /// Where plugins' Python environments and byob's helper module go
+    /// (`<data>/plugin-python`); `None`: a temporary folder.
+    pub python_root: Option<PathBuf>,
 }
 
 /// One set of plugin folders (a scope) and what was found there.
@@ -242,6 +249,12 @@ pub(crate) struct Extensions {
     /// Tool names of each plugin at its last composition, by plugin folder.
     pub tools_of: BTreeMap<PathBuf, BTreeSet<String>>,
     builtin_skill: Skill,
+    /// Plugins' Python (helper module, requirements environments).
+    pub pyenvs: Arc<PyEnvs>,
+    /// Plugin backends by plugin folder.
+    pub backends: Backends,
+    /// Where backends' messages go (the engine's inbox); `None`: no backends.
+    pub sink: Option<SinkFor>,
 }
 
 /// The scratch root used when byob has no data folder (tests, throwaway runs).
@@ -269,7 +282,12 @@ impl Extensions {
                 meta: BTreeMap::new(),
             }
         });
+        let python_root = cfg.python_root.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("byob-python-{}", std::process::id())));
+        let pyenvs = Arc::new(PyEnvs::new(python_root, cfg.python.clone()));
         Self {
+            pyenvs,
+            backends: Backends::default(),
+            sink: None,
             cfg,
             scratch_root,
             global,
@@ -295,6 +313,7 @@ impl Extensions {
     /// A chat was deleted: forget its scratch plugins (and delete them).
     pub(crate) fn forget_chat(&mut self, chat: &str) {
         self.chats.remove(chat);
+        self.backends.stop_chat(chat);
         if !chat.is_empty() && !chat.contains(['/', '\\', '.']) {
             let _ = std::fs::remove_dir_all(self.scratch_root.join(chat));
         }
@@ -343,20 +362,25 @@ impl Extensions {
         for (_, dir) in &changed {
             self.pool.drop_dir(dir);
             self.last_error.remove(dir);
+            self.backends.stop_dir(dir, "its plugin changed");
         }
         if any {
             self.pool.retry_failed(None);
+            self.pyenvs.forget_failed();
         }
         (changed, any)
     }
 
-    /// Forget every set's fingerprint so the next refresh reads everything again.
+    /// Forget every set's fingerprint so the next refresh reads everything again; backends
+    /// start afresh and failed Python environments are tried again.
     pub(crate) fn invalidate(&mut self) {
         self.global.fp = None;
         for s in self.workspaces.values_mut().chain(self.chats.values_mut()) {
             s.fp = None;
         }
         self.pool.retry_failed(None);
+        self.backends.stop_all("plugins were reloaded");
+        self.pyenvs.forget_failed();
     }
 
     /// The plugins a chat sees in `scope` (loaded sets only).
@@ -372,7 +396,7 @@ impl Extensions {
 
     /// Build a chat's tools and prompt from the base registry and its plugins.
     pub(crate) fn compose(&mut self, input: &ComposeIn<'_>) -> Composed {
-        let Self { cfg, global, workspaces, chats, pool, last_error, tools_of, builtin_skill, .. } = self;
+        let Self { cfg, global, workspaces, chats, pool, last_error, tools_of, builtin_skill, pyenvs, backends, sink, .. } = self;
         let mut out = Composed { tools: input.base.clone(), ..Default::default() };
         let mut names = ToolNames::new(input.base.specs().into_iter().map(|s| s.name).chain(RESERVED_NAMES.iter().map(|s| (*s).to_owned())));
         // Most specific set first; each keeps its folder errors.
@@ -431,9 +455,13 @@ impl Extensions {
                     }
                     agent_lists.push(plugin.agents.clone());
                 }
-                let has_code = !plugin.manifest.tools.is_empty() || !plugin.manifest.mcp_servers.is_empty();
+                let has_code = !plugin.manifest.tools.is_empty() || !plugin.manifest.mcp_servers.is_empty() || plugin.manifest.backend.is_some();
+                let mut backend_info = None;
+                let mut python_problem = None;
                 if on && trusted {
-                    for tool in byob_plugins::python_tools_in(plugin, values, &cfg.python, &mut names, cfg.sandbox.as_ref()) {
+                    let python = PluginPython::new(pyenvs, &plugin.manifest.requirements, &plugin.dir);
+                    python_problem = python.failure();
+                    for tool in byob_plugins::python_tools_with(plugin, values, &cfg.python, &mut names, cfg.sandbox.as_ref(), Some(&python)) {
                         let name = tool.spec().name;
                         let declared = tool.declared().name.clone();
                         out.owners.insert(name.clone(), Owner { dir: plugin.dir.clone(), plugin: id.clone(), scope: set.scope, declared });
@@ -442,6 +470,28 @@ impl Extensions {
                     }
                     let plugin_ref = PluginRef::new(plugin, values);
                     let missing = PluginRef::missing_settings(plugin, values);
+                    if let (Some(decl), Some(sink)) = (&plugin.manifest.backend, sink.as_ref()) {
+                        let make = Make {
+                            plugin,
+                            decl,
+                            scope: set.scope,
+                            chat: input.chat,
+                            workspace: input.workspace,
+                            fp,
+                            plugin_ref: &plugin_ref,
+                            python: &python,
+                            sink,
+                        };
+                        let (bi, tools) = backend_tools(backends, &make, &missing, &mut names);
+                        backend_info = Some(bi);
+                        for tool in tools {
+                            let name = tool.spec().name;
+                            let declared = tool.declared().name.clone();
+                            out.owners.insert(name.clone(), Owner { dir: plugin.dir.clone(), plugin: id.clone(), scope: set.scope, declared });
+                            tool_names.push(name);
+                            out.tools.register(tool);
+                        }
+                    }
                     for (server, config) in &plugin.manifest.mcp_servers {
                         if !missing.is_empty() {
                             servers.push(ServerInfo {
@@ -499,6 +549,8 @@ impl Extensions {
                 tools_of.insert(plugin.dir.clone(), tool_names.iter().cloned().collect());
                 let mut info = info(plugin, set.scope, input, &tool_names, fp, last);
                 info.servers = servers;
+                info.backend = backend_info;
+                info.problems.extend(python_problem);
                 out.infos.push(info);
             }
         }
@@ -531,6 +583,28 @@ impl Extensions {
         pool.gc();
         out
     }
+}
+
+/// The backend of `m.plugin` (made if needed) and the tools it serves; off while required
+/// settings are `missing`.
+fn backend_tools(backends: &mut Backends, m: &Make<'_>, missing: &[String], names: &mut ToolNames) -> (BackendInfo, Vec<Arc<BackendTool>>) {
+    if !missing.is_empty() {
+        return (BackendInfo { state: "off".into(), error: Some(format!("fill in: {}", missing.join(", "))), ..Default::default() }, Vec::new());
+    }
+    let backend = backends.ensure(m);
+    let id = m.plugin.id();
+    let tools = m
+        .plugin
+        .manifest
+        .tools
+        .iter()
+        .filter(|t| t.kind == ToolKind::Backend)
+        .map(|t| {
+            let name = names.claim(&t.name, &byob_plugins::names::namespaced(id, &t.name));
+            Arc::new(BackendTool::new(name, m.plugin_ref.clone(), t.clone(), Arc::clone(&backend)))
+        })
+        .collect();
+    (crate::backends::info(&backend), tools)
 }
 
 /// The `/` menu: `/compact`, then commands, then skills; a name only once.
@@ -621,6 +695,7 @@ fn info(plugin: &Plugin, scope: PluginScope, input: &ComposeIn<'_>, tools: &[Str
             agents: plugin.agents.iter().map(|a| a.name.clone()).collect(),
             commands: plugin.commands.iter().map(|c| c.name.clone()).collect(),
             servers: Vec::new(),
+            backend: None,
             settings: m
                 .settings
                 .iter()

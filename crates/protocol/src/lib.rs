@@ -25,8 +25,8 @@ pub use delegation::{Delegation, DelegationState, DelegationUpdate};
 pub use env::{ContainerEnv, EnvAction, EnvSupport, WorkspaceEnv};
 pub use media::{MediaContent, MediaKind, MediaRef};
 pub use plugins::{
-    Extensions, PluginAction, PluginCard, PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, PluginTest, ServerInfo, ServerState,
-    SlashItem, SlashKind,
+    BackendInfo, Extensions, PluginAction, PluginCard, PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, PluginTest, ServerInfo,
+    ServerState, SlashItem, SlashKind,
 };
 pub use queue::{ChatQueue, QueuePause, QueuedMessage};
 pub use usage::{ChatUsage, Compaction};

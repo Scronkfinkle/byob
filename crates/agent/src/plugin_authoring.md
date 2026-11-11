@@ -101,8 +101,66 @@ file)` reads one, and these two fix it in place. Don't make a new plugin beside 
 - MCP servers: `command`/`args`/`env` for a local program (stdio), or `url` (+ `headers`) for a
   remote one. `${KEY}` is replaced by the setting `KEY`. Their tools appear as
   `<plugin>__<tool>` a moment after the server starts.
+- Python packages: `"python": {"requirements": ["requests>=2.31"]}`. byob installs them into
+  the plugin's own environment the first time it runs; if that fails, `plugin_status` shows
+  pip's output as a problem.
 
-## 4. Skills and subagents
+## 4. A backend: Python that keeps running
+
+A script tool starts fresh for every call. A **backend** is one Python program that byob
+starts when the plugin is first used and keeps running: it keeps its state in variables, it
+can serve tools (fast), answer the plugin's UI, and hear about turns. Write it with byob's
+helper module `byob_plugin` (always importable):
+
+`byob-plugin.json`:
+```json
+{
+  "id": "counter",
+  "name": "Counter",
+  "backend": "backend.py",
+  "tools": [
+    {"name": "bump", "description": "Add to the counter and say the total",
+     "params": {"type": "object", "properties": {"by": {"type": "integer"}}},
+     "run": "backend"}
+  ]
+}
+```
+
+`backend.py`:
+```python
+import byob_plugin as byob
+
+total = 0
+
+@byob.tool
+def bump(by: int = 1):
+    global total
+    total += by
+    byob.send_view({"type": "text", "text": f"Total: {total}"})  # shown in the plugin's pane
+    return f"total is {total}"
+
+@byob.on_message            # a message from the plugin's UI
+def ui(msg, client):
+    byob.send({"total": total}, client=client)
+
+@byob.on("turn_finished")   # also: chat_opened, turn_started, step_done, artifact_updated
+def turn_done(event):
+    byob.log("turn", event["entry"], "finished in chat", event["chat"])
+
+byob.run()
+```
+
+- `"run": "backend"` tools call the function of the same name with the model's arguments
+  as keyword arguments; return text (or `{"text": ..., "files": [...]}`).
+- Never write to stdout yourself: it carries byob's messages. `print()` goes to the
+  backend's log once `byob.run()` runs. `byob.log(...)` adds a line; `byob.fault(text)`
+  reports a problem; `byob.notice(text)` shows a short notice to the user.
+- `byob.settings` has the plugin's settings (secret ones only as environment variables).
+- If it crashes, the tool call fails with its last output and byob starts it again;
+  `plugin_status(plugin)` shows `backend: crashed`, the error and the last lines of its
+  output. Fix the file with `edit_plugin`: the backend restarts with the new code.
+
+## 5. Skills and subagents
 
 - Skill: `skills/<name>/SKILL.md` with frontmatter `name:` and `description:` (when to use it),
   then step-by-step instructions. Listed in the system prompt; loaded with `use_skill`.
@@ -113,9 +171,10 @@ file)` reads one, and these two fix it in place. Don't make a new plugin beside 
   template with `$ARGUMENTS` (all arguments) and `$1`, `$2`… filled in. Users also type
   `/<skill> task` to ask you to use a skill.
 
-## 5. Status, keeping and removing
+## 6. Status, keeping and removing
 
-- `plugin_status(plugin?)`: scope, on/off, tools, skills, missing settings, problems, last error.
+- `plugin_status(plugin?)`: scope, on/off, tools, skills, missing settings, problems, last error,
+  the backend's state, faults and last output.
 - `keep_plugin(plugin, scope="workspace"|"global", new_id?)`: move a chat plugin so later chats
   have it. The user is asked first; only do it when the user wants to keep it. Give a
   descriptive `new_id` when keeping the `scratch` plugin.

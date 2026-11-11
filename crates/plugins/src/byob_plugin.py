@@ -25,7 +25,7 @@ that loop for you:
 
     byob.run()
 
-print() goes to byob's log of the plugin (stderr), never to byob itself.
+In a backend (once run() is called), print() goes to byob's log of the plugin (stderr).
 """
 
 import json
@@ -33,8 +33,7 @@ import sys
 import threading
 import traceback
 
-_out = sys.stdout
-sys.stdout = sys.stderr  # stray print()s must not break the protocol
+_out = sys.stdout  # the protocol's stream; run() sends print() to stderr instead
 _lock = threading.Lock()
 
 VERSION = 1
@@ -160,6 +159,7 @@ def _request(msg):
 def run(handlers=None):
     """Serve byob until it closes stdin. `handlers` may also map names to functions:
     {"tool:add": add, "message": fn, "start": fn, "view": fn, "turn_finished": fn}."""
+    sys.stdout = sys.stderr  # stray print()s must not break the protocol
     for key, fn in (handlers or {}).items():
         if key.startswith("tool:"):
             _tools[key[5:]] = fn
