@@ -6,8 +6,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-/// Give up waiting for the conversation to settle after this long and shoot anyway.
-const SETTLE_TIMEOUT: Duration = Duration::from_secs(180);
+/// Give up waiting for the conversation to settle after this long and shoot anyway
+/// (`BYOB_SETTLE_SECS` for slow models).
+fn settle_timeout() -> Duration {
+    Duration::from_secs(std::env::var("BYOB_SETTLE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(180))
+}
 /// A message that hasn't made the app busy after this long was refused or finished at once.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -151,7 +154,7 @@ impl Runner {
         // first), one at a time: the next once the app was busy and has settled again.
         if let Some((at, was_busy)) = self.waiting {
             let busy = was_busy || app.busy();
-            let finished = at.elapsed() >= SETTLE_TIMEOUT || if busy { !app.busy() && app.settled() } else { at.elapsed() >= START_TIMEOUT };
+            let finished = at.elapsed() >= settle_timeout() || if busy { !app.busy() && app.settled() } else { at.elapsed() >= START_TIMEOUT };
             self.waiting = (!finished).then_some((at, busy));
         }
         if self.waiting.is_none()
@@ -203,7 +206,7 @@ impl Runner {
             return;
         }
         let elapsed = self.started.elapsed();
-        let settled = app.settled() || elapsed >= SETTLE_TIMEOUT;
+        let settled = app.settled() || elapsed >= settle_timeout();
         if !self.script.then.is_empty() {
             // Give the chat a moment after settling so artifacts and apps have loaded.
             if !settled || elapsed < Duration::from_secs(2) || self.next_at.is_some_and(|t| Instant::now() < t) {
