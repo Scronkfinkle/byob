@@ -647,6 +647,10 @@ fn describe(p: &PluginInfo, detail: bool) -> String {
     if !p.agents.is_empty() {
         s.push_str(&format!("; subagents: {}", list(&p.agents)));
     }
+    if !p.views.is_empty() {
+        let views: Vec<String> = p.views.iter().map(|v| format!("{} \"{}\" ({})", v.site.label(), v.id, v.title)).collect();
+        s.push_str(&format!("\n  views: {}", views.join(", ")));
+    }
     for srv in &p.servers {
         s.push_str(&format!("\n  MCP server {}: {:?}{}", srv.name, srv.state, srv.error.as_ref().map(|e| format!(" ({e})")).unwrap_or_default()));
     }

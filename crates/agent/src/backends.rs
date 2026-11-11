@@ -167,7 +167,8 @@ fn make(m: &Make<'_>) -> Backend {
     env.insert("HOB_PLUGIN_DIR".into(), d);
     let decl = m.decl.clone();
     let python = m.python.clone();
-    let prepare_dir = dir.clone();
+    // absolute: it is also the working folder, so a relative one (--plugin DIR) would resolve twice
+    let prepare_dir = std::path::absolute(&dir).unwrap_or_else(|_| dir.clone());
     let prepare = Box::new(move || {
         let mut env = env.clone();
         let mut argv = match &decl.run {

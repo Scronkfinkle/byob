@@ -94,7 +94,7 @@ fn a_pane_opens_once_shows_the_live_tree_and_sends_events() {
     let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
     assert!(has(&found, "its backend is failed"));
     // another chat: everything resolves anew
-    s.apply(&ServerMsg::ChatOpened { chat: None, workspace: None });
+    s.peek(&ServerMsg::ChatOpened { chat: None, workspace: None });
     texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
     assert_eq!(s.take(), vec![ClientMsg::OpenView { view: r }]);
     // the plugin switched off: its views go, the pane closes
@@ -173,7 +173,7 @@ fn image_nodes_load_through_media_and_artifacts() {
         json!({"id": "logo", "kind": "image", "title": "Logo", "filename": "logo.png", "versions": [{"n": 2, "path": "logo.png", "created_at": 0}]}),
     )
     .unwrap();
-    s.apply(&ServerMsg::Artifacts { chat: None, artifacts: vec![art] });
+    s.peek(&ServerMsg::Artifacts { chat: None, artifacts: vec![art] });
     s.apply(&ServerMsg::LiveView(LiveView { view: r.clone(), tree: Some(t0), ..Default::default() }));
     let ctx = egui::Context::default();
     let t = Tokens::dark();
@@ -187,8 +187,8 @@ fn image_nodes_load_through_media_and_artifacts() {
     image::RgbaImage::new(4, 3).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
     let data = byob_protocol::media::encode(&png);
     // others see these too (not consumed)
-    assert!(!s.apply(&ServerMsg::Media { path: "plots/a.png".into(), content: MediaContent::Image { mime: "image/png".into(), data: data.clone() } }));
-    assert!(!s.apply(&ServerMsg::ArtifactFile { id: "logo".into(), version: 2, data: Some(data), error: None }));
+    s.peek(&ServerMsg::Media { path: "plots/a.png".into(), content: MediaContent::Image { mime: "image/png".into(), data: data.clone() } });
+    s.peek(&ServerMsg::ArtifactFile { id: "logo".into(), version: 2, data: Some(data), error: None });
     let found = texts(&ctx, vec![], &mut |ui| s.pane(ui, &t, false));
     assert!(!has(&found, "Loading…"));
     assert!(!s.loading());

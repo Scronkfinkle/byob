@@ -69,6 +69,9 @@ pub struct Sites {
     pane_open: bool,
     active: Option<ViewRef>,
     images: SiteImages,
+    /// How wide each header status item was last drawn (the header lays out right to left,
+    /// so an item gets exactly its width).
+    status_w: HashMap<ViewRef, f32>,
 }
 
 impl Sites {
@@ -77,10 +80,19 @@ impl Sites {
         self.enabled = on;
     }
 
-    /// Take in a server message; true if it was only for us. Media, artifact files and lists
-    /// are only looked at (others use them too).
-    pub fn apply(&mut self, msg: &ServerMsg) -> bool {
+    /// Look at a server message others handle too (call it for every message, before
+    /// anything else takes it): another chat opened, artifact lists, media and files.
+    pub fn peek(&mut self, msg: &ServerMsg) {
         self.images.peek(msg);
+        if let ServerMsg::ChatOpened { .. } = msg {
+            // The engine forgot what we had open: the new chat's views resolve anew.
+            self.slots.clear();
+            self.images.clear();
+        }
+    }
+
+    /// Take in a server message; true if it was only for us (`LiveView`).
+    pub fn apply(&mut self, msg: &ServerMsg) -> bool {
         match msg {
             ServerMsg::LiveView(lv) => {
                 self.live(lv.clone());
@@ -88,12 +100,6 @@ impl Sites {
             }
             ServerMsg::Extensions(e) => {
                 self.extensions(e);
-                false
-            }
-            ServerMsg::ChatOpened { .. } => {
-                // The engine forgot what we had open: the new chat's views resolve anew.
-                self.slots.clear();
-                self.images.clear();
                 false
             }
             _ => false,
@@ -243,12 +249,17 @@ impl Sites {
         let items: Vec<Declared> = self.declared.iter().filter(|d| d.decl.site == Site::Status).cloned().collect();
         for d in items.iter().rev() {
             let r = d.view_ref();
-            ui.allocate_ui_with_layout(vec2(STATUS_WIDTH, ui.available_height()), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let w = self.status_w.get(&r).copied().unwrap_or(STATUS_WIDTH);
+            let shown = ui.allocate_ui_with_layout(vec2(w, ui.available_height()), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.set_max_width(STATUS_WIDTH);
                 self.draw(ui, t, &r, None);
-            })
-            .response
-            .on_hover_text(format!("{} ({})", d.title(), d.plugin_name));
+            });
+            let used = shown.response.rect.width().clamp(4.0, STATUS_WIDTH);
+            if (used - w).abs() > 0.5 {
+                self.status_w.insert(r, used);
+                ui.ctx().request_repaint();
+            }
+            shown.response.on_hover_text(format!("{} ({})", d.title(), d.plugin_name));
         }
     }
 

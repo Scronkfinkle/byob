@@ -8,10 +8,81 @@ code gets an **event** and answers with a new view or a few **patches**.
 The code lives in `byob_protocol::tree` (schema, decoding, patches, diff) and
 `byob_ui_egui::tree` (the renderer). This page is the authoring guide.
 
-## A view plugin in Python
+## Views in a plugin (render sites)
 
-A view plugin is a Python 3 script (standard library only). byob starts it once and keeps it
-running; it talks JSON lines on stdin/stdout.
+A plugin declares its views in `byob-plugin.json` and draws them in its backend
+(`docs/plugins-backend.md`) with byob's helper `byob_plugin`. A to-do pane beside the chat
+and a chip in the header with the count:
+
+`byob-plugin.json`:
+```json
+{
+  "id": "todo",
+  "name": "To-do",
+  "backend": "backend.py",
+  "views": [
+    {"site": "pane", "id": "list", "title": "To-do"},
+    {"site": "status", "id": "count"}
+  ]
+}
+```
+
+`backend.py`:
+```python
+import byob_plugin as byob
+
+items = []
+
+@byob.view("list")                 # draws the view with id "list"
+def todo_list():
+    rows = []
+    for i, text in enumerate(items):
+        rows.append({"type": "row", "children": [
+            {"type": "text", "text": text},
+            {"type": "button", "label": "Done", "action": f"done:{i}"}]})
+    return {"type": "column", "children": [
+        {"type": "row", "children": [
+            {"type": "input", "name": "new", "placeholder": "New item", "submit": "add"},
+            {"type": "button", "label": "Add", "action": "add", "primary": True}]},
+        *rows]}
+
+@byob.on_event("list")             # a click or Enter in that view
+def list_event(event):
+    action = event["action"]
+    if action == "add":
+        text = event["values"].get("new", "").strip()
+        if text:
+            items.append(text)
+        return {"values": {"new": ""}}   # clear the input
+    if action.startswith("done:"):
+        items.pop(int(action[5:]))
+
+@byob.view("count")                # the chip in the header
+def count():
+    return {"type": "chip", "text": f"{len(items)} to do", "tone": "accent"}
+
+byob.run()
+```
+
+- **Sites:** `pane` (a tab of the side pane beside the chat, opened from its title in the
+  header), `status` (a header item: one `chip` or a short `text`), `settings` (a section
+  under the plugin in Settings → Plugins), `card` (on a step of one of the plugin's backend
+  tools: `return byob.card(text, "<card view id>", key=...)`, drawn by a `@byob.view` that
+  takes the key).
+- **One owner.** byob's engine keeps every view's tree; each window or tab shows the same
+  thing and keeps only what is being typed, scroll positions and selections. A view is
+  redrawn whole after every event; byob sends windows only what changed.
+- **Mistakes** become faults in the plugin's status (`plugin_status`) and a warning line at
+  the site; a view that can't be had at all (the backend crashed, a traceback in the view
+  function) shows a small error box.
+
+`examples/plugins/todo-demo` in byob's repository has every site, a settings section and
+cards (run byob with `--plugin examples/plugins/todo-demo`).
+
+## A view process in Python (low level)
+
+Outside a plugin backend, a view process is a Python 3 script (standard library only) that
+talks JSON lines on stdin/stdout.
 
 - On start, print ONE line: `{"view": <node>}`.
 - Then loop over stdin lines. Each line is an event:
@@ -165,4 +236,5 @@ byob never rejects a view. It draws what it can and reports what it had to fix, 
 
 A tree can be shown on a step of a reply as a view of kind `byob.tree` (version 1; the tree
 is the view's `data`, a markdown summary its fallback for clients that can't draw trees).
-Other render sites (side pane, settings sections, status items) take the same trees.
+A plugin's card carries its `owner` (plugin, view, key): clients that can show live views
+draw the live one and send its events to the plugin; others show the stored tree.

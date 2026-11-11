@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-10 (plugin backends; view trees: declarative UI drawn natively)
+Last updated: 2026-11-10 (render sites: plugins' live views in the pane, header, settings and on steps)
 
 ## Shape
 
@@ -35,7 +35,9 @@ bumps (`crates/protocol/src/version.rs`, `view.rs`).
   minor is informational.
 - **Caps** are feature strings (`[a-z0-9_.-]`, ≤ 64 of ≤ 64 chars). A feature both sides must
   understand is used only when both list its cap (`version::shared`); unknown caps are
-  ignored. Today: `views`, `plugin_channel`. Minors so far: 1 — `Artifact::content_type`; 2 — `PluginInfo::backend`.
+  ignored. Today: `views`, `plugin_channel`, `view_sites`. Minors so far: 1 — `Artifact::content_type`; 2 —
+  `PluginInfo::backend`; 3 — render sites (`PluginInfo::views`, `View::owner`, `OpenView`/`CloseView`/
+  `ViewEvent`, `LiveView`).
 - **Compatibility rules.** Bump the major only for changes an older peer can't survive (a
   renamed/removed field, a changed meaning). Everything else is additive: new fields are
   `#[serde(default)]` (and skipped when empty); new messages and features go behind a cap
@@ -97,8 +99,57 @@ the theme tokens, on the desktop and in the browser alike. Authoring guide: `doc
   reply's `values` force it), so replies never clobber typing.
 - **On steps** a tree is a `View` of kind `byob.tree` (data = the tree, fallback = a markdown
   summary). The `ViewRegistry` draws it (decoded once per change, its state kept per step and
-  view) and queues its events (`take_tree_events`); routing them to their owner, and the other
-  render sites (pane, settings section, status item), come with the plugin backends.
+  view). A plugin's card carries `View::owner` and is drawn live (below); an ownerless tree's
+  events are only queued (`take_tree_events`).
+
+## Render sites: plugins' live views
+
+A plugin declares views in its manifest (`views: [{site, id, title, icon}]`) and its backend
+draws them as view trees (`docs/plugins-backend.md`, authoring: `docs/views.md`). Sites are
+places in the client: **pane** (a tab of a side panel beside the chat and the artifact pane,
+opened from its title in the header; full screen on phones), **status** (an item in the
+header's actions, sized to its tree), **settings** (a section under the plugin in Settings →
+Plugins) and **card** (on a step of the plugin's backend tool). Clients learn the views from
+`PluginInfo::views` (switched-on, trusted plugins with a backend show them).
+
+- **One owner** (the ipywidgets rule). The engine (`crates/agent/src/live_views.rs`) keeps
+  each view's tree by (plugin folder, view id, key) — the folder, so a chat's scratch copy
+  and the global copy are separate; the key is `""` except for cards. Clients keep only
+  transient state (`TreeState`), so every window shows the same view.
+- **Routing.** A site that draws a view the first time sends `OpenView` (only when both
+  sides list `view_sites`). The engine resolves it in the client's chat (the plugin copy
+  that wins, its declared view, its backend), subscribes the client, and answers
+  `LiveView { tree }` from its cache — or sends the backend `request view` on a thread of
+  its own and answers when the reply comes (`Input::ViewReply`). User actions are
+  `ViewEvent { view, event }`, handed to the backend as an `event` of kind `view`. The
+  backend answers (or changes a view on its own) with a `view` message: a whole tree or
+  patches. The engine applies it to the cached tree, diffs old against new (`tree::diff`)
+  and sends `LiveView { patch }` to every subscribed client; `values` (forced field values)
+  only to the client whose event caused it. A client is unsubscribed on `CloseView`, when
+  it opens another chat (it opens what it shows again after `ChatOpened`) and when it
+  leaves; a plugin that stops declaring a view gets `CloseView` from the client.
+- **Caching.** A tree stays cached with no one showing it (a reconnecting or second client
+  gets it at once). It is dropped — clients get `LiveView { reset }` and open it again —
+  when the backend it came from is replaced (reload, edit, switch, settings, trust,
+  removal) or restarts after a crash (`sweep_views` after every plugin change).
+- **Faults.** Trees are decoded on the way in (`tree::decode`/`Reply::parse`); what had to
+  be fixed goes into the backend's status (`Backend::report_fault` → `BackendInfo::faults`
+  → `plugin_status`, so the model can fix its own view) and to clients as
+  `LiveView::faults` (a warning line at the site). A failed view request (a traceback in the
+  view function, a crashed backend) is `LiveView::error`, a small error box at the site,
+  and a fault too. Undeclared views and cards are faults.
+- **Cards.** A backend tool returns `{"text", "card": tree, "card_view"?, "card_key"?}`; the
+  tool host passes it to the engine through the backend's sink, the engine caches it as a
+  live view and attaches it to the tool's step (`step_views`) as a `byob.tree` view with
+  `owner`. The step stores that first state (older clients and the transcript show it);
+  clients with the cap draw the live one over it.
+- **Images** in trees load like the transcript's: `GetMedia` for workspace paths (the engine
+  allows a path a view the client has open shows), `GetArtifact` (latest version) for
+  artifacts, decoded once into textures (`byob_ui_egui::sites`).
+- **Client** (`crates/ui-egui/src/sites.rs`, in `PluginsUi`): `Sites::peek` sees every
+  message first (chat switches, artifact lists, media), `apply` takes `LiveView`s;
+  `side_panel`/`pane`, `pane_toggles`, `status_items`, `settings_sections`, `card` are the
+  sites. Scripted runs: `--open-panel plugin-pane[:plugin[/view]]`, `plugin:<id>`.
 
 ## Concurrency: no async runtime
 
@@ -470,7 +521,8 @@ gets the plugin channel's client messages and the engine events it subscribed to
 (`chat_opened`, `turn_started`, `turn_finished`, `step_done`, `artifact_updated`;
 `Engine::emit`); tools declared `"run": "backend"` are requests to it (`BackendTool`). What it
 sends (`view`, `notify`, `notice`) goes to clients as `ServerMsg::Plugin`/notices; its state,
-faults and stderr tail are `PluginInfo::backend` and part of `plugin_status`.
+faults and stderr tail are `PluginInfo::backend` and part of `plugin_status`. Its views
+are drawn at render sites (above).
 `python.requirements` get a cached venv per requirements hash under `<data>/plugin-python`
 (uv, else venv + pip; `byob_plugins::pyenv`), used by the backend and the plugin's script
 tools, which all have byob's `byob_plugin.py` helper on `PYTHONPATH`.
@@ -494,6 +546,8 @@ view (or the new chat a client is about to start). `PluginInfo`:
 | `tools` | model-facing tool names in use (empty when off or untrusted) |
 | `skills`, `agents`, `commands` | names (`commands`: its `commands/*.md`) |
 | `servers` | `{ name, state: connecting/ready/failed/off, tools, error }` |
+| `backend` | its backend process: state, starts, error, faults, stderr tail (13.2) |
+| `views` | `{ id, site: pane/settings/status/card, title, icon }` it declares (13.3; see Render sites) |
 | `settings` | `{ key, label, help, secret, required, set }`, never the value |
 | `network` | its tools may use the internet |
 | `problems` | the loader's messages (missing script, bad skill, "needs settings: …") |

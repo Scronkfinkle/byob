@@ -130,7 +130,7 @@ fn a_backend_tool_attaches_a_live_card_to_its_step() {
     let (mut a, _) = hello(&h);
     let entry = turn(&mut a, "remind me to call mum");
     let step = entry.steps.iter().find(|s| s.tool == "todo_add").unwrap();
-    assert!(step.detail.starts_with("Added 'call mum'"), "{}", step.detail);
+    assert_eq!(step.detail, "Added 'call mum'. The list now has 1 items.");
     let view = step.views.first().expect("the card");
     assert_eq!(view.kind, tree::KIND);
     let owner = view.owner.clone().expect("owned by the plugin");
@@ -229,4 +229,41 @@ fn clients_without_the_cap_get_no_live_views() {
     while let Some(m) = old.try_recv() {
         assert!(!matches!(m, ServerMsg::LiveView(_)), "{m:?}");
     }
+}
+
+#[test]
+fn the_authoring_guides_views_example_works() {
+    if !have_python() {
+        return;
+    }
+    let block = crate::backend_tests::guide_block;
+    let h = harness(vec![Reply::Text("hi")], |root| {
+        let dir = root.join("todo");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("byob-plugin.json"), block("## 5. Views", "json")).unwrap();
+        fs::write(dir.join("backend.py"), block("## 5. Views", "python")).unwrap();
+    });
+    let (mut a, ext) = hello(&h);
+    let p = find(&ext, "todo");
+    assert!(p.problems.is_empty(), "{:?}", p.problems);
+    let list = ViewRef::new("todo", "list", "");
+    let count = ViewRef::new("todo", "count", "");
+    let mut t = open(&mut a, &list);
+    let mut chip = open(&mut a, &count);
+    assert!(text(&chip).contains("0 to do"));
+    for item in ["milk", "bread"] {
+        a.send(ClientMsg::ViewEvent { view: list.clone(), event: event("add", json!({"new": item})) });
+        let lv = live(&mut a, &list);
+        assert_eq!(lv.values.get("new"), Some(&json!("")));
+        apply(&mut t, lv);
+        apply(&mut chip, live(&mut a, &count));
+    }
+    assert!(text(&t).contains("bread") && text(&chip).contains("2 to do"), "{}", text(&chip));
+    a.send(ClientMsg::ViewEvent { view: list.clone(), event: event("done:0", json!({})) });
+    apply(&mut t, live(&mut a, &list));
+    apply(&mut chip, live(&mut a, &count));
+    assert!(!text(&t).contains("milk") && text(&chip).contains("1 to do"));
+    // and the docs page shows the same example
+    let views_md = include_str!("../../../docs/views.md");
+    assert!(views_md.contains(&block("## 5. Views", "python")), "docs/views.md and the authoring guide differ");
 }

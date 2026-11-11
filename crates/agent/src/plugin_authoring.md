@@ -1,11 +1,12 @@
 ---
 name: plugin-authoring
-description: How to extend byob with plugins - Python tools (make_tool), skills, MCP servers, subagents, settings and API keys, and keeping a plugin for later chats.
+description: How to extend byob with plugins - Python tools (make_tool), backends, views (a pane, a header chip, a settings section, step cards), skills, MCP servers, subagents, settings and API keys, and keeping a plugin for later chats.
 ---
 # Writing byob plugins
 
 A plugin is a folder with a `byob-plugin.json` manifest plus files. It can add tools (Python
-scripts or MCP servers), skills, subagents and one system-prompt line. Plugins live in three
+scripts or MCP servers), UI (views: a side pane, a header chip, a settings section, cards on
+steps), skills, subagents and one system-prompt line. Plugins live in three
 places; the same id resolves chat > workspace > global:
 
 - this chat's scratch plugins: what you make with `make_tool` (no approval needed);
@@ -136,7 +137,6 @@ total = 0
 def bump(by: int = 1):
     global total
     total += by
-    byob.send_view({"type": "text", "text": f"Total: {total}"})  # shown in the plugin's pane
     return f"total is {total}"
 
 @byob.on_message            # a message from the plugin's UI
@@ -160,7 +160,91 @@ byob.run()
   `plugin_status(plugin)` shows `backend: crashed`, the error and the last lines of its
   output. Fix the file with `edit_plugin`: the backend restarts with the new code.
 
-## 5. Skills and subagents
+## 5. Views: a pane, a header chip, a settings section, cards
+
+A backend can show UI. Declare each view in the manifest with a `site` and an `id`, and draw
+it in `backend.py` with a function that returns a **view tree** (a dict; the node types are
+below). byob draws it in the user's theme and sends you what the user clicks.
+
+Sites: `"pane"` (a tab beside the chat; the user opens it from its title in the header),
+`"status"` (a small item in the header: use one `chip` or `text`), `"settings"` (a section
+under the plugin in Settings → Plugins), `"card"` (on the step of one of its tools).
+
+A to-do pane and a chip with the count. Write both files with `write_plugin_file`:
+
+`byob-plugin.json`:
+```json
+{
+  "id": "todo",
+  "name": "To-do",
+  "backend": "backend.py",
+  "views": [
+    {"site": "pane", "id": "list", "title": "To-do"},
+    {"site": "status", "id": "count"}
+  ]
+}
+```
+
+`backend.py`:
+```python
+import byob_plugin as byob
+
+items = []
+
+@byob.view("list")                 # draws the view with id "list"
+def todo_list():
+    rows = []
+    for i, text in enumerate(items):
+        rows.append({"type": "row", "children": [
+            {"type": "text", "text": text},
+            {"type": "button", "label": "Done", "action": f"done:{i}"}]})
+    return {"type": "column", "children": [
+        {"type": "row", "children": [
+            {"type": "input", "name": "new", "placeholder": "New item", "submit": "add"},
+            {"type": "button", "label": "Add", "action": "add", "primary": True}]},
+        *rows]}
+
+@byob.on_event("list")             # a click or Enter in that view
+def list_event(event):
+    action = event["action"]
+    if action == "add":
+        text = event["values"].get("new", "").strip()
+        if text:
+            items.append(text)
+        return {"values": {"new": ""}}   # clear the input
+    if action.startswith("done:"):
+        items.pop(int(action[5:]))
+
+@byob.view("count")                # the chip in the header
+def count():
+    return {"type": "chip", "text": f"{len(items)} to do", "tone": "accent"}
+
+byob.run()
+```
+
+How it works:
+- `@byob.view("list")` draws view `list`. After every event (and every tool call) byob calls
+  all your view functions again and updates what changed, so just change your variables in
+  `@byob.on_event` and return nothing. Return `{"values": {"new": ""}}` to clear a field.
+- An event is `{"action": ..., "values": {...}, "key": ...}`: `action` is the button's
+  `action` (or an input's `submit`), `values` has the text of every `input` (by `name`),
+  every `toggle` (true/false) and `select`. Put an index in the action (`"done:3"`) to tell
+  rows apart.
+- Nodes: `column`/`row`/`card` (with `children`; card has a `title`), `text` (`text`,
+  `style`: body/heading/strong/small/mono, `tone`), `markdown`, `chip` (`text`, `tone`),
+  `button` (`label`, `action`, `primary`/`danger`), `input` (`name`, `placeholder`,
+  `submit`), `toggle` (`name`, `label`, `value`, `action`), `select` (`name`, `options`,
+  `value`, `action`), `progress` (`value` 0..1), `table`, `chart`, `image`, `separator`.
+  `tone`: normal, dim, accent, success, warning, danger. Every node needs its `"type"`.
+- A card on a tool's step: declare `{"site": "card", "id": "result"}`, draw it with
+  `@byob.view("result")` taking the card's key (`def result(key):`), and end the tool with
+  `return byob.card("text for you", "result", key="some-id")`. Clicks on it are events of
+  view `result` with that `key`.
+- Mistakes in a tree don't break anything: byob draws what it can and `plugin_status`
+  lists what it had to fix (`backend fault: view list: …`) and any traceback. Fix the file
+  with `edit_plugin`; the backend restarts with the new code and the views redraw.
+
+## 6. Skills and subagents
 
 - Skill: `skills/<name>/SKILL.md` with frontmatter `name:` and `description:` (when to use it),
   then step-by-step instructions. Listed in the system prompt; loaded with `use_skill`.
@@ -171,10 +255,10 @@ byob.run()
   template with `$ARGUMENTS` (all arguments) and `$1`, `$2`… filled in. Users also type
   `/<skill> task` to ask you to use a skill.
 
-## 6. Status, keeping and removing
+## 7. Status, keeping and removing
 
-- `plugin_status(plugin?)`: scope, on/off, tools, skills, missing settings, problems, last error,
-  the backend's state, faults and last output.
+- `plugin_status(plugin?)`: scope, on/off, tools, views, skills, missing settings, problems,
+  last error, the backend's state, faults and last output.
 - `keep_plugin(plugin, scope="workspace"|"global", new_id?)`: move a chat plugin so later chats
   have it. The user is asked first; only do it when the user wants to keep it. Give a
   descriptive `new_id` when keeping the `scratch` plugin.

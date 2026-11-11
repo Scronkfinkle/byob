@@ -110,7 +110,7 @@ def item_event(event):
 @byob.tool
 def todo_add(text: str):
     item = add(text)
-    return byob.card(f"Added {text!r} (item {item['id']}); {len(todos)} on the list", "item", key=str(item["id"]))
+    return byob.card(f"Added {text!r}. The list now has {len(todos)} items.", "item", key=str(item["id"]))
 
 
 byob.run()

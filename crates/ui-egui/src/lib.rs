@@ -218,6 +218,7 @@ impl ByobApp {
 
     fn pump(&mut self) {
         while let Some(msg) = self.conn.try_recv() {
+            self.plugins.sites.peek(&msg);
             if matches!(msg, ServerMsg::ChatOpened { .. }) {
                 self.workspaces.chat_changed();
                 // The queued message being edited stays queued in the chat we leave.
@@ -1327,6 +1328,35 @@ mod app_tests {
         app.open_connection();
         frame(&ctx, &mut app, 1000.0);
         assert!(app.show_settings && !app.reveal_connection);
+    }
+
+    /// Plugins' header items open their views once the engine says it has live views, and
+    /// again in another chat (the engine forgets a client's views when it switches chats).
+    #[test]
+    fn plugin_status_items_open_their_views_and_reopen_in_another_chat() {
+        use byob_protocol::{BackendInfo, Extensions, PluginOrigin, PluginScope, Site, ViewDecl, ViewRef};
+        let fake = Fake::default();
+        let mut app = ByobApp::new(Box::new(fake.clone()), "test");
+        let mut p = plugins::tests::info("todo", PluginScope::Global, PluginOrigin::User);
+        p.views = vec![ViewDecl { id: "count".into(), site: Site::Status, title: "Count".into(), icon: String::new() }];
+        p.backend = Some(BackendInfo { state: "running".into(), ..Default::default() });
+        fake.inbox.lock().unwrap().extend([
+            ServerMsg::Welcome(Welcome::current()),
+            ServerMsg::State(state(Link::Ok, true)),
+            ServerMsg::Extensions(Box::new(Extensions { plugins: vec![p], ..Default::default() })),
+        ]);
+        let ctx = egui::Context::default();
+        let opens = |fake: &Fake| {
+            fake.sent.lock().unwrap().iter().filter(|m| matches!(m, ClientMsg::OpenView { view } if *view == ViewRef::new("todo", "count", ""))).count()
+        };
+        frame(&ctx, &mut app, 1200.0);
+        frame(&ctx, &mut app, 1200.0);
+        assert_eq!(opens(&fake), 1);
+        assert!(!app.settled(), "waiting for the view");
+        fake.inbox.lock().unwrap().push(ServerMsg::ChatOpened { chat: None, workspace: None });
+        frame(&ctx, &mut app, 1200.0);
+        frame(&ctx, &mut app, 1200.0);
+        assert_eq!(opens(&fake), 2);
     }
 
     /// A newer engine's messages are skipped, not fatal; plugin messages go out only when the

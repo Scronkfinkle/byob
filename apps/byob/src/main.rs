@@ -39,7 +39,9 @@
 //!                             folder through the New workspace form, then send the messages in it
 //!     --open-panel NAME       open new-workspace, new-workspace-container, workspace-settings,
 //!                             chat-settings, more-menu (the header's ⋯ menu) or plugins
-//!                             (Settings → Plugins) once the messages are done
+//!                             (Settings → Plugins) once the messages are done; also
+//!                             plugin-pane[:PLUGIN[/VIEW]] (a plugin's pane) and plugin:ID
+//!                             (Settings → Plugins open on that plugin)
 //!     --draft TEXT            type TEXT into the composer once the messages are done, unsent
 //! ```
 //!
@@ -215,8 +217,9 @@ fn parse_args() -> Result<Args, String> {
             // Hidden, for testing: open a workspace view (new-workspace, workspace-settings, …).
             "--open-panel" => {
                 let v = it.next().ok_or("--open-panel needs a name")?;
-                if !byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == v) {
-                    return Err(format!("unknown panel {v:?} ({})", byob_ui_egui::ByobApp::PANELS));
+                let plugin_panel = v == "plugin-pane" || v.starts_with("plugin-pane:") || v.starts_with("plugin:");
+                if !plugin_panel && !byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == v) {
+                    return Err(format!("unknown panel {v:?} ({}, {})", byob_ui_egui::ByobApp::PANELS, byob_ui_egui::ByobApp::PLUGIN_PANELS));
                 }
                 args.script.open_panel = Some(v);
             }
