@@ -37,7 +37,7 @@ pub(super) struct Grid<'a> {
     pub name: &'a str,
     pub rows: u32,
     pub cols: u32,
-    pub blocks: &'a [GridBlock],
+    pub blocks: Blocks<'a>,
     pub frozen_rows: u32,
     pub frozen_cols: u32,
     pub widths: &'a BTreeMap<u32, f32>,
@@ -46,6 +46,44 @@ pub(super) struct Grid<'a> {
     pub headers: bool,
     pub height: Option<f32>,
     pub selection: Option<GridRange>,
+}
+
+/// A grid's blocks with their widths worked out once (a block's width is its longest row:
+/// [`GridBlock::width`] walks every row, too slow per cell).
+pub(super) struct Blocks<'a> {
+    list: &'a [GridBlock],
+    /// (row, col, height, width) of each block, in order.
+    spans: Vec<(u32, u32, u32, u32)>,
+}
+
+impl<'a> Blocks<'a> {
+    pub(super) fn new(list: &'a [GridBlock]) -> Self {
+        Self { list, spans: list.iter().map(|b| (b.row, b.col, b.height(), b.width())).collect() }
+    }
+
+    /// The first block covering (`r`, `c`), and the cell's place in it.
+    fn find(&self, r: u32, c: u32) -> Option<(&'a GridBlock, usize, usize)> {
+        let i = self.spans.iter().position(|&(br, bc, h, w)| r >= br && c >= bc && r - br < h && c - bc < w)?;
+        let (br, bc, _, _) = *self.spans.get(i)?;
+        Some((self.list.get(i)?, usize::try_from(r - br).ok()?, usize::try_from(c - bc).ok()?))
+    }
+
+    /// The cell at (`r`, `c`): `None` if not loaded, `Some(None)` if empty.
+    fn get(&self, r: u32, c: u32) -> Option<Option<&'a GridCell>> {
+        let (b, i, j) = self.find(r, c)?;
+        Some(b.cells.get(i).and_then(|row| row.get(j)))
+    }
+
+    fn covers(&self, r: u32, c: u32) -> bool {
+        self.find(r, c).is_some()
+    }
+
+    /// One past the last row and column any block reaches.
+    fn ends(&self) -> (u32, u32) {
+        let max_r = self.spans.iter().map(|&(r, _, h, _)| r.saturating_add(h)).max().unwrap_or(0);
+        let max_c = self.spans.iter().map(|&(_, c, _, w)| c.saturating_add(w)).max().unwrap_or(0);
+        (max_r, max_c)
+    }
 }
 
 /// One grid's client state (in the [`super::TreeState`], by grid name, so it survives
@@ -114,21 +152,39 @@ enum Drag {
     HBar(f32),
 }
 
-/// Column positions with sparse widths: no per-column allocation.
+/// Column positions with sparse widths: no per-column allocation, and the columns with their
+/// own width summed up once per frame (a cell's left edge is a binary search, not a sum).
 struct Cols<'a> {
     widths: &'a BTreeMap<u32, f32>,
     dw: f64,
     n: u32,
+    /// The columns with their own width, in order, and what the ones before each add to the
+    /// default widths (one more entry: all of them).
+    keys: Vec<u32>,
+    extra: Vec<f64>,
 }
 
-impl Cols<'_> {
+impl<'a> Cols<'a> {
+    fn new(widths: &'a BTreeMap<u32, f32>, dw: f64, n: u32) -> Self {
+        let keys: Vec<u32> = widths.keys().copied().collect();
+        let mut extra = Vec::with_capacity(keys.len().saturating_add(1));
+        let mut sum = 0.0;
+        extra.push(sum);
+        for w in widths.values() {
+            sum += f64::from(*w) - dw;
+            extra.push(sum);
+        }
+        Self { widths, dw, n, keys, extra }
+    }
+
     fn w(&self, c: u32) -> f64 {
         self.widths.get(&c).map_or(self.dw, |w| f64::from(*w))
     }
 
     /// Left edge of column `c` from column 0.
     fn x(&self, c: u32) -> f64 {
-        f64::from(c) * self.dw + self.widths.range(..c).map(|(_, w)| f64::from(*w) - self.dw).sum::<f64>()
+        let before = self.keys.partition_point(|k| *k < c);
+        f64::from(c) * self.dw + self.extra.get(before).copied().unwrap_or(0.0)
     }
 
     /// The column at `x` from column 0 (clamped to the sheet).
@@ -268,21 +324,14 @@ impl Geo<'_> {
     }
 }
 
-/// The cell at (`r`, `c`): `None` if not loaded, `Some(None)` if empty.
-fn lookup(blocks: &[GridBlock], r: u32, c: u32) -> Option<Option<&GridCell>> {
-    blocks.iter().find_map(|b| b.get(r, c))
-}
-
-fn covered(blocks: &[GridBlock], rows: &[std::ops::Range<u32>], cols: &[std::ops::Range<u32>]) -> bool {
-    rows.iter().cloned().flatten().all(|r| cols.iter().cloned().flatten().all(|c| blocks.iter().any(|b| b.covers(r, c))))
+fn covered(blocks: &Blocks<'_>, rows: &[std::ops::Range<u32>], cols: &[std::ops::Range<u32>]) -> bool {
+    rows.iter().cloned().flatten().all(|r| cols.iter().cloned().flatten().all(|c| blocks.covers(r, c)))
 }
 
 fn shape_of(g: &Grid<'_>) -> u64 {
     let mut h = std::hash::DefaultHasher::new();
     (g.rows, g.cols).hash(&mut h);
-    for b in g.blocks {
-        (b.row, b.col, b.height(), b.width()).hash(&mut h);
-    }
+    g.blocks.spans.hash(&mut h);
     h.finish()
 }
 
@@ -322,7 +371,7 @@ fn shown<'c>(gs: &'c GridState, cell: Option<&'c GridCell>, r: u32, c: u32) -> &
 
 /// What editing a cell starts with (and the formula bar shows).
 fn input_of(gs: &GridState, g: &Grid<'_>, r: u32, c: u32) -> String {
-    let cell = lookup(g.blocks, r, c).flatten();
+    let cell = g.blocks.get(r, c).flatten();
     let v = cell.map_or("", |c| c.v.as_str());
     match gs.pending.get(&(r, c)) {
         Some(p) if p.was == v => p.text.clone(),
@@ -391,7 +440,7 @@ impl Run<'_, '_> {
         let row_h = ui.text_style_height(&egui::TextStyle::Body) + 2.0 * t.pad(3.0);
         let bar_h = if cx.st.compact { 0.0 } else { self.formula_bar(ui, t, &font) };
         let g = self.g;
-        let cols = Cols { widths: g.widths, dw: f64::from(g.default_width), n: g.cols };
+        let cols = Cols::new(g.widths, f64::from(g.default_width), g.cols);
         // Row numbers as wide as the biggest.
         let hx = if g.headers {
             let digits = "8".repeat(u64::from(g.rows).to_string().len().max(2));
@@ -551,7 +600,7 @@ impl Run<'_, '_> {
         if text == was_input {
             return;
         }
-        let was = lookup(self.g.blocks, r, c).flatten().map(|c| c.v.clone()).unwrap_or_default();
+        let was = self.g.blocks.get(r, c).flatten().map(|c| c.v.clone()).unwrap_or_default();
         self.gs.pending.insert((r, c), Pending { text: text.clone(), was });
         let e = GridEvent { value: Some(text), ..self.event("edit", r, c) };
         self.events.push(e);
@@ -653,7 +702,7 @@ impl Run<'_, '_> {
         if u64::from(b - t + 1) * u64::from(r - l + 1) <= MAX_PENDING {
             for row in t..=b {
                 for col in l..=r {
-                    if let Some(Some(cell)) = lookup(self.g.blocks, row, col) {
+                    if let Some(Some(cell)) = self.g.blocks.get(row, col) {
                         self.gs.pending.insert((row, col), Pending { text: String::new(), was: cell.v.clone() });
                     }
                 }
@@ -665,8 +714,7 @@ impl Run<'_, '_> {
     /// what is loaded and to [`MAX_COPY_CELLS`].
     fn tsv(&self) -> String {
         let (t, l, b, r) = self.sel.bounds();
-        let max_r = self.g.blocks.iter().map(|k| k.row.saturating_add(k.height())).max().unwrap_or(0);
-        let max_c = self.g.blocks.iter().map(|k| k.col.saturating_add(k.width())).max().unwrap_or(0);
+        let (max_r, max_c) = self.g.blocks.ends();
         let b = b.min(max_r.saturating_sub(1)).max(t);
         let r = r.min(max_c.saturating_sub(1)).max(l);
         let width = u64::from(r - l + 1);
@@ -680,7 +728,7 @@ impl Run<'_, '_> {
                 if col > l {
                     out.push('\t');
                 }
-                let cell = lookup(self.g.blocks, row, col).flatten();
+                let cell = self.g.blocks.get(row, col).flatten();
                 out.push_str(&shown(self.gs, cell, row, col).replace(['\t', '\n', '\r'], " "));
             }
         }
@@ -919,7 +967,7 @@ impl Run<'_, '_> {
     fn ask_window(&mut self, geo: &Geo<'_>) {
         let (fr, sr) = geo.visible_rows();
         let (fc, sc) = geo.visible_cols();
-        if covered(self.g.blocks, &[fr.clone(), sr.clone()], &[fc.clone(), sc.clone()]) {
+        if covered(&self.g.blocks, &[fr.clone(), sr.clone()], &[fc.clone(), sc.clone()]) {
             return;
         }
         // The scrolling part (the owner adds the frozen strips itself).
@@ -965,7 +1013,7 @@ impl Cells<'_> {
         for r in rows.clone() {
             for c in cols.clone() {
                 let rect = self.geo.cell_rect(r, c);
-                let got = lookup(self.g.blocks, r, c);
+                let got = self.g.blocks.get(r, c);
                 let cell = got.flatten();
                 match (got, cell.and_then(|c| c.fill.as_deref())) {
                     (None, _) => {
@@ -1103,6 +1151,26 @@ fn contrast_text(fill: Color32) -> Color32 {
 #[cfg(test)]
 mod contrast_tests {
     use super::*;
+
+    #[test]
+    fn cached_widths_and_blocks_answer_as_the_slow_way() {
+        let widths: BTreeMap<u32, f32> = [(2, 30.0), (5, 200.0), (9, 10.0)].into_iter().collect();
+        let cols = Cols::new(&widths, 90.0, 20);
+        for c in 0..20 {
+            let slow = f64::from(c) * 90.0 + widths.range(..c).map(|(_, w)| f64::from(*w) - 90.0).sum::<f64>();
+            assert!((cols.x(c) - slow).abs() < 1e-9, "column {c}: {} vs {slow}", cols.x(c));
+        }
+        let row = |n: usize| (0..n).map(|i| GridCell::text(i.to_string())).collect::<Vec<_>>();
+        let list = vec![GridBlock { row: 1, col: 1, cells: vec![row(3), row(1), row(2)] }, GridBlock { row: 0, col: 0, cells: vec![row(6); 6] }];
+        let blocks = Blocks::new(&list);
+        for r in 0..8 {
+            for c in 0..8 {
+                assert_eq!(blocks.get(r, c), list.iter().find_map(|b| b.get(r, c)), "({r}, {c})");
+                assert_eq!(blocks.covers(r, c), list.iter().any(|b| b.covers(r, c)));
+            }
+        }
+        assert_eq!(blocks.ends(), (6, 6));
+    }
 
     #[test]
     fn text_on_a_fill_reads_in_any_theme() {

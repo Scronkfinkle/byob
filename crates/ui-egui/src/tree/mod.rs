@@ -402,7 +402,7 @@ fn node(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, n: &Node, id: egui::Id) {
                 name,
                 rows: (*rows).max(1),
                 cols: (*cols).max(1),
-                blocks,
+                blocks: grid::Blocks::new(blocks),
                 frozen_rows: (*frozen_rows).min(rows.saturating_sub(1)),
                 frozen_cols: (*frozen_cols).min(cols.saturating_sub(1)),
                 widths,
