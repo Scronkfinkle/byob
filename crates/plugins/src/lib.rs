@@ -18,12 +18,14 @@
 
 pub mod agents;
 pub mod authoring;
+pub mod backend;
 pub mod commands;
 pub mod connectors;
 pub mod discover;
 pub mod manifest;
 pub mod mcp;
 pub mod names;
+pub mod pyenv;
 pub mod python;
 pub mod skills;
 
@@ -32,6 +34,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 pub use agents::{AgentDef, load_agents_dir, merge_agents, parse_agent};
+pub use backend::{Backend, BackendTool};
 pub use commands::{Command, load_commands_dir, split_slash};
 pub use connectors::{
     Connector, ConnectorContent, ConnectorDraft, ConnectorResult, ConnectorTool, ConnectorToolAdapter, connector_tools, connector_tools_from, parse_connector,
@@ -39,7 +42,8 @@ pub use connectors::{
 pub use discover::{Discovery, Plugin, PluginSources, discover, load_plugin};
 pub use manifest::{MANIFEST, Manifest, ManifestError, McpServerConfig, OLD_MANIFEST, parse_manifest};
 pub use names::ToolNames;
-pub use python::{PythonTool, default_python, python_tools, python_tools_in, run_script_sandboxed, run_script_unsandboxed};
+pub use pyenv::{PluginPython, PyEnvs};
+pub use python::{PythonTool, default_python, python_tools, python_tools_in, python_tools_with, run_script_sandboxed, run_script_unsandboxed};
 pub use skills::{SaveSkillTool, Skill, UseSkillTool, load_skills_dir, skills_prompt};
 
 /// Something that couldn't load, for the user (`path`: the plugin or skill folder).

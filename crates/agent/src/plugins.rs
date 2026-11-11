@@ -238,6 +238,9 @@ impl Engine {
             PluginOp::Trust { plugins, trust } => {
                 for p in plugins {
                     record(self, p, Some(if *trust { PluginTrust::Trusted } else { PluginTrust::Declined }));
+                    if !trust && let Some(ext) = self.ext.as_mut() {
+                        ext.backends.stop_plugin(p, "the user declined it");
+                    }
                 }
             }
         }
@@ -273,6 +276,9 @@ impl Engine {
         }
         let Some(run) = self.turns.get(&entry) else { return };
         let chat = run.chat.clone();
+        let event = serde_json::json!({"entry": entry, "step": step.id, "tool": step.tool, "status": step.status, "title": step.title});
+        self.emit(&chat, "step_done", event);
+        let Some(run) = self.turns.get(&entry) else { return };
         if self.step_views.get(&chat).is_some_and(|(tool, _)| *tool == step.tool)
             && let Some((_, view)) = self.step_views.remove(&chat)
         {
@@ -373,6 +379,12 @@ impl Engine {
         if let Err(e) = result {
             self.notice(client, e);
         }
+        if enabled != Some(true)
+            && let Some(ext) = self.ext.as_mut()
+        {
+            // where it is still on, it starts again on first use
+            ext.backends.stop_plugin(plugin, "it was switched off");
+        }
         self.extensions_changed();
     }
 
@@ -430,6 +442,10 @@ impl Engine {
                 self.notice(client, format!("the setting applies now but couldn't be saved: {e}"));
             }
         }
+        if let Some(ext) = self.ext.as_mut() {
+            // settings are its environment: start it again with the new ones
+            ext.backends.stop_plugin(plugin, "its settings changed");
+        }
         self.extensions_changed();
     }
 
@@ -486,6 +502,9 @@ impl Engine {
             self.notice(client, format!("{plugin} ships with byob; switch it off instead"));
             return;
         }
+        if let Some(ext) = self.ext.as_mut() {
+            ext.backends.stop_dir(Path::new(&info.dir), "its plugin was removed");
+        }
         if let Err(e) = std::fs::remove_dir_all(&info.dir) {
             self.notice(client, format!("couldn't remove {}: {e}", info.dir));
             return;
@@ -532,6 +551,9 @@ impl Engine {
             if let Err(e) = self.workspaces.set_plugin_trust(&row.id, p, Some(t)) {
                 self.notice(client, format!("couldn't save the decision: {e}"));
                 return;
+            }
+            if !trust && let Some(ext) = self.ext.as_mut() {
+                ext.backends.stop_plugin(p, "the user declined it");
             }
         }
         self.extensions_changed();

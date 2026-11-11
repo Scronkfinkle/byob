@@ -85,6 +85,27 @@ pub struct ServerInfo {
     pub error: Option<String>,
 }
 
+/// A plugin's long-lived backend process (13.2+; see `docs/plugins-backend.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendInfo {
+    /// `idle` (starts on first use), `starting`, `running`, `crashed` (restarting),
+    /// `failed` (given up until the plugin reloads), `stopped`, `off` (missing settings),
+    /// or a state a newer engine knows.
+    pub state: String,
+    /// Times it was started in this engine run.
+    #[serde(default)]
+    pub starts: u32,
+    /// Why it isn't running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The newest problems it reported (`fault`) or byob found in its output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub faults: Vec<String>,
+    /// The end of its stderr (≤ 4 KiB).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stderr: String,
+}
+
 /// A value a plugin asks the user for (an API key, a folder). The value itself never
 /// reaches clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +164,9 @@ pub struct PluginInfo {
     pub commands: Vec<String>,
     #[serde(default)]
     pub servers: Vec<ServerInfo>,
+    /// Its backend process, if it declares one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<BackendInfo>,
     #[serde(default)]
     pub settings: Vec<PluginSetting>,
     /// Its tools may use the internet (`permissions.network`).
@@ -363,6 +387,7 @@ mod tests {
             agents: vec![],
             commands: vec![],
             servers: vec![ServerInfo { name: "s".into(), state: ServerState::Connecting, tools: 0, error: None }],
+            backend: None,
             settings: vec![PluginSetting { key: "API_KEY".into(), label: "API key".into(), help: None, secret: true, required: true, set: false }],
             network: true,
             problems: vec!["tools/x.py is missing".into()],

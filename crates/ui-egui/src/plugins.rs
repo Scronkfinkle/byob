@@ -407,6 +407,31 @@ impl PluginsUi {
                 }
             });
         }
+        if let Some(b) = &p.backend {
+            let color = match b.state.as_str() {
+                "running" => t.success,
+                "crashed" | "failed" => t.danger,
+                _ => t.text_dim,
+            };
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Backend").small().color(t.text));
+                ui.label(RichText::new(&b.state).small().color(color));
+                if b.starts > 1 {
+                    ui.label(RichText::new(format!("started {} times", b.starts)).small().color(t.text_faint));
+                }
+            });
+            for e in b.error.iter().chain(&b.faults) {
+                ui.add(egui::Label::new(RichText::new(e).small().color(t.danger)).wrap());
+            }
+            if !b.stderr.is_empty() {
+                egui::CollapsingHeader::new(RichText::new("Backend output").small().color(t.text_dim)).id_salt(("backend-output", &p.id, &p.dir)).show(
+                    ui,
+                    |ui| {
+                        ui.add(egui::Label::new(RichText::new(tail_lines(&b.stderr, 30)).small().monospace().color(t.text_dim)).wrap());
+                    },
+                );
+            }
+        }
         if p.network {
             ui.label(RichText::new("Its tools may use the internet").small().color(t.text_dim));
         }
@@ -656,7 +681,16 @@ fn suggested_id(card: &PluginCard) -> String {
 
 /// A plugin with a problem worth a badge: loader problems, a failed tool or server.
 fn has_trouble(p: &PluginInfo) -> bool {
-    !p.problems.is_empty() || p.last_error.is_some() || p.servers.iter().any(|s| s.state == ServerState::Failed)
+    !p.problems.is_empty()
+        || p.last_error.is_some()
+        || p.servers.iter().any(|s| s.state == ServerState::Failed)
+        || p.backend.as_ref().is_some_and(|b| matches!(b.state.as_str(), "crashed" | "failed") || !b.faults.is_empty())
+}
+
+/// The last `n` lines of a backend's output.
+fn tail_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.trim_end().lines().collect();
+    lines.get(lines.len().saturating_sub(n)..).unwrap_or_default().join("\n")
 }
 
 /// The settings level a switch at `level` is stored in (`None`: no such level here).

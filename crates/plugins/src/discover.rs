@@ -52,7 +52,7 @@ impl Plugin {
             .iter()
             .filter_map(|t| match &t.kind {
                 ToolKind::Native(n) => Some(n.as_str()),
-                ToolKind::Script(_) => None,
+                ToolKind::Script(_) | ToolKind::Backend => None,
             })
             .collect()
     }
@@ -99,6 +99,11 @@ pub fn load_plugin(dir: &Path, builtin: bool) -> Option<Result<Plugin, LoadError
         {
             problems.push(format!("{file_name}: {run} is missing"));
         }
+    }
+    if let Some(crate::manifest::BackendDecl { run: crate::manifest::BackendRun::Python(script), .. }) = &manifest.backend
+        && !dir.join(script).is_file()
+    {
+        problems.push(format!("{file_name}: backend {script} is missing"));
     }
     let (skills, skill_errors) = load_skills_dir(&dir.join("skills"));
     problems.extend(skill_errors.into_iter().map(|e| e.message));

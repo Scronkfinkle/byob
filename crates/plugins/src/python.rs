@@ -25,6 +25,7 @@ use crate::PluginRef;
 use crate::discover::Plugin;
 use crate::manifest::{ManifestTool, ToolKind, path_inside};
 use crate::names::{ToolNames, namespaced};
+use crate::pyenv::PluginPython;
 
 /// hob's limit for a plugin tool.
 pub const SCRIPT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -92,16 +93,30 @@ pub fn run_script_sandboxed(
     network: bool,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<ScriptOutcome, String> {
+    run_script_sandboxed_reading(run, sandbox, &[plugin_dir.to_path_buf()], network, cancelled)
+}
+
+/// [`run_script_sandboxed`] that may also read `read` (the plugin folder, its venv, byob's
+/// helper module).
+pub fn run_script_sandboxed_reading(
+    run: &ScriptRun,
+    sandbox: &Sandbox,
+    read: &[PathBuf],
+    network: bool,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ScriptOutcome, String> {
     let Some((program, lead)) = run.program.split_first() else { return Err("no interpreter configured".into()) };
     let cwd = run.cwd.canonicalize().map_err(|e| format!("{}: {e}", run.cwd.display()))?;
     let tmp = TempDir::new("byob-plugin-")?;
     let mut policy = Policy::for_workspace(&cwd, tmp.path())
         .network(network)
         .limits(Limits::for_timeout(run.timeout.as_secs()))
-        .allow_read(plugin_dir)
         .allow_path_dirs(std::env::var_os("PATH").as_deref())
         // Where the OS can't confine, run anyway (as before the sandbox existed).
         .allow_unsandboxed(true);
+    for p in read {
+        policy = policy.allow_read(p);
+    }
     for p in byob_sandbox::interpreter_read_paths(program) {
         policy = policy.allow_read(p);
     }
@@ -191,6 +206,8 @@ pub struct PythonTool {
     decl: ManifestTool,
     script: String,
     interpreter: Vec<OsString>,
+    /// The plugin's own Python (helper module, requirements venv); beats `interpreter`.
+    python: Option<PluginPython>,
     sandbox: Option<Sandbox>,
     timeout: Duration,
 }
@@ -200,7 +217,13 @@ impl PythonTool {
     pub fn new(name: String, plugin: PluginRef, decl: ManifestTool, interpreter: Vec<OsString>) -> Option<Self> {
         let ToolKind::Script(script) = &decl.kind else { return None };
         let script = script.clone();
-        Some(Self { name, plugin, decl, script, interpreter, sandbox: None, timeout: SCRIPT_TIMEOUT })
+        Some(Self { name, plugin, decl, script, interpreter, python: None, sandbox: None, timeout: SCRIPT_TIMEOUT })
+    }
+
+    /// Run with the plugin's own Python (built on first use if it has requirements).
+    pub fn with_python(mut self, python: Option<PluginPython>) -> Self {
+        self.python = python;
+        self
     }
 
     /// Run the script in `sandbox` (see [`run_script_sandboxed`]); `None`: unsandboxed.
@@ -301,8 +324,20 @@ impl Tool for PythonTool {
         for (k, v) in [("HOB_CHAT_DIR", &chat), ("BYOB_CHAT_DIR", &chat), ("HOB_PLUGIN_DIR", &dir), ("BYOB_PLUGIN_DIR", &dir)] {
             env.insert(k.into(), v.clone());
         }
+        let mut read = vec![self.plugin.dir.clone()];
+        let program = match &self.python {
+            None => self.interpreter.clone(),
+            Some(p) => match p.python() {
+                Ok(py) => {
+                    read.extend(py.read);
+                    env.extend(py.env);
+                    py.program
+                }
+                Err(e) => return ToolOutput::err(format!("{} couldn't run: {e}", self.plugin.name)),
+            },
+        };
         let run = ScriptRun {
-            program: self.interpreter.clone(),
+            program,
             script,
             args: Vec::new(),
             cwd: ctx.workspace.to_path_buf(),
@@ -313,7 +348,7 @@ impl Tool for PythonTool {
         };
         let before = snapshot(ctx.workspace);
         let result = match &self.sandbox {
-            Some(sb) => run_script_sandboxed(&run, sb, &self.plugin.dir, self.plugin.network, &|| ctx.cancelled()),
+            Some(sb) => run_script_sandboxed_reading(&run, sb, &read, self.plugin.network, &|| ctx.cancelled()),
             None => run_script_unsandboxed(&run, &|| ctx.cancelled()),
         };
         match result {
@@ -338,6 +373,18 @@ pub fn python_tools_in(
     names: &mut ToolNames,
     sandbox: Option<&Sandbox>,
 ) -> Vec<Arc<PythonTool>> {
+    python_tools_with(plugin, settings, interpreter, names, sandbox, None)
+}
+
+/// [`python_tools_in`] running with the plugin's own Python (`python`, see [`PluginPython`]).
+pub fn python_tools_with(
+    plugin: &Plugin,
+    settings: &BTreeMap<String, String>,
+    interpreter: &[OsString],
+    names: &mut ToolNames,
+    sandbox: Option<&Sandbox>,
+    python: Option<&PluginPython>,
+) -> Vec<Arc<PythonTool>> {
     let r = PluginRef::new(plugin, settings);
     plugin
         .manifest
@@ -346,7 +393,7 @@ pub fn python_tools_in(
         .filter(|t| matches!(&t.kind, ToolKind::Script(s) if plugin.dir.join(s).is_file()))
         .filter_map(|t| {
             let name = names.claim(&t.name, &namespaced(plugin.id(), &t.name));
-            PythonTool::new(name, r.clone(), t.clone(), interpreter.to_vec()).map(|t| Arc::new(t.with_sandbox(sandbox.cloned())))
+            PythonTool::new(name, r.clone(), t.clone(), interpreter.to_vec()).map(|t| Arc::new(t.with_sandbox(sandbox.cloned()).with_python(python.cloned())))
         })
         .collect()
 }

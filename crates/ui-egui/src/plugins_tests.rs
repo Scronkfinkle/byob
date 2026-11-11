@@ -26,6 +26,7 @@ pub(crate) fn info(id: &str, scope: PluginScope, origin: PluginOrigin) -> Plugin
         agents: vec![],
         commands: vec![],
         servers: vec![],
+        backend: None,
         settings: vec![],
         network: false,
         problems: vec![],
@@ -346,4 +347,16 @@ fn views_draw_plugin_cards_as_before_and_unknown_kinds_as_their_fallback() {
     let s = step_with(12, vec![grid]);
     let texts = frame(&ctx, vec![], &mut |ui| reg.show_step(ui, &t, &s, &latest, &mut p));
     assert!(has(&texts, "native grid 3") && !has(&texts, "of 3 rows"), "{texts:?}");
+}
+
+#[test]
+fn a_crashed_backend_is_trouble_and_its_output_shows_the_last_lines() {
+    let mut p = info("clicker", PluginScope::Global, PluginOrigin::User);
+    p.backend = Some(byob_protocol::BackendInfo { state: "running".into(), starts: 1, ..Default::default() });
+    assert!(!has_trouble(&p));
+    p.backend = Some(byob_protocol::BackendInfo { state: "crashed".into(), starts: 2, error: Some("exit code 1".into()), ..Default::default() });
+    assert!(has_trouble(&p));
+    let text: String = (1..=40).map(|i| format!("line {i}\n")).collect();
+    let tail = tail_lines(&text, 30);
+    assert!(tail.starts_with("line 11\n") && tail.ends_with("line 40"));
 }
