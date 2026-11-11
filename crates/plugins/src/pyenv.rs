@@ -443,7 +443,7 @@ mod tests {
         assert_eq!(a.dir(), b.dir());
         assert_ne!(a.dir(), c.dir());
         let w = envs.for_plugin(&["./wheels/w.whl".into()], Path::new("/p/a"));
-        assert_eq!(w.requirements(), ["/p/a/./wheels/w.whl"]);
+        assert_eq!(w.requirements(), [Path::new("/p/a").join("./wheels/w.whl").display().to_string()]);
     }
 
     #[test]
