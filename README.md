@@ -24,8 +24,7 @@ that draws its own interface on the GPU, with no Electron.
 - **Your model, your machine.** No bundled inference and no account: any OpenAI-compatible URL.
   First run finds local servers on their usual ports; tool calling falls back to prompt-based
   calls when the server has none.
-- **Artifacts beside the chat.** Spreadsheets (xlsx/csv, recalculated with
-  [IronCalc](https://github.com/ironcalc/IronCalc), editable), charts, Markdown documents,
+- **Artifacts beside the chat.** Spreadsheets (xlsx/csv), charts, Markdown documents,
   images and HTML apps, each with its version history.
 - **Hands, with a leash.** File tools, `run_command` and `run_python` in a sandbox; approval
   cards with diffs; undo per turn.
