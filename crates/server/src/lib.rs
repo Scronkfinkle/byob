@@ -259,7 +259,8 @@ fn websocket(stream: TcpStream, leftover: Vec<u8>, engine: &EngineHandle, config
             ws.send(Message::Ping(Default::default())).map_err(io::Error::other)?;
         }
         while let Some(msg) = conn.try_recv() {
-            ws.send(Message::text(msg.to_json())).map_err(io::Error::other)?;
+            // Never a frame the client refuses (it would wait on it forever).
+            ws.send(Message::text(msg.to_frame())).map_err(io::Error::other)?;
         }
         match ws.flush() {
             Ok(()) => {}

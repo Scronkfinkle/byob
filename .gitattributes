@@ -1,0 +1,9 @@
+# Text stays LF on every platform: byob embeds guides, plugin files and test trees
+# (include_str!, the bundled plugins), and the model and the tests must see the same
+# bytes on Windows as elsewhere.
+* text=auto eol=lf
+
+*.ttf binary
+*.png binary
+*.jpg binary
+*.ico binary

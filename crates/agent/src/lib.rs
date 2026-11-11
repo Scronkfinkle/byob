@@ -85,7 +85,7 @@ pub use adapt::{AdaptOptions, ToolMode};
 pub use byob_plugins::AgentDef;
 use byob_protocol::{
     ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, DelegationState, EngineState, Entry, EntryRole, Link, MediaRef,
-    NoticeLevel, PROTOCOL_MAJOR, PROTOCOL_MINOR, ServerMsg, Step, StepStatus, View, Welcome,
+    NoticeLevel, PROTOCOL_MAJOR, PROTOCOL_MINOR, ServerMsg, Step, StepStatus, Welcome,
 };
 use byob_store::{ChatStore, GrantScope, NewMessage, Paths, Role, Secrets, Settings, StorageKind, Store, StoreError};
 use byob_tools::Registry;
@@ -254,12 +254,6 @@ enum Input {
         op: plugins::PluginOp,
         reply: Sender<plugins::PluginReply>,
     },
-    /// A view (e.g. a plugin card) for the next finished step of `tool` in `chat`.
-    StepView {
-        chat: String,
-        tool: String,
-        view: View,
-    },
     /// An MCP server connected (or failed) on a worker thread.
     Connected {
         key: String,
@@ -278,6 +272,8 @@ enum Input {
     Backend {
         dir: PathBuf,
         plugin: String,
+        /// Which backend of the folder (see `backends::Entry::generation`).
+        generation: u64,
         out: byob_plugins::backend::Out,
     },
 }
@@ -560,8 +556,6 @@ struct Engine {
     ext: Option<extensions::Extensions>,
     /// Plugin settings by plugin id, then key (secret ones included; never sent to clients).
     plugin_values: BTreeMap<String, BTreeMap<String, String>>,
-    /// Views (plugin cards) waiting for their step to finish, by chat: (tool, view).
-    step_views: BTreeMap<String, (String, View)>,
     /// Draft versions: (chat, artifact) → the version the user's edits in a plugin's view
     /// keep replacing (`{"type": "artifact", "draft": true}` from a backend), until the model
     /// writes the artifact or a turn starts in the chat.
@@ -625,10 +619,10 @@ impl Engine {
         }
         let plugin_values = Self::load_plugin_values(config.paths.as_ref());
         let sink_inbox = inbox.clone();
-        let sink: backends::SinkFor = Arc::new(move |dir, plugin| {
+        let sink: backends::SinkFor = Arc::new(move |dir, plugin, generation| {
             let (inbox, dir, plugin) = (sink_inbox.clone(), dir.to_path_buf(), plugin.to_owned());
             Arc::new(move |out| {
-                let _ = inbox.send(Input::Backend { dir: dir.clone(), plugin: plugin.clone(), out });
+                let _ = inbox.send(Input::Backend { dir: dir.clone(), plugin: plugin.clone(), generation, out });
             })
         });
         let mut engine = Self {
@@ -639,7 +633,6 @@ impl Engine {
                 ext
             }),
             plugin_values,
-            step_views: BTreeMap::new(),
             drafts: BTreeMap::new(),
             live_views: live_views::LiveViews::default(),
             channels: config.channels,
@@ -923,7 +916,6 @@ impl Engine {
         self.queues.remove(chat);
         self.provisional.remove(chat);
         self.chat_prompts.remove(chat);
-        self.step_views.remove(chat);
         if let Some(ext) = self.ext.as_mut() {
             ext.forget_chat(chat);
         }
@@ -1046,11 +1038,8 @@ impl Engine {
             Input::Env { client, env } => self.send_to(client, ServerMsg::WorkspaceEnv(env)),
             Input::Reply { client, msg } => self.send_to(client, *msg),
             Input::Plugins { chat, op, reply } => self.plugin_op(&chat, op, &reply),
-            Input::StepView { chat, tool, view } => {
-                self.step_views.insert(chat, (tool, view));
-            }
             Input::Connected { key, result } => self.server_connected(&key, result),
-            Input::Backend { dir, plugin, out } => self.backend_out(&dir, &plugin, out),
+            Input::Backend { dir, plugin, generation, out } => self.backend_out(&dir, &plugin, generation, out),
             Input::ViewReply { dir, view, key, starts, result } => self.view_reply(&dir, &view, &key, starts, result),
         }
     }

@@ -502,3 +502,163 @@ fn a_plugin_declares_an_environment_provider() {
 fn find_info<'a>(infos: &'a [PluginInfo], id: &str) -> &'a PluginInfo {
     infos.iter().find(|p| p.id == id).unwrap()
 }
+
+#[test]
+fn a_fork_of_a_locked_plugin_under_a_new_id_doesnt_double_its_natives() {
+    let h = harness(vec![Reply::Text("hi")], Some(Policy::ALLOW_ALL), Natives::builtin(), |root| {
+        let prompt = json!({"id": "my-prompt", "name": "My prompt", "hooks": [
+            {"event": "before_prompt", "native": "base_prompt", "priority": 0},
+            {"event": "before_prompt", "native": "plugin_prompts", "priority": 100},
+            {"event": "before_prompt", "native": "instructions", "priority": 400}
+        ]});
+        plugin(root, "my-prompt", prompt, &[]);
+        let artifacts = json!({"id": "my-artifacts", "name": "My artifacts", "system_prompt": {"native": "artifacts"},
+            "hooks": [{"event": "before_prompt", "native": "artifact_list", "priority": 600}]});
+        plugin(root, "my-artifacts", artifacts, &[]);
+    });
+    let (mut c, _) = hello(&h);
+    let _ = turn(&mut c, "hi", ApprovalAnswer::Deny);
+    let sys = system(&h.requests.lock().unwrap()[0]);
+    assert_eq!(sys.matches(crate::turn::DEFAULT_SYSTEM_PROMPT).count(), 1, "{sys}");
+    assert_eq!(sys.matches("Artifacts: ").count(), 1, "{sys}");
+}
+
+#[test]
+fn late_words_of_a_replaced_backend_are_dropped() {
+    let h = harness(vec![Reply::Text("hi")], Some(Policy::ALLOW_ALL), Natives::builtin(), |root| {
+        plugin(root, "noisy", json!({"id": "noisy", "name": "Noisy", "backend": "backend.py"}), &[("backend.py", "")]);
+    });
+    let (mut c, ext) = hello(&h);
+    let dir = std::path::PathBuf::from(&find(&ext, "noisy").dir);
+    // Generation 0 was never given out: it stands for a backend the folder had before.
+    let late = byob_plugins::backend::Out::Msg(json!({"type": "notice", "text": "from the old process"}));
+    h.engine.inbox.send(crate::Input::Backend { dir, plugin: "noisy".into(), generation: 0, out: late }).unwrap();
+    c.send(ClientMsg::GetExtensions);
+    loop {
+        match recv(&mut c) {
+            ServerMsg::Notice { text, .. } => panic!("a stale backend's notice went out: {text}"),
+            ServerMsg::Extensions(_) => break,
+            _ => {}
+        }
+    }
+}
+
+// ---- hooks can't get around the turn's limits ------------------------------------------
+
+/// Replaces every result with far more text than one call may return.
+struct Flood;
+impl NativeHook for Flood {
+    fn after_tool_call(&self, ctx: &mut crate::hooks::AfterCtx<'_>) -> Flow {
+        *ctx.result = "x".repeat(200_000);
+        Flow::Continue
+    }
+}
+
+#[test]
+fn an_after_tool_call_replacement_is_capped_like_the_tools_own_output() {
+    let natives = Natives::builtin().hook("flood", Arc::new(Flood), &[(Event::AfterToolCall, 10)]);
+    let h = harness(vec![call("list_files", "{}"), Reply::Text("done")], Some(Policy::ALLOW_ALL), natives, |_| {});
+    let (mut c, _) = hello(&h);
+    let (_, error, _) = turn(&mut c, "list", ApprovalAnswer::Deny);
+    assert_eq!(error, None);
+    let reqs = h.requests.lock().unwrap().clone();
+    let r = results(&reqs[1]);
+    assert!(r[0].len() < crate::limits::MAX_OUTPUT + 200, "{} bytes reached the model", r[0].len());
+    assert!(r[0].contains("[… cut:"), "the model is told it was cut");
+}
+
+/// Hides delete_file from every request.
+struct HideDelete;
+impl NativeHook for HideDelete {
+    fn before_request(&self, ctx: &mut RequestCtx<'_>) -> Flow {
+        ctx.specs.retain(|s| s.name != "delete_file");
+        Flow::Continue
+    }
+}
+
+#[test]
+fn a_tool_a_before_request_hook_hid_cant_be_called() {
+    let natives = Natives::builtin().hook("hide_delete", Arc::new(HideDelete), &[(Event::BeforeRequest, 10)]);
+    let h = harness(vec![call("delete_file", r#"{"path":"keep.txt"}"#), Reply::Text("done")], Some(Policy::ALLOW_ALL), natives, |_| {});
+    fs::write(h.ws.path().join("keep.txt"), "precious").unwrap();
+    let (mut c, _) = hello(&h);
+    let (reply, error, _) = turn(&mut c, "delete keep.txt", ApprovalAnswer::Allow);
+    assert_eq!(error, None);
+    assert!(h.ws.path().join("keep.txt").exists(), "the hidden tool didn't run");
+    assert_eq!(reply.steps[0].status, StepStatus::Failed);
+    let reqs = h.requests.lock().unwrap().clone();
+    assert!(!crate::extensions_tests::tool_names(&reqs[0]).contains(&"delete_file".to_owned()));
+    let r = results(&reqs[1]);
+    assert!(r[0].contains("there is no tool called \"delete_file\"") && !r[0].contains("delete_file,"), "{r:?}");
+}
+
+#[test]
+fn the_approval_card_shows_the_arguments_a_hook_rewrote() {
+    let natives = Natives::builtin().hook("into_safe", Arc::new(IntoSafe), &[(Event::BeforeToolCall, 10)]);
+    let h = harness(vec![call("write_file", r#"{"path":"notes.txt","content":"hi"}"#), Reply::Text("done")], None, natives, |_| {});
+    let (mut c, _) = hello(&h);
+    let (reply, _, cards) = turn(&mut c, "write a note", ApprovalAnswer::Allow);
+    assert_eq!(cards, 1);
+    match &reply.steps[0].preview {
+        Some(byob_protocol::Preview::Write { path, .. }) => assert_eq!(path, "safe/notes.txt"),
+        other => panic!("{other:?}"),
+    }
+    assert!(h.ws.path().join("safe/notes.txt").exists());
+}
+
+/// An observer that takes its time (until released, or 10 s).
+struct SlowObserver(Mutex<std::sync::mpsc::Receiver<()>>, Arc<std::sync::atomic::AtomicBool>);
+impl NativeHook for SlowObserver {
+    fn on_turn_end(&self, _: &crate::hooks::TurnEndCtx<'_>) {
+        let _ = self.0.lock().unwrap().recv_timeout(Duration::from_secs(10));
+        self.1.store(true, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_slow_on_turn_end_hook_doesnt_hold_up_the_end_of_the_turn() {
+    let (release, wait) = std::sync::mpsc::channel();
+    let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let natives = Natives::builtin().hook("slow", Arc::new(SlowObserver(Mutex::new(wait), Arc::clone(&observed))), &[(Event::OnTurnEnd, 10)]);
+    let h = harness(vec![Reply::Text("hi")], Some(Policy::ALLOW_ALL), natives, |_| {});
+    let (mut c, _) = hello(&h);
+    let (_, error, _) = turn(&mut c, "hi", ApprovalAnswer::Deny);
+    assert_eq!(error, None);
+    assert!(!observed.load(Ordering::SeqCst), "the turn finished before its observer did");
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !observed.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the observer never ran");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+const BROKEN_PROMPT: &str = r#"
+import byob_plugin as byob
+
+@byob.hook("before_prompt")
+def prompt(p):
+    raise RuntimeError("the policy file is missing")
+
+byob.run()
+"#;
+
+#[test]
+fn a_failing_fail_closed_before_prompt_hook_ends_the_turn() {
+    if !have_python() {
+        return;
+    }
+    let h = harness(vec![Reply::Text("hi")], Some(Policy::ALLOW_ALL), Natives::builtin(), |root| {
+        plugin(
+            root,
+            "rules",
+            json!({"id": "rules", "name": "Rules", "backend": "backend.py", "hooks": [{"event": "before_prompt", "fail": "closed"}]}),
+            &[("backend.py", BROKEN_PROMPT)],
+        );
+    });
+    let (mut c, _) = hello(&h);
+    let (_, error, _) = turn(&mut c, "hi", ApprovalAnswer::Deny);
+    let error = error.expect("the turn failed");
+    assert!(error.contains("the rules plugin's before_prompt hook failed") && error.contains("the policy file is missing"), "{error}");
+    assert!(h.requests.lock().unwrap().is_empty(), "no request without the prompt the hook guards");
+}

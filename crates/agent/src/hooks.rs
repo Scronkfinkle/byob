@@ -146,7 +146,8 @@ pub struct RequestCtx<'a> {
     pub llm: &'a byob_llm::Client,
     pub plan: &'a adapt::Plan,
     pub cancel: &'a AtomicBool,
-    /// The entry each of the turn's first messages came from (see `compact::history`).
+    /// The entry each of the turn's first messages came from (see `compact::history`);
+    /// empty once a hook replaced the messages (a native that does should empty it too).
     pub ids: &'a [u64],
     /// The chat's last entry before this turn.
     pub prior: u64,
@@ -274,6 +275,8 @@ enum Reply {
     Allow,
     Deny(String),
     Ask(String),
+    /// A fail-closed hook's backend faulted or timed out (why).
+    Failed(String),
 }
 
 /// Longest message list sent to a backend hook (bytes of JSON); longer lists go as `null`.
@@ -312,8 +315,9 @@ impl Hooks {
         join(&sections)
     }
 
-    /// The system prompt: every `before_prompt` hook in order.
-    pub fn before_prompt(&self, inputs: &PromptInputs, cancel: &AtomicBool) -> String {
+    /// The system prompt: every `before_prompt` hook in order. `Err` (why) if a fail-closed
+    /// hook failed: the turn must not run without what it would have added.
+    pub fn before_prompt(&self, inputs: &PromptInputs, cancel: &AtomicBool) -> Result<String, String> {
         let mut sections: Vec<Section> = Vec::new();
         for b in self.of(Event::BeforePrompt) {
             let flow = match &b.run {
@@ -330,6 +334,7 @@ impl Hooks {
                             Flow::Continue
                         }
                         Reply::Stop(r) => Flow::Stop(r),
+                        Reply::Failed(why) => return Err(why),
                         _ => Flow::Continue,
                     }
                 }
@@ -338,7 +343,7 @@ impl Hooks {
                 break;
             }
         }
-        join(&sections)
+        Ok(join(&sections))
     }
 
     /// Run `before_request` hooks; `Stop(reason)` ends the turn.
@@ -362,7 +367,7 @@ impl Hooks {
                             apply_request(b, &m, ctx);
                             Flow::Continue
                         }
-                        Reply::Stop(r) => Flow::Stop(r),
+                        Reply::Stop(r) | Reply::Failed(r) => Flow::Stop(r),
                         _ => Flow::Continue,
                     }
                 }
@@ -401,6 +406,7 @@ impl Hooks {
                         Reply::Allow => Decision::Allow,
                         Reply::Deny(m) => Decision::Deny(m),
                         Reply::Ask(m) => Decision::Ask(m),
+                        Reply::Failed(r) => Decision::Deny(r),
                         Reply::Stop(r) if *fail_closed || !r.is_empty() => Decision::Deny(r),
                         Reply::Stop(_) => Decision::Deny(format!("the {} plugin stopped this call", b.plugin)),
                     }
@@ -433,7 +439,7 @@ impl Hooks {
                             apply_after(b, &m, ctx);
                             Flow::Continue
                         }
-                        Reply::Stop(r) => Flow::Stop(r),
+                        Reply::Stop(r) | Reply::Failed(r) => Flow::Stop(r),
                         _ => Flow::Continue,
                     }
                 }
@@ -473,7 +479,7 @@ impl Hooks {
         }
         let failed = |why: String| {
             report(b, &format!("{} hook: {why}", b.event.name()));
-            if *fail_closed { Reply::Stop(format!("the {} plugin's {} hook failed ({why})", b.plugin, b.event.name())) } else { Reply::Continue }
+            if *fail_closed { Reply::Failed(format!("the {} plugin's {} hook failed ({why})", b.plugin, b.event.name())) } else { Reply::Continue }
         };
         match backend.request("hook", payload, *timeout, &|| cancel.load(std::sync::atomic::Ordering::Relaxed)) {
             Ok(v) => match parse_reply(&v) {
@@ -573,7 +579,12 @@ const MAX_PROMPT_BYTES: usize = 256 * 1024;
 fn apply_request(b: &Binding, m: &serde_json::Map<String, Value>, ctx: &mut RequestCtx<'_>) {
     if let Some(v) = m.get("messages").filter(|v| !v.is_null()) {
         match serde_json::from_value::<Vec<ChatMessage>>(v.clone()) {
-            Ok(list) if !list.is_empty() => *ctx.messages = list,
+            Ok(list) if !list.is_empty() => {
+                *ctx.messages = list;
+                // Which entry each message came from is unknown now (a compaction then
+                // covers none of the stored entries rather than the wrong ones).
+                ctx.ids = &[];
+            }
             Ok(_) => report(b, "before_request: \"messages\" can't be empty; the request keeps its messages"),
             Err(e) => report(b, &format!("before_request: \"messages\" isn't a list of messages ({e}); the request keeps its messages")),
         }
@@ -591,11 +602,11 @@ fn apply_request(b: &Binding, m: &serde_json::Map<String, Value>, ctx: &mut Requ
 
 /// `after_tool_call` modify: `result` (new text) and/or `card` (a view tree for the step).
 fn apply_after(b: &Binding, m: &serde_json::Map<String, Value>, ctx: &mut AfterCtx<'_>) {
-    if let Some(v) = m.get("result") {
-        match v {
-            Value::String(s) => s.clone_into(ctx.result),
-            other => *ctx.result = other.to_string(),
-        }
+    // `null` (Python's `modify(result=None, card=…)`) leaves the result as it is.
+    match m.get("result") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(s)) => s.clone_into(ctx.result),
+        Some(other) => *ctx.result = other.to_string(),
     }
     if let Some(card) = m.get("card").filter(|c| c.is_object()) {
         if ctx.views.len() >= byob_protocol::view::MAX_STEP_VIEWS {
@@ -687,7 +698,7 @@ mod tests {
             native("z", 20, 0, Push("stops", Flow::Stop("enough".into()))),
             native("y", 30, 0, Push("never", Flow::Continue)),
         ]);
-        let p = hooks.before_prompt(&PromptInputs::default(), &AtomicBool::new(false));
+        let p = hooks.before_prompt(&PromptInputs::default(), &AtomicBool::new(false)).unwrap();
         assert_eq!(p, "first\n\nchat\n\nglobal\n\nstops");
         assert_eq!(hooks.native_prompt(&PromptInputs::default()), p);
     }
@@ -723,5 +734,59 @@ mod tests {
         };
         let p = Hooks::defaults(&natives).native_prompt(&inputs);
         assert_eq!(p, "BASE\n\nSECTIONS\n\nLINES\n\n## AGENTS\n\nThe user's instructions for this chat:\nbe brief\n\n## Subagents");
+    }
+
+    fn modify(v: Value) -> serde_json::Map<String, Value> {
+        v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn an_after_hook_with_a_null_result_keeps_the_result_and_adds_its_card() {
+        let b = native("p", 0, 0, Push("x", Flow::Continue));
+        let (mut result, mut views) = ("the tool's text".to_owned(), Vec::new());
+        let mut ctx = AfterCtx {
+            tool: "t",
+            args: &Value::Null,
+            result: &mut result,
+            failed: false,
+            views: &mut views,
+            chat: "c",
+            workspace: Path::new("/w"),
+            child: false,
+        };
+        apply_after(&b, &modify(json!({"result": null, "card": {"type": "text", "text": "hi"}})), &mut ctx);
+        apply_after(&b, &modify(json!({"card": {"type": "text", "text": "again"}})), &mut ctx);
+        assert_eq!((result.as_str(), views.len()), ("the tool's text", 2));
+    }
+
+    #[test]
+    fn replacing_the_messages_forgets_which_entries_they_came_from() {
+        let b = native("p", 0, 0, Push("x", Flow::Continue));
+        let llm = byob_llm::Client::new(byob_types::InferenceConfig::default()).unwrap();
+        let plan = adapt::Plan { key: String::new(), prompt_tools: false, fallback: false, context: 1000, reserve: 0, vision: None };
+        let (mut messages, mut specs, mut usage, mut calls, mut state) =
+            (vec![ChatMessage::system("s"), ChatMessage::user("u")], Vec::new(), Usage::default(), 0, BTreeMap::new());
+        let ids = [0, 7];
+        let mut ctx = RequestCtx {
+            entry: 1,
+            round: 0,
+            child: false,
+            messages: &mut messages,
+            specs: &mut specs,
+            llm: &llm,
+            plan: &plan,
+            cancel: &AtomicBool::new(false),
+            ids: &ids,
+            prior: 7,
+            compact: None,
+            usage: &mut usage,
+            model_calls: &mut calls,
+            state: &mut state,
+            emit: &|_| {},
+        };
+        apply_request(&b, &modify(json!({"tools": []})), &mut ctx);
+        assert_eq!(ctx.ids, [0, 7], "only the tools changed");
+        apply_request(&b, &modify(json!({"messages": [{"role": "user", "content": "other"}]})), &mut ctx);
+        assert!(ctx.ids.is_empty());
     }
 }

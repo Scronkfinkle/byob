@@ -313,15 +313,6 @@ impl Engine {
         let event = serde_json::json!({"entry": entry, "step": step.id, "tool": step.tool, "status": step.status, "title": step.title});
         self.emit(&chat, "step_done", event);
         let Some(run) = self.turns.get(&entry) else { return };
-        if self.step_views.get(&chat).is_some_and(|(tool, _)| *tool == step.tool)
-            && let Some((_, view)) = self.step_views.remove(&chat)
-        {
-            match view.check() {
-                Ok(()) if step.views.len() < byob_protocol::view::MAX_STEP_VIEWS => step.views.push(view),
-                Ok(()) => log::warn!("step {}: too many views; {} dropped", step.id, view.kind),
-                Err(e) => log::warn!("step {}: view {} dropped: {e}", step.id, view.kind),
-            }
-        }
         if let Some(owner) = run.owners.get(&step.tool).cloned()
             && let Some(ext) = self.ext.as_mut()
         {

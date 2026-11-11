@@ -234,6 +234,41 @@ fn a_plugin_web_view_talks_to_its_backend() {
     assert!(web_call(&mut c, 8, &undeclared, "byob/document", json!({}), false).is_err());
 }
 
+const CARDS_BACKEND: &str = r#"
+import byob_plugin as byob
+
+@byob.tool
+def chart(card: bool = True):
+    if card:
+        return {"text": "with a card", "card": {"type": "text", "text": "a card"}}
+    return "no card"
+
+byob.run()
+"#;
+
+#[test]
+fn a_card_goes_on_its_own_calls_step_only() {
+    let script = vec![call("chart", r#"{"card": false}"#), Reply::Text("done")];
+    let h = harness(script, Some(crate::Policy::ALLOW_ALL), |home, _| {
+        let dir = home.join("plugins/panel");
+        fs::create_dir_all(dir.join("ui")).unwrap();
+        fs::write(dir.join("backend.py"), CARDS_BACKEND).unwrap();
+        fs::write(dir.join("ui/index.html"), "<p>panel</p>").unwrap();
+        let m = json!({"id": "panel", "name": "Panel", "backend": "backend.py",
+            "views": [{"site": "pane", "id": "panel", "html": "ui/index.html"}, {"site": "card", "id": "result"}],
+            "tools": [{"name": "chart", "description": "Chart", "params": {"type": "object", "properties": {"card": {"type": "boolean"}}}, "run": "backend"}]});
+        fs::write(dir.join("byob-plugin.json"), m.to_string()).unwrap();
+    });
+    let (mut c, _) = hello(&h);
+    let owner = WebOwner::Plugin { plugin: "panel".into(), view: "panel".into(), key: String::new() };
+    // The page's own call makes a card, but there's no step for it.
+    let r = web_call(&mut c, 1, &owner, "tools/call", json!({"name": "chart", "arguments": {}}), false).unwrap();
+    assert_eq!(r["content"][0]["text"], "with a card");
+    // So the model's next call of the same tool (which makes none) doesn't get it.
+    let (r, _) = turn(&mut c, "chart without a card", |_, _| {});
+    assert!(step(&r, "chart").views.is_empty(), "{:?}", step(&r, "chart").views);
+}
+
 /// Bridge round trip through the engine: page call → engine → plugin backend → page.
 #[test]
 #[ignore = "measurement; run with --ignored --nocapture"]

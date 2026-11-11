@@ -250,30 +250,28 @@ pub fn spawn(setup: Setup) -> std::io::Result<()> {
         let inbox = setup.inbox.clone();
         let mut turn = Turn::new(setup);
         let result = catch_unwind(AssertUnwindSafe(|| turn.run()));
-        let end = hooks::TurnEndCtx {
-            entry: id,
-            chat: &turn.s.chat,
-            workspace: turn.s.workspace.as_path(),
-            answer: &turn.answer,
-            error: match &result {
-                Ok(Err(End::Error(e))) => Some(e.as_str()),
-                Err(_) => Some("internal error: the turn crashed"),
-                _ => None,
-            },
-            stopped: matches!(result, Ok(Err(End::Stopped))),
-        };
-        let never = AtomicBool::new(false);
-        turn.s.hooks.on_turn_end(&end, &never);
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let stats =
             TurnStats { prompt_tokens: turn.usage.prompt_tokens, completion_tokens: turn.usage.completion_tokens, elapsed_ms, model_calls: turn.model_calls };
+        let stopped = matches!(result, Ok(Err(End::Stopped)));
         let (error, stats) = match result {
             Ok(Ok(())) => (None, Some(stats)),
             Ok(Err(End::Stopped)) => (Some("stopped".to_owned()), Some(stats)),
             Ok(Err(End::Error(e))) => (Some(e), turn.rounds_done.then_some(stats)),
             Err(_) => (Some("internal error: the turn crashed".to_owned()), None),
         };
-        let _ = inbox.send(Input::Turn(TurnEvent::Finished { id, error, stats }));
+        // The turn is over for the user before its observers run (they may take their
+        // time); they get the turn's stop flag.
+        let _ = inbox.send(Input::Turn(TurnEvent::Finished { id, error: error.clone(), stats }));
+        let end = hooks::TurnEndCtx {
+            entry: id,
+            chat: &turn.s.chat,
+            workspace: turn.s.workspace.as_path(),
+            answer: &turn.answer,
+            error: error.as_deref().filter(|_| !stopped),
+            stopped,
+        };
+        turn.s.hooks.on_turn_end(&end, &turn.s.cancel);
     })?;
     Ok(())
 }
@@ -287,6 +285,8 @@ struct Turn {
     s: Setup,
     /// This round's tools (taken from `s.tools` when the round starts).
     tools: Registry,
+    /// Names of the tools this round's request offered (after the `before_request` hooks).
+    offered: Vec<String>,
     messages: Vec<ChatMessage>,
     usage: Usage,
     /// At least one model request completed (so `usage` means something).
@@ -367,6 +367,7 @@ impl Turn {
         Self {
             s,
             tools,
+            offered: Vec::new(),
             messages,
             usage: Usage::default(),
             rounds_done: false,
@@ -403,7 +404,7 @@ impl Turn {
         }
         // The system prompt: every before_prompt hook, in order (plugins' backends included).
         if let Some(inputs) = self.s.prompt.take() {
-            let text = self.s.hooks.before_prompt(&inputs, &self.s.cancel);
+            let text = self.s.hooks.before_prompt(&inputs, &self.s.cancel).map_err(End::Error)?;
             if let Some(first) = self.messages.first_mut().filter(|m| m.role == "system") {
                 *first = ChatMessage::system(text);
             }
@@ -414,6 +415,8 @@ impl Turn {
             let tools_on = self.tools_on();
             let mut specs = if tools_on { specs(&self.tools) } else { Vec::new() };
             self.before_request(&mut specs, round)?;
+            // A hook may have hidden tools: calls to those are refused like unknown ones.
+            self.offered = specs.iter().map(|s| s.name.clone()).collect();
             let out = self.model_call(&specs)?;
             if out.cancelled {
                 return Err(End::Stopped);
@@ -615,9 +618,9 @@ impl Turn {
         (self.calls > max).then(|| format!("Not run: the limit of {max} tool calls per turn is reached. Answer with what you have."))
     }
 
-    /// Bound a result by the per-call cap and what is left of the turn's output budget.
+    /// Bound a result (already within the per-call cap) by what is left of the turn's
+    /// output budget.
     fn charge(&mut self, text: String) -> String {
-        let text = cap(text, MAX_OUTPUT, "the tool's output is longer than one call may return");
         let remaining = TURN_OUTPUT_BUDGET.saturating_sub(self.output_used);
         let text = cap(text, remaining, "this turn's tool output budget is used up; answer with what you have");
         self.output_used = self.output_used.saturating_add(text.len());
@@ -715,9 +718,9 @@ impl Turn {
             return Err(refused);
         }
         let name = call.name.trim().to_owned();
-        let Some(tool) = self.tools.get(&name).cloned() else {
+        let Some(tool) = self.tools.get(&name).filter(|_| self.offered.contains(&name)).cloned() else {
             self.failed_step(&name, format!("Unknown tool {name:?}"), ToolAccess::Read, "no such tool");
-            let known: Vec<String> = specs(&self.tools).into_iter().map(|s| s.name).collect();
+            let known: Vec<&str> = self.offered.iter().map(String::as_str).collect();
             return Err(format!("Error: there is no tool called {name:?}. Available tools: {}.", known.join(", ")));
         };
         let mut args = match parse_arguments(&call.arguments) {
@@ -735,16 +738,11 @@ impl Turn {
                 prefix(earlier, REPEAT_QUOTE)
             ));
         }
-        let tool_ref = tool.as_ref();
-        // Tool code is not ours to trust either: a panic in title/access/preview/run fails the call.
-        let title = catch_unwind(AssertUnwindSafe(|| tool_ref.pending_title(&args))).unwrap_or_else(|_| name.clone());
-        // If access() can't say, assume the most dangerous.
-        let access = catch_unwind(AssertUnwindSafe(|| tool_ref.access(&args))).map_or(ToolAccess::Execute, to_protocol);
-        let preview = catch_unwind(AssertUnwindSafe(|| tool_ref.preview(&args, self.s.workspace.as_path()))).ok().flatten().map(crate::steps::bound_preview);
+        let (title, access, preview, ask) = self.describe(tool.as_ref(), &name, &args);
         let mut step = Step {
             id: self.s.step_ids.fetch_add(1, Ordering::Relaxed),
             tool: name.clone(),
-            title: one_line(&title, DETAIL_CHARS),
+            title,
             access,
             status: StepStatus::Running,
             detail: one_line(&args.to_string(), DETAIL_CHARS),
@@ -754,10 +752,7 @@ impl Turn {
             media: Vec::new(),
             artifacts: Vec::new(),
             delegation: None,
-            // A call a person must confirm every time (installing system-wide).
-            ask: catch_unwind(AssertUnwindSafe(|| tool_ref.always_ask(&args)))
-                .unwrap_or_else(|_| Some("this tool must be confirmed".into()))
-                .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true })),
+            ask,
             views: vec![],
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step: step.clone() });
@@ -772,6 +767,8 @@ impl Turn {
         };
         let decision = self.s.hooks.before_tool_call(&mut hook_ctx, &self.s.cancel);
         if format!("{name}:{args}") != key {
+            // New arguments: the gate and the card judge the call that will actually run.
+            (step.title, step.access, step.preview, step.ask) = self.describe(tool.as_ref(), &name, &args);
             step.detail = one_line(&args.to_string(), DETAIL_CHARS);
         }
         let verdict = match decision {
@@ -806,7 +803,10 @@ impl Turn {
             self.emit(TurnEvent::Undo { id: self.s.entry, ops, complete });
         }
         *self.ran.entry(name.clone()).or_default() += 1;
-        let mut text = self.charge(output.text);
+        // Hooks see the call's result within the per-call cap; what they leave is charged
+        // against the turn's budget (a hook's replacement is capped like the tool's own).
+        let capped = cap_call(output.text);
+        let mut text = capped.clone();
         let mut hook_ctx = hooks::AfterCtx {
             tool: &name,
             args: &args,
@@ -818,6 +818,8 @@ impl Turn {
             child: self.s.child.is_some(),
         };
         self.s.hooks.after_tool_call(&mut hook_ctx, &self.s.cancel);
+        let text = if text == capped { text } else { cap_call(text) };
+        let mut text = self.charge(text);
         if !owned {
             step.status = if output.failed { StepStatus::Failed } else { StepStatus::Done };
             if !output.failed {
@@ -837,6 +839,20 @@ impl Turn {
         }
         self.seen.insert(key, text.clone());
         text
+    }
+
+    /// A call's title, access, preview and must-confirm card, from its arguments. Tool code
+    /// is not ours to trust either: a panic in any of these fails safe.
+    fn describe(&self, tool: &dyn Tool, name: &str, args: &Value) -> (String, ToolAccess, Option<byob_protocol::Preview>, Option<Box<Ask>>) {
+        let title = catch_unwind(AssertUnwindSafe(|| tool.pending_title(args))).unwrap_or_else(|_| name.to_owned());
+        // If access() can't say, assume the most dangerous.
+        let access = catch_unwind(AssertUnwindSafe(|| tool.access(args))).map_or(ToolAccess::Execute, to_protocol);
+        let preview = catch_unwind(AssertUnwindSafe(|| tool.preview(args, self.s.workspace.as_path()))).ok().flatten().map(crate::steps::bound_preview);
+        // A call a person must confirm every time (installing system-wide).
+        let ask = catch_unwind(AssertUnwindSafe(|| tool.always_ask(args)))
+            .unwrap_or_else(|_| Some("this tool must be confirmed".into()))
+            .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true }));
+        (one_line(&title, DETAIL_CHARS), access, preview, ask)
     }
 
     /// Ask the engine for permission; blocks until answered or the turn is cancelled.
@@ -866,6 +882,11 @@ impl Turn {
         };
         self.emit(TurnEvent::Step { id: self.s.entry, step });
     }
+}
+
+/// Bound one call's result by the per-call cap.
+fn cap_call(text: String) -> String {
+    cap(text, MAX_OUTPUT, "the tool's output is longer than one call may return")
 }
 
 /// A receiver that already holds a failed output.
