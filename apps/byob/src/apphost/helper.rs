@@ -60,6 +60,8 @@ pub struct Helper {
     /// What it announced with `Event::Features` (none until then).
     features: wire::Features,
     gone: Option<Gone>,
+    /// Why the reader stopped, when it wasn't the end of the stream.
+    broken: Arc<Mutex<Option<String>>>,
 }
 
 impl Helper {
@@ -82,7 +84,7 @@ impl Helper {
                 return Err(io::Error::other("no pipes to the helper"));
             }
         };
-        let (out, events, frame) = match pipes(stdin, stdout, wake) {
+        let (out, events, frame, broken) = match pipes(stdin, stdout, wake) {
             Ok(p) => p,
             Err(e) => {
                 kill(&mut child);
@@ -95,6 +97,7 @@ impl Helper {
             out,
             events,
             frame,
+            broken,
             started: Instant::now(),
             ready_at: None,
             last_pong: None,
@@ -112,7 +115,7 @@ fn pipes(
     stdin: std::process::ChildStdin,
     stdout: std::process::ChildStdout,
     wake: impl Fn() + Send + 'static,
-) -> io::Result<(Sender<Request>, Receiver<Event>, Arc<Mutex<Option<Frame>>>)> {
+) -> io::Result<(Sender<Request>, Receiver<Event>, Arc<Mutex<Option<Frame>>>, Arc<Mutex<Option<String>>>)> {
     let (out, requests) = mpsc::channel::<Request>();
     std::thread::Builder::new().name("artifact-host-in".into()).spawn(move || {
         let mut w = BufWriter::new(stdin);
@@ -125,6 +128,8 @@ fn pipes(
     let (tx, events) = mpsc::channel();
     let frame: Arc<Mutex<Option<Frame>>> = Arc::default();
     let slot = Arc::clone(&frame);
+    let broken: Arc<Mutex<Option<String>>> = Arc::default();
+    let why = Arc::clone(&broken);
     std::thread::Builder::new().name("artifact-host-out".into()).spawn(move || {
         let mut r = BufReader::new(stdout);
         loop {
@@ -137,7 +142,10 @@ fn pipes(
                 }
                 Ok(None) => break,
                 Err(e) => {
+                    // Usually something else wrote to its stdout (our channel): say so, it's
+                    // otherwise a silent stall.
                     log::warn!("artifact host: {e}");
+                    *why.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!("its output was unreadable: {e}"));
                     break;
                 }
             }
@@ -146,7 +154,7 @@ fn pipes(
         // Dropping `tx` tells the UI the helper is gone.
         wake();
     })?;
-    Ok((out, events, frame))
+    Ok((out, events, frame, broken))
 }
 
 impl Helper {
@@ -167,7 +175,8 @@ impl Helper {
                 Err(TryRecvError::Disconnected) => {
                     if self.gone.is_none() {
                         let status = self.child.as_mut().and_then(|c| c.try_wait().ok().flatten());
-                        self.gone = Some(Gone::Exited(status.map_or_else(|| "it closed its output".to_owned(), |s| s.to_string())));
+                        let broken = self.broken.lock().unwrap_or_else(PoisonError::into_inner).take();
+                        self.gone = Some(Gone::Exited(broken.or_else(|| status.map(|s| s.to_string())).unwrap_or_else(|| "it closed its output".to_owned())));
                     }
                     break;
                 }
@@ -312,6 +321,24 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(matches!(gone, Some(Gone::Exited(_))), "{gone:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_that_prints_to_its_stdout_is_reported_not_left_hanging() {
+        // Its stdout is our channel: a stray line (a library logging) is an unreadable frame.
+        let dir = tempfile::tempdir().unwrap();
+        let path = script(dir.path(), "chatty", "echo 'hello from a library'; sleep 30");
+        let mut h = Helper::spawn(&path, || {}).unwrap();
+        let start = Instant::now();
+        let mut gone = None;
+        while gone.is_none() && start.elapsed() < Duration::from_secs(5) {
+            h.poll();
+            gone = h.check(Instant::now());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(matches!(&gone, Some(Gone::Exited(how)) if how.contains("unreadable")), "{gone:?}");
+        h.kill();
     }
 
     #[test]

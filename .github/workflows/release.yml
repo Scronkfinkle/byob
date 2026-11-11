@@ -131,6 +131,9 @@ jobs:
       - name: Smoke test the HTML app renderer
         if: matrix.smoke
         shell: bash
+        env:
+          RUST_BACKTRACE: "1"
+          RUST_LOG: info
         run: |
           set -euo pipefail
           if [[ "$RUNNER_OS" == Linux ]]; then sudo apt-get install -y libegl1 libgl1-mesa-dri; fi

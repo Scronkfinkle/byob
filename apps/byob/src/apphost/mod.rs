@@ -748,7 +748,12 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            assert!(out.iter().any(|m| m.starts_with(what)), "no {what:?} from the page: {out:?}");
+            assert!(
+                out.iter().any(|m| m.starts_with(what)),
+                "no {what:?} from the page: {out:?} (helper ready: {}, gone: {:?})",
+                h.ready(),
+                h.check(Instant::now())
+            );
         };
         pump_until(&mut h, &mut out, "ready");
         for i in inputs {
@@ -827,7 +832,12 @@ mod tests {
                 if let Some(m) = h.poll().into_iter().find_map(|e| if let wire::Event::Message(m) = e { Some(m) } else { None }) {
                     return m;
                 }
-                assert!(start.elapsed() < Duration::from_secs(30), "no message from the page");
+                assert!(
+                    start.elapsed() < Duration::from_secs(30),
+                    "no message from the page (helper ready: {}, gone: {:?})",
+                    h.ready(),
+                    h.check(Instant::now())
+                );
                 std::thread::sleep(Duration::from_micros(200));
             }
         };
