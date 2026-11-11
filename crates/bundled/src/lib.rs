@@ -66,4 +66,24 @@ mod tests {
             assert!(file(id, "byob-plugin.json").is_some_and(|m| m.contains(&format!("\"id\": \"{id}\""))), "{id}");
         }
     }
+
+    /// The sheets backend's Python tests (`sheets_tests/`): the ironcalc ones run when the
+    /// Python in `BYOB_SHEETS_PYTHON` has it (else they are skipped); the CSV fallback always.
+    #[test]
+    fn sheets_backend_python_tests() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let python = std::env::var("BYOB_SHEETS_PYTHON").unwrap_or_else(|_| "python3".into());
+        let Ok(out) = std::process::Command::new(&python)
+            .args(["-B", "-m", "unittest", "discover", "-s", "sheets_tests"])
+            .current_dir(dir)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+        else {
+            eprintln!("no {python}: skipped");
+            return;
+        };
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{err}");
+        eprintln!("{}", err.lines().last().unwrap_or_default());
+    }
 }
