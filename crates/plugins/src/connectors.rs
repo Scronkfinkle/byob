@@ -191,8 +191,8 @@ impl ConnectorResult {
     }
 
     /// The `CallToolResult` for an MCP App (the raw result, else one made of the content),
-    /// at most about `max` bytes of JSON: a larger one keeps only its text parts (cut) and
-    /// `structuredContent` if that fits.
+    /// at most `max` bytes of JSON: a larger one keeps only its text parts (cut to share half
+    /// of `max`) and `structuredContent` if that fits in the rest.
     pub fn for_app(&self, max: usize) -> Value {
         let full = if self.raw.is_object() {
             self.raw.clone()
@@ -212,21 +212,38 @@ impl ConnectorResult {
         if full.to_string().len() <= max {
             return full;
         }
-        let texts: Vec<Value> = full
-            .get("content")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|p| p.get("text").and_then(Value::as_str))
-                    .map(|t| json!({"type": "text", "text": t.chars().take(max / 4).collect::<String>()}))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // one budget for every text part (as JSON, with its wrapper)
+        const PART: usize = r#"{"type":"text","text":""},"#.len();
+        let mut left = max / 2;
+        let mut texts = Vec::new();
+        for t in full.get("content").and_then(Value::as_array).into_iter().flatten().filter_map(|p| p.get("text").and_then(Value::as_str)) {
+            let Some(room) = left.checked_sub(PART).filter(|r| *r > 0) else { break };
+            let mut used = 0;
+            let cut: String = t
+                .chars()
+                .take_while(|c| {
+                    used += json_len(*c);
+                    used <= room
+                })
+                .collect();
+            left = left.saturating_sub(PART + cut.chars().map(json_len).sum::<usize>());
+            texts.push(json!({"type": "text", "text": cut}));
+        }
         let mut out = json!({"content": texts, "isError": self.is_error});
-        if let Some(s) = full.get("structuredContent").filter(|s| s.to_string().len() <= max / 2) {
+        let room = max.saturating_sub(out.to_string().len()).saturating_sub(r#","structuredContent":"#.len());
+        if let Some(s) = full.get("structuredContent").filter(|s| s.to_string().len() <= room) {
             out["structuredContent"] = s.clone();
         }
         out
+    }
+}
+
+/// Bytes `c` takes in a JSON string (at most).
+fn json_len(c: char) -> usize {
+    match c {
+        '"' | '\\' => 2,
+        c if u32::from(c) < 0x20 => 6,
+        c => c.len_utf8(),
     }
 }
 
@@ -819,5 +836,20 @@ mod tests {
         assert_eq!(name_from_url("http://localhost:3000/mcp"), "Local app");
         assert_eq!(name_from_url("http://127.0.0.1/mcp"), "Local app");
         assert_eq!(name_from_url("https://notion.com"), "Notion");
+    }
+
+    #[test]
+    fn an_app_result_stays_under_its_cap_however_many_parts() {
+        let max = 16 * 1024;
+        let parts: Vec<Value> = (0..20).map(|i| json!({"type": "text", "text": format!("{i}\"\n{}", "é".repeat(5000))})).collect();
+        let r = ConnectorResult::from_mcp(&json!({"content": parts, "structuredContent": {"n": 1}}));
+        let out = r.for_app(max);
+        assert!(out.to_string().len() <= max, "{} bytes", out.to_string().len());
+        let first = out["content"][0]["text"].as_str().unwrap();
+        assert!(first.starts_with("0\"\n") && first.len() > 1000, "{first:.20}");
+        assert_eq!(out["structuredContent"], json!({"n": 1}));
+        // a small one comes through whole
+        let small = ConnectorResult::from_mcp(&json!({"content": [{"type": "text", "text": "hi"}]}));
+        assert_eq!(small.for_app(max)["content"][0]["text"], "hi");
     }
 }
