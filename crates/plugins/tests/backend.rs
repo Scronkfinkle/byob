@@ -266,6 +266,29 @@ fn a_backend_that_never_reads_gets_its_messages_dropped_not_queued_forever() {
 }
 
 #[test]
+fn non_ascii_survives_a_non_utf8_locale() {
+    let Some(f) = fixture("import byob_plugin as byob\n\n@byob.tool\ndef echo(s: str = ''):\n    print('got', s)\n    return s + ' ✓'\n\nbyob.run()\n")
+    else {
+        return;
+    };
+    let py = PluginPython::new(&f.envs, &[], &f.root);
+    let cwd = f.root.clone();
+    let prepare = Box::new(move |_: &dyn Fn() -> bool| {
+        let p = py.python()?;
+        let mut argv = p.program;
+        argv.push("backend.py".into());
+        let mut env = p.env;
+        // what Windows' cp1252 does to UTF-8 input, everywhere
+        env.insert("PYTHONIOENCODING".into(), "ascii".into());
+        env.insert("PYTHONUTF8".into(), "0".into());
+        Ok(Launch { argv, cwd: cwd.clone(), env, remove_env: vec![] }.into())
+    });
+    let b = Backend::new("utf8", json!({"type": "init"}), &[], prepare, Arc::new(|_| {}));
+    let r = b.request("tool", json!({"name": "echo", "args": {"s": "Grüße, 東京"}}), Duration::from_secs(20), &|| false);
+    assert_eq!(r, Ok(json!("Grüße, 東京 ✓")), "{:?}", b.status());
+}
+
+#[test]
 fn oversized_and_garbled_output_are_faults_not_failures() {
     let Some(f) = fixture(ECHO) else { return };
     let (b, rx) = start(&f, &[]);

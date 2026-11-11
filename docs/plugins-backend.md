@@ -57,7 +57,7 @@ byob_plugin.py` (the Python helper), `crates/plugins/src/pyenv.rs` (Python envir
   to read them (more are dropped, with a fault). Stopping it calls off a venv build in
   progress. Working folder: the plugin folder. Environment: byob's, plus the plugin's
   settings (secret ones too), `BYOB_PLUGIN_DIR`, `PYTHONPATH`, `PYTHONUNBUFFERED=1`,
-  minus `BYOB_API_KEY`. On Unix it leads a process
+  `PYTHONUTF8=1`, `PYTHONIOENCODING=utf-8`, minus `BYOB_API_KEY`. On Unix it leads a process
   group of its own, killed with it (so are what it started). No sandbox: like VS Code extensions, an
   installed plugin runs with the user's rights; the trust question for plugins that came
   with a workspace still applies before anything runs.

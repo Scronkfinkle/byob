@@ -430,6 +430,12 @@ def _view_event(msg):
 def run(handlers=None):
     """Serve byob until it closes stdin. `handlers` may also map names to functions:
     {"tool:add": add, "message": fn, "start": fn, "view": fn, "turn_finished": fn}."""
+    # the protocol is UTF-8 whatever the locale says (Windows: cp1252)
+    for stream, errors in ((sys.stdin, "replace"), (_out, "strict"), (sys.stderr, "backslashreplace")):
+        try:
+            stream.reconfigure(encoding="utf-8", errors=errors)
+        except (AttributeError, ValueError, OSError):
+            pass
     sys.stdout = sys.stderr  # stray print()s must not break the protocol
     for key, fn in (handlers or {}).items():
         if key.startswith("tool:"):

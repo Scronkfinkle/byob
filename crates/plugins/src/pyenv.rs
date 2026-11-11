@@ -169,6 +169,9 @@ impl PyEnvs {
             Err(e) => log::warn!("the byob_plugin helper isn't available: {e}"),
         }
         vars.insert("PYTHONUNBUFFERED".to_owned(), "1".to_owned());
+        // UTF-8 on stdin/stdout and in files even where the locale says otherwise (Windows)
+        vars.insert("PYTHONUTF8".to_owned(), "1".to_owned());
+        vars.insert("PYTHONIOENCODING".to_owned(), "utf-8".to_owned());
         let program = match env {
             None => self.base.clone(),
             Some(env) => {
@@ -452,6 +455,14 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.join(HELPER_FILE)).unwrap(), HELPER);
         assert!(py.env["PYTHONPATH"].starts_with(&dir.display().to_string()));
         assert_eq!(py.program, crate::default_python());
+    }
+
+    #[test]
+    fn python_speaks_utf8_whatever_the_locale() {
+        let root = tempfile::tempdir().unwrap();
+        let py = PyEnvs::new(root.path(), crate::default_python()).python(None, &|| false).unwrap();
+        assert_eq!(py.env.get("PYTHONUTF8").map(String::as_str), Some("1"));
+        assert_eq!(py.env.get("PYTHONIOENCODING").map(String::as_str), Some("utf-8"));
     }
 
     /// An environment whose interpreter doesn't exist: a build fails at once.
