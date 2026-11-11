@@ -63,7 +63,8 @@ pub(super) struct GridState {
     bar: Option<(u32, u32, String)>,
     /// Cells edited here and not answered: shown until a reply (or the cell changes).
     pending: HashMap<(u32, u32), Pending>,
-    /// The window last asked for (row, col, rows, cols), until the tree changes.
+    /// The window last asked for (row, col, rows, cols), until the blocks change shape (a
+    /// reply that brings no new blocks doesn't count: asking again would loop).
     asked: Option<(u32, u32, u32, u32)>,
     /// What the blocks covered when last drawn.
     shape: u64,
@@ -77,7 +78,6 @@ pub(super) struct GridState {
 impl GridState {
     pub(super) fn replied(&mut self) {
         self.pending.clear();
-        self.asked = None;
     }
 }
 

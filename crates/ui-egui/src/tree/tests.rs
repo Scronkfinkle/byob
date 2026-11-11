@@ -527,6 +527,14 @@ fn scrolling_asks_for_the_window_once_and_frozen_rows_stay() {
     assert!(texts.iter().any(|(t, _)| t == "1"), "row 1's number");
     // Not again while it is outstanding, even moving a little.
     w.frame(vec![], &mut s.draw());
+    // A reply that brings no blocks there (the owner can't, or answered something else)
+    // doesn't make it ask again every frame.
+    s.st.replied(&Map::new());
+    w.frame(vec![], &mut s.draw());
+    s.st.replied(&Map::new());
+    w.frame(vec![], &mut s.draw());
+    let again = s.take();
+    assert!(again.is_empty(), "asked again after a reply: {again:?}");
     s.st.scroll_grid("s", 0.0, 500_010.0 * 22.0);
     w.frame(vec![], &mut s.draw());
     let again = s.take();
