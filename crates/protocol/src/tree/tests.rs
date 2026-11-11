@@ -37,7 +37,7 @@ pub(crate) fn grid(n: usize) -> Node {
 
 #[test]
 fn the_demo_trees_decode_cleanly_and_round_trip() {
-    for src in [DASHBOARD, SETTINGS, CANVAS] {
+    for src in [DASHBOARD, SETTINGS, CANVAS, GRID] {
         let n = ok(src);
         let again = ok(&serde_json::to_string(&n).unwrap());
         assert_eq!(n, again);
@@ -180,7 +180,12 @@ fn replies_decode_tolerantly() {
     assert_eq!(back, r.patch);
     assert!(Reply::parse("[1]").is_err() && Reply::parse("print('hi')").is_err());
     // An event as a plugin reads it.
-    let e = Event { action: "edit".into(), values: Map::new(), edit: Some(CellEdit { table: "g".into(), row: 3, column: "qty".into(), value: "5".into() }) };
+    let e = Event {
+        action: "edit".into(),
+        values: Map::new(),
+        edit: Some(CellEdit { table: "g".into(), row: 3, column: "qty".into(), value: "5".into() }),
+        grid: None,
+    };
     assert_eq!(serde_json::to_string(&e).unwrap(), r#"{"action":"edit","values":{},"edit":{"table":"g","row":3,"column":"qty","value":"5"}}"#);
 }
 
@@ -388,4 +393,171 @@ fn trees_travel_as_views_with_a_markdown_fallback() {
     }
     let big = grid(100);
     assert!(big.fallback_markdown().contains("80 more rows"));
+}
+
+pub(crate) const GRID: &str = include_str!("../../tests/trees/grid.json");
+
+fn the_grid(n: &Node) -> &Kind {
+    &n.find("g").expect("grid").kind
+}
+
+#[test]
+fn a_grid_decodes_with_typed_cells_and_round_trips() {
+    let n = ok(GRID);
+    assert_eq!(n.count(), 2, "cells aren't nodes");
+    let Kind::Grid { name, rows, cols, blocks, frozen_rows, widths, editable, headers, height, selection, .. } = the_grid(&n) else { panic!() };
+    assert_eq!((name.as_str(), *rows, *cols, *frozen_rows, *editable, *headers, *height), ("sheet", 1000, 26, 1, true, true, Some(400.0)));
+    assert_eq!(widths.get(&0), Some(&140.0));
+    assert_eq!(*selection, Some(GridRange::cell(1, 1)));
+    let b = &blocks[0];
+    assert_eq!((b.height(), b.width(), b.cell_count()), (5, 4, 20));
+    let cell = |r, c| b.get(r, c).flatten().cloned().unwrap_or_default();
+    assert_eq!((cell(1, 1).v.as_str(), cell(1, 1).t), ("1200", CellType::Number));
+    assert_eq!((cell(1, 3).v.as_str(), cell(1, 3).t), ("TRUE", CellType::Bool));
+    assert_eq!((cell(3, 2).t, cell(3, 2).input()), (CellType::Error, "=B4/0"));
+    assert_eq!(cell(4, 1).input(), "=SUM(B2:B4)");
+    assert!(cell(0, 0).bold && cell(2, 2).italic && cell(0, 1).align == Some(CellAlign::Right));
+    assert_eq!(cell(4, 0).fill.as_deref(), Some("table_header_bg"));
+    assert_eq!(b.get(3, 3).map(|c| c.map(|c| c.t)), Some(Some(CellType::Empty)), "null: an empty cell of the block");
+    assert_eq!(b.get(9, 0), None, "outside the block: not loaded");
+    let again = ok(&serde_json::to_string(&n).unwrap());
+    assert_eq!(n, again);
+    // Plain cells stay short on the wire.
+    let s = serde_json::to_string(&n).unwrap();
+    assert!(s.contains(r#"["Rent",1200,1200,true]"#), "{s}");
+    // The markdown fallback: the first block with column letters.
+    let md = n.fallback_markdown();
+    for want in ["|   | A | B | C | D |", "| 2 | Rent | 1200 | 1200 | TRUE |", "*Grid: 1000 × 26*"] {
+        assert!(md.contains(want), "{want:?} not in\n{md}");
+    }
+    assert_eq!(column_name(0), "A");
+    assert_eq!(column_name(25), "Z");
+    assert_eq!(column_name(26), "AA");
+    assert_eq!(column_name(MAX_GRID_COLS - 1), "XFD");
+    assert_eq!(cell_name(2, 1), "B3");
+}
+
+#[test]
+fn broken_grids_are_fixed_with_faults() {
+    let block = |row: u32, n: usize| json!({"row": row, "col": 0, "cells": vec![vec![json!(1); 10]; n]});
+    let (n, f) = decode(json!({"type": "column", "children": [
+        {"type": "grid", "rows": 5_000_000, "cols": "many", "blocks": (0..20).map(|i| block(i * 100, 1)).collect::<Vec<_>>()},
+        {"type": "grid", "rows": 100_000, "cols": 10, "blocks": [block(0, 4000), block(5000, 4000)]},
+        {"type": "grid", "rows": 10, "cols": 4, "frozen_rows": 50, "widths": {"1": 50, "x": 3, "9": 40, "2": "wide"},
+         "editable": "yes", "height": -3, "selection": {"row": 99, "col": 1},
+         "blocks": [{"row": 7, "col": 2, "cells": [[1, [2], "x", 4], 7, [{"v": "é".repeat(MAX_CELL_CHARS + 5), "zz": 1}], [1]]}, {"row": 20}, 7]},
+        {"type": "grid", "rows": 3, "cols": 3, "blocks": {"row": 0}},
+    ]}));
+    let report = Fault::report(&f);
+    let c = n.children();
+    assert_eq!(c.len(), 4, "a grid always decodes: {report}");
+    let Kind::Grid { rows, cols, blocks, .. } = &c[0].kind else { panic!() };
+    assert_eq!((*rows, *cols, blocks.len()), (MAX_GRID_ROWS, 10, MAX_GRID_BLOCKS), "cols from the blocks");
+    let Kind::Grid { blocks, .. } = &c[1].kind else { panic!() };
+    assert_eq!(blocks.iter().map(GridBlock::cell_count).sum::<usize>(), MAX_GRID_CELLS);
+    let Kind::Grid { frozen_rows, widths, editable, height, selection, blocks, .. } = &c[2].kind else { panic!() };
+    assert_eq!((*frozen_rows, *editable, *height), (9, false, Some(60.0)));
+    assert_eq!(widths.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>(), [(1, 50.0)]);
+    assert_eq!(*selection, Some(GridRange::cell(9, 1)), "clamped to the sheet");
+    assert_eq!(blocks.len(), 1);
+    let b = &blocks[0];
+    assert_eq!(b.cells.len(), 3, "rows past the end cut");
+    assert_eq!(b.cells[0].len(), 2, "columns past the end cut");
+    assert_eq!(b.cells[0][1], GridCell::default(), "a list isn't a cell");
+    assert!(b.cells[1].is_empty(), "a row that isn't a list");
+    let Kind::Grid { blocks, .. } = &c[3].kind else { panic!() };
+    assert!(blocks.is_empty());
+    for want in [
+        "/children/0/rows: at most 1048576",
+        "/children/0/cols: must be a whole number",
+        "/children/0/blocks: at most 16 blocks",
+        "/children/0: a grid needs \"rows\" and \"cols\"",
+        "/children/1/blocks: a grid has at most 50000 cells",
+        "/children/2/frozen_rows: more than the grid has",
+        "/children/2/widths/x: a width's key is a column index",
+        "/children/2/widths/9: a width's key",
+        "/children/2/widths/2: must be a number",
+        "/children/2/editable: must be true or false",
+        "/children/2/selection/row: at most 9",
+        "/children/2/blocks/0/cells: rows past the grid's last row",
+        "/children/2/blocks/0/cells: cells past the grid's last column",
+        "/children/2/blocks/0/cells/1: a row of cells must be a list",
+        "/children/2/blocks/0/cells/0/1: a cell is null, text",
+        "/children/2/blocks: grid cell text longer than 4096",
+        "/children/2/blocks/1: the block starts outside the grid",
+        "/children/2/blocks/2: a block must be an object",
+        "/children/3/blocks: blocks must be a list",
+    ] {
+        assert!(report.contains(want), "{want:?} not in\n{report}");
+    }
+}
+
+/// A sheet window: `rows` × 6 cells from `row`, plus the frozen header row.
+fn sheet(row: u32, rows: usize, tag: &str) -> Node {
+    let cells = |r0: u32, n: usize| (0..n).map(|r| (0..6).map(|c| GridCell::text(format!("{tag}{}:{c}", r0 as usize + r))).collect()).collect();
+    let kind = Kind::Grid {
+        name: "s".into(),
+        rows: 100_000,
+        cols: 30,
+        blocks: vec![GridBlock { row: 0, col: 0, cells: cells(0, 1) }, GridBlock { row, col: 0, cells: cells(row, rows) }],
+        frozen_rows: 1,
+        frozen_cols: 0,
+        widths: Default::default(),
+        default_width: None,
+        editable: true,
+        headers: true,
+        height: None,
+        selection: None,
+    };
+    Node::new(Kind::Column { children: vec![text("top"), Node::keyed("g", kind)] })
+}
+
+#[test]
+fn grid_diffs_move_blocks_and_patches_apply() {
+    let a = sheet(100, 200, "");
+    let b = sheet(5000, 200, "");
+    let p = round_trip(&a, &b);
+    assert_eq!(p.len(), 1, "one block put: {p:?}");
+    // Fields change, blocks come and go, fields go back to their defaults.
+    let mut c = sheet(5000, 50, "x");
+    let Kind::Grid { blocks, frozen_rows, widths, height, selection, editable, .. } = &mut c.children_mut().unwrap()[1].kind else { panic!() };
+    blocks.push(GridBlock { row: 9, col: 9, cells: vec![vec![GridCell { v: "3".into(), t: CellType::Number, bold: true, ..GridCell::default() }]] });
+    *frozen_rows = 0;
+    widths.insert(3, 200.0);
+    *height = Some(300.0);
+    *selection = Some(GridRange { row: 2, col: 2, to_row: 4, to_col: 1 });
+    *editable = false;
+    round_trip(&a, &c);
+    round_trip(&c, &a);
+    // A set on a grid keeps its blocks; a put of one block checks it against the grid.
+    let mut t = a.clone();
+    let p: Vec<Patch> = serde_json::from_value(json!([
+        {"set": {"key": "g", "fields": {"height": 250, "rows": 2000}}},
+        {"put": {"path": "/children/1/blocks/2", "value": {"row": 300, "col": 0, "cells": [["new"]]}}},
+        {"put": {"path": "/children/1/blocks/9", "value": {"row": 0, "col": 0}}},
+        {"put": {"path": "/children/1/blocks/0", "value": {"row": 1_000_000, "col": 0}}},
+    ]))
+    .unwrap();
+    let f = apply(&mut t, p);
+    assert_eq!(f.len(), 3, "{f:?}");
+    let Kind::Grid { blocks, rows, height, .. } = the_grid(&t) else { panic!() };
+    assert_eq!((blocks.len(), *rows, *height), (3, 2000, Some(250.0)));
+    assert_eq!(blocks[1].cell_count(), 1200);
+    assert_eq!(blocks[2].get(300, 0).flatten().map(|c| c.v.as_str()), Some("new"));
+}
+
+#[test]
+fn grid_events_are_optional_for_old_peers() {
+    let old: Event = serde_json::from_str(r#"{"action": "save", "values": {"a": 1}}"#).unwrap();
+    assert_eq!((old.action.as_str(), old.grid.as_ref()), ("save", None));
+    assert!(!serde_json::to_string(&old).unwrap().contains("grid"));
+    let e = Event {
+        action: "window".into(),
+        values: Map::new(),
+        edit: None,
+        grid: Some(GridEvent { name: "s".into(), op: "window".into(), row: 900, col: 0, rows: Some(160), cols: Some(30), ..GridEvent::default() }),
+    };
+    let s = serde_json::to_string(&e).unwrap();
+    assert_eq!(s, r#"{"action":"window","values":{},"grid":{"name":"s","op":"window","row":900,"col":0,"rows":160,"cols":30}}"#);
+    assert_eq!(serde_json::from_str::<Event>(&s).unwrap(), e);
 }

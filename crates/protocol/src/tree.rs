@@ -3,7 +3,7 @@
 //!
 //! A tree is a [`Node`]: containers (`column`, `row`, `card`) holding leaves (`text`,
 //! `markdown`, `chip`, `button`, `input`, `toggle`, `select`, `progress`, `table`, `chart`,
-//! `separator`, `image`, `canvas`). Any node may carry a `key` (patches address it, clients keep
+//! `separator`, `image`, `canvas`, `grid`). Any node may carry a `key` (patches address it, clients keep
 //! its transient state under it). The user's actions come back as an [`Event`] (an action name
 //! plus the value of every named field, like an HTML form); a plugin answers with a [`Reply`]:
 //! a whole new view, or [`Patch`]es to the current one.
@@ -18,6 +18,7 @@
 //! On a step, a tree travels as a [`crate::View`] of kind [`KIND`] (`byob.tree`), with a
 //! markdown summary as the fallback for clients that can't draw it.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -60,6 +61,16 @@ pub const MAX_OPTIONS: usize = 1_000;
 pub const MAX_PATCHES: usize = 10_000;
 /// Most named values in an event or reply.
 pub const MAX_VALUES: usize = 1_000;
+/// Most rows in a grid (a spreadsheet's).
+pub const MAX_GRID_ROWS: u32 = 1_048_576;
+/// Most columns in a grid.
+pub const MAX_GRID_COLS: u32 = 16_384;
+/// Most blocks of known cells in one grid.
+pub const MAX_GRID_BLOCKS: usize = 16;
+/// Most cells in all the blocks of one grid.
+pub const MAX_GRID_CELLS: usize = 50_000;
+/// Longest text of one grid cell (shown value or input; characters).
+pub const MAX_CELL_CHARS: usize = 4096;
 /// Most faults reported for one tree or reply (the rest are counted in the last one).
 pub const MAX_FAULTS: usize = 50;
 
@@ -200,6 +211,332 @@ pub enum Kind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         action: Option<String>,
     },
+    /// A spreadsheet: a `rows` × `cols` sheet of which the client has the cells in `blocks`
+    /// and asks for others (a `window` event) as the user scrolls. Its events carry a
+    /// [`GridEvent`]; `values[name]` is the selection (a [`GridRange`]).
+    Grid {
+        /// Names the grid in events and is `values[name]`.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        name: String,
+        rows: u32,
+        cols: u32,
+        /// Rectangles of known cells; the rest aren't loaded.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        blocks: Vec<GridBlock>,
+        /// Data rows (from the top) that stay put while scrolling.
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        frozen_rows: u32,
+        /// Data columns (from the left) that stay put while scrolling.
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        frozen_cols: u32,
+        /// Column index → width in points.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        widths: BTreeMap<u32, f32>,
+        /// Width of the other columns ([`GRID_DEFAULT_WIDTH`] if not given).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default_width: Option<f32>,
+        /// Cells can be edited, cleared and pasted into.
+        #[serde(default, skip_serializing_if = "is_false")]
+        editable: bool,
+        /// Column letters and row numbers.
+        #[serde(default = "yes", skip_serializing_if = "is_true")]
+        headers: bool,
+        /// Tallest the grid is drawn (points); else the height its site gives.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<f32>,
+        /// The selection to show (taken when the tree changes it, like a field's value).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selection: Option<GridRange>,
+    },
+}
+
+/// Width of a grid column without its own.
+pub const GRID_DEFAULT_WIDTH: f32 = 90.0;
+
+/// Known cells of a grid: row-major `cells` from (`row`, `col`), 0-based.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GridBlock {
+    pub row: u32,
+    pub col: u32,
+    #[serde(default)]
+    pub cells: Vec<Vec<GridCell>>,
+}
+
+impl GridBlock {
+    /// Rows the block covers.
+    pub fn height(&self) -> u32 {
+        u32::try_from(self.cells.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Columns the block covers (its longest row; a short row's missing cells are empty).
+    pub fn width(&self) -> u32 {
+        u32::try_from(self.cells.iter().map(Vec::len).max().unwrap_or(0)).unwrap_or(u32::MAX)
+    }
+
+    /// Whether (`row`, `col`) of the sheet is in the block.
+    pub fn covers(&self, row: u32, col: u32) -> bool {
+        row >= self.row && col >= self.col && row - self.row < self.height() && col - self.col < self.width()
+    }
+
+    /// The cell at (`row`, `col`) of the sheet: `Some(None)` for an empty cell of the block,
+    /// `None` outside it.
+    pub fn get(&self, row: u32, col: u32) -> Option<Option<&GridCell>> {
+        if row < self.row || col < self.col {
+            return None;
+        }
+        let r = self.cells.get(usize::try_from(row - self.row).ok()?)?;
+        let c = usize::try_from(col - self.col).ok()?;
+        if c >= usize::try_from(self.width()).unwrap_or(0) {
+            return None;
+        }
+        Some(r.get(c))
+    }
+
+    /// Cells in the block.
+    pub fn cell_count(&self) -> usize {
+        self.cells.iter().map(Vec::len).sum()
+    }
+}
+
+/// A rectangle of a grid: the anchor (`row`, `col`, the active cell) and the other corner
+/// (`to_row`, `to_col`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GridRange {
+    pub row: u32,
+    pub col: u32,
+    pub to_row: u32,
+    pub to_col: u32,
+}
+
+impl GridRange {
+    pub fn cell(row: u32, col: u32) -> Self {
+        Self { row, col, to_row: row, to_col: col }
+    }
+
+    /// Top row, left column, bottom row, right column.
+    pub fn bounds(&self) -> (u32, u32, u32, u32) {
+        (self.row.min(self.to_row), self.col.min(self.to_col), self.row.max(self.to_row), self.col.max(self.to_col))
+    }
+
+    pub fn contains(&self, row: u32, col: u32) -> bool {
+        let (t, l, b, r) = self.bounds();
+        (t..=b).contains(&row) && (l..=r).contains(&col)
+    }
+}
+
+/// What a grid cell holds (`"t"` in JSON: `s`, `n`, `b`, `e`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum CellType {
+    /// Nothing (null).
+    #[default]
+    Empty,
+    Text,
+    Number,
+    Bool,
+    Error,
+}
+
+/// Where a cell's text sits (by default numbers right, booleans centred, the rest left).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CellAlign {
+    Left,
+    Center,
+    Right,
+}
+
+/// One grid cell. In JSON: null, a string, a number, a bool, or an object `{"v": shown text,
+/// "i": input (a formula), "t": "s"|"n"|"b"|"e", "b": bold, "it": italic, "fill", "color",
+/// "align"}`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GridCell {
+    /// What the cell shows.
+    pub v: String,
+    /// What editing starts with and the formula bar shows (`=SUM(B2:B9)`), if not `v`.
+    pub i: Option<String>,
+    pub t: CellType,
+    pub bold: bool,
+    pub italic: bool,
+    /// Background: a theme role (`accent`, `chart3`, …) or `#rrggbb`.
+    pub fill: Option<String>,
+    /// Text colour, the same way.
+    pub color: Option<String>,
+    pub align: Option<CellAlign>,
+}
+
+/// Longest colour name of a cell.
+const MAX_COLOR_CHARS: usize = 64;
+
+impl GridCell {
+    pub fn text(v: impl Into<String>) -> Self {
+        Self { v: v.into(), t: CellType::Text, ..Self::default() }
+    }
+
+    /// What editing the cell starts with.
+    pub fn input(&self) -> &str {
+        self.i.as_deref().unwrap_or(&self.v)
+    }
+
+    fn plain(&self) -> bool {
+        self.i.is_none() && !self.bold && !self.italic && self.fill.is_none() && self.color.is_none() && self.align.is_none()
+    }
+
+    /// Decode an untrusted cell (unknown fields ignored); `Err` if it isn't one. Long text is
+    /// cut to [`MAX_CELL_CHARS`] (the bool says so).
+    pub fn decode(v: Value) -> Result<(GridCell, bool), &'static str> {
+        let mut long = false;
+        let mut cut = |s: String| {
+            let (s, l) = cut_chars(s, MAX_CELL_CHARS);
+            long |= l;
+            s
+        };
+        let cell = match v {
+            Value::Null => GridCell::default(),
+            Value::String(s) => GridCell { v: cut(s), t: CellType::Text, ..GridCell::default() },
+            Value::Number(n) => GridCell { v: n.to_string(), t: CellType::Number, ..GridCell::default() },
+            Value::Bool(b) => GridCell { v: bool_text(b).into(), t: CellType::Bool, ..GridCell::default() },
+            Value::Object(mut o) => {
+                let (v, guessed) = match o.remove("v") {
+                    None | Some(Value::Null) => (String::new(), None),
+                    Some(Value::String(s)) => (cut(s), Some(CellType::Text)),
+                    Some(Value::Number(n)) => (n.to_string(), Some(CellType::Number)),
+                    Some(Value::Bool(b)) => (bool_text(b).into(), Some(CellType::Bool)),
+                    Some(other) => (cut(other.to_string()), Some(CellType::Text)),
+                };
+                let t = match o.get("t").and_then(Value::as_str) {
+                    Some("n") => CellType::Number,
+                    Some("b") => CellType::Bool,
+                    Some("e") => CellType::Error,
+                    Some("s") => CellType::Text,
+                    _ => guessed.unwrap_or(CellType::Empty),
+                };
+                let text = |o: &mut Map<String, Value>, k: &str| match o.remove(k) {
+                    Some(Value::String(s)) => Some(s),
+                    Some(Value::Number(n)) => Some(n.to_string()),
+                    _ => None,
+                };
+                let flag = |o: &Map<String, Value>, k: &str| o.get(k).and_then(Value::as_bool).unwrap_or(false);
+                let short = |s: Option<String>| s.map(|s| cut_chars(s, MAX_COLOR_CHARS).0);
+                let i = text(&mut o, "i").map(&mut cut);
+                GridCell {
+                    v,
+                    i,
+                    t,
+                    bold: flag(&o, "b"),
+                    italic: flag(&o, "it"),
+                    fill: short(text(&mut o, "fill")),
+                    color: short(text(&mut o, "color")),
+                    align: match o.get("align").and_then(Value::as_str) {
+                        Some("left") => Some(CellAlign::Left),
+                        Some("center" | "centre") => Some(CellAlign::Center),
+                        Some("right") => Some(CellAlign::Right),
+                        _ => None,
+                    },
+                }
+            }
+            Value::Array(_) => return Err("a cell is null, text, a number, a bool or an object like {\"v\": \"shown\"}"),
+        };
+        Ok((cell, long))
+    }
+}
+
+fn bool_text(b: bool) -> &'static str {
+    if b { "TRUE" } else { "FALSE" }
+}
+
+/// `s` cut to `max` characters; whether it was longer.
+fn cut_chars(mut s: String, max: usize) -> (String, bool) {
+    if s.len() <= max {
+        return (s, false);
+    }
+    match s.char_indices().nth(max) {
+        Some((at, _)) => {
+            s.truncate(at);
+            (s, true)
+        }
+        None => (s, false),
+    }
+}
+
+impl Serialize for GridCell {
+    /// The shortest form that decodes back to the same cell.
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        if self.plain() {
+            match self.t {
+                CellType::Empty if self.v.is_empty() => return s.serialize_none(),
+                CellType::Text => return s.serialize_str(&self.v),
+                CellType::Bool if self.v == "TRUE" || self.v == "FALSE" => return s.serialize_bool(self.v == "TRUE"),
+                CellType::Number => {
+                    if let Ok(n) = self.v.parse::<serde_json::Number>()
+                        && n.to_string() == self.v
+                    {
+                        return n.serialize(s);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut m = s.serialize_map(None)?;
+        // Without "v" and "t" an object is an empty cell; with "v" and without "t", text.
+        let t = match self.t {
+            CellType::Empty if self.v.is_empty() => None,
+            CellType::Empty => Some(""),
+            CellType::Text => None,
+            CellType::Number => Some("n"),
+            CellType::Bool => Some("b"),
+            CellType::Error => Some("e"),
+        };
+        if self.t != CellType::Empty || !self.v.is_empty() {
+            m.serialize_entry("v", &self.v)?;
+        }
+        if let Some(t) = t {
+            m.serialize_entry("t", t)?;
+        }
+        if let Some(i) = &self.i {
+            m.serialize_entry("i", i)?;
+        }
+        if self.bold {
+            m.serialize_entry("b", &true)?;
+        }
+        if self.italic {
+            m.serialize_entry("it", &true)?;
+        }
+        if let Some(c) = &self.fill {
+            m.serialize_entry("fill", c)?;
+        }
+        if let Some(c) = &self.color {
+            m.serialize_entry("color", c)?;
+        }
+        if let Some(a) = &self.align {
+            m.serialize_entry("align", a)?;
+        }
+        m.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for GridCell {
+    /// Leniently: what isn't a cell is an empty one.
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(GridCell::decode(Value::deserialize(d)?).map(|c| c.0).unwrap_or_default())
+    }
+}
+
+/// A grid column's name: `A`…`Z`, `AA`…
+pub fn column_name(col: u32) -> String {
+    let mut n = u64::from(col) + 1;
+    let mut out = Vec::new();
+    while n > 0 {
+        let rem = u8::try_from((n - 1) % 26).unwrap_or(0);
+        out.push(char::from(b'A' + rem));
+        n = (n - 1) / 26;
+    }
+    out.iter().rev().collect()
+}
+
+/// A cell's name (`B3`) from 0-based indices.
+pub fn cell_name(row: u32, col: u32) -> String {
+    format!("{}{}", column_name(col), u64::from(row) + 1)
 }
 
 /// A colour role, not a colour: clients map it to their theme. Unknown names (a newer tone)
@@ -317,6 +654,15 @@ fn is_default<T: Default + PartialEq>(v: &T) -> bool {
 fn is_false(b: &bool) -> bool {
     !*b
 }
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+fn yes() -> bool {
+    true
+}
+fn is_true(b: &bool) -> bool {
+    *b
+}
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
@@ -416,12 +762,15 @@ impl Kind {
             Kind::Separator {} => "separator",
             Kind::Image { .. } => "image",
             Kind::Canvas { .. } => "canvas",
+            Kind::Grid { .. } => "grid",
         }
     }
 }
 
 /// Rows of a table shown in a fallback.
 const FALLBACK_ROWS: usize = 20;
+/// Columns of a grid shown in a fallback.
+const FALLBACK_COLS: u32 = 12;
 
 fn fallback(n: &Node, out: &mut String) {
     let cell = |v: &Value| cell_text(v).replace('|', "\\|").replace('\n', " ");
@@ -449,6 +798,26 @@ fn fallback(n: &Node, out: &mut String) {
             if rows.len() > FALLBACK_ROWS {
                 out.push_str(&format!("\n*… {} more rows*\n", rows.len() - FALLBACK_ROWS));
             }
+            out.push('\n');
+        }
+        Kind::Grid { blocks, rows, cols, .. } => {
+            let size = format!("*Grid: {rows} × {cols}*\n");
+            let Some(b) = blocks.first().filter(|b| b.height() > 0 && b.width() > 0) else {
+                out.push_str(&size);
+                out.push('\n');
+                return;
+            };
+            let esc = |s: &str| s.replace('|', "\\|").replace('\n', " ");
+            let ncols = b.width().min(FALLBACK_COLS);
+            let letters: Vec<String> = (0..ncols).map(|c| column_name(b.col.saturating_add(c))).collect();
+            out.push_str(&format!("\n|   | {} |\n", letters.join(" | ")));
+            out.push_str(&format!("|{}\n", " --- |".repeat(letters.len() + 1)));
+            for (r, row) in (0u64..).zip(b.cells.iter().take(FALLBACK_ROWS)) {
+                let cells: Vec<String> = (0..letters.len()).map(|c| row.get(c).map(|c| esc(&c.v)).unwrap_or_default()).collect();
+                out.push_str(&format!("| {} | {} |\n", u64::from(b.row) + r + 1, cells.join(" | ")));
+            }
+            out.push('\n');
+            out.push_str(&size);
             out.push('\n');
         }
         _ => {}
@@ -516,6 +885,37 @@ pub struct Event {
     pub values: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edit: Option<CellEdit>,
+    /// What happened in a grid (the action is its op).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<GridEvent>,
+}
+
+/// Something the user did in a grid. `op` (also the event's action) is `edit` (`value` typed
+/// into `row`, `col`), `select` (the selection changed: `to_row`, `to_col` is the other
+/// corner), `window` (the client wants the cells of `rows` × `cols` from `row`, `col`),
+/// `paste` (`text`, tab-separated, at `row`, `col`) or `clear` (the cells to `to_row`,
+/// `to_col`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GridEvent {
+    /// The grid's `name`.
+    pub name: String,
+    pub op: String,
+    pub row: u32,
+    pub col: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_row: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_col: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cols: Option<u32>,
+    /// What was typed (always text; `=…` is a formula, the owner works it out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Pasted text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// A table cell the user edited.

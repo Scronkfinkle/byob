@@ -2,8 +2,11 @@
 
 use serde_json::{Map, Value};
 
-use super::decode::{Decoder, cell};
-use super::{Fault, Kind, MAX_DEPTH, MAX_NODES, MAX_PATCHES, MAX_SHAPES, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS, Node, Patch, Shape, Target, pointer_segments};
+use super::decode::{CellBudget, Decoder, cell};
+use super::{
+    Fault, GridBlock, Kind, MAX_DEPTH, MAX_GRID_BLOCKS, MAX_GRID_CELLS, MAX_NODES, MAX_PATCHES, MAX_SHAPES, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS, Node, Patch,
+    Shape, Target, pointer_segments,
+};
 
 /// Apply patches in order. One that can't apply (no such key, a field of the wrong type,
 /// over a limit) is skipped and reported; the rest still apply.
@@ -119,6 +122,7 @@ enum Heavy {
     Children(Vec<Node>),
     Rows(Vec<Vec<Value>>),
     Shapes(Vec<Shape>),
+    Blocks(Vec<GridBlock>),
 }
 
 fn take_heavy(k: &mut Kind) -> Heavy {
@@ -126,6 +130,7 @@ fn take_heavy(k: &mut Kind) -> Heavy {
         Kind::Column { children } | Kind::Row { children } | Kind::Card { children, .. } => Heavy::Children(std::mem::take(children)),
         Kind::Table { rows, .. } => Heavy::Rows(std::mem::take(rows)),
         Kind::Canvas { shapes, .. } => Heavy::Shapes(std::mem::take(shapes)),
+        Kind::Grid { blocks, .. } => Heavy::Blocks(std::mem::take(blocks)),
         _ => Heavy::None,
     }
 }
@@ -135,6 +140,7 @@ fn put_heavy(k: &mut Kind, h: Heavy) {
         (Kind::Column { children } | Kind::Row { children } | Kind::Card { children, .. }, Heavy::Children(c)) => *children = c,
         (Kind::Table { rows, .. }, Heavy::Rows(r)) => *rows = r,
         (Kind::Canvas { shapes, .. }, Heavy::Shapes(s)) => *shapes = s,
+        (Kind::Grid { blocks, .. }, Heavy::Blocks(b)) => *blocks = b,
         _ => {}
     }
 }
@@ -288,10 +294,28 @@ impl Apply {
                 }
                 Ok(())
             }
+            ["blocks", i] => {
+                let n = at_mut(root, &idx).ok_or("no such node")?;
+                let Kind::Grid { blocks, rows, cols, .. } = &mut n.kind else { return Err(format!("no blocks in a {}", n.type_name())) };
+                let i: usize = i.parse().map_err(|_| format!("{i:?} isn't a block index"))?;
+                if i > blocks.len() || i >= MAX_GRID_BLOCKS {
+                    return Err(format!("no block {i} (a grid has at most {MAX_GRID_BLOCKS})"));
+                }
+                let others: usize = blocks.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, b)| b.cell_count()).sum();
+                let mut budget = CellBudget::with(MAX_GRID_CELLS.saturating_sub(others));
+                let block = self.dec.block(value, *rows, *cols, &vpath, &mut budget);
+                budget.report(&mut self.dec, &vpath);
+                let block = block.ok_or("the value isn't a block that fits the grid")?;
+                match blocks.get_mut(i) {
+                    Some(slot) => *slot = block,
+                    None => blocks.push(block),
+                }
+                Ok(())
+            }
             // Deeper into a small field (a column, an option, the chart spec): round trip the
             // node without its big parts.
             [field, ..] => {
-                if matches!(*field, "children" | "rows" | "shapes") {
+                if matches!(*field, "children" | "rows" | "shapes" | "blocks") {
                     return Err(format!("no node at {ptr:?}"));
                 }
                 let n = at_mut(root, &idx).ok_or("no such node")?;
@@ -303,7 +327,7 @@ impl Apply {
                     }
                     let Value::Object(mut fields) = v else { return Err("not a node".to_owned()) };
                     // Taken out above: empty here, and not to be set.
-                    for big in ["children", "rows", "shapes"] {
+                    for big in ["children", "rows", "shapes", "blocks"] {
                         fields.remove(big);
                     }
                     Ok(fields)
@@ -336,7 +360,10 @@ impl Apply {
             self.count = self.count.saturating_sub(old) + children.iter().map(Node::count).sum::<usize>();
             *slot = children;
         }
-        if let Some(v) = fields.remove("rows") {
+        // A grid's `rows` is its size, a small field.
+        if !matches!(n.kind, Kind::Grid { .. })
+            && let Some(v) = fields.remove("rows")
+        {
             let ty = n.type_name();
             let Kind::Table { rows, columns, .. } = &mut n.kind else { return Err(format!("a {ty} has no rows")) };
             *rows = self.dec.rows(Some(v), columns, &fpath);
@@ -351,6 +378,8 @@ impl Apply {
         }
         let ty = n.type_name();
         let heavy = take_heavy(&mut n.kind);
+        // New blocks are decoded with the rest (against the grid's new size).
+        let new_blocks = matches!(heavy, Heavy::Blocks(_)) && fields.contains_key("blocks");
         let mut obj = match serde_json::to_value(&*n) {
             Ok(Value::Object(o)) => o,
             _ => {
@@ -368,7 +397,9 @@ impl Apply {
                 for f in faults {
                     self.dec.fault(&f.path, f.message);
                 }
-                put_heavy(&mut new.kind, heavy);
+                if !new_blocks {
+                    put_heavy(&mut new.kind, heavy);
+                }
                 *n = new;
                 Ok(())
             }

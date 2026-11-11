@@ -15,7 +15,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use byob_protocol::tree::{CellEdit, Event, Fault, Kind, Node, Reply, TextStyle, Tone};
+use byob_protocol::tree::{CellEdit, Event, Fault, GRID_DEFAULT_WIDTH, GridEvent, Kind, Node, Reply, TextStyle, Tone};
 use egui::{Color32, FontFamily, RichText, Stroke};
 use serde_json::{Map, Value};
 
@@ -23,6 +23,7 @@ use crate::markdown;
 use crate::theme::{self, Tokens};
 
 mod canvas;
+mod grid;
 mod step;
 mod table;
 #[cfg(test)]
@@ -52,6 +53,12 @@ pub struct TreeState {
     md: markdown::Cache,
     md_live: HashSet<u64>,
     queued: Vec<Queued>,
+    /// Grid name → its selection, scroll, editor, pending edits, last window asked for.
+    grids: HashMap<String, grid::GridState>,
+    /// Height a grid without its own fills.
+    fill_height: Option<f32>,
+    /// Grids without their formula bar (chat cards).
+    compact: bool,
 }
 
 /// A table cell being edited.
@@ -66,6 +73,7 @@ struct Editing {
 struct Queued {
     action: String,
     edit: Option<CellEdit>,
+    grid: Option<GridEvent>,
     /// Values for this event only (a canvas click's `_x`/`_y`).
     extra: Map<String, Value>,
 }
@@ -85,14 +93,39 @@ impl TreeState {
     /// own) replace what the user typed.
     pub fn replied(&mut self, values: &Map<String, Value>) {
         self.pending.clear();
+        self.grids.values_mut().for_each(grid::GridState::replied);
         for (k, v) in values {
             self.values.insert(k.clone(), v.clone());
         }
     }
 
+    /// The height a grid without its own `height` fills (the artifact pane passes what it
+    /// has; a chat card something small); `None`: a default.
+    pub fn set_fill_height(&mut self, h: Option<f32>) {
+        self.fill_height = h.filter(|h| h.is_finite() && *h > 0.0);
+    }
+
+    /// Compact grids (chat cards) have no formula bar.
+    pub fn set_compact(&mut self, compact: bool) {
+        self.compact = compact;
+    }
+
+    /// A grid's selection: (row, col, to_row, to_col), the active cell first.
+    pub fn grid_selection(&self, name: &str) -> Option<(u32, u32, u32, u32)> {
+        let v = self.values.get(name)?;
+        let n = |k: &str| v.get(k).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+        Some((n("row")?, n("col")?, n("to_row")?, n("to_col")?))
+    }
+
     fn fire(&mut self, action: &str, edit: Option<CellEdit>, extra: Map<String, Value>) {
         if self.queued.len() < MAX_EVENTS_PER_FRAME {
-            self.queued.push(Queued { action: action.to_owned(), edit, extra });
+            self.queued.push(Queued { action: action.to_owned(), edit, grid: None, extra });
+        }
+    }
+
+    fn fire_grid(&mut self, e: GridEvent) {
+        if self.queued.len() < MAX_EVENTS_PER_FRAME {
+            self.queued.push(Queued { action: e.op.clone(), edit: None, grid: Some(e), extra: Map::new() });
         }
     }
 
@@ -184,12 +217,13 @@ pub fn show_tree_with(ui: &mut egui::Ui, t: &Tokens, tree: &Node, st: &mut TreeS
     st.seen.retain(|k, _| live.contains_key(k));
     let md_live = &st.md_live;
     st.md.retain(|id| md_live.contains(&id));
+    st.grids.retain(|_, g| g.pass == pass);
     std::mem::take(&mut st.queued)
         .into_iter()
         .map(|q| {
             let mut values = st.values.clone();
             values.extend(q.extra);
-            Event { action: q.action, values, edit: q.edit }
+            Event { action: q.action, values, edit: q.edit, grid: q.grid }
         })
         .collect()
 }
@@ -362,6 +396,24 @@ fn node(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, n: &Node, id: egui::Id) {
             }
         }
         Kind::Canvas { width, height, shapes, action } => canvas::show(ui, cx, *width, *height, shapes, action.as_deref()),
+        Kind::Grid { name, rows, cols, blocks, frozen_rows, frozen_cols, widths, default_width, editable, headers, height, selection } => {
+            let name = if name.is_empty() { n.key.as_deref().unwrap_or("grid") } else { name };
+            let g = grid::Grid {
+                name,
+                rows: (*rows).max(1),
+                cols: (*cols).max(1),
+                blocks,
+                frozen_rows: (*frozen_rows).min(rows.saturating_sub(1)),
+                frozen_cols: (*frozen_cols).min(cols.saturating_sub(1)),
+                widths,
+                default_width: default_width.filter(|w| w.is_finite()).unwrap_or(GRID_DEFAULT_WIDTH).clamp(16.0, 2000.0),
+                editable: *editable,
+                headers: *headers,
+                height: height.filter(|h| h.is_finite()).map(|h| h.clamp(60.0, 4000.0)),
+                selection: *selection,
+            };
+            grid::show(ui, cx, g, id);
+        }
     }
 }
 

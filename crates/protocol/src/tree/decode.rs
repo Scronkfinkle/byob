@@ -5,9 +5,12 @@ use std::fmt::Write as _;
 
 use serde_json::{Map, Value};
 
+use std::collections::BTreeMap;
+
 use super::{
-    Fault, Kind, MAX_DEPTH, MAX_FAULTS, MAX_KEY_CHARS, MAX_NODES, MAX_OPTIONS, MAX_PATCHES, MAX_SHAPES, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS, MAX_TEXT_CHARS,
-    MAX_VALUES, Node, Patch, Reply, Shape, TableColumn, Target, TextStyle, Tone, pointer_segment,
+    Fault, GridBlock, GridCell, GridRange, Kind, MAX_CELL_CHARS, MAX_DEPTH, MAX_FAULTS, MAX_GRID_BLOCKS, MAX_GRID_CELLS, MAX_GRID_COLS, MAX_GRID_ROWS,
+    MAX_KEY_CHARS, MAX_NODES, MAX_OPTIONS, MAX_PATCHES, MAX_SHAPES, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS, MAX_TEXT_CHARS, MAX_VALUES, Node, Patch, Reply, Shape,
+    TableColumn, Target, TextStyle, Tone, pointer_segment,
 };
 
 /// Decode an untrusted tree. Never fails: what can't be shown is left out (or shown as its
@@ -178,6 +181,7 @@ impl Decoder {
                     _ => return self.fallback(key, fallback),
                 }
             }
+            "grid" => self.grid(o, path),
             "text" | "markdown" | "chip" | "button" | "input" | "toggle" | "select" | "progress" | "separator" | "image" => match self.leaf(&ty, o, path) {
                 Some(kind) => kind,
                 None => return self.fallback(key, fallback),
@@ -322,6 +326,231 @@ impl Decoder {
         }
     }
 
+    /// A whole number field up to `max` (over it: `max`, with a fault); `None` if absent or
+    /// not a number (with a fault).
+    fn uint(&mut self, v: Option<Value>, path: &str, max: u32) -> Option<u32> {
+        let v = match v {
+            None | Some(Value::Null) => return None,
+            Some(v) => v,
+        };
+        let n = match v.as_u64() {
+            Some(n) => n,
+            None => match v.as_f64() {
+                Some(f) if f.is_finite() && f >= 0.0 => f.floor() as u64,
+                _ => {
+                    self.fault(path, "must be a whole number from 0");
+                    return None;
+                }
+            },
+        };
+        if n > u64::from(max) {
+            self.fault(path, format!("at most {max}"));
+            return Some(max);
+        }
+        u32::try_from(n).ok()
+    }
+
+    fn number(&mut self, v: Option<Value>, path: &str, lo: f32, hi: f32) -> Option<f32> {
+        match v {
+            None | Some(Value::Null) => None,
+            Some(v) => match v.as_f64().map(|f| f as f32).filter(|f| f.is_finite()) {
+                Some(f) => Some(f.clamp(lo, hi)),
+                None => {
+                    self.fault(path, "must be a number");
+                    None
+                }
+            },
+        }
+    }
+
+    fn flag(&mut self, v: Option<Value>, path: &str, default: bool) -> bool {
+        match v {
+            None | Some(Value::Null) => default,
+            Some(Value::Bool(b)) => b,
+            Some(_) => {
+                self.fault(path, "must be true or false");
+                default
+            }
+        }
+    }
+
+    /// A grid, field by field: what's wrong is fixed or left out, the grid always decodes.
+    pub(crate) fn grid(&mut self, mut o: Map<String, Value>, path: &str) -> Kind {
+        let name = match o.remove("name") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(s)) => s,
+            Some(Value::Number(n)) => n.to_string(),
+            Some(_) => {
+                self.fault(&format!("{path}/name"), "name must be text");
+                String::new()
+            }
+        };
+        let given_rows = self.uint(o.remove("rows"), &format!("{path}/rows"), MAX_GRID_ROWS);
+        let given_cols = self.uint(o.remove("cols"), &format!("{path}/cols"), MAX_GRID_COLS);
+        let blocks = self.blocks(o.remove("blocks"), given_rows.unwrap_or(MAX_GRID_ROWS), given_cols.unwrap_or(MAX_GRID_COLS), path);
+        if given_rows.is_none() || given_cols.is_none() {
+            self.fault(path, "a grid needs \"rows\" and \"cols\" (its size); taken from its blocks");
+        }
+        let rows = given_rows.unwrap_or_else(|| blocks.iter().map(|b| b.row.saturating_add(b.height())).max().unwrap_or(0)).clamp(1, MAX_GRID_ROWS);
+        let cols = given_cols.unwrap_or_else(|| blocks.iter().map(|b| b.col.saturating_add(b.width())).max().unwrap_or(0)).clamp(1, MAX_GRID_COLS);
+        let mut frozen = |d: &mut Self, field: &str, max: u32| {
+            let n = d.uint(o.remove(field), &format!("{path}/{field}"), MAX_GRID_ROWS).unwrap_or(0);
+            if n >= max && n > 0 {
+                d.fault(&format!("{path}/{field}"), "more than the grid has; one less than its size is frozen");
+            }
+            n.min(max.saturating_sub(1))
+        };
+        let frozen_rows = frozen(self, "frozen_rows", rows);
+        let frozen_cols = frozen(self, "frozen_cols", cols);
+        let mut widths = BTreeMap::new();
+        match o.remove("widths") {
+            None | Some(Value::Null) => {}
+            Some(Value::Object(m)) => {
+                for (k, v) in m {
+                    let at = format!("{path}/widths/{}", pointer_segment(&cut_str(&k, MAX_KEY_CHARS)));
+                    let Some(c) = k.trim().parse::<u32>().ok().filter(|c| *c < cols) else {
+                        self.fault(&at, format!("a width's key is a column index from 0 to {}", cols - 1));
+                        continue;
+                    };
+                    if let Some(w) = self.number(Some(v), &at, 16.0, 2000.0) {
+                        widths.insert(c, w);
+                    }
+                }
+            }
+            Some(_) => self.fault(&format!("{path}/widths"), "widths must be an object of column index → points, like {\"0\": 140}"),
+        }
+        let default_width = self.number(o.remove("default_width"), &format!("{path}/default_width"), 16.0, 2000.0);
+        let editable = self.flag(o.remove("editable"), &format!("{path}/editable"), false);
+        let headers = self.flag(o.remove("headers"), &format!("{path}/headers"), true);
+        let height = self.number(o.remove("height"), &format!("{path}/height"), 60.0, 4000.0);
+        let selection = match o.remove("selection") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(mut s)) => {
+                let sp = format!("{path}/selection");
+                let row = self.uint(s.remove("row"), &format!("{sp}/row"), rows - 1);
+                let col = self.uint(s.remove("col"), &format!("{sp}/col"), cols - 1);
+                match (row, col) {
+                    (Some(row), Some(col)) => {
+                        let to_row = self.uint(s.remove("to_row"), &format!("{sp}/to_row"), rows - 1).unwrap_or(row);
+                        let to_col = self.uint(s.remove("to_col"), &format!("{sp}/to_col"), cols - 1).unwrap_or(col);
+                        Some(GridRange { row, col, to_row, to_col })
+                    }
+                    _ => {
+                        self.fault(&sp, "a selection needs a \"row\" and a \"col\"");
+                        None
+                    }
+                }
+            }
+            Some(_) => {
+                self.fault(&format!("{path}/selection"), "selection must be an object like {\"row\": 0, \"col\": 0}");
+                None
+            }
+        };
+        Kind::Grid { name, rows, cols, blocks, frozen_rows, frozen_cols, widths, default_width, editable, headers, height, selection }
+    }
+
+    /// A grid's blocks, cut to a `rows` × `cols` sheet and the cell limits.
+    pub(crate) fn blocks(&mut self, v: Option<Value>, rows: u32, cols: u32, path: &str) -> Vec<GridBlock> {
+        let mut list = match v {
+            None | Some(Value::Null) => return Vec::new(),
+            Some(Value::Array(list)) => list,
+            Some(_) => {
+                self.fault(&format!("{path}/blocks"), "blocks must be a list of {\"row\", \"col\", \"cells\"}");
+                return Vec::new();
+            }
+        };
+        if list.len() > MAX_GRID_BLOCKS {
+            self.fault(&format!("{path}/blocks"), format!("at most {MAX_GRID_BLOCKS} blocks; the rest are left out"));
+            list.truncate(MAX_GRID_BLOCKS);
+        }
+        let mut cx = CellBudget::with(MAX_GRID_CELLS);
+        let mut out = Vec::with_capacity(list.len());
+        for (i, b) in list.into_iter().enumerate() {
+            let bp = format!("{path}/blocks/{i}");
+            if let Some(b) = self.block(b, rows, cols, &bp, &mut cx) {
+                out.push(b);
+            }
+        }
+        cx.report(self, &format!("{path}/blocks"));
+        out
+    }
+
+    /// One block; `None` if it can't be placed.
+    pub(crate) fn block(&mut self, b: Value, rows: u32, cols: u32, bp: &str, cx: &mut CellBudget) -> Option<GridBlock> {
+        let Value::Object(mut bo) = b else {
+            self.fault(bp, "a block must be an object like {\"row\": 0, \"col\": 0, \"cells\": [[...]]}");
+            return None;
+        };
+        let at = |d: &mut Self, v: Option<Value>, field: &str| -> Option<u32> {
+            match v {
+                None | Some(Value::Null) => Some(0),
+                v => d.uint(v, &format!("{bp}/{field}"), u32::MAX),
+            }
+        };
+        let row = at(self, bo.remove("row"), "row")?;
+        let col = at(self, bo.remove("col"), "col")?;
+        if row >= rows || col >= cols {
+            self.fault(bp, format!("the block starts outside the grid ({rows} rows × {cols} columns); left out"));
+            return None;
+        }
+        let list = match bo.remove("cells") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(l)) => l,
+            Some(_) => {
+                self.fault(&format!("{bp}/cells"), "cells must be a list of rows (each a list of cells)");
+                return None;
+            }
+        };
+        let (max_h, max_w) = (usize::try_from(rows - row).unwrap_or(usize::MAX), usize::try_from(cols - col).unwrap_or(usize::MAX));
+        if list.len() > max_h {
+            self.fault(&format!("{bp}/cells"), "rows past the grid's last row are left out");
+        }
+        let mut cells = Vec::with_capacity(list.len().min(max_h));
+        let mut wide = false;
+        for (r, rv) in list.into_iter().take(max_h).enumerate() {
+            if cx.left == 0 {
+                cx.over = true;
+                break;
+            }
+            let Value::Array(mut cs) = rv else {
+                self.fault(&format!("{bp}/cells/{r}"), "a row of cells must be a list");
+                cells.push(Vec::new());
+                continue;
+            };
+            if cs.len() > max_w {
+                wide = true;
+                cs.truncate(max_w);
+            }
+            if cs.len() > cx.left {
+                cx.over = true;
+                cs.truncate(cx.left);
+            }
+            cx.left -= cs.len();
+            let row: Vec<GridCell> = cs
+                .into_iter()
+                .enumerate()
+                .map(|(c, v)| match GridCell::decode(v) {
+                    Ok((cell, long)) => {
+                        cx.long |= long;
+                        cell
+                    }
+                    Err(msg) => {
+                        if cx.bad == 0 {
+                            cx.first_bad = Some((format!("{bp}/cells/{r}/{c}"), msg));
+                        }
+                        cx.bad += 1;
+                        GridCell::default()
+                    }
+                })
+                .collect();
+            cells.push(row);
+        }
+        if wide {
+            self.fault(&format!("{bp}/cells"), "cells past the grid's last column are left out");
+        }
+        Some(GridBlock { row, col, cells })
+    }
+
     /// One patch; `None` (with a fault) if it can't be read.
     pub(crate) fn patch(&mut self, v: Value, path: &mut String) -> Option<Patch> {
         const OPS: &str = "put, replace, set, append, remove or rows";
@@ -433,6 +662,8 @@ impl Decoder {
         let mut c = |s: &mut String| long |= cut(s);
         match k {
             Kind::Column { .. } | Kind::Row { .. } | Kind::Separator {} | Kind::Chart { .. } => {}
+            // Checked as it was decoded.
+            Kind::Grid { name, .. } => c(name),
             Kind::Card { title, .. } => c(title),
             Kind::Text { text, .. } | Kind::Markdown { text } | Kind::Chip { text, .. } => c(text),
             Kind::Button { label, action, .. } => {
@@ -491,6 +722,35 @@ impl Decoder {
         }
         if long {
             self.fault(path, format!("text longer than {MAX_TEXT_CHARS} characters was cut"));
+        }
+    }
+}
+
+/// What's left of a grid's cell limit, and what was wrong with its cells (reported once).
+#[derive(Default)]
+pub(crate) struct CellBudget {
+    pub(crate) left: usize,
+    over: bool,
+    long: bool,
+    bad: usize,
+    first_bad: Option<(String, &'static str)>,
+}
+
+impl CellBudget {
+    pub(crate) fn with(left: usize) -> Self {
+        Self { left, ..Self::default() }
+    }
+
+    pub(crate) fn report(self, d: &mut Decoder, path: &str) {
+        if let Some((path, msg)) = self.first_bad {
+            let more = if self.bad > 1 { format!(" ({} cells like it are empty)", self.bad) } else { "; it is empty".to_owned() };
+            d.fault(&path, format!("{msg}{more}"));
+        }
+        if self.long {
+            d.fault(path, format!("grid cell text longer than {MAX_CELL_CHARS} characters was cut"));
+        }
+        if self.over {
+            d.fault(path, format!("a grid has at most {MAX_GRID_CELLS} cells in its blocks; the rest are left out"));
         }
     }
 }

@@ -41,7 +41,7 @@ fn live(c: &mut LocalConnection, r: &ViewRef) -> LiveView {
 }
 
 fn event(action: &str, values: Value) -> Event {
-    Event { action: action.into(), values: values.as_object().cloned().unwrap_or_default(), edit: None }
+    Event { action: action.into(), values: values.as_object().cloned().unwrap_or_default(), edit: None, grid: None }
 }
 
 /// What a client does with a `LiveView`.

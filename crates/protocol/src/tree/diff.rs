@@ -72,7 +72,71 @@ fn node(a: &Node, b: &Node, path: &mut String, out: &mut Vec<Patch>) {
                 put(path, "shapes", s2, out);
             }
         }
+        (Kind::Grid { blocks: x, .. }, Kind::Grid { blocks: y, .. }) => {
+            // The small fields as for a leaf (without the blocks), then the blocks that changed.
+            let strip = |n: &Node| {
+                let mut v = serde_json::to_value(Node { key: n.key.clone(), kind: small_grid(&n.kind) }).unwrap_or(Value::Null);
+                if let Value::Object(o) = &mut v {
+                    o.remove("blocks");
+                }
+                v
+            };
+            match (strip(a), strip(b)) {
+                (Value::Object(p), Value::Object(q)) => {
+                    for (k, v) in &q {
+                        if p.get(k) != Some(v) {
+                            put(path, &pointer_segment(k), v, out);
+                        }
+                    }
+                    for k in p.keys() {
+                        if !q.contains_key(k) {
+                            // Back to its default.
+                            let default = match k.as_str() {
+                                "headers" => Value::Bool(true),
+                                "editable" => Value::Bool(false),
+                                "frozen_rows" | "frozen_cols" => Value::from(0),
+                                "widths" => Value::Object(serde_json::Map::new()),
+                                "name" => Value::String(String::new()),
+                                _ => Value::Null,
+                            };
+                            put(path, &pointer_segment(k), &default, out);
+                        }
+                    }
+                }
+                _ => return put(path, "", b, out),
+            }
+            if x.len() == y.len() {
+                for (i, (p, q)) in x.iter().zip(y).enumerate() {
+                    if p != q {
+                        put(path, &format!("blocks/{i}"), q, out);
+                    }
+                }
+            } else {
+                put(path, "blocks", y, out);
+            }
+        }
         _ => leaf(a, b, path, out),
+    }
+}
+
+/// A grid without its blocks (the rest is small).
+fn small_grid(k: &Kind) -> Kind {
+    match k {
+        Kind::Grid { name, rows, cols, frozen_rows, frozen_cols, widths, default_width, editable, headers, height, selection, .. } => Kind::Grid {
+            name: name.clone(),
+            rows: *rows,
+            cols: *cols,
+            blocks: Vec::new(),
+            frozen_rows: *frozen_rows,
+            frozen_cols: *frozen_cols,
+            widths: widths.clone(),
+            default_width: *default_width,
+            editable: *editable,
+            headers: *headers,
+            height: *height,
+            selection: *selection,
+        },
+        other => other.clone(),
     }
 }
 

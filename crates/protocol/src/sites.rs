@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn view_messages_round_trip_and_are_checked() {
         let r = ViewRef::new("todo", "list", "");
-        let event = Event { action: "add".into(), values: serde_json::json!({"new": "milk"}).as_object().cloned().unwrap_or_default(), edit: None };
+        let event = Event { action: "add".into(), values: serde_json::json!({"new": "milk"}).as_object().cloned().unwrap_or_default(), edit: None, grid: None };
         for m in [ClientMsg::OpenView { view: r.clone() }, ClientMsg::CloseView { view: r.clone() }, ClientMsg::ViewEvent { view: r.clone(), event }] {
             assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m, "{}", m.to_json());
             assert!(m.check_sizes().is_ok());
@@ -210,7 +210,8 @@ mod tests {
         for bad in [ViewRef::new("Todo", "list", ""), ViewRef::new("todo", "a b", ""), ViewRef::new("todo", "list", "k".repeat(MAX_VIEW_KEY_CHARS + 1))] {
             assert!(ClientMsg::OpenView { view: bad }.check_sizes().is_err());
         }
-        let big = Event { action: "x".into(), values: [("t".to_owned(), Value::String("x".repeat(MAX_EVENT_BYTES)))].into_iter().collect(), edit: None };
+        let big =
+            Event { action: "x".into(), values: [("t".to_owned(), Value::String("x".repeat(MAX_EVENT_BYTES)))].into_iter().collect(), edit: None, grid: None };
         assert!(ClientMsg::ViewEvent { view: r.clone(), event: big }.check_sizes().is_err());
 
         let tree = Node::new(Kind::Text { text: "3 left".into(), style: Default::default(), tone: Default::default() });

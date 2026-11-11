@@ -1,0 +1,10 @@
+{"type": "card", "title": "Budget", "children": [
+  {"type": "grid", "key": "g", "name": "sheet", "rows": 1000, "cols": 26,
+   "frozen_rows": 1, "widths": {"0": 140, "3": 60}, "editable": true, "height": 400,
+   "selection": {"row": 1, "col": 1, "to_row": 1, "to_col": 1},
+   "blocks": [{"row": 0, "col": 0, "cells": [
+     [{"v": "Item", "b": true}, {"v": "Q1", "b": true, "align": "right"}, {"v": "Q2", "b": true, "align": "right"}, {"v": "OK", "b": true}],
+     ["Rent", 1200, 1200, true],
+     ["Travel", 340.5, {"v": "410", "t": "n", "it": true}, false],
+     ["Food", 610, {"v": "#DIV/0!", "t": "e", "i": "=B4/0"}, null],
+     [{"v": "Total", "b": true, "fill": "table_header_bg"}, {"v": "2150.5", "i": "=SUM(B2:B4)", "t": "n", "b": true}, {"v": "1610", "i": "=SUM(C2:C4)", "t": "n", "color": "accent"}, null]]}]}]}
