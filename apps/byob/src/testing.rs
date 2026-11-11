@@ -189,6 +189,8 @@ impl Runner {
             && app.open_panel(&name)
         {
             self.script.open_panel = None;
+            // What the panel shows may still have to load (a plugin's view): wait from here.
+            self.then_at = Some(Instant::now());
         }
         if let Some(text) = self.script.draft.take_if(|_| app.settled()) {
             app.set_draft(&text);

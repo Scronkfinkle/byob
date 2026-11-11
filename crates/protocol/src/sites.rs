@@ -224,4 +224,32 @@ mod tests {
         let d: ViewDecl = serde_json::from_str(r#"{"id":"list","site":"pane"}"#).unwrap();
         assert_eq!((d.title.as_str(), d.icon.as_str()), ("", ""));
     }
+
+    /// 13.3 additions are optional on the wire both ways: a 13.2 peer's messages parse here,
+    /// and what 13.3 adds is left out when empty (so 13.2 peers see the same JSON as before).
+    #[test]
+    fn minor_3_is_compatible_with_minor_2() {
+        let card = crate::PluginCard {
+            plugin: "p".into(),
+            scope: crate::PluginScope::Chat,
+            action: crate::PluginAction::Made,
+            tools: vec![],
+            added: vec![],
+            removed: vec![],
+            test: None,
+            problems: vec![],
+            missing_settings: vec![],
+        };
+        let v = crate::View::of(&card);
+        assert!(!serde_json::to_string(&v).unwrap().contains("owner"));
+        let old: crate::View = serde_json::from_str(r#"{"kind":"byob.tree","v":1,"data":{"type":"text","text":"x"},"fallback":"x"}"#).unwrap();
+        assert_eq!(old.owner, None);
+        let mut owned = old.clone();
+        owned.owner = Some(ViewRef::new("todo", "item", "3"));
+        let back: crate::View = serde_json::from_str(&serde_json::to_string(&owned).unwrap()).unwrap();
+        assert_eq!(back, owned);
+        // a 13.2 client doesn't know LiveView: it skips it
+        let lv = ServerMsg::LiveView(LiveView { view: ViewRef::new("todo", "list", ""), reset: true, ..Default::default() }).to_json();
+        assert!(lv.starts_with(r#"{"type":"live_view""#), "{lv}");
+    }
 }

@@ -240,6 +240,8 @@ How it works:
   `@byob.view("result")` taking the card's key (`def result(key):`), and end the tool with
   `return byob.card("text for you", "result", key="some-id")`. Clicks on it are events of
   view `result` with that `key`.
+- Give view functions, event handlers and tools different Python names: a later `def`
+  with the same name replaces the earlier one.
 - Mistakes in a tree don't break anything: byob draws what it can and `plugin_status`
   lists what it had to fix (`backend fault: view list: …`) and any traceback. Fix the file
   with `edit_plugin`; the backend restarts with the new code and the views redraw.
