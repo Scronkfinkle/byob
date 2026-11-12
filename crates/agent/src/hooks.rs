@@ -658,9 +658,14 @@ impl NativeHook for PromptPart {
     }
 }
 
+/// `Today is Wednesday, 2026-11-11.` (local time; the prompt is built once per turn).
+pub(crate) fn today() -> String {
+    chrono::Local::now().format("Today is %A, %Y-%m-%d.").to_string()
+}
+
 /// The prompt contributors byob registers, `(id, default priority, pick)`, in prompt order:
 /// the base prompt, the plugins' sections and lines, the workspace's AGENTS.md, the user's
-/// instructions, the subagents section, the artifact list.
+/// instructions, the subagents section, the artifact list, the web surfaces' context, the date.
 pub(crate) fn prompt_parts() -> Vec<(&'static str, i64, fn(&PromptInputs) -> Vec<String>)> {
     vec![
         ("base_prompt", 0, |i| vec![i.base.clone()]),
@@ -670,6 +675,9 @@ pub(crate) fn prompt_parts() -> Vec<(&'static str, i64, fn(&PromptInputs) -> Vec
         ("subagents", 500, |i| i.delegation.clone().into_iter().collect()),
         ("artifact_list", 600, |i| vec![i.artifacts.clone()]),
         ("app_context", 650, |i| if i.app_context.is_empty() { vec![] } else { vec![i.app_context.clone()] }),
+        // models don't know the date, and "the latest X" needs it; last, so the rest of the
+        // prompt stays the same from day to day
+        ("date", 690, |_| vec![today()]),
     ]
 }
 
@@ -733,7 +741,8 @@ mod tests {
             ..Default::default()
         };
         let p = Hooks::defaults(&natives).native_prompt(&inputs);
-        assert_eq!(p, "BASE\n\nSECTIONS\n\nLINES\n\n## AGENTS\n\nThe user's instructions for this chat:\nbe brief\n\n## Subagents");
+        assert_eq!(p, format!("BASE\n\nSECTIONS\n\nLINES\n\n## AGENTS\n\nThe user's instructions for this chat:\nbe brief\n\n## Subagents\n\n{}", today()));
+        assert!(today().starts_with("Today is ") && today().len() >= "Today is Monday, 2026-11-11.".len(), "{}", today());
     }
 
     fn modify(v: Value) -> serde_json::Map<String, Value> {

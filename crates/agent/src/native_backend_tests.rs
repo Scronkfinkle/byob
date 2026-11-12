@@ -71,6 +71,10 @@ struct H {
 }
 
 fn harness(script: Vec<Reply>, bundled: Vec<Embedded>, natives: Natives) -> H {
+    harness_with(script, bundled, natives, Policy::ALLOW_ALL)
+}
+
+fn harness_with(script: Vec<Reply>, bundled: Vec<Embedded>, natives: Natives, policy: Policy) -> H {
     let (url, requests) = fake_llm(script, "final answer");
     let home = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();
@@ -78,7 +82,7 @@ fn harness(script: Vec<Reply>, bundled: Vec<Embedded>, natives: Natives) -> H {
     config.workspace = ws.path().canonicalize().unwrap();
     config.register_workspace = true;
     config.tools = byob_tools::builtin();
-    config.policy = Some(Policy::ALLOW_ALL);
+    config.policy = Some(policy);
     config.paths = Some(Paths::at(home.path()));
     config.auto_title = false;
     config.plugins = Some(PluginsConfig {
@@ -185,6 +189,53 @@ fn a_native_backend_is_hosted_like_a_process_one() {
     assert_eq!(h.requests.lock().unwrap().len(), 8);
 }
 
+/// Says what its `init` carried.
+#[derive(Default)]
+struct Peek {
+    init: Value,
+}
+
+impl NativeBackend for Peek {
+    fn init(&mut self, init: &Value, _: &Outbox) {
+        self.init = init.clone();
+    }
+
+    fn request(&mut self, _: &str, _: &Value, _: &Outbox) -> Result<Value, String> {
+        let token = self.init["secrets"]["TOKEN"].as_str().unwrap_or_default();
+        Ok(json!(format!(
+            "token {} chars, city {}, token in settings: {}",
+            token.len(),
+            self.init["settings"]["CITY"],
+            self.init["settings"].get("TOKEN").is_some()
+        )))
+    }
+}
+
+#[test]
+fn a_native_backend_gets_its_secrets_in_init_and_its_read_tools_run_unasked() {
+    let manifest = json!({
+        "id": "keyed", "name": "Keyed", "backend": {"native": "peek"},
+        "settings": [{"key": "TOKEN", "label": "Token", "secret": true}, {"key": "CITY", "label": "City", "default": "Paris"}],
+        "tools": [{"name": "peek", "description": "Peek", "run": "backend", "access": "read"}]
+    });
+    let plugin = Embedded { id: "keyed".into(), files: [("byob-plugin.json".to_owned(), manifest.to_string())].into_iter().collect() };
+    let factory: NativeFactory = Arc::new(|| Box::new(Peek::default()) as Box<dyn NativeBackend>);
+    // The default policy asks before `execute` tools: this one says it only reads.
+    let h = harness_with(vec![call("peek", "{}"), Reply::Text("done")], vec![plugin], Natives::builtin().backend("peek", factory), Policy::default());
+    let mut c = connect(&h);
+    wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "keyed"));
+    let secret = "s3cret-token";
+    c.send(ClientMsg::SetPluginSetting { plugin: "keyed".into(), key: "TOKEN".into(), value: Some(secret.into()) });
+    wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "keyed" && p.settings.iter().all(|s| s.set)));
+    let (entry, seen) = turn(&mut c, "peek", |s, _| panic!("a read tool was asked about: {}", s.title));
+    let s = step(&entry, "peek");
+    assert_eq!(s.status, StepStatus::Done, "{}", s.detail);
+    assert_eq!(s.detail, format!("token {} chars, city \"Paris\", token in settings: false", secret.len()));
+    for m in &seen {
+        assert!(!m.to_json().contains(secret), "a secret went to a client: {}", m.to_json());
+    }
+}
+
 fn sheets_natives() -> Natives {
     Natives::builtin().backend(byob_sheets::ID, byob_sheets::factory())
 }
@@ -280,4 +331,46 @@ fn the_sheets_manifest_names_the_native_backend() {
     let names: Vec<&str> = m.tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, byob_sheets::TOOLS);
     assert_eq!(m.views.len(), 1);
+}
+
+/// A one-page web server on loopback (no live network in tests).
+fn page_server(body: &'static str) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = s.write_all(head.as_bytes()).and_then(|()| s.write_all(body.as_bytes()));
+        }
+    });
+    base
+}
+
+#[test]
+fn the_web_plugin_is_on_by_default_and_reads_pages_without_asking() {
+    let page = "<html><head><title>Release notes</title></head><body><nav>Home | Blog</nav><main><h1>v2.0</h1>\
+        <p>This release adds a brand new parser, many fixes, and a much faster startup for everyone who uses it daily.</p>\
+        <p>Upgrading is easy: replace the binary, keep your settings, and read the migration notes linked below.</p></main></body></html>";
+    let base = page_server(page);
+    let script = vec![call("web_fetch", &json!({"url": format!("{base}/notes")}).to_string()), Reply::Text("read it")];
+    let natives = Natives::builtin().backend(byob_web_tools::ID, byob_web_tools::factory());
+    // The default policy: web_fetch only reads, so nobody is asked.
+    let h = harness_with(script, bundled_plugins(), natives, Policy::default());
+    let mut c = connect(&h);
+    let e = wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "web"));
+    let web = info(&e, "web");
+    assert!(web.enabled && web.problems.is_empty(), "{:?}", web.problems);
+    assert_eq!(web.tools, ["web_search", "web_fetch"]);
+    let (entry, _) = turn(&mut c, "read the notes", |s, _| panic!("web_fetch was asked about: {}", s.title));
+    let s = step(&entry, "web_fetch");
+    assert_eq!(s.status, StepStatus::Done, "{}", s.detail);
+    assert_eq!(s.title, format!("Read {base}/notes"));
+    let reqs = h.requests.lock().unwrap();
+    let result = reqs[1]["messages"].as_array().unwrap().iter().rev().find(|m| m["role"] == "tool").unwrap()["content"].as_str().unwrap().to_owned();
+    assert!(result.contains("Title: Release notes\n") && result.contains("# v2.0\n\nThis release adds") && !result.contains("Home | Blog"), "{result}");
+    let tools = tool_names(&reqs[0]);
+    assert!(tools.iter().any(|t| t == "web_search") && tools.iter().any(|t| t == "web_fetch"), "{tools:?}");
 }

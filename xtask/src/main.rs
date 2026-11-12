@@ -23,6 +23,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("byob-agent", 4),
     // the native sheets backend: engine-side, registered by the app (never in the UI or wasm)
     ("byob-sheets", 4),
+    // the native web tools backend (web_search, web_fetch): engine-side, registered by the app
+    ("byob-web-tools", 4),
     ("byob-server", 5),
     ("byob-ui-egui", 5),
     ("byob", 6),

@@ -174,7 +174,7 @@ cheap. `cargo xtask layers` fails if one of our crates depends directly on `toki
 ```
 L6  apps/byob (desktop, --serve, --headless) · apps/byob-web (wasm)
 L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
-L4  agent: engine, turns, tool loop, permissions, approvals · sheets (native spreadsheets backend)
+L4  agent: engine, turns, tool loop, permissions, approvals · sheets (native spreadsheets backend) · web-tools (web_search/web_fetch backend)
 L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python, install_packages, workspace environments)
 L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
 L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store (SQLite or folder) · artifact-wire (helper protocol)
@@ -419,6 +419,36 @@ of every tool, a 38-formula battery, the grid and CSV/TSV handling (`snapshots.r
 "spreadsheets"`, so a third-party spreadsheets plugin can replace it (see Plugins).
 `tests/bench.rs` (ignored) measures it.
 
+### Web tools (bundled `web` plugin)
+
+`crates/bundled/plugins/web` declares `web_search` and `web_fetch` (`"run": "backend"`,
+`"access": "read"`: they run without asking, like `read_file`) served by native backend `web`
+(`crates/web-tools`, `byob-web-tools`, L4; default feature `native-web-tools`), on blocking
+`ureq` like inference. Every request has a deadline (15 s search, 20 s fetch, 30 s reader), at
+most 5 redirects and a byte cap after decompression (2 MiB search, 4 MiB page); HTML goes
+through a forgiving tokenizer (no DOM, no recursion, open-element stack capped at 256).
+
+- **Search** tries providers in order until one has results: the one `SEARCH_PROVIDER`
+  names, then those with settings (SearXNG URL, Brave key, Tavily key), then **Exa** through
+  its hosted MCP endpoint (`mcp.exa.ai`, `tools/call web_search_exa`, keyless at a shared
+  rate; `EXA_API_KEY` for the user's own), then **Wikipedia** (MediaWiki search API). The
+  reply is a numbered list (title, URL, date when known, a ≤ 300-character snippet; 5
+  results, ≤ 10) and names the providers it skipped and why. No engine's HTML is scraped
+  (DuckDuckGo/Bing/Google terms forbid it and they answer scripts with captchas).
+- **Fetch** turns HTML into Markdown-ish text: the `main`/`article` content if marked, else
+  the body without `nav`/`header`/`footer`/`aside`, forms, scripts, hidden elements and
+  class/id chrome (cookie banners, sidebars, share bars); headings, lists, tables and `pre`
+  are kept, links as their text (`links: true` adds `(url)`: on Wikipedia that doubles the
+  size), images left out. JSON is pretty-printed, other text as it is; binary types and PDFs are
+  refused (PDFs go to the reader). A reply is a window (`max_chars`, default 8000, 500–40000)
+  from `start`, cut at a line break, ending with `[Truncated: N more characters. Call
+  web_fetch with start=… to read on.]`; the last 8 pages stay cached 10 minutes, so reading
+  on doesn't fetch again. Pages that come back nearly empty or behind a bot check go through
+  **Jina Reader** (`r.jina.ai/<url>`, keyless at 20/min; it renders JavaScript and reads
+  PDFs) unless `READER_FALLBACK` is off; it sees the URL.
+
+Calls run one at a time on the backend's thread (a slow page delays the next call).
+
 ### Web surfaces: the bridge, MCP Apps, plugin web views
 
 A web surface is HTML that talks to byob: an **MCP App** (an MCP tool whose `_meta.ui.
@@ -629,7 +659,7 @@ text, the artifacts prompt section), `html-apps` (`text/html` + `guidance.md` + 
 the `web` renderer with Open), `charts` (make_chart, the chart type, `native:chart`),
 `markdown`, `images` and `core-tools` (file tools: list/search/read/write/edit/move/delete;
 run_command/run_python/install_*, the code-running section), `sheets` (spreadsheets: a native backend on IronCalc, see
-Spreadsheets below). `artifacts` and `core-tools` are `locked` (always on: their switch
+Spreadsheets below), `web` (web_search and web_fetch: a native backend, see Web tools below). `artifacts` and `core-tools` are `locked` (always on: their switch
 is refused with a notice and the UI shows "always on"; a fork with the same id stays locked);
 the others switch like any plugin. Since the hooks phase they also include `prompt` (locked:
 the base prompt, plugins' prompt parts, the user's instructions), `workspace-instructions`

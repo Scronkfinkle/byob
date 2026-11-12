@@ -1,0 +1,23 @@
+[package]
+name = "byob-web-tools"
+description = "Web search and page reading as a native plugin backend: the bundled web plugin's backend (L4)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+byob-plugins.workspace = true
+serde_json.workspace = true
+log.workspace = true
+url.workspace = true
+# Blocking HTTP (rustls, gzip), the same client as inference. MIT OR Apache-2.0.
+ureq.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

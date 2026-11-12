@@ -22,12 +22,17 @@ byob_plugin.py` (the Python helper), `crates/plugins/src/pyenv.rs` (Python envir
 - `"backend": {"native": "<id>"}` is in-tree Rust the app registered (`byob_plugins::native`,
   see `docs/architecture.md`, Native backends): same messages, same lifecycle, run in byob's
   process on a thread of its own.
+  Its `init` also carries `secrets` (the secret settings, by key): in-tree code has no
+  environment of its own, and the message never leaves byob's process.
 - `"backend": "backend.py"` is a Python script in the plugin folder, run with the plugin's
   Python. The long form is `{"run": "backend.py", "args": [], "events": []}`, or
   `{"command": "node", "args": ["server.js"]}` for any other program (on `PATH`, or a path
   inside the plugin folder). `events` lists engine events it gets from the start.
 - A tool with `"run": "backend"` is served by the backend (a `tool` request) instead of a
   script started per call. Such a tool needs a `backend`.
+- A script or backend tool may say what it does for the permission gate: `"access"`:
+  `read` (runs without asking by default), `write`, `network` or `execute` (the default:
+  asks).
 - `python.requirements` (≤ 64 pip specs; relative `./x.whl` paths are the plugin's): byob
   makes a virtual environment for them under `<data>/plugin-python/venvs/<hash>`, keyed by
   the interpreter and the sorted list, so plugins with the same list share one. It is built
@@ -213,7 +218,7 @@ point it answers:
 ```
 
 `event`: `before_prompt`, `before_request`, `before_tool_call`, `after_tool_call`,
-`on_turn_end`. `priority` (default 100; lower runs first; byob's prompt sections sit at 0–600,
+`on_turn_end`. `priority` (default 100; lower runs first; byob's prompt sections sit at 0–650 and today's date at 690,
 compaction at 100). `timeout_ms` (default 2000, ≤ 60000). `fail`: `open` (default: a fault or
 timeout counts as continue) or `closed` (it stops the stage: a tool call is denied, a request
 not made). `tools` limits the tool events to those tools. A hook without `native` needs a

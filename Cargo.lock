@@ -652,6 +652,7 @@ dependencies = [
  "byob-tools",
  "byob-types",
  "byob-ui-egui",
+ "byob-web-tools",
  "eframe",
  "egui",
  "env_logger",
@@ -676,6 +677,7 @@ dependencies = [
  "byob-store",
  "byob-tools",
  "byob-types",
+ "byob-web-tools",
  "chrono",
  "image",
  "log",
@@ -879,6 +881,18 @@ dependencies = [
 [[package]]
 name = "byob-web-assets"
 version = "0.3.1"
+
+[[package]]
+name = "byob-web-tools"
+version = "0.3.1"
+dependencies = [
+ "byob-plugins",
+ "log",
+ "proptest",
+ "serde_json",
+ "ureq",
+ "url",
+]
 
 [[package]]
 name = "bytemuck"

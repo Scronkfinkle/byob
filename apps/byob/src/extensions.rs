@@ -59,6 +59,9 @@ pub fn load(tools: &mut Registry, artifact_types: &byob_tools::ArtifactTypes, li
     // The bundled `sheets` plugin's backend: spreadsheets in-process.
     #[cfg(feature = "native-sheets")]
     let natives = natives.backend(byob_sheets::ID, byob_sheets::factory());
+    // The bundled `web` plugin's backend: web_search and web_fetch in-process.
+    #[cfg(feature = "native-web-tools")]
+    let natives = natives.backend(byob_web_tools::ID, byob_web_tools::factory());
     let mut plugins = PluginsConfig {
         linked,
         python: byob_plugins::default_python(),
