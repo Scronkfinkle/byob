@@ -1,8 +1,8 @@
 //! Built-in file tools. Every path goes through [`crate::sandbox`]; output is bounded.
 
 mod delete;
-mod edit;
 mod docs;
+mod edit;
 mod list;
 mod look;
 mod moves;

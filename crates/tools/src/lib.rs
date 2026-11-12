@@ -530,7 +530,16 @@ mod tests {
             let tool = reg.get(&spec.name).unwrap();
             let expected = if matches!(
                 spec.name.as_str(),
-                "list_files" | "read_file" | "search_files" | "look_at_image" | "make_chart" | "create_artifact" | "update_artifact" | "read_artifact" | "update_plan" | "ask_user"
+                "list_files"
+                    | "read_file"
+                    | "search_files"
+                    | "look_at_image"
+                    | "make_chart"
+                    | "create_artifact"
+                    | "update_artifact"
+                    | "read_artifact"
+                    | "update_plan"
+                    | "ask_user"
             ) {
                 Access::Read
             } else {
