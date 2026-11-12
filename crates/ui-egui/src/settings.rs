@@ -52,6 +52,13 @@ impl ByobApp {
         // Close on the right, then the title; the subtitle wraps (on a phone it ran off-screen
         // and widened everything below it).
         ui.horizontal(|ui| {
+            // The way back where people look first: top left (testers clicked the header's
+            // title there to "go home" and got the chat's settings instead).
+            let back = ui.button("← Back to chat").on_hover_text("Close the settings and go back to the chat");
+            self.header_rects.settings_back = back.rect;
+            if back.clicked() {
+                self.go_home();
+            }
             ui.label(RichText::new("App settings").size(t.text_size(16.0)).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let shortcut = crate::header::settings_shortcut(ui.ctx());

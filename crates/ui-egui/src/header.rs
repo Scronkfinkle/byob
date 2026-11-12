@@ -75,6 +75,12 @@ pub struct Rects {
     pub plugins: Rect,
     /// The app settings' Close button (`Rect::NOTHING` while they are shut).
     pub settings_close: Rect,
+    /// The app settings' "Back to chat" button (`Rect::NOTHING` while they are shut).
+    pub settings_back: Rect,
+    /// The "byob" wordmark, which goes back to the chat (`Rect::NOTHING` when it isn't shown).
+    pub home: Rect,
+    /// The chat's title in the header.
+    pub title: Rect,
     /// Scripted runs: open the "⋯" menu on the next frame.
     pub open_menu: bool,
 }
@@ -88,6 +94,9 @@ impl Default for Rects {
             more: Rect::NOTHING,
             plugins: Rect::NOTHING,
             settings_close: Rect::NOTHING,
+            settings_back: Rect::NOTHING,
+            home: Rect::NOTHING,
+            title: Rect::NOTHING,
             open_menu: false,
         }
     }
@@ -104,6 +113,14 @@ pub fn settings_tip(ctx: &egui::Context) -> String {
 }
 
 impl ByobApp {
+    /// Back to the chat: close the app settings and the chat settings popover.
+    pub(crate) fn go_home(&mut self) {
+        self.show_settings = false;
+        if self.workspaces.chat.is_some() {
+            self.workspaces.toggle_chat();
+        }
+    }
+
     /// Keyboard shortcuts the header offers (before anything else takes the keys).
     pub(crate) fn header_shortcuts(&mut self, ctx: &egui::Context) {
         if ctx.input_mut(|i| i.consume_shortcut(&SETTINGS_SHORTCUT)) {
@@ -196,7 +213,14 @@ impl ByobApp {
             self.sidebar.toggle();
         }
         if layout.wordmark {
-            ui.label(egui::RichText::new("byob").strong().size(t.text_size(18.0)).color(t.accent));
+            let home = ui
+                .add(egui::Label::new(egui::RichText::new("byob").strong().size(t.text_size(18.0)).color(t.accent)).sense(egui::Sense::click()))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Back to the chat");
+            self.header_rects.home = home.rect;
+            if home.clicked() {
+                self.go_home();
+            }
         }
         if steps::awaiting_approval(&self.entries) {
             steps::waiting_badge(ui, t);
@@ -260,7 +284,12 @@ impl ByobApp {
             .inner;
         let gear = icons::settings_button(ui, t).on_hover_text("Chat settings: this chat's model, approvals, where commands run…");
         self.header_rects.chat_settings = gear.rect;
-        if gear.clicked() || title_resp.clicked() {
+        self.header_rects.title = title_resp.rect;
+        if title_resp.clicked() && self.show_settings {
+            // Over the app settings, the top left means "back": don't stack the chat's
+            // settings on top.
+            self.go_home();
+        } else if gear.clicked() || title_resp.clicked() {
             self.workspaces.toggle_chat();
         }
     }

@@ -1198,6 +1198,88 @@ mod app_tests {
         assert_eq!(app.header_rects.settings_close, before, "Close moved when the settings scrolled");
     }
 
+    /// A click at `pos` (press and release over two frames) in a window `width` wide.
+    fn click(ctx: &egui::Context, app: &mut ByobApp, width: f32, pos: egui::Pos2) {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0));
+        let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        for events in [vec![egui::Event::PointerMoved(pos)], vec![button(true)], vec![button(false)]] {
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| app.ui(ui));
+            out.textures_delta.clear();
+        }
+        frame(ctx, app, width);
+    }
+
+    #[test]
+    fn the_top_left_goes_back_to_the_chat_from_the_settings() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        // Over the settings, the chat's title (top left) goes back instead of opening the
+        // chat's settings on top (a tester expected "home" there).
+        app.show_settings = true;
+        frame(&ctx, &mut app, 1600.0);
+        frame(&ctx, &mut app, 1600.0);
+        let at = app.header_rects.title.center();
+        click(&ctx, &mut app, 1600.0, at);
+        assert!(!app.show_settings && app.workspaces.chat.is_none(), "settings {} chat settings {}", app.show_settings, app.workspaces.chat.is_some());
+        // Without the settings, the title still opens the chat's settings.
+        let at = app.header_rects.title.center();
+        click(&ctx, &mut app, 1600.0, at);
+        assert!(app.workspaces.chat.is_some());
+        // The wordmark closes both.
+        app.show_settings = true;
+        frame(&ctx, &mut app, 1600.0);
+        assert!(app.header_rects.home.is_positive());
+        let at = app.header_rects.home.center();
+        click(&ctx, &mut app, 1600.0, at);
+        assert!(!app.show_settings && app.workspaces.chat.is_none());
+        // So does "Back to chat", at the left of the settings' title row.
+        app.show_settings = true;
+        frame(&ctx, &mut app, 1600.0);
+        frame(&ctx, &mut app, 1600.0);
+        let back = app.header_rects.settings_back;
+        assert!(back.is_positive() && back.center().x < 300.0, "{back:?}");
+        click(&ctx, &mut app, 1600.0, back.center());
+        assert!(!app.show_settings);
+    }
+
+    #[test]
+    fn the_chat_settings_window_can_be_dragged_and_reopens_in_place() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        frame(&ctx, &mut app, 1000.0);
+        app.workspaces.toggle_chat();
+        frame(&ctx, &mut app, 1000.0);
+        frame(&ctx, &mut app, 1000.0);
+        let rect = |ctx: &egui::Context, app: &ByobApp| ctx.memory(|m| m.area_rect(app.workspaces.chat_window_id())).unwrap();
+        let start = rect(&ctx, &app);
+        // Press on the title bar, drag by (-150, 120), let go.
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
+        let grab = start.min + egui::vec2(40.0, 12.0);
+        let to = grab + egui::vec2(-150.0, 120.0);
+        let press = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let steps = [
+            vec![egui::Event::PointerMoved(grab)],
+            vec![press(grab, true)],
+            vec![egui::Event::PointerMoved(grab + egui::vec2(-50.0, 40.0))],
+            vec![egui::Event::PointerMoved(to)],
+            vec![press(to, false)],
+        ];
+        for events in steps {
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| app.ui(ui));
+            out.textures_delta.clear();
+        }
+        frame(&ctx, &mut app, 1000.0);
+        let moved = rect(&ctx, &app);
+        assert!((moved.min - start.min - egui::vec2(-150.0, 120.0)).length() < 2.0, "{start:?} -> {moved:?}");
+        // Closed and opened again: back under its button.
+        app.workspaces.toggle_chat();
+        frame(&ctx, &mut app, 1000.0);
+        app.workspaces.toggle_chat();
+        frame(&ctx, &mut app, 1000.0);
+        frame(&ctx, &mut app, 1000.0);
+        assert!((rect(&ctx, &app).min - start.min).length() < 2.0, "{start:?} vs {:?}", rect(&ctx, &app));
+    }
+
     #[test]
     fn settings_at_the_bottom_of_the_chat_list_opens_the_app_settings() {
         let ctx = egui::Context::default();

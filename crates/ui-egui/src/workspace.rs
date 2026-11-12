@@ -786,11 +786,22 @@ pub struct WorkspaceUi {
     pub chat: Option<LayerEditor>,
     /// Settings → Defaults for every chat.
     pub defaults: LayerEditor,
+    /// Counts openings, so a window opened again starts at its usual place (a window keeps
+    /// where it was dragged only while it stays open).
+    opens: u64,
 }
 
 impl Default for WorkspaceUi {
     fn default() -> Self {
-        Self { root: String::new(), support: EnvSupport::default(), form: None, window: None, chat: None, defaults: LayerEditor::new(ConfigScope::Global) }
+        Self {
+            root: String::new(),
+            support: EnvSupport::default(),
+            form: None,
+            window: None,
+            chat: None,
+            defaults: LayerEditor::new(ConfigScope::Global),
+            opens: 0,
+        }
     }
 }
 
@@ -847,10 +858,18 @@ impl WorkspaceUi {
 
     pub fn open_new(&mut self, env: EnvKind) {
         self.form = Some(NewWorkspaceForm::with_env(env));
+        self.opens += 1;
     }
 
     pub fn open_settings(&mut self, id: &str, remove: bool) {
         self.window = Some(WorkspaceWindow::new(id, remove));
+        self.opens += 1;
+    }
+
+    /// The chat settings window's id while it is open (tests find its rect by it).
+    #[cfg(test)]
+    pub(crate) fn chat_window_id(&self) -> egui::Id {
+        egui::Id::unique(("chat-settings", self.opens))
     }
 
     pub fn toggle_chat(&mut self) {
@@ -858,6 +877,7 @@ impl WorkspaceUi {
             Some(_) => None,
             None => Some(LayerEditor::new(ConfigScope::Chat)),
         };
+        self.opens += 1;
     }
 
     /// Draw the windows that are open; returns messages for the engine.
@@ -874,12 +894,15 @@ impl WorkspaceUi {
         let screen = ctx.content_rect();
         let max_w = (screen.width() - 24.0).clamp(240.0, 520.0);
         let max_h = (screen.height() - 80.0).max(200.0);
+        let opens = self.opens;
+        // Centred near the top at first; movable by the title bar (and kept on screen).
+        let top_centre = |dy: f32| egui::pos2(screen.center().x, screen.top() + dy);
         if let Some(form) = &mut self.form {
             let mut open = true;
             let (root, support) = (self.root.clone(), self.support.clone());
             let mut close = false;
             egui::Window::new("New workspace")
-                .id(egui::Id::unique("new-workspace"))
+                .id(egui::Id::unique(("new-workspace", opens)))
                 .open(&mut open)
                 .collapsible(false)
                 .fade_in(false)
@@ -887,7 +910,10 @@ impl WorkspaceUi {
                 .default_width(max_w.min(460.0))
                 .max_width(max_w)
                 .max_height(max_h)
-                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 60.0))
+                .pivot(egui::Align2::CENTER_TOP)
+                .default_pos(top_centre(60.0))
+                .movable(true)
+                .constrain(true)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().max_height(max_h - 40.0).min_scrolled_height((max_h - 40.0).min(560.0)).show(ui, |ui| {
                         let o = form.show(ui, t, &root, &support);
@@ -905,7 +931,7 @@ impl WorkspaceUi {
             let ws = workspaces.iter().find(|x| x.id == w.id);
             let title = ws.map_or_else(|| "Workspace".to_owned(), |x| format!("Workspace \u{201c}{}\u{201d}", x.name));
             egui::Window::new(title)
-                .id(egui::Id::unique("workspace-settings"))
+                .id(egui::Id::unique(("workspace-settings", opens)))
                 .open(&mut open)
                 .collapsible(false)
                 .fade_in(false)
@@ -913,7 +939,10 @@ impl WorkspaceUi {
                 .default_width(max_w)
                 .max_width(max_w)
                 .max_height(max_h)
-                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 50.0))
+                .pivot(egui::Align2::CENTER_TOP)
+                .default_pos(top_centre(50.0))
+                .movable(true)
+                .constrain(true)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().max_height(max_h - 40.0).min_scrolled_height((max_h - 40.0).min(560.0)).show(ui, |ui| {
                         let o = w.show(ui, t, ws, plugins);
@@ -930,7 +959,7 @@ impl WorkspaceUi {
             let w = max_w.min(440.0);
             let x = anchor.x.clamp(8.0, (screen.right() - w - 8.0).max(8.0));
             egui::Window::new("Chat settings")
-                .id(egui::Id::unique("chat-settings"))
+                .id(egui::Id::unique(("chat-settings", opens)))
                 .open(&mut open)
                 .collapsible(false)
                 .fade_in(false)
@@ -939,7 +968,10 @@ impl WorkspaceUi {
                 .default_width(w)
                 .max_width(w)
                 .max_height(max_h)
-                .fixed_pos(egui::pos2(x, anchor.y))
+                // Opens under its button; drag it by the title bar.
+                .default_pos(egui::pos2(x, anchor.y))
+                .movable(true)
+                .constrain(true)
                 .show(ctx, |ui| {
                     let ws = editor.view().and_then(|v| v.workspace.as_ref()).map(|w| w.name.clone());
                     let line = match ws {
