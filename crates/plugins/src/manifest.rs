@@ -239,6 +239,10 @@ pub struct ManifestTool {
     /// A native tool this build may not have (e.g. `install_packages` without a package
     /// manager): missing isn't a problem.
     pub optional: bool,
+    /// What a script or backend tool does, for the permission gate (`"access"`: `read`,
+    /// `write`, `network`, `execute`); `None` is `execute`. Native tools bring their own.
+    #[serde(skip)]
+    pub access: Option<byob_tools::Access>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -932,7 +936,17 @@ fn parse_tool(t: &Value, i: usize) -> R<ManifestTool> {
         v => Some(req_str(v, &format!("{f}.title"))?),
     };
     let optional = t.get("optional") == Some(&Value::Bool(true));
-    Ok(ManifestTool { name, description, params, kind, title, optional })
+    let access = match t.get("access") {
+        None | Some(Value::Null) => None,
+        a => Some(match req_str(a, &format!("{f}.access"))?.as_str() {
+            "read" => byob_tools::Access::Read,
+            "write" => byob_tools::Access::Write,
+            "network" => byob_tools::Access::Network,
+            "execute" => byob_tools::Access::Execute,
+            _ => return Err(format!("{f}.access must be one of read, write, network, execute")),
+        }),
+    };
+    Ok(ManifestTool { name, description, params, kind, title, optional, access })
 }
 
 fn parse_servers(v: Option<&Value>) -> R<BTreeMap<String, McpServerConfig>> {
@@ -1110,6 +1124,7 @@ mod tests {
         assert!(m.permissions.network);
         assert_eq!(m.tools[0].kind, ToolKind::Script("tools/count.py".into()));
         assert_eq!(m.tools[0].title.as_deref(), Some("Counted {file}"));
+        assert_eq!(m.tools[0].access, None);
         let s = &m.settings[0];
         assert!(s.secret && s.multiple && !s.required);
         assert_eq!(s.kind, SettingKind::Directory);
@@ -1126,6 +1141,13 @@ mod tests {
         assert_eq!(m.backend.unwrap().run, BackendRun::Python("backend.py".into()));
         assert_eq!(m.tools[0].kind, ToolKind::Backend);
         assert_eq!(m.requirements, ["requests>=2", "./wheels/w.whl"]);
+        let m =
+            parse_user(json!({"id": "a", "name": "x", "backend": "b.py", "tools": [{"name": "t", "description": "d", "run": "backend", "access": "read"}]}))
+                .unwrap();
+        assert_eq!(m.tools[0].access, Some(byob_tools::Access::Read));
+        let bad =
+            parse_user(json!({"id": "a", "name": "x", "backend": "b.py", "tools": [{"name": "t", "description": "d", "run": "backend", "access": "root"}]}));
+        assert_eq!(bad.unwrap_err(), "byob-plugin.json: tools[0].access must be one of read, write, network, execute");
         let m = parse_user(json!({"id": "a", "name": "x", "backend": {"command": "node", "args": ["s.js"], "events": ["turn_finished"]}})).unwrap();
         let b = m.backend.unwrap();
         assert_eq!((b.run, b.args, b.events), (BackendRun::Command("node".into()), vec!["s.js".to_string()], vec!["turn_finished".to_string()]));

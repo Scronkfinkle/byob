@@ -71,6 +71,10 @@ struct H {
 }
 
 fn harness(script: Vec<Reply>, bundled: Vec<Embedded>, natives: Natives) -> H {
+    harness_with(script, bundled, natives, Policy::ALLOW_ALL)
+}
+
+fn harness_with(script: Vec<Reply>, bundled: Vec<Embedded>, natives: Natives, policy: Policy) -> H {
     let (url, requests) = fake_llm(script, "final answer");
     let home = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();
@@ -78,7 +82,7 @@ fn harness(script: Vec<Reply>, bundled: Vec<Embedded>, natives: Natives) -> H {
     config.workspace = ws.path().canonicalize().unwrap();
     config.register_workspace = true;
     config.tools = byob_tools::builtin();
-    config.policy = Some(Policy::ALLOW_ALL);
+    config.policy = Some(policy);
     config.paths = Some(Paths::at(home.path()));
     config.auto_title = false;
     config.plugins = Some(PluginsConfig {
@@ -183,6 +187,53 @@ fn a_native_backend_is_hosted_like_a_process_one() {
     let (entry, _) = turn(&mut c, "after the switch", |_, _| {});
     assert!(step(&entry, "poke").detail.contains("poked 1 times, restart 0"), "{}", step(&entry, "poke").detail);
     assert_eq!(h.requests.lock().unwrap().len(), 8);
+}
+
+/// Says what its `init` carried.
+#[derive(Default)]
+struct Peek {
+    init: Value,
+}
+
+impl NativeBackend for Peek {
+    fn init(&mut self, init: &Value, _: &Outbox) {
+        self.init = init.clone();
+    }
+
+    fn request(&mut self, _: &str, _: &Value, _: &Outbox) -> Result<Value, String> {
+        let token = self.init["secrets"]["TOKEN"].as_str().unwrap_or_default();
+        Ok(json!(format!(
+            "token {} chars, city {}, token in settings: {}",
+            token.len(),
+            self.init["settings"]["CITY"],
+            self.init["settings"].get("TOKEN").is_some()
+        )))
+    }
+}
+
+#[test]
+fn a_native_backend_gets_its_secrets_in_init_and_its_read_tools_run_unasked() {
+    let manifest = json!({
+        "id": "keyed", "name": "Keyed", "backend": {"native": "peek"},
+        "settings": [{"key": "TOKEN", "label": "Token", "secret": true}, {"key": "CITY", "label": "City", "default": "Paris"}],
+        "tools": [{"name": "peek", "description": "Peek", "run": "backend", "access": "read"}]
+    });
+    let plugin = Embedded { id: "keyed".into(), files: [("byob-plugin.json".to_owned(), manifest.to_string())].into_iter().collect() };
+    let factory: NativeFactory = Arc::new(|| Box::new(Peek::default()) as Box<dyn NativeBackend>);
+    // The default policy asks before `execute` tools: this one says it only reads.
+    let h = harness_with(vec![call("peek", "{}"), Reply::Text("done")], vec![plugin], Natives::builtin().backend("peek", factory), Policy::default());
+    let mut c = connect(&h);
+    wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "keyed"));
+    let secret = "s3cret-token";
+    c.send(ClientMsg::SetPluginSetting { plugin: "keyed".into(), key: "TOKEN".into(), value: Some(secret.into()) });
+    wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "keyed" && p.settings.iter().all(|s| s.set)));
+    let (entry, seen) = turn(&mut c, "peek", |s, _| panic!("a read tool was asked about: {}", s.title));
+    let s = step(&entry, "peek");
+    assert_eq!(s.status, StepStatus::Done, "{}", s.detail);
+    assert_eq!(s.detail, format!("token {} chars, city \"Paris\", token in settings: false", secret.len()));
+    for m in &seen {
+        assert!(!m.to_json().contains(secret), "a secret went to a client: {}", m.to_json());
+    }
 }
 
 fn sheets_natives() -> Natives {

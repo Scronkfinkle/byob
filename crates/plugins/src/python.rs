@@ -306,7 +306,7 @@ impl Tool for PythonTool {
     }
 
     fn access(&self, _args: &Value) -> Access {
-        Access::Execute
+        self.decl.access.unwrap_or(Access::Execute)
     }
 
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {

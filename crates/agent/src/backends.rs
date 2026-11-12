@@ -159,7 +159,7 @@ fn make(m: &Make<'_>, generation: u64) -> Backend {
     let secret: Vec<&str> = plugin.manifest.settings.iter().filter(|s| s.secret).map(|s| s.key.as_str()).collect();
     let settings: serde_json::Map<String, Value> =
         m.plugin_ref.env.iter().filter(|(k, _)| !secret.contains(&k.as_str())).map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
-    let init = json!({
+    let mut init = json!({
         "type": "init",
         "v": WIRE_VERSION,
         "plugin": plugin.id(),
@@ -175,6 +175,15 @@ fn make(m: &Make<'_>, generation: u64) -> Backend {
         "workspace": (m.scope == PluginScope::Workspace).then(|| m.workspace.display().to_string()),
         "views": plugin.manifest.views.iter().map(|v| json!({"id": v.id, "site": v.site, "title": v.title})).collect::<Vec<_>>(),
     });
+    // In-tree code has no environment of its own to read secrets from (and setting byob's
+    // would leak them to every child): its `init` carries them. It never leaves the process.
+    if matches!(m.decl.run, BackendRun::Native(_))
+        && let Some(o) = init.as_object_mut()
+    {
+        let secrets: serde_json::Map<String, Value> =
+            m.plugin_ref.env.iter().filter(|(k, _)| secret.contains(&k.as_str())).map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+        o.insert("secrets".into(), Value::Object(secrets));
+    }
     let mut env = m.plugin_ref.env.clone();
     let d = dir.display().to_string();
     env.insert("BYOB_PLUGIN_DIR".into(), d.clone());
