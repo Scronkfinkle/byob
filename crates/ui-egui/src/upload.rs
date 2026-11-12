@@ -8,10 +8,11 @@
 //! - Desktop: dropped files are read from their path; the picker is `rfd`'s native dialog
 //!   (the XDG desktop portal on Linux), on a thread.
 
+use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use byob_protocol::media::{self, MAX_ATTACHMENTS, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_BYTES};
-use byob_protocol::{ClientMsg, Connection, MediaRef};
+use byob_protocol::{ClientMsg, Connection, MediaKind, MediaRef};
 use egui::{Stroke, vec2};
 
 use crate::theme::Tokens;
@@ -19,9 +20,37 @@ use crate::theme::Tokens;
 /// A file read on the client, or why it couldn't be.
 pub type Picked = Result<(String, Vec<u8>), String>;
 
+/// Longest side of an attachment's preview, in pixels (shown small in its chip, at this
+/// size on hover).
+const THUMB_SIDE: u32 = 256;
+/// Previews kept (attached files, and those set aside while a queued message is edited).
+const MAX_THUMBS: usize = 64;
+
 struct Pending {
     id: u64,
     name: String,
+    /// A preview, for images.
+    thumb: Option<Thumb>,
+}
+
+/// An attached image's preview: decoded when it is attached, a texture once drawn.
+enum Thumb {
+    Pixels(egui::ColorImage),
+    Texture(egui::TextureHandle),
+}
+
+impl Thumb {
+    fn texture(&mut self, ctx: &egui::Context, name: &str) -> egui::TextureHandle {
+        if let Self::Pixels(img) = self {
+            let tex = ctx.load_texture(format!("attachment-thumb:{name}"), std::mem::take(img), egui::TextureOptions::LINEAR);
+            *self = Self::Texture(tex);
+        }
+        match self {
+            Self::Texture(t) => t.clone(),
+            // (just replaced)
+            Self::Pixels(_) => ctx.load_texture("attachment-thumb", egui::ColorImage::default(), egui::TextureOptions::LINEAR),
+        }
+    }
 }
 
 pub struct Uploads {
@@ -32,12 +61,14 @@ pub struct Uploads {
     rx: Receiver<Picked>,
     /// A picker dialog is open.
     picking: bool,
+    /// Previews of attached images, by the attachment's path.
+    thumbs: HashMap<String, Thumb>,
 }
 
 impl Default for Uploads {
     fn default() -> Self {
         let (tx, rx) = channel();
-        Self { next_id: 1, pending: Vec::new(), ready: Vec::new(), tx, rx, picking: false }
+        Self { next_id: 1, pending: Vec::new(), ready: Vec::new(), tx, rx, picking: false, thumbs: HashMap::new() }
     }
 }
 
@@ -61,7 +92,9 @@ impl Uploads {
             conn.send(ClientMsg::Upload { upload: id, name: name.to_owned(), size, offset, data: media::encode(piece), done: i == last });
             offset = offset.saturating_add(u64::try_from(piece.len()).unwrap_or(0));
         }
-        self.pending.push(Pending { id, name: name.to_owned() });
+        // A preview for images, made now while the bytes are here (a broken image just has none).
+        let thumb = (MediaKind::for_path(name) == MediaKind::Image).then(|| crate::media::thumbnail(bytes, THUMB_SIDE).ok()).flatten().map(Thumb::Pixels);
+        self.pending.push(Pending { id, name: name.to_owned(), thumb });
         Ok(())
     }
 
@@ -71,6 +104,13 @@ impl Uploads {
         let p = self.pending.remove(pos);
         match (attachment, error) {
             (Some(a), _) => {
+                if let Some(thumb) = p.thumb {
+                    if self.thumbs.len() >= MAX_THUMBS {
+                        let ready: Vec<&str> = self.ready.iter().map(|r| r.path.as_str()).collect();
+                        self.thumbs.retain(|path, _| ready.contains(&path.as_str()));
+                    }
+                    self.thumbs.insert(a.path.clone(), thumb);
+                }
                 self.ready.push(a);
                 None
             }
@@ -143,10 +183,21 @@ impl Uploads {
             return;
         }
         let mut remove = None;
-        ui.horizontal_wrapped(|ui| {
+        let ctx = ui.ctx().clone();
+        // With a preview among them, every chip is a preview's height, so the row lines up.
+        let tall = self.pending.iter().any(|p| p.thumb.is_some()) || self.ready.iter().any(|r| self.thumbs.contains_key(&r.path));
+        let min_h = if tall { t.text_size(44.0) } else { 0.0 };
+        let thumbs = &mut self.thumbs;
+        // Top-aligned rows (horizontal_wrapped centres each chip on a row that grows as taller
+        // ones arrive, so they stepped down).
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true), |ui| {
             for (i, r) in self.ready.iter().enumerate() {
                 chip_frame(t).show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        ui.set_min_height(min_h);
+                        if let Some(thumb) = thumbs.get_mut(&r.path) {
+                            preview(ui, t, &thumb.texture(&ctx, &r.path), r.name());
+                        }
                         ui.label(egui::RichText::new(r.name()).small().color(t.text));
                         ui.label(egui::RichText::new(media::size_label(r.size)).small().color(t.text_dim));
                         if ui.add(egui::Button::new(egui::RichText::new("×").small()).frame(false)).on_hover_text("Remove").clicked() {
@@ -155,9 +206,13 @@ impl Uploads {
                     });
                 });
             }
-            for p in &self.pending {
+            for p in &mut self.pending {
                 chip_frame(t).show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        ui.set_min_height(min_h);
+                        if let Some(thumb) = &mut p.thumb {
+                            preview(ui, t, &thumb.texture(&ctx, &p.name), &p.name);
+                        }
                         crate::theme::spinner(ui, t, None);
                         ui.label(egui::RichText::new(&p.name).small().color(t.text_dim));
                     });
@@ -168,6 +223,21 @@ impl Uploads {
             self.ready.remove(i);
         }
     }
+}
+
+/// An attached image's preview in its chip, larger on hover.
+fn preview(ui: &mut egui::Ui, t: &Tokens, tex: &egui::TextureHandle, name: &str) {
+    let natural = tex.size_vec2();
+    if natural.x <= 0.0 || natural.y <= 0.0 {
+        return;
+    }
+    // A fixed height so chips line up; wide images get up to twice that in width.
+    let h = t.text_size(44.0);
+    let size = natural * (h / natural.y).min(2.0 * h / natural.x);
+    ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), size)).corner_radius(t.round(4.0))).on_hover_ui(|ui| {
+        ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(tex.id(), natural)));
+        ui.label(egui::RichText::new(name).small());
+    });
 }
 
 fn chip_frame(t: &Tokens) -> egui::Frame {
@@ -373,6 +443,39 @@ mod tests {
             assert_eq!(read_path(&d.join("a.csv")).unwrap(), ("a.csv".to_owned(), b"a,b".to_vec()));
             let _ = std::fs::remove_dir_all(&d);
         }
+    }
+
+    #[test]
+    fn attached_images_get_a_preview_and_other_files_dont() {
+        let png = {
+            let img = image::RgbaImage::from_pixel(600, 300, image::Rgba([200, 30, 30, 255]));
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+            out
+        };
+        let mut u = Uploads::default();
+        let mut conn = Recorder::default();
+        u.add(&mut conn, "photo.png", &png).unwrap();
+        u.add(&mut conn, "data.csv", b"a,b").unwrap();
+        u.add(&mut conn, "broken.jpg", b"not a jpeg").unwrap();
+        // While uploading: the image's preview, scaled to fit 256 on its long side.
+        match &u.pending[0].thumb {
+            Some(Thumb::Pixels(img)) => assert_eq!(img.size, [256, 128]),
+            _ => panic!("no preview for the PNG"),
+        }
+        assert!(u.pending[1].thumb.is_none() && u.pending[2].thumb.is_none(), "no preview for a CSV or a broken image");
+        let ctx = egui::Context::default();
+        let draw = |u: &mut Uploads| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| u.chips(ui, &Tokens::light()));
+            out.textures_delta.clear();
+        };
+        draw(&mut u);
+        // Uploaded: the preview follows the file to its chip, as a texture once drawn.
+        u.uploaded(1, Some(MediaRef::new("uploads/photo.png", 1)), None);
+        u.uploaded(3, Some(MediaRef::new("uploads/broken.jpg", 1)), None);
+        draw(&mut u);
+        assert!(matches!(u.thumbs.get("uploads/photo.png"), Some(Thumb::Texture(t)) if t.size() == [256, 128]));
+        assert!(!u.thumbs.contains_key("uploads/broken.jpg"), "a broken image still attaches, without a preview");
     }
 
     #[test]

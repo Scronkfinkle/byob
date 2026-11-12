@@ -127,6 +127,25 @@ pub fn decode_image(bytes: &[u8]) -> Result<egui::ColorImage, String> {
     Ok(egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()))
 }
 
+/// A small preview of PNG/JPEG bytes, at most `max_side` pixels on its longer side (same
+/// decoder limits as [`decode_image`]).
+pub fn thumbnail(bytes: &[u8], max_side: u32) -> Result<egui::ColorImage, String> {
+    let full = decode_image(bytes)?;
+    let [w, h] = full.size;
+    let (w, h) = (u32::try_from(w).unwrap_or(0), u32::try_from(h).unwrap_or(0));
+    if w == 0 || h == 0 {
+        return Err("empty image".into());
+    }
+    let scale = (f64::from(max_side) / f64::from(w.max(h))).min(1.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // both ≤ max_side, ≥ 1
+    let (tw, th) = (((f64::from(w) * scale).round() as u32).max(1), ((f64::from(h) * scale).round() as u32).max(1));
+    let rgba: Vec<u8> = full.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
+    let img = image::RgbaImage::from_raw(w, h, rgba).ok_or("unreadable image")?;
+    let small = image::imageops::thumbnail(&img, tw, th);
+    let size = [usize::try_from(small.width()).unwrap_or(0), usize::try_from(small.height()).unwrap_or(0)];
+    Ok(egui::ColorImage::from_rgba_unmultiplied(size, small.as_raw()))
+}
+
 fn image(ui: &mut egui::Ui, t: &Tokens, tex: &egui::TextureHandle, r: &MediaRef) {
     let natural = tex.size_vec2();
     if natural.x <= 0.0 || natural.y <= 0.0 {
