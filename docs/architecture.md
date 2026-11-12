@@ -627,8 +627,8 @@ byob's own features ship as plugins on the same manifest and registries third pa
 `Plugin::embedded`/`Plugin::read`). They are `artifacts` (create/update/read_artifact, plain
 text, the artifacts prompt section), `html-apps` (`text/html` + `guidance.md` + its check +
 the `web` renderer with Open), `charts` (make_chart, the chart type, `native:chart`),
-`markdown`, `images` and `core-tools` (file tools, run_command/run_python/install_*,
-the code-running section), `sheets` (spreadsheets: a native backend on IronCalc, see
+`markdown`, `images` and `core-tools` (file tools: list/search/read/write/edit/move/delete;
+run_command/run_python/install_*, the code-running section), `sheets` (spreadsheets: a native backend on IronCalc, see
 Spreadsheets below). `artifacts` and `core-tools` are `locked` (always on: their switch
 is refused with a notice and the UI shows "always on"; a fork with the same id stays locked);
 the others switch like any plugin. Since the hooks phase they also include `prompt` (locked:

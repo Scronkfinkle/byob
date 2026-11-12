@@ -108,9 +108,10 @@ pub fn tool_aliases(name: &str) -> Vec<&str> {
     match name {
         "Read" | "NotebookRead" => vec!["read_file", "read_artifact"],
         "Write" => vec!["write_file", "create_artifact"],
-        "Edit" | "MultiEdit" | "NotebookEdit" => vec!["write_file", "update_artifact"],
-        "Glob" | "LS" => vec!["list_files"],
-        "Grep" => vec!["list_files", "read_file"],
+        "Edit" | "MultiEdit" => vec!["edit_file", "update_artifact"],
+        "NotebookEdit" => vec!["write_file", "update_artifact"],
+        "Glob" | "LS" => vec!["list_files", "search_files"],
+        "Grep" => vec!["search_files"],
         "Bash" | "BashOutput" => vec!["run_command"],
         "Task" | "Agent" | "WebFetch" | "WebSearch" | "TodoWrite" | "KillBash" | "KillShell" | "ExitPlanMode" | "SlashCommand" | "Skill" => Vec::new(),
         other => vec![other],

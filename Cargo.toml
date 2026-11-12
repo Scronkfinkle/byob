@@ -97,6 +97,11 @@ png = "0.18"
 landlock = "0.4"
 nix = { version = "0.31", default-features = false, features = ["sched", "signal", "resource", "user", "process"] }
 
+# search_files: ripgrep's walker (.gitignore rules; Unlicense OR MIT) and the regex
+# engine (linear time, so hostile patterns can't hang a turn).
+ignore = "0.4"
+regex = "1"
+
 # Testing.
 proptest = "1"
 tempfile = "3"

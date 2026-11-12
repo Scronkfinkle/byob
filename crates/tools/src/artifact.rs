@@ -41,7 +41,7 @@ pub const MAX_CONTENT_BYTES: usize = 1024 * 1024;
 /// Largest version file read back (adopted images may be bigger than what tools write).
 pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 /// Find/replace edits in one `update_artifact` call.
-pub const MAX_EDITS: usize = 50;
+pub use crate::edits::MAX_EDITS;
 /// Versions one artifact may have.
 pub const MAX_VERSIONS: usize = 500;
 const MAX_TITLE_CHARS: usize = 80;
@@ -669,42 +669,12 @@ impl Tool for UpdateArtifact {
     }
 }
 
-/// Apply find/replace edits in order. Each `find` must occur exactly once in the text as
-/// it is at that point.
+/// Apply find/replace edits in order (see [`crate::edits`]): each `find` must occur once in
+/// the text as it is at that point, exactly or failing that ignoring whitespace.
 pub fn apply_edits(text: &str, edits: &[(String, String)]) -> Result<String, String> {
-    if edits.is_empty() {
-        return Err("edits is empty; give at least one {find, replace}".into());
-    }
-    if edits.len() > MAX_EDITS {
-        return Err(format!("too many edits ({}; at most {MAX_EDITS}); send the whole file as content instead", edits.len()));
-    }
-    let mut out = text.to_owned();
-    for (i, (find, replace)) in edits.iter().enumerate() {
-        let k = i.saturating_add(1);
-        if find.is_empty() {
-            return Err(format!("edit {k}: `find` is empty"));
-        }
-        let count = out.matches(find.as_str()).count();
-        match count {
-            1 => out = out.replacen(find.as_str(), replace, 1),
-            0 => {
-                return Err(format!(
-                    "edit {k}: this `find` text is not in the current version: {:?}. It must match exactly (whitespace too); call read_artifact to see the current text. No edits were applied.",
-                    clip(find, 120)
-                ));
-            }
-            n => {
-                return Err(format!(
-                    "edit {k}: this `find` text occurs {n} times: {:?}. Include more surrounding text so it occurs exactly once. No edits were applied.",
-                    clip(find, 120)
-                ));
-            }
-        }
-        if out.len() > MAX_CONTENT_BYTES {
-            return Err(format!("the edits make the file too big (over {MAX_CONTENT_BYTES} bytes)"));
-        }
-    }
-    Ok(out)
+    let opts =
+        crate::edits::Opts { replace_all: false, offer_replace_all: false, max_bytes: MAX_CONTENT_BYTES, what: "the current version", reread: "read_artifact" };
+    crate::edits::apply(text, edits, &opts).map(|a| a.text)
 }
 
 fn update(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
