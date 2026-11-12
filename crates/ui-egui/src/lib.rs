@@ -368,6 +368,14 @@ impl ByobApp {
             theme::install_fonts(ctx, fonts.0, fonts.1);
             self.fonts = Some(fonts);
         }
+        // The zoom: the stored preference is the one source of truth (byob handles Ctrl +/−/0
+        // itself, see `header_shortcuts`, so egui's own keyboard zoom is off).
+        if ctx.options(|o| o.zoom_with_keyboard) {
+            ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        }
+        if (ctx.zoom_factor() - self.prefs.zoom).abs() > 1e-3 {
+            ctx.set_zoom_factor(self.prefs.zoom);
+        }
         if self.applied != Some(key) {
             self.tokens = theme::Tokens::for_prefs(&self.prefs, key.1, &self.user_themes);
             self.tokens.apply(ctx);
@@ -1207,6 +1215,34 @@ mod app_tests {
             out.textures_delta.clear();
         }
         frame(ctx, app, width);
+    }
+
+    #[test]
+    fn ctrl_plus_minus_and_zero_zoom_the_whole_interface_and_are_remembered() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        let press = |ctx: &egui::Context, app: &mut ByobApp, k| {
+            let mut out = ctx.run_ui(egui::RawInput { events: vec![key(k)], ..Default::default() }, |ui| app.ui(ui));
+            out.textures_delta.clear();
+            frame(ctx, app, 1000.0);
+            frame(ctx, app, 1000.0);
+        };
+        frame(&ctx, &mut app, 1000.0);
+        press(&ctx, &mut app, egui::Key::Equals);
+        press(&ctx, &mut app, egui::Key::Plus);
+        assert!((app.prefs().zoom - 1.2).abs() < 1e-4, "{}", app.prefs().zoom);
+        assert!((ctx.zoom_factor() - 1.2).abs() < 1e-4, "egui zoom {}", ctx.zoom_factor());
+        press(&ctx, &mut app, egui::Key::Minus);
+        assert!((app.prefs().zoom - 1.1).abs() < 1e-4);
+        press(&ctx, &mut app, egui::Key::Num0);
+        assert_eq!(app.prefs().zoom, 1.0);
+        assert!((ctx.zoom_factor() - 1.0).abs() < 1e-4);
+        // A stored zoom is applied when the preferences are restored (the next launch).
+        app.set_prefs(theme::Prefs { zoom: 1.5, ..theme::Prefs::default() });
+        frame(&ctx, &mut app, 1000.0);
+        frame(&ctx, &mut app, 1000.0);
+        assert!((ctx.zoom_factor() - 1.5).abs() < 1e-4);
     }
 
     #[test]

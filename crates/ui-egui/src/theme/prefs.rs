@@ -331,6 +331,9 @@ pub struct Prefs {
     pub overrides: BTreeMap<String, BTreeMap<String, String>>,
     /// Theme files imported in the browser (their text; desktop keeps them in the themes folder).
     pub imported: Vec<String>,
+    /// Zoom of the whole interface (text, icons, spacing), 1 = 100 %; see [`Prefs::ZOOM_RANGE`].
+    /// Per device and not part of themes: it's about the screen and the eyes in front of it.
+    pub zoom: f32,
     /// Version 0's text size; moved into `knobs` by [`Prefs::sanitized`].
     #[serde(skip_serializing, deserialize_with = "present")]
     pub font_scale: Option<f32>,
@@ -355,6 +358,7 @@ impl Default for Prefs {
             knobs: Knobs::default(),
             overrides: BTreeMap::new(),
             imported: Vec::new(),
+            zoom: 1.0,
             font_scale: None,
             high_contrast: None,
         }
@@ -368,6 +372,17 @@ impl Prefs {
     /// Most imported themes kept in browser storage, and the largest each may be.
     pub const MAX_IMPORTED: usize = 32;
     pub const MAX_THEME_BYTES: usize = 64 * 1024;
+    /// Zoom from 50 % to 300 %, in steps of 10 % (as browsers and Ctrl +/− do).
+    pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
+    pub const ZOOM_STEP: f32 = 0.1;
+
+    /// The zoom one step in (`dir` > 0) or out, rounded to a step and kept in range.
+    #[must_use]
+    pub fn zoom_step(zoom: f32, dir: i8) -> f32 {
+        let z = zoom + Self::ZOOM_STEP * f32::from(dir.signum());
+        ((z * 10.0).round() / 10.0).clamp(*Self::ZOOM_RANGE.start(), *Self::ZOOM_RANGE.end())
+    }
+
     /// Overrides kept per theme (there are fewer roles than this).
     const MAX_OVERRIDES: usize = 128;
 
@@ -378,6 +393,7 @@ impl Prefs {
         if let Some(scale) = self.font_scale.take() {
             self.knobs.font_scale = scale;
         }
+        self.zoom = if self.zoom.is_finite() { self.zoom.clamp(*Self::ZOOM_RANGE.start(), *Self::ZOOM_RANGE.end()) } else { 1.0 };
         if let Some(hc) = self.high_contrast.take() {
             self.knobs.high_contrast = hc;
         }

@@ -102,6 +102,28 @@ impl Default for Rects {
     }
 }
 
+/// "−  110 %  +  Reset": the zoom's controls (Settings and the ⋯ menu); the new zoom when one
+/// is pressed.
+pub fn zoom_controls(ui: &mut egui::Ui, zoom: f32) -> Option<f32> {
+    use egui::gui_zoom::kb_shortcuts as keys;
+    let ctx = ui.ctx().clone();
+    let mut out = None;
+    let (lo, hi) = (*theme::Prefs::ZOOM_RANGE.start(), *theme::Prefs::ZOOM_RANGE.end());
+    if ui.add_enabled(zoom > lo + 1e-3, egui::Button::new(" − ")).on_hover_text(format!("Zoom out ({})", ctx.format_shortcut(&keys::ZOOM_OUT))).clicked() {
+        out = Some(theme::Prefs::zoom_step(zoom, -1));
+    }
+    #[allow(clippy::cast_possible_truncation)] // 50..=300
+    let pct = (zoom * 100.0).round() as i32;
+    ui.label(format!("{pct} %")).on_hover_text("Everything bigger or smaller: text, icons and spacing");
+    if ui.add_enabled(zoom < hi - 1e-3, egui::Button::new(" + ")).on_hover_text(format!("Zoom in ({})", ctx.format_shortcut(&keys::ZOOM_IN))).clicked() {
+        out = Some(theme::Prefs::zoom_step(zoom, 1));
+    }
+    if (zoom - 1.0).abs() > 1e-3 && ui.button("Reset").on_hover_text(format!("Back to 100 % ({})", ctx.format_shortcut(&keys::ZOOM_RESET))).clicked() {
+        out = Some(1.0);
+    }
+    out
+}
+
 /// "Ctrl+," (egui spells the key out: "Ctrl+Comma").
 pub fn settings_shortcut(ctx: &egui::Context) -> String {
     ctx.format_shortcut(&SETTINGS_SHORTCUT).replace("Comma", ",")
@@ -113,6 +135,12 @@ pub fn settings_tip(ctx: &egui::Context) -> String {
 }
 
 impl ByobApp {
+    /// Zoom the whole interface (stored with the appearance preferences; applied next frame).
+    pub(crate) fn set_zoom(&mut self, zoom: f32) {
+        self.prefs.zoom = zoom;
+        self.prefs = std::mem::take(&mut self.prefs).sanitized();
+    }
+
     /// Back to the chat: close the app settings and the chat settings popover.
     pub(crate) fn go_home(&mut self) {
         self.show_settings = false;
@@ -125,6 +153,15 @@ impl ByobApp {
     pub(crate) fn header_shortcuts(&mut self, ctx: &egui::Context) {
         if ctx.input_mut(|i| i.consume_shortcut(&SETTINGS_SHORTCUT)) {
             self.show_settings = !self.show_settings;
+        }
+        // Zoom the whole interface, as in a browser: Ctrl + (or Ctrl =), Ctrl −, Ctrl 0.
+        use egui::gui_zoom::kb_shortcuts as zoom;
+        if ctx.input_mut(|i| i.consume_shortcut(&zoom::ZOOM_RESET)) {
+            self.set_zoom(1.0);
+        } else if ctx.input_mut(|i| i.consume_shortcut(&zoom::ZOOM_IN) || i.consume_shortcut(&zoom::ZOOM_IN_SECONDARY)) {
+            self.set_zoom(theme::Prefs::zoom_step(self.prefs.zoom, 1));
+        } else if ctx.input_mut(|i| i.consume_shortcut(&zoom::ZOOM_OUT)) {
+            self.set_zoom(theme::Prefs::zoom_step(self.prefs.zoom, -1));
         }
     }
 
@@ -198,6 +235,13 @@ impl ByobApp {
             self.artifacts.menu_items(ui);
         }
         ui.separator();
+        // Zoom, where people look for it in an app menu.
+        ui.horizontal(|ui| {
+            ui.label("Zoom");
+            if let Some(z) = zoom_controls(ui, self.prefs.zoom) {
+                self.set_zoom(z);
+            }
+        });
         if ui.add(egui::Button::new("App settings").shortcut_text(settings_shortcut(ui.ctx()))).clicked() {
             self.show_settings = true;
             ui.close();

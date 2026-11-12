@@ -488,8 +488,13 @@ fn scale_buttons(ui: &mut egui::Ui, value: &mut f32) {
 
 fn knobs(ui: &mut egui::Ui, t: &Tokens, narrow: bool, current: &ThemeDef, prefs: &mut Prefs) {
     row(ui, narrow, "Accent", |ui| accent_picker(ui, t, current, &mut prefs.accent));
-    let k = &mut prefs.knobs;
     ui.add_space(t.pad(10.0)); // groups: colour, text, look, layout, other
+    row(ui, narrow, "Zoom", |ui| {
+        if let Some(z) = crate::header::zoom_controls(ui, prefs.zoom) {
+            prefs.zoom = z;
+        }
+    });
+    let k = &mut prefs.knobs;
     row(ui, narrow, "Text size", |ui| scale_buttons(ui, &mut k.font_scale));
     row(ui, narrow, "Code size", |ui| scale_buttons(ui, &mut k.code_scale));
     row(ui, narrow, "Font", |ui| {

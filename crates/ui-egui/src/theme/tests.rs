@@ -346,3 +346,19 @@ fn slugs() {
     assert_eq!(file::slug("Rosé Pine"), "rosé-pine");
     assert!(file::slug(&"x".repeat(500)).len() <= 64);
 }
+
+#[test]
+fn zoom_is_kept_in_range_and_old_prefs_get_100_percent() {
+    assert_eq!(Prefs::default().zoom, 1.0);
+    for (bad, want) in [(f32::NAN, 1.0), (f32::INFINITY, 1.0), (0.1, 0.5), (9.0, 3.0), (1.25, 1.25)] {
+        assert_eq!(Prefs { zoom: bad, ..Prefs::default() }.sanitized().zoom, want, "{bad}");
+    }
+    // Stored before zoom existed: 100 %.
+    let old: Prefs = serde_json::from_str(r#"{"version":1,"theme":"Dark"}"#).unwrap();
+    assert_eq!(old.sanitized().zoom, 1.0);
+    // Steps of 10 %, rounded, within 50..=300 %.
+    assert_eq!(Prefs::zoom_step(1.0, 1), 1.1);
+    assert_eq!(Prefs::zoom_step(1.25, -1), 1.2);
+    assert_eq!(Prefs::zoom_step(0.5, -1), 0.5);
+    assert_eq!(Prefs::zoom_step(3.0, 1), 3.0);
+}
