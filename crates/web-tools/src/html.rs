@@ -52,8 +52,8 @@ pub fn tokenize(html: &str) -> Vec<Token<'_>> {
         let next = b.get(i + 1).copied().unwrap_or(0);
         if next == b'!' || next == b'?' {
             push_text(html, text_from, i, &mut out);
-            i = if html[i..].starts_with("<!--") {
-                html[i + 4..].find("-->").map_or(b.len(), |e| i + 4 + e + 3)
+            i = if html.get(i..).is_some_and(|r| r.starts_with("<!--")) {
+                html.get(i + 4..).and_then(|r| r.find("-->")).map_or(b.len(), |e| i + 4 + e + 3)
             } else {
                 find_byte(b, i, b'>').map_or(b.len(), |e| e + 1)
             };
@@ -74,12 +74,12 @@ pub fn tokenize(html: &str) -> Vec<Token<'_>> {
             && RAW.contains(&name.as_str())
         {
             let close = format!("</{name}");
-            let rest = &html[i..];
+            let rest = html.get(i..).unwrap_or_default();
             let stop = find_ci(rest, &close).unwrap_or(rest.len());
             let name = name.clone();
             out.push(tok);
             if stop > 0 {
-                out.push(Token::Text(&rest[..stop]));
+                out.push(Token::Text(rest.get(..stop).unwrap_or_default()));
             }
             i += stop;
             i = find_byte(b, i, b'>').map_or(b.len(), |e| e + 1);
@@ -780,6 +780,25 @@ mod tests {
         assert_eq!(t[2], Token::Start { name: "br".into(), attrs: vec![], self_closing: true });
         assert_eq!(t[4], Token::Text(r#"if (a < b) { "</p>" }"#), "raw text runs to its own end tag");
         assert!(t.contains(&Token::End("p".into())));
+    }
+
+    proptest::proptest! {
+        /// Any text, and any soup of HTML-ish pieces, converts without a panic.
+        #[test]
+        fn any_input_converts(s in "\\PC{0,400}", parts in proptest::collection::vec(proptest::sample::select(vec![
+            "<", ">", "</", "/>", "<!--", "-->", "<a href=\"", "\"", "'", "=", "&", "&#", "&amp", ";", "<script>", "</script>", "<pre>", "</pre>",
+            "<main>", "</main>", "<li>", "<ol start=x>", "<table><tr><td>", "é", "\u{1F600}", " ", "\n", "text", "<div hidden>", "</div>",
+        ]), 0..80)) {
+            let soup: String = parts.concat();
+            let base = Url::parse("https://example.com/a/").unwrap();
+            for input in [s.as_str(), soup.as_str()] {
+                let _ = tokenize(input);
+                let _ = strip_tags(input);
+                let _ = decode_entities(input);
+                let _ = readable(input, Some(&base));
+                let _ = readable(input, None);
+            }
+        }
     }
 
     #[test]

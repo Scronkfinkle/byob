@@ -16,5 +16,8 @@ url.workspace = true
 # Blocking HTTP (rustls, gzip), the same client as inference. MIT OR Apache-2.0.
 ureq.workspace = true
 
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true

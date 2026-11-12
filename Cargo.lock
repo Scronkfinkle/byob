@@ -876,6 +876,7 @@ version = "0.3.1"
 dependencies = [
  "byob-plugins",
  "log",
+ "proptest",
  "serde_json",
  "ureq",
  "url",
