@@ -15,6 +15,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("byob-artifact-wire", 1),
     ("byob-llm", 1),
     ("byob-store", 1),
+    // document text and PDF page images (pure Rust; used by read_file and look_at_image)
+    ("byob-docs", 1),
     ("byob-tools", 2),
     ("byob-mcp", 2),
     ("byob-sandbox", 2),
