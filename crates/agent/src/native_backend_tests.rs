@@ -332,3 +332,45 @@ fn the_sheets_manifest_names_the_native_backend() {
     assert_eq!(names, byob_sheets::TOOLS);
     assert_eq!(m.views.len(), 1);
 }
+
+/// A one-page web server on loopback (no live network in tests).
+fn page_server(body: &'static str) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = s.write_all(head.as_bytes()).and_then(|()| s.write_all(body.as_bytes()));
+        }
+    });
+    base
+}
+
+#[test]
+fn the_web_plugin_is_on_by_default_and_reads_pages_without_asking() {
+    let page = "<html><head><title>Release notes</title></head><body><nav>Home | Blog</nav><main><h1>v2.0</h1>\
+        <p>This release adds a brand new parser, many fixes, and a much faster startup for everyone who uses it daily.</p>\
+        <p>Upgrading is easy: replace the binary, keep your settings, and read the migration notes linked below.</p></main></body></html>";
+    let base = page_server(page);
+    let script = vec![call("web_fetch", &json!({"url": format!("{base}/notes")}).to_string()), Reply::Text("read it")];
+    let natives = Natives::builtin().backend(byob_web_tools::ID, byob_web_tools::factory());
+    // The default policy: web_fetch only reads, so nobody is asked.
+    let h = harness_with(script, bundled_plugins(), natives, Policy::default());
+    let mut c = connect(&h);
+    let e = wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "web"));
+    let web = info(&e, "web");
+    assert!(web.enabled && web.problems.is_empty(), "{:?}", web.problems);
+    assert_eq!(web.tools, ["web_search", "web_fetch"]);
+    let (entry, _) = turn(&mut c, "read the notes", |s, _| panic!("web_fetch was asked about: {}", s.title));
+    let s = step(&entry, "web_fetch");
+    assert_eq!(s.status, StepStatus::Done, "{}", s.detail);
+    assert_eq!(s.title, format!("Read {base}/notes"));
+    let reqs = h.requests.lock().unwrap();
+    let result = reqs[1]["messages"].as_array().unwrap().iter().rev().find(|m| m["role"] == "tool").unwrap()["content"].as_str().unwrap().to_owned();
+    assert!(result.contains("Title: Release notes\n") && result.contains("# v2.0\n\nThis release adds") && !result.contains("Home | Blog"), "{result}");
+    let tools = tool_names(&reqs[0]);
+    assert!(tools.iter().any(|t| t == "web_search") && tools.iter().any(|t| t == "web_fetch"), "{tools:?}");
+}

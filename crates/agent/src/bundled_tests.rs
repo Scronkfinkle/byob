@@ -23,15 +23,18 @@ use crate::{EngineConfig, EngineHandle, LocalConnection, Policy};
 const EXEC: &str = "Running code: run_command and run_python run in a sandbox.";
 
 fn natives() -> Natives {
-    Natives::builtin().prompt("exec", |_| EXEC.to_owned()).backend(byob_sheets::ID, byob_sheets::factory())
+    Natives::builtin()
+        .prompt("exec", |_| EXEC.to_owned())
+        .backend(byob_sheets::ID, byob_sheets::factory())
+        .backend(byob_web_tools::ID, byob_web_tools::factory())
 }
 
 /// The bundled plugins byob had before spreadsheets (P5): with them the prompt and tools must
-/// be what they were. `sheets` adds its own (tested in
+/// be what they were. `sheets` and `web` add their own (tested in
 /// `bundled_plugins_load_with_no_files_on_disk` and `native_backend_tests`).
 fn config(home: &Path, bundled: bool) -> PluginsConfig {
     let mut c = config_all(home, bundled);
-    c.bundled.retain(|e| e.id != "sheets");
+    c.bundled.retain(|e| e.id != "sheets" && e.id != "web");
     c
 }
 
@@ -85,6 +88,7 @@ fn bundled_plugins_load_with_no_files_on_disk() {
             "prompt",
             "sheets",
             "subagents",
+            "web",
             "workspace-instructions"
         ]
     );

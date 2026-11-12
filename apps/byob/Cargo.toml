@@ -14,11 +14,13 @@ categories.workspace = true
 [features]
 # The browser UI (`byob --serve`), compiled in. `--no-default-features` builds the slim
 # desktop-only binary.
-default = ["web", "native-sheets"]
+default = ["web", "native-sheets", "native-web-tools"]
 web = ["byob-server/embedded-web"]
 # The spreadsheets backend (byob-sheets, IronCalc in-process) behind the bundled `sheets`
 # plugin. Without it that plugin reports its backend missing.
 native-sheets = ["dep:byob-sheets"]
+# web_search and web_fetch (byob-web-tools, in-process) behind the bundled `web` plugin.
+native-web-tools = ["dep:byob-web-tools"]
 
 [dependencies]
 byob-types.workspace = true
@@ -28,6 +30,7 @@ byob-plugins.workspace = true
 byob-sandbox.workspace = true
 byob-exec.workspace = true
 byob-sheets = { workspace = true, optional = true }
+byob-web-tools = { workspace = true, optional = true }
 byob-store.workspace = true
 byob-server.workspace = true
 byob-ui-egui.workspace = true
