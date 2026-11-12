@@ -218,7 +218,7 @@ point it answers:
 ```
 
 `event`: `before_prompt`, `before_request`, `before_tool_call`, `after_tool_call`,
-`on_turn_end`. `priority` (default 100; lower runs first; byob's prompt sections sit at 0–600,
+`on_turn_end`. `priority` (default 100; lower runs first; byob's prompt sections sit at 0–650 and today's date at 690,
 compaction at 100). `timeout_ms` (default 2000, ≤ 60000). `fail`: `open` (default: a fault or
 timeout counts as continue) or `closed` (it stops the stage: a tool call is denied, a request
 not made). `tools` limits the tool events to those tools. A hook without `native` needs a
