@@ -214,6 +214,8 @@ jobs:
         with:
           pattern: byob-*
           merge-multiple: true
+          # The archives as uploaded; a .zip would otherwise be unpacked into a folder.
+          skip-decompress: true
       - name: Checksums
         run: for f in byob-*.tar.gz byob-*.zip; do sha256sum "$f" > "$f.sha256"; done
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
