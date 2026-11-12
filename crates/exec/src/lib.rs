@@ -421,7 +421,7 @@ fn describe(out: &Outcome, changes: &byob_sandbox::Changes, root: &Path, timeout
     let mut fc: Vec<FileChange> = changes.created.iter().cloned().map(FileChange::Created).collect();
     fc.extend(changes.modified.iter().cloned().map(FileChange::Modified));
     fc.extend(changes.deleted.iter().cloned().map(FileChange::Deleted));
-    ToolOutput { text: text.trim_end().to_owned(), failed: !out.success(), changes: fc }
+    ToolOutput { text: text.trim_end().to_owned(), failed: !out.success(), changes: fc, images: Vec::new() }
 }
 
 fn timeout_of(secs: Option<f64>) -> Duration {
@@ -748,7 +748,7 @@ impl Tool for InstallPackages {
             Err(e) => return ToolOutput::err(e),
         };
         match self.0.envs.install(&root, &a.packages, &CallRunner { exec: &self.0, ctx }) {
-            Ok(done) => ToolOutput { text: done.text, failed: done.failed, changes: Vec::new() },
+            Ok(done) => ToolOutput { text: done.text, failed: done.failed, changes: Vec::new(), images: Vec::new() },
             Err(e) => ToolOutput::err(e),
         }
     }

@@ -27,7 +27,7 @@ impl Tool for ReadFile {
         ToolSpec {
             name: "read_file".into(),
             description:
-                "Read a text file in the workspace. Long files come back in parts: pass offset (first line, from 1) and limit (number of lines) to read more."
+                "Read a text file in the workspace, or look at a PNG/JPEG image. Long files come back in parts: pass offset (first line, from 1) and limit (number of lines) to read more."
                     .into(),
             parameters: json!({
                 "type": "object",
@@ -60,13 +60,13 @@ impl Tool for ReadFile {
 
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
         match read(args, ctx) {
-            Ok(text) => ToolOutput::ok(text),
+            Ok(out) => out,
             Err(e) => ToolOutput::err(e),
         }
     }
 }
 
-fn read(args: &Value, ctx: &ToolContext<'_>) -> Result<String, String> {
+fn read(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
     let path = req_string(args, "path")?;
     let offset = opt_u64(args, "offset")?.unwrap_or(1).max(1);
     let limit = opt_u64(args, "limit")?.unwrap_or(DEFAULT_LINES).clamp(1, DEFAULT_LINES);
@@ -88,10 +88,20 @@ fn read(args: &Value, ctx: &ToolContext<'_>) -> Result<String, String> {
     let mut head = Vec::with_capacity(SNIFF);
     (&mut f).take(SNIFF as u64).read_to_end(&mut head).map_err(|e| format!("can't read {name}: {e}"))?;
     if size == 0 || head.is_empty() {
-        return Ok(format!("File: {name} (empty)"));
+        return Ok(ToolOutput::ok(format!("File: {name} (empty)")));
+    }
+    if crate::images::sniff(&head).is_some() {
+        // A picture: the model gets to look at it (vision models; others are told they can't).
+        return Ok(match crate::images::for_model(&file.abs) {
+            Ok(url) => ToolOutput {
+                images: vec![url],
+                ..ToolOutput::ok(format!("File: {name} ({}, an image; it is shown to you after the tool results)", bytes(size)))
+            },
+            Err(e) => ToolOutput::ok(format!("File: {name} ({}, an image)\nIt can't be shown: {e}", bytes(size))),
+        });
     }
     if looks_binary(&head) {
-        return Ok(format!("File: {name} ({})\nThis is a binary file; it can't be shown as text.", bytes(size)));
+        return Ok(ToolOutput::ok(format!("File: {name} ({})\nThis is a binary file; it can't be shown as text.", bytes(size))));
     }
 
     let mut reader = BufReader::new(std::io::Cursor::new(head).chain(f));
@@ -148,7 +158,7 @@ fn read(args: &Value, ctx: &ToolContext<'_>) -> Result<String, String> {
     let mut header = format!("File: {name} ({}, {total})", bytes(size));
     if first_shown == 0 {
         let _ = write!(header, "\nOffset {offset} is past the end of the file.");
-        return Ok(header);
+        return Ok(ToolOutput::ok(header));
     }
     let whole = first_shown == 1 && !full;
     if !whole {
@@ -164,7 +174,7 @@ fn read(args: &Value, ctx: &ToolContext<'_>) -> Result<String, String> {
     if full {
         let _ = write!(text, "\n--- more follows: call read_file with offset={}", last_shown.saturating_add(1));
     }
-    Ok(text)
+    Ok(ToolOutput::ok(text))
 }
 
 /// Text unless it has NUL bytes or is mostly control characters.
@@ -230,6 +240,27 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         fs::write(d.path().join(name), content).unwrap();
         d
+    }
+
+    #[test]
+    fn images_are_shown_to_the_model() {
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(3000, 1500, image::Rgb([200, 30, 30])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let d = ws_with("sheet.png", &png);
+        let out = run(&ReadFile, d.path(), json!({"path": "sheet.png"}));
+        assert!(!out.failed && out.text.contains("an image; it is shown to you"), "{}", out.text);
+        assert_eq!(out.images.len(), 1);
+        let url = &out.images[0];
+        let (mime, data) = url.strip_prefix("data:").and_then(|u| u.split_once(";base64,")).unwrap();
+        let bytes = byob_protocol::media::decode(data).unwrap();
+        let img = image::load_from_memory(&bytes).unwrap();
+        // Downscaled to fit the model's side.
+        assert_eq!((mime, img.width(), img.height()), ("image/jpeg", 1024, 512));
+
+        // Not an image after all: said so, no picture.
+        let d = ws_with("bad.png", b"\x89PNG\r\n\x1a\nnot really");
+        let out = run(&ReadFile, d.path(), json!({"path": "bad.png"}));
+        assert!(!out.failed && out.text.contains("can't be shown") && out.images.is_empty(), "{}", out.text);
     }
 
     #[test]

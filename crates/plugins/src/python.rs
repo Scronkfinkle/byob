@@ -289,7 +289,7 @@ impl PythonTool {
         if text.is_empty() {
             text = "(no result)".into();
         }
-        ToolOutput { text, failed: false, changes }
+        ToolOutput { text, failed: false, changes, images: Vec::new() }
     }
 }
 

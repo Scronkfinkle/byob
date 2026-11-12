@@ -118,7 +118,7 @@ fn write(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
     });
     let change = if existed { FileChange::Modified(file.abs.clone()) } else { FileChange::Created(file.abs.clone()) };
     let verb = if existed { "Replaced" } else { "Created" };
-    Ok(ToolOutput { text: format!("{verb} {name} ({})", bytes(content.len() as u64)), failed: false, changes: vec![change] })
+    Ok(ToolOutput { text: format!("{verb} {name} ({})", bytes(content.len() as u64)), failed: false, changes: vec![change], images: Vec::new() })
 }
 
 #[cfg(test)]

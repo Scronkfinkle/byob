@@ -1126,7 +1126,7 @@ fn tool_output(v: Value, workspace: &Path) -> ToolOutput {
     };
     let changes = files.iter().filter(|f| path_inside(f)).map(|f| workspace.join(f)).filter(|p| p.is_file()).map(FileChange::Modified).collect();
     let text = if text.trim().is_empty() { "(no result)".to_owned() } else { text };
-    ToolOutput { text, failed: false, changes }
+    ToolOutput { text, failed: false, changes, images: Vec::new() }
 }
 
 #[cfg(test)]

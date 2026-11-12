@@ -27,6 +27,11 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = "You are byob, a helpful assistant runni
 Use the provided tools when they help; when a tool fails or the user declines it, explain instead of retrying the same call.";
 
 /// How often a turn blocked on an approval re-checks its cancel flag.
+/// Images from tool calls kept in a turn's messages (the latest ones).
+const MAX_LIVE_IMAGES: usize = 8;
+/// Starts the message that carries tool calls' images.
+const TOOL_IMAGES: &str = "[Images from the tool calls above:";
+const OLD_IMAGE_NOTE: &str = "[an image shown earlier, no longer kept; read it again to look again]";
 const APPROVAL_POLL: Duration = Duration::from_millis(50);
 
 /// The engine's answer to a [`TurnEvent::Gate`].
@@ -314,6 +319,8 @@ struct Turn {
     content: String,
     /// Tools that ran, with counts.
     ran: BTreeMap<String, usize>,
+    /// Images this round's calls returned (title, `data:` URL), shown after their results.
+    images: Vec<(String, String)>,
 }
 
 /// A call that passed the checks and the gate, about to run.
@@ -383,6 +390,7 @@ impl Turn {
             answer: String::new(),
             content: String::new(),
             ran: BTreeMap::new(),
+            images: Vec::new(),
         }
     }
 
@@ -445,11 +453,36 @@ impl Turn {
             for (call, result) in calls.iter().zip(self.call_all(&calls)) {
                 self.messages.push(if prompt { toolprompt::fallback_tool_result(call, &result) } else { ChatMessage::tool_result(call.id.clone(), result) });
             }
+            self.show_images();
             if self.cancelled() {
                 return Err(End::Stopped);
             }
         }
         Err(End::Error(format!("stopped after {MAX_ROUNDS} model requests without an answer")))
+    }
+
+    /// Images the round's calls returned go to the model in a user message after the tool
+    /// results (OpenAI-style tool results carry text only). Only the latest
+    /// [`MAX_LIVE_IMAGES`] stay in the turn's messages; older ones leave a note.
+    fn show_images(&mut self) {
+        if self.images.is_empty() {
+            return;
+        }
+        let (titles, urls): (Vec<String>, Vec<String>) = std::mem::take(&mut self.images).into_iter().unzip();
+        self.messages.push(ChatMessage::user_with_images(format!("{TOOL_IMAGES} {}]", titles.join(", ")), urls));
+        let mut live = 0usize;
+        for m in self.messages.iter_mut().rev() {
+            if m.images.is_empty() || m.role != "user" || !m.content.as_deref().is_some_and(|c| c.starts_with(TOOL_IMAGES)) {
+                continue;
+            }
+            // Keep this message's latest images that still fit; note the dropped ones.
+            let keep = MAX_LIVE_IMAGES.saturating_sub(live).min(m.images.len());
+            let dropped: Vec<String> = m.images.drain(..m.images.len().saturating_sub(keep)).collect();
+            for _ in dropped {
+                m.content = m.content.take().map(|c| format!("{c}\n{OLD_IMAGE_NOTE}"));
+            }
+            live = live.saturating_add(keep);
+        }
     }
 
     /// The `before_request` hooks (compaction among them) may change the messages and
@@ -837,7 +870,14 @@ impl Turn {
         if output.failed && !text.starts_with("Error") {
             text.insert_str(0, "Error: ");
         }
-        self.seen.insert(key, text.clone());
+        if !output.failed && !output.images.is_empty() {
+            let title = catch_unwind(AssertUnwindSafe(|| tool.title(&args))).unwrap_or_else(|_| name.clone());
+            let title = one_line(&title, DETAIL_CHARS);
+            self.images.extend(output.images.into_iter().take(MAX_LIVE_IMAGES).map(|url| (title.clone(), url)));
+        } else {
+            // Looking at an image again is allowed (it may have left the context).
+            self.seen.insert(key, text.clone());
+        }
         text
     }
 

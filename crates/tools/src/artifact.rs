@@ -625,7 +625,7 @@ fn create(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
         "Created the {} artifact \"{title}\" (id {id}, version 1, {filename}). It shows beside the chat. To change it later, call update_artifact with id {id}.{warning}",
         ty.label
     );
-    Ok(ToolOutput { text, failed: false, changes: vec![FileChange::Created(file)] })
+    Ok(ToolOutput { text, failed: false, changes: vec![FileChange::Created(file)], images: Vec::new() })
 }
 
 impl Tool for UpdateArtifact {
@@ -755,14 +755,16 @@ fn update(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
     }
     let text =
         format!("Saved version {n} of \"{}\" (id {id}){}.{warning}", meta.artifact.title, if note.is_empty() { String::new() } else { format!(": {note}") });
-    Ok(ToolOutput { text, failed: false, changes: vec![FileChange::Created(file)] })
+    Ok(ToolOutput { text, failed: false, changes: vec![FileChange::Created(file)], images: Vec::new() })
 }
 
 impl Tool for ReadArtifact {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read_artifact".into(),
-            description: "Read the current text of an artifact (or of an older version), e.g. before changing it with update_artifact.".into(),
+            description:
+                "Read the current text of an artifact (or of an older version), e.g. before changing it with update_artifact. Image artifacts are shown to you."
+                    .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -797,23 +799,37 @@ impl Tool for ReadArtifact {
             };
             let ty = self.types.of(&meta.artifact);
             if !ty.text {
-                return Err(format!("{} is not a text file ({}); it can't be read as text", meta.artifact.id, ty.label));
+                // An image the model can look at; other binaries can't be read.
+                let (_, bytes) = read_version(ctx.workspace, chat, &meta.artifact.id, v.n, MAX_FILE_BYTES)?;
+                if crate::images::sniff(&bytes).is_none() {
+                    return Err(format!("{} is not a text file ({}); it can't be read as text", meta.artifact.id, ty.label));
+                }
+                let (mime, data) = crate::images::fit(bytes, crate::images::MODEL_IMAGE_SIDE, byob_protocol::media::MAX_IMAGE_BYTES)?;
+                let text = format!(
+                    "{} \"{}\", version {} of {} ({}): an image; it is shown to you after the tool results",
+                    meta.artifact.id,
+                    meta.artifact.title,
+                    v.n,
+                    meta.artifact.versions.len(),
+                    meta.artifact.filename
+                );
+                return Ok(ToolOutput { images: vec![format!("data:{mime};base64,{}", byob_protocol::media::encode(&data))], ..ToolOutput::ok(text) });
             }
             let (_, bytes) = read_version(ctx.workspace, chat, &meta.artifact.id, v.n, MAX_FILE_BYTES)?;
             let text = String::from_utf8_lossy(&bytes);
             let shown: String = text.chars().take(MAX_READ_CHARS).collect();
             let more = if shown.len() < text.len() { "\n… [cut off]" } else { "" };
-            Ok(format!(
+            Ok(ToolOutput::ok(format!(
                 "{} \"{}\", version {} of {} ({}):\n{shown}{more}",
                 meta.artifact.id,
                 meta.artifact.title,
                 v.n,
                 meta.artifact.versions.len(),
                 meta.artifact.filename
-            ))
+            )))
         })();
         match result {
-            Ok(t) => ToolOutput::ok(t),
+            Ok(out) => out,
             Err(e) => ToolOutput::err(e),
         }
     }
@@ -1046,6 +1062,20 @@ mod tests {
         // an artifact tool's own version is recognised, not adopted again
         let p = ws.join(".byob/artifacts/x-1/v3.md");
         assert_eq!(for_call(ws, "c", &[FileChange::Created(p)], &media), vec![ArtifactRef { id: "x-1".into(), version: 3 }]);
+    }
+
+    #[test]
+    fn image_artifacts_are_shown_to_the_model() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = d.path();
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        std::fs::write(ws.join("plot.png"), &png).unwrap();
+        for_call(ws, "c", &[], &[MediaRef::new("plot.png", png.len() as u64)]);
+        let id = list(ws, "c")[0].id.clone();
+        let out = run_in(&ReadArtifact { types: ArtifactTypes::builtin() }, ws, "c", json!({"id": id}));
+        assert!(!out.failed && out.text.contains("an image; it is shown to you"), "{}", out.text);
+        assert_eq!(out.images, vec![format!("data:image/png;base64,{}", byob_protocol::media::encode(&png))]);
     }
 
     #[test]

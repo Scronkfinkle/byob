@@ -377,7 +377,7 @@ fn output(r: &ConnectorResult, dir: &Path, label: &str) -> ToolOutput {
     if text.chars().count() > MAX_RESULT_CHARS {
         text = text.chars().take(MAX_RESULT_CHARS).collect::<String>() + "\n…(cut: the result was too long)";
     }
-    ToolOutput { text, failed: r.is_error, changes }
+    ToolOutput { text, failed: r.is_error, changes, images: Vec::new() }
 }
 
 fn save_image(dir: &Path, label: &str, n: usize, data: &str, mime: &str) -> Result<PathBuf, String> {

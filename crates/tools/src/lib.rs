@@ -295,6 +295,9 @@ pub struct ToolOutput {
     /// The call failed; `text` explains why (the model sees it and can recover).
     pub failed: bool,
     pub changes: Vec<FileChange>,
+    /// Images for the model to look at (`data:` URLs, see [`images::for_model`]). They go to
+    /// the model after the round's tool results, in a message of their own.
+    pub images: Vec<String>,
 }
 
 impl ToolOutput {

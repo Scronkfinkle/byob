@@ -145,6 +145,7 @@ impl DeleteFile {
             text: format!("Deleted {} (moved to {}; move it back to restore)", target.show(), dest.show()),
             failed: false,
             changes: vec![FileChange::Deleted(target.abs)],
+            images: Vec::new(),
         })
     }
 }

@@ -120,7 +120,7 @@ fn make(args: &Value, workspace: &Path) -> Result<ToolOutput, String> {
         text.push_str(&note);
     }
     text.push_str(" It shows in the chat; don't describe it again, just give the main takeaway.");
-    Ok(ToolOutput { text, failed: false, changes: vec![FileChange::Created(saved)] })
+    Ok(ToolOutput { text, failed: false, changes: vec![FileChange::Created(saved)], images: Vec::new() })
 }
 
 /// Rows from a CSV or JSON file inside the workspace.

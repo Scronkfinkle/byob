@@ -5,6 +5,23 @@ use std::io::Cursor;
 /// Decoder limits: refuse decompression bombs.
 const MAX_DECODE_SIDE: u32 = 16_384;
 const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
+/// Longest side of an image shown to the model.
+pub const MODEL_IMAGE_SIDE: u32 = 1024;
+/// Image files larger than this on disk are not decoded.
+pub const MAX_IMAGE_FILE: u64 = 64 * 1024 * 1024;
+
+/// A PNG/JPEG file as a `data:` URL for the model: downscaled to [`MODEL_IMAGE_SIDE`] and
+/// [`byob_protocol::media::MAX_IMAGE_BYTES`].
+pub fn for_model(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).and_then(|f| f.take(MAX_IMAGE_FILE.saturating_add(1)).read_to_end(&mut bytes)).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_IMAGE_FILE {
+        return Err("the image is too big to show".into());
+    }
+    let (mime, data) = fit(bytes, MODEL_IMAGE_SIDE, byob_protocol::media::MAX_IMAGE_BYTES)?;
+    Ok(format!("data:{mime};base64,{}", byob_protocol::media::encode(&data)))
+}
 
 /// The MIME type of PNG or JPEG bytes.
 pub fn sniff(bytes: &[u8]) -> Option<&'static str> {

@@ -62,7 +62,7 @@ impl Tool for MoveFile {
             Err(e) => ToolOutput::err(e),
             Ok(Plan::Done { to }) => ToolOutput::ok(format!("{} is already there. Nothing to do.", to.show())),
             Ok(Plan::Move { from, to }) => match apply(ctx, &from, &to) {
-                Ok(change) => ToolOutput { text: format!("Moved {} to {}", from.show(), to.show()), failed: false, changes: vec![change] },
+                Ok(change) => ToolOutput { text: format!("Moved {} to {}", from.show(), to.show()), failed: false, changes: vec![change], images: Vec::new() },
                 Err(e) => ToolOutput::err(e),
             },
         }
@@ -260,11 +260,18 @@ fn run_batch(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> 
     let mut changes = Vec::new();
     for (from, to) in &todo {
         if ctx.cancelled() {
-            return Ok(ToolOutput { text: format!("Stopped after moving {} of {}.", changes.len(), todo.len()), failed: true, changes });
+            return Ok(ToolOutput { text: format!("Stopped after moving {} of {}.", changes.len(), todo.len()), failed: true, changes, images: Vec::new() });
         }
         match apply(ctx, from, to) {
             Ok(c) => changes.push(c),
-            Err(e) => return Ok(ToolOutput { text: format!("Moved {} of {}, then stopped: {e}", changes.len(), todo.len()), failed: true, changes }),
+            Err(e) => {
+                return Ok(ToolOutput {
+                    text: format!("Moved {} of {}, then stopped: {e}", changes.len(), todo.len()),
+                    failed: true,
+                    changes,
+                    images: Vec::new(),
+                });
+            }
         }
     }
     let n = changes.len();
@@ -272,7 +279,7 @@ fn run_batch(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> 
     if done > 0 {
         text.push_str(&format!(" ({done} already done earlier.)"));
     }
-    Ok(ToolOutput { text, failed: false, changes })
+    Ok(ToolOutput { text, failed: false, changes, images: Vec::new() })
 }
 
 #[cfg(test)]

@@ -128,6 +128,9 @@ impl Tool for Fake {
         if self.change {
             out.changes.push(byob_tools::FileChange::Created(ctx.workspace.join("a.txt")));
         }
+        if self.name == "look" {
+            out.images.push(format!("data:image/png;base64,{}", out.text));
+        }
         out
     }
 }
@@ -288,6 +291,47 @@ fn tool_call_then_answer() {
     assert_eq!(assistant["tool_calls"][0]["id"], "c0");
     let tool = &second[second.len() - 1];
     assert_eq!((tool["role"].as_str(), tool["tool_call_id"].as_str(), tool["content"].as_str()), (Some("tool"), Some("c0"), Some("pong")));
+}
+
+/// The `image_url`s of a request, in order, and the notes for images no longer kept.
+fn image_parts(req: &Value) -> (Vec<String>, usize) {
+    let mut urls = Vec::new();
+    let mut notes = 0;
+    for m in messages(req) {
+        let parts = m["content"].as_array().cloned().unwrap_or_default();
+        urls.extend(parts.iter().filter_map(|p| p["image_url"]["url"].as_str().map(str::to_owned)));
+        let text = parts.iter().filter_map(|p| p["text"].as_str()).chain(m["content"].as_str()).collect::<String>();
+        notes += text.matches("no longer kept").count();
+    }
+    (urls, notes)
+}
+
+#[test]
+fn images_from_tools_reach_the_model_and_only_the_latest_stay() {
+    // Ten looks, one per round (the last one again), then the answer.
+    let mut script: Vec<Reply> = (0..9).map(|i| call("look", &format!(r#"{{"text":"img{i}"}}"#))).collect();
+    script.push(call("look", r#"{"text":"img8"}"#));
+    script.push(Reply::Text("seen"));
+    let h = harness(script, "look", Access::Read);
+    let (mut c, _) = client(&h);
+    let view = run_turn(&mut c, "look at them", |_, _| panic!("reads must not ask"));
+    assert_eq!(view.error, Some(None));
+    assert_eq!(view.reply().content, "seen");
+    // Looking again at the same image runs the tool again (it may have left the context).
+    assert_eq!(h.runs.load(Ordering::SeqCst), 10);
+
+    let reqs = h.requests.lock().unwrap();
+    // After the first look: the tool result, then a user message carrying the image.
+    let second = messages(&reqs[1]);
+    let last = &second[second.len() - 1];
+    assert_eq!(last["role"], "user");
+    assert_eq!(second[second.len() - 2]["role"], "tool");
+    assert!(last["content"][0]["text"].as_str().unwrap().contains("look img0"), "{last}");
+    assert_eq!(image_parts(&reqs[1]), (vec!["data:image/png;base64,img0".to_owned()], 0));
+    // The final request keeps the latest eight; the two oldest leave a note.
+    let (urls, notes) = image_parts(reqs.last().unwrap());
+    let want: Vec<String> = (2..9).chain([8]).map(|i| format!("data:image/png;base64,img{i}")).collect();
+    assert_eq!((urls, notes), (want, 2));
 }
 
 #[test]

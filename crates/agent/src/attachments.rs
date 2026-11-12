@@ -32,10 +32,10 @@ const MAX_NAME_CHARS: usize = 100;
 /// Chart files larger than this are not served.
 const MAX_CHART_FILE: u64 = 8 * 1024 * 1024;
 /// Images larger than this on disk are not decoded.
-const MAX_IMAGE_FILE: u64 = 64 * 1024 * 1024;
+const MAX_IMAGE_FILE: u64 = byob_tools::images::MAX_IMAGE_FILE;
 /// Longest side of an image sent to clients, and to the model.
 const CLIENT_IMAGE_SIDE: u32 = byob_tools::artifact_types::image::CLIENT_IMAGE_SIDE;
-const MODEL_IMAGE_SIDE: u32 = 1024;
+const MODEL_IMAGE_SIDE: u32 = byob_tools::images::MODEL_IMAGE_SIDE;
 /// CSV preview given to the model.
 const PREVIEW_LINES: usize = 8;
 const PREVIEW_CHARS: usize = 2_000;
