@@ -86,7 +86,8 @@ impl Web {
                 let url = args.get("url").and_then(Value::as_str).unwrap_or_default().to_owned();
                 let start = uint(args, "start").unwrap_or(0);
                 let max_chars = uint(args, "max_chars").unwrap_or(DEFAULT_CHARS);
-                self.fetcher.fetch(&self.http, &FetchArgs { url, start, max_chars }).map(Value::String)
+                let links = args.get("links").is_some_and(|v| v == &Value::Bool(true) || v.as_str() == Some("true"));
+                self.fetcher.fetch(&self.http, &FetchArgs { url, start, max_chars, links }).map(Value::String)
             }
             other => Err(format!("the web backend has no tool {other:?}")),
         }
@@ -166,5 +167,24 @@ mod tests {
         assert_eq!(seen[0]["type"], "fault", "an unknown provider is a fault: {:?}", seen[0]);
         assert_eq!(seen[1]["type"], "reply");
         assert!(seen[1]["result"].as_str().unwrap().contains("hello world hello"), "{:?}", seen[1]);
+    }
+
+    /// Against the real services (network): `cargo test -p byob-web-tools live -- --ignored
+    /// --nocapture`, optionally with `BYOB_WEB_QUERY` and `BYOB_WEB_URL`.
+    #[test]
+    #[ignore = "uses the network"]
+    fn live() {
+        let mut w = Web::default();
+        w.configure(&json!({"settings": {}}), None);
+        let query = std::env::var("BYOB_WEB_QUERY").unwrap_or_else(|_| "llama.cpp latest release".into());
+        match w.tool("web_search", &json!({"query": query})) {
+            Ok(v) => println!("{}\n", v.as_str().unwrap_or_default()),
+            Err(e) => println!("search failed: {e}\n"),
+        }
+        let url = std::env::var("BYOB_WEB_URL").unwrap_or_else(|_| "https://en.wikipedia.org/wiki/Llama.cpp".into());
+        match w.tool("web_fetch", &json!({"url": url, "max_chars": 3000})) {
+            Ok(v) => println!("{}", v.as_str().unwrap_or_default()),
+            Err(e) => println!("fetch failed: {e}"),
+        }
     }
 }

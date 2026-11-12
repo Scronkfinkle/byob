@@ -437,8 +437,9 @@ through a forgiving tokenizer (no DOM, no recursion, open-element stack capped a
   (DuckDuckGo/Bing/Google terms forbid it and they answer scripts with captchas).
 - **Fetch** turns HTML into Markdown-ish text: the `main`/`article` content if marked, else
   the body without `nav`/`header`/`footer`/`aside`, forms, scripts, hidden elements and
-  class/id chrome (cookie banners, sidebars, share bars); headings, lists, tables, `pre` and
-  links are kept. JSON is pretty-printed, other text as it is; binary types and PDFs are
+  class/id chrome (cookie banners, sidebars, share bars); headings, lists, tables and `pre`
+  are kept, links as their text (`links: true` adds `(url)`: on Wikipedia that doubles the
+  size), images left out. JSON is pretty-printed, other text as it is; binary types and PDFs are
   refused (PDFs go to the reader). A reply is a window (`max_chars`, default 8000, 500–40000)
   from `start`, cut at a line break, ending with `[Truncated: N more characters. Call
   web_fetch with start=… to read on.]`; the last 8 pages stay cached 10 minutes, so reading

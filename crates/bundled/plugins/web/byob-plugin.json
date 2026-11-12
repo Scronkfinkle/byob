@@ -53,7 +53,8 @@
         "properties": {
           "url": { "type": "string", "description": "The http(s) URL to read." },
           "start": { "type": "integer", "description": "Character offset to start from (default 0), for reading on." },
-          "max_chars": { "type": "integer", "description": "Characters to return (500-40000, default 8000)." }
+          "max_chars": { "type": "integer", "description": "Characters to return (500-40000, default 8000)." },
+          "links": { "type": "boolean", "description": "Also show link URLs as [text](url), to follow them (longer; default false)." }
         },
         "required": ["url"]
       }

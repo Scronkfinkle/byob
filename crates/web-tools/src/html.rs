@@ -366,6 +366,7 @@ const CHROME_WORDS: &[&str] = &[
     "visually-hidden",
     "sr-only",
     "toc-",
+    "editsection",
 ];
 
 /// Block elements: their content goes on lines of its own.
@@ -417,7 +418,8 @@ struct Open {
 
 /// Readable text of a page: its title, and its main content (the `main`/`article` elements
 /// if it has them, else the body without navigation, header, footer and asides) as
-/// Markdown-ish text. `base` resolves relative links (left out when `None`).
+/// Markdown-ish text. With `base`, links are written as `[text](url)` (relative ones resolved
+/// against it); without, only their text is kept.
 pub fn readable(html: &str, base: Option<&Url>) -> Readable {
     let tokens = tokenize(html);
     let title = page_title(&tokens);
@@ -531,7 +533,7 @@ fn convert(tokens: &[Token<'_>], base: Option<&Url>, scoped: bool) -> String {
                 if main && !drop {
                     mains += 1;
                 }
-                let href = if name == "a" && emit { t.attr("href").and_then(|h| link(h, base)) } else { None };
+                let href = if name == "a" && emit && base.is_some() { t.attr("href").and_then(|h| link(h, base)) } else { None };
                 stack.push(Open { name: name.to_owned(), drop, pre: pre || name == "pre", href, link_at: out.buf.len() });
             }
             Token::End(name) => {
@@ -612,11 +614,6 @@ fn open_tag(name: &str, t: &Token<'_>, base: Option<&Url>, out: &mut Out, lists:
             out.raw("```\n");
         }
         "code" | "kbd" | "samp" => out.text("`"),
-        "img" => {
-            if let Some(alt) = t.attr("alt").map(collapse).filter(|a| !a.is_empty() && a.chars().count() <= 120) {
-                out.text(&format!("[image: {alt}]"));
-            }
-        }
         "blockquote" => {
             out.block();
             out.raw("> ");

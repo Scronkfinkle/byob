@@ -54,6 +54,8 @@ pub struct Page {
     pub cut: bool,
     /// Read through the reader service.
     pub via_reader: bool,
+    /// Links written as `[text](url)`.
+    pub links: bool,
     at: Instant,
 }
 
@@ -83,6 +85,8 @@ pub struct FetchArgs {
     pub url: String,
     pub start: usize,
     pub max_chars: usize,
+    /// Keep link URLs (`[text](url)`); off, only link text (much shorter).
+    pub links: bool,
 }
 
 impl Fetcher {
@@ -90,9 +94,9 @@ impl Fetcher {
     pub fn fetch(&mut self, http: &Http, args: &FetchArgs) -> Result<String, String> {
         let url = normalize(&args.url)?;
         self.cache.retain(|p| p.at.elapsed() < CACHE_TTL);
-        let page = match self.cache.iter().position(|p| p.url == url || p.final_url == url) {
+        let page = match self.cache.iter().position(|p| (p.url == url || p.final_url == url) && (p.links == args.links || p.via_reader)) {
             Some(i) => self.cache.remove(i),
-            None => self.load(http, &url)?,
+            None => self.load(http, &url, args.links)?,
         };
         let out = window(&page, args.start, args.max_chars.clamp(MIN_CHARS, MAX_CHARS));
         self.cache.push(page);
@@ -102,14 +106,14 @@ impl Fetcher {
         Ok(out)
     }
 
-    fn load(&self, http: &Http, url: &str) -> Result<Page, String> {
+    fn load(&self, http: &Http, url: &str, links: bool) -> Result<Page, String> {
         let direct = http.get(
             url,
             &[("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5"), ("Accept-Language", "en-US,en;q=0.9")],
             LIMITS,
         );
         let problem = match direct {
-            Ok(r) => match convert(&r, url) {
+            Ok(r) => match convert(&r, url, links) {
                 Ok(page) if !thin(&page.text) => return Ok(page),
                 Ok(page) => Some((Some(page), "it came back nearly empty or behind a bot check (it may need JavaScript)".to_owned())),
                 Err(Refusal::Final(e)) => return Err(e),
@@ -166,7 +170,7 @@ fn mime(content_type: &str) -> &str {
     content_type.split(';').next().unwrap_or_default().trim()
 }
 
-fn convert(r: &Response, url: &str) -> Result<Page, Refusal> {
+fn convert(r: &Response, url: &str, links: bool) -> Result<Page, Refusal> {
     let host = Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default();
     if !r.ok() {
         let why = match r.status {
@@ -205,7 +209,7 @@ fn convert(r: &Response, url: &str) -> Result<Page, Refusal> {
     let base = Url::parse(&r.url).ok().or_else(|| Url::parse(url).ok());
     let (title, mut text) = match kind {
         Kind::Html => {
-            let doc = readable(&raw, base.as_ref());
+            let doc = readable(&raw, base.as_ref().filter(|_| links));
             (doc.title, doc.text)
         }
         Kind::Json => (String::new(), serde_json::from_str::<serde_json::Value>(&raw).ok().and_then(|v| serde_json::to_string_pretty(&v).ok()).unwrap_or(raw)),
@@ -223,6 +227,7 @@ fn convert(r: &Response, url: &str) -> Result<Page, Refusal> {
         text,
         cut,
         via_reader: false,
+        links,
         at: Instant::now(),
     })
 }
@@ -268,7 +273,7 @@ fn read_via(http: &Http, reader: &Reader, url: &str) -> Result<Page, String> {
         text.truncate(i);
         cut = true;
     }
-    Ok(Page { url: url.to_owned(), final_url: url.to_owned(), title, text, cut, via_reader: true, at: Instant::now() })
+    Ok(Page { url: url.to_owned(), final_url: url.to_owned(), title, text, cut, via_reader: true, links: true, at: Instant::now() })
 }
 
 /// `max` characters of the page from `start`, cut at a line break when one is near, with a
@@ -323,7 +328,7 @@ mod tests {
     use crate::fake::{Reply, Server};
 
     fn args(url: &str) -> FetchArgs {
-        FetchArgs { url: url.into(), start: 0, max_chars: DEFAULT_CHARS }
+        FetchArgs { url: url.into(), start: 0, max_chars: DEFAULT_CHARS, links: false }
     }
 
     fn article(words: usize) -> String {
@@ -358,6 +363,19 @@ mod tests {
         assert_eq!(server.requests().len(), 1, "reading on comes from the cache");
         let past = f.fetch(&http, &FetchArgs { start: 10_000_000, ..args(&server.url("/doc")) }).unwrap();
         assert!(past.contains("[Nothing at start=10000000"), "{past}");
+    }
+
+    #[test]
+    fn link_urls_only_when_asked() {
+        let body = format!("<main><p>See <a href=\"/next\">the next page</a>. {}</p><img alt=\"logo\" src=\"x.png\"></main>", "filler ".repeat(40));
+        let server = Server::start(move |_| Reply::html(&body));
+        let mut f = Fetcher::default();
+        let http = Http::new();
+        let plain = f.fetch(&http, &args(&server.url("/a"))).unwrap();
+        assert!(plain.contains("See the next page. filler") && !plain.contains("logo"), "{plain}");
+        let linked = f.fetch(&http, &FetchArgs { links: true, ..args(&server.url("/a")) }).unwrap();
+        assert!(linked.contains(&format!("See [the next page]({}/next). filler", server.base)), "{linked}");
+        assert_eq!(server.requests().len(), 2, "the cached copy had no links");
     }
 
     #[test]
@@ -430,8 +448,16 @@ mod tests {
 
     #[test]
     fn windows_never_split_a_character() {
-        let page =
-            Page { url: "u".into(), final_url: "u".into(), title: String::new(), text: "é".repeat(3000), cut: false, via_reader: false, at: Instant::now() };
+        let page = Page {
+            url: "u".into(),
+            final_url: "u".into(),
+            title: String::new(),
+            text: "é".repeat(3000),
+            cut: false,
+            via_reader: false,
+            links: false,
+            at: Instant::now(),
+        };
         for (start, max) in [(0, 500), (1, 777), (2999, 500), (2500, 1000)] {
             let w = window(&page, start, max);
             assert!(w.contains('é'), "{start} {max}");
