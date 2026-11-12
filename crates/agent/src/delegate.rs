@@ -183,6 +183,8 @@ pub struct Launch {
     pub env: Arc<byob_tools::EnvPlan>,
     /// The parent's hooks (approval policies apply to subagents' calls too).
     pub hooks: crate::hooks::Hooks,
+    /// The `vision` model role, for images the subagent's tools show.
+    pub vision: Option<byob_llm::Client>,
 }
 
 /// The `delegate` tool of one turn: checks the call, starts the subagent through the turn
@@ -236,6 +238,7 @@ impl byob_tools::Tool for DelegateTool {
             step_ids: Arc::clone(&host.step_ids),
             env: Arc::clone(&host.env),
             hooks: host.hooks.clone(),
+            vision: host.vision.clone(),
         };
         match launch_job(&self.env, job, launch) {
             Ok(report) => {
@@ -521,6 +524,7 @@ fn run(job: Job, l: &Launch, step: &mut Step, slots: &Arc<Slots>, opts: Subagent
         env: Arc::clone(&l.env),
         hooks: l.hooks.clone(),
         prompt: None,
+        vision: l.vision.clone(),
     };
     let out = turn::run_child(setup);
     done.store(true, Ordering::Relaxed);
