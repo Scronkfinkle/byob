@@ -1663,6 +1663,7 @@ impl Engine {
             env: Arc::new(env_plan),
             hooks: chat_prompt.hooks.clone(),
             prompt: Some(inputs),
+            vision: self.vision_role(),
         };
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });

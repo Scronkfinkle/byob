@@ -20,7 +20,7 @@ pub mod undo;
 pub use artifact::{CreateArtifact, ReadArtifact, UpdateArtifact};
 pub use artifact_types::{ArtifactHooks, ArtifactType, ArtifactTypes};
 pub use chart::MakeChart;
-pub use fs::{DEFAULT_TRASH_DIR, DeleteFile, EditFile, ListFiles, MoveFile, MoveFiles, ReadFile, SearchFiles, WriteFile};
+pub use fs::{DEFAULT_TRASH_DIR, DeleteFile, EditFile, ListFiles, LookAtImage, MoveFile, MoveFiles, ReadFile, SearchFiles, WriteFile};
 pub use preview::Preview;
 pub use undo::{Journal, UndoOp};
 
@@ -66,6 +66,7 @@ pub struct ToolContext<'a> {
     env: Option<&'a EnvPlan>,
     host: Option<&'a (dyn std::any::Any + Sync)>,
     views: Option<&'a std::sync::Mutex<Vec<byob_protocol::View>>>,
+    images: Option<&'a std::sync::Mutex<Vec<String>>>,
 }
 
 /// Where a chat's commands run, as its workspace and chat settings decide (the engine
@@ -115,7 +116,7 @@ pub struct CommandEnv {
 
 impl<'a> ToolContext<'a> {
     pub fn new(workspace: &'a Path, cancel: &'a AtomicBool) -> Self {
-        Self { workspace, cancel, journal: None, chat: None, asker: None, env: None, host: None, views: None }
+        Self { workspace, cancel, journal: None, chat: None, asker: None, env: None, host: None, views: None, images: None }
     }
 
     /// Where [`ToolContext::attach_view`] puts views (the engine's turn: on the call's step).
@@ -129,6 +130,24 @@ impl<'a> ToolContext<'a> {
     pub fn attach_view(&self, view: byob_protocol::View) -> bool {
         let Some(v) = self.views else { return false };
         v.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(view);
+        true
+    }
+
+    /// Where [`ToolContext::show_image`] puts images (the engine's turn).
+    #[must_use]
+    pub fn with_images(mut self, images: &'a std::sync::Mutex<Vec<String>>) -> Self {
+        self.images = Some(images);
+        self
+    }
+
+    /// Show the model an image (a `data:image/...;base64,` URL, already downscaled) with
+    /// this call's result. The turn hands it to the chat's model if that can see, else asks
+    /// the `vision` model role about it (the call's `question` argument) and adds the answer
+    /// to the result. Only this turn sees it; later turns see the result text alone.
+    /// `false` if nobody takes images.
+    pub fn show_image(&self, url: String) -> bool {
+        let Some(i) = self.images else { return false };
+        i.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(url);
         true
     }
 
@@ -398,6 +417,7 @@ pub fn register_builtins_with(reg: &mut Registry, types: &ArtifactTypes) {
     reg.register(Arc::new(ListFiles));
     reg.register(Arc::new(ReadFile));
     reg.register(Arc::new(SearchFiles));
+    reg.register(Arc::new(LookAtImage));
     reg.register(Arc::new(WriteFile));
     reg.register(Arc::new(EditFile));
     reg.register(Arc::new(MoveFile));
@@ -463,14 +483,14 @@ mod tests {
     #[test]
     fn builtins_are_valid() {
         let reg = builtin();
-        assert_eq!(reg.len(), 12);
+        assert_eq!(reg.len(), 13);
         for spec in reg.specs() {
             assert!(spec.name.len() <= 64 && spec.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
             assert_eq!(spec.parameters["type"], "object");
             let tool = reg.get(&spec.name).unwrap();
             let expected = if matches!(
                 spec.name.as_str(),
-                "list_files" | "read_file" | "search_files" | "make_chart" | "create_artifact" | "update_artifact" | "read_artifact"
+                "list_files" | "read_file" | "search_files" | "look_at_image" | "make_chart" | "create_artifact" | "update_artifact" | "read_artifact"
             ) {
                 Access::Read
             } else {

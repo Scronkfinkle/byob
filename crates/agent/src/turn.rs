@@ -26,6 +26,30 @@ use crate::limits::{DETAIL_CHARS, MAX_OUTPUT, MAX_REPEATS, MAX_ROUNDS, REPEAT_QU
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are byob, a helpful assistant running inside a desktop harness. Be concise and accurate. \
 Use the provided tools when they help; when a tool fails or the user declines it, explain instead of retrying the same call.";
 
+/// The model role (settings `models`) that looks at images for models that can't see.
+pub const VISION_ROLE: &str = "vision";
+/// What the vision model is asked when the call has no `question`.
+const VISION_QUESTION: &str =
+    "Describe this image in detail. Copy out any text in it exactly, in reading order; write tables as Markdown tables and give the values of charts.";
+/// Most images one call may show.
+const MAX_TOOL_IMAGES: usize = 4;
+/// Longest answer kept from the vision model (bytes).
+const MAX_VISION_ANSWER: usize = 8 * 1024;
+
+/// Ask the vision model role `question` about `images`; its answer, capped.
+fn ask_vision(vision: &byob_llm::Client, question: &str, images: Vec<String>, cancel: &AtomicBool) -> Result<String, String> {
+    let messages = [ChatMessage::user_with_images(question, images)];
+    let out = vision.stream_chat(&messages, &[], cancel, |_| {}).map_err(|e| e.to_string())?;
+    if out.cancelled {
+        return Err("stopped".into());
+    }
+    let answer = out.content.trim();
+    if answer.is_empty() {
+        return Err("it gave no answer".into());
+    }
+    Ok(cap(answer.to_owned(), MAX_VISION_ANSWER, "the vision model's answer was cut"))
+}
+
 /// How often a turn blocked on an approval re-checks its cancel flag.
 const APPROVAL_POLL: Duration = Duration::from_millis(50);
 
@@ -170,6 +194,9 @@ pub struct Setup {
     /// What the `before_prompt` hooks build the system prompt from, before the first
     /// request (`None`: keep `history`'s, as child turns do).
     pub prompt: Option<PromptInputs>,
+    /// The `vision` model role, if set: it answers questions about images tools show
+    /// ([`ToolContext::show_image`]) when the turn's own model can't see.
+    pub vision: Option<byob_llm::Client>,
 }
 
 /// A turn's tools, swappable between rounds (never during a call: a round works on the
@@ -314,6 +341,8 @@ struct Turn {
     content: String,
     /// Tools that ran, with counts.
     ran: BTreeMap<String, usize>,
+    /// Images tools showed this round, for the model after the round's results.
+    round_images: Vec<String>,
 }
 
 /// A call that passed the checks and the gate, about to run.
@@ -329,7 +358,7 @@ struct Opened {
 /// A concurrent call running on its own thread.
 struct Started {
     opened: Opened,
-    done: Receiver<(ToolOutput, Vec<UndoOp>, bool, Vec<View>)>,
+    done: Receiver<(ToolOutput, Vec<UndoOp>, bool, Vec<View>, Vec<String>)>,
 }
 
 /// What a running tool can reach of its turn ([`ToolContext::host`]): enough to start a
@@ -355,6 +384,8 @@ pub(crate) struct TurnHost {
     pub child: bool,
     /// The tool reported the step itself (the turn doesn't finish it).
     pub owns_step: AtomicBool,
+    /// The turn's vision model role (child turns use it too).
+    pub vision: Option<byob_llm::Client>,
 }
 
 impl Turn {
@@ -383,6 +414,7 @@ impl Turn {
             answer: String::new(),
             content: String::new(),
             ran: BTreeMap::new(),
+            round_images: Vec::new(),
         }
     }
 
@@ -445,6 +477,7 @@ impl Turn {
             for (call, result) in calls.iter().zip(self.call_all(&calls)) {
                 self.messages.push(if prompt { toolprompt::fallback_tool_result(call, &result) } else { ChatMessage::tool_result(call.id.clone(), result) });
             }
+            self.show_round_images(prompt);
             if self.cancelled() {
                 return Err(End::Stopped);
             }
@@ -603,10 +636,11 @@ impl Turn {
         }
         for (i, started) in running {
             // The call's thread always answers; a closed channel means it crashed.
-            let (output, ops, owned, views) = started.done.recv().unwrap_or_else(|_| (ToolOutput::err("the tool crashed"), Vec::new(), false, Vec::new()));
+            let (output, ops, owned, views, images) =
+                started.done.recv().unwrap_or_else(|_| (ToolOutput::err("the tool crashed"), Vec::new(), false, Vec::new(), Vec::new()));
             let mut opened = started.opened;
             attach_views(&mut opened.step, views);
-            results[i] = Some(self.close(opened, output, ops, owned));
+            results[i] = Some(self.close(opened, output, ops, owned, images));
         }
         results.into_iter().map(Option::unwrap_or_default).collect()
     }
@@ -636,18 +670,21 @@ impl Turn {
         let host = self.host(&opened.step);
         let asker = self.asker(&opened.name);
         let views = Mutex::new(Vec::new());
+        let images = Mutex::new(Vec::new());
         let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel)
             .with_journal(&self.journal)
             .with_chat(&self.s.chat)
             .with_asker(&asker)
             .with_env(&self.s.env)
             .with_host(&host)
-            .with_views(&views);
+            .with_views(&views)
+            .with_images(&images);
         let output = catch_unwind(AssertUnwindSafe(|| opened.tool.run(&opened.args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
         let ops = self.journal.take();
         let owned = host.owns_step.load(Ordering::Relaxed);
         attach_views(&mut opened.step, views.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner));
-        self.close(opened, output, ops, owned)
+        let images = images.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.close(opened, output, ops, owned, images)
     }
 
     /// Start a concurrent call on a thread of its own (with its own undo journal).
@@ -661,16 +698,19 @@ impl Turn {
         let spawned = thread::Builder::new().name("byob-tool".into()).spawn(move || {
             let journal = Journal::new(workspace.as_path(), &tag);
             let views = Mutex::new(Vec::new());
+            let images = Mutex::new(Vec::new());
             let ctx = ToolContext::new(workspace.as_path(), &cancel)
                 .with_journal(&journal)
                 .with_chat(&chat)
                 .with_asker(&asker)
                 .with_env(&env)
                 .with_host(&host)
-                .with_views(&views);
+                .with_views(&views)
+                .with_images(&images);
             let output = catch_unwind(AssertUnwindSafe(|| tool.run(&args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
             let views = views.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let _ = tx.send((output, journal.take(), host.owns_step.load(Ordering::Relaxed), views));
+            let images = images.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = tx.send((output, journal.take(), host.owns_step.load(Ordering::Relaxed), views, images));
         });
         match spawned {
             Ok(_) => Ok(Started { opened, done: rx }),
@@ -705,6 +745,7 @@ impl Turn {
             hooks: self.s.hooks.clone(),
             child: self.s.child.is_some(),
             owns_step: AtomicBool::new(false),
+            vision: self.s.vision.clone(),
         }
     }
 
@@ -796,8 +837,11 @@ impl Turn {
 
     /// After a call: undo information, the `after_tool_call` hooks, the step's final state,
     /// and the text the model gets. `owned`: the tool reported its step itself.
-    fn close(&mut self, opened: Opened, output: ToolOutput, ops: Vec<UndoOp>, owned: bool) -> String {
+    fn close(&mut self, opened: Opened, mut output: ToolOutput, ops: Vec<UndoOp>, owned: bool, images: Vec<String>) -> String {
         let Opened { tool, name, args, key, mut step } = opened;
+        if !images.is_empty() && !output.failed {
+            self.route_images(&args, images, &mut output);
+        }
         let (ops, complete) = crate::steps::undo_ops(ops, &output.changes);
         if !ops.is_empty() || !complete {
             self.emit(TurnEvent::Undo { id: self.s.entry, ops, complete });
@@ -839,6 +883,53 @@ impl Turn {
         }
         self.seen.insert(key, text.clone());
         text
+    }
+
+    /// Images a call showed: to this turn's model if it can see (after the round's
+    /// results), else to the `vision` model role, whose answer joins the result. A model
+    /// that can't see and no vision role: the call fails, saying so.
+    fn route_images(&mut self, args: &Value, images: Vec<String>, output: &mut ToolOutput) {
+        let images: Vec<String> = images.into_iter().take(MAX_TOOL_IMAGES).collect();
+        let sees = match self.s.plan.vision {
+            Some(v) => v,
+            // Unknown: a vision role is the safer bet (a server without vision errors).
+            None => self.s.vision.is_none(),
+        };
+        if sees {
+            output.text.push_str("\n(The image is attached below. Later turns don't keep it: look again if you need it.)");
+            self.round_images.extend(images);
+            return;
+        }
+        let Some(vision) = self.s.vision.clone() else {
+            output.failed = true;
+            output.text = "This model can't see images, and no vision model is set up (a \"vision\" model role in settings). Tell the user; work from the text instead if you can.".into();
+            return;
+        };
+        let question = args.get("question").and_then(Value::as_str).map(str::trim).filter(|q| !q.is_empty()).unwrap_or(VISION_QUESTION);
+        match ask_vision(&vision, question, images, &self.s.cancel) {
+            Ok(answer) => {
+                let asked = if question == VISION_QUESTION { String::new() } else { format!(" for \"{}\"", one_line(question, 200)) };
+                output.text.push_str(&format!("\nThe vision model looked at it{asked}:\n{answer}"));
+            }
+            Err(e) => {
+                output.failed = true;
+                output.text = format!("The vision model couldn't look at it: {e}");
+            }
+        }
+    }
+
+    /// The images of this round's calls, for the model, after their results: as a user
+    /// message (tool messages can't carry images on most servers), or in prompt mode with
+    /// the last result (which is a user message already).
+    fn show_round_images(&mut self, prompt: bool) {
+        if self.round_images.is_empty() {
+            return;
+        }
+        let images = std::mem::take(&mut self.round_images);
+        match self.messages.last_mut().filter(|m| prompt && m.role == "user") {
+            Some(last) => last.images.extend(images),
+            None => self.messages.push(ChatMessage::user_with_images("[The image(s) from the tool results above]", images)),
+        }
     }
 
     /// A call's title, access, preview and must-confirm card, from its arguments. Tool code
@@ -890,9 +981,9 @@ fn cap_call(text: String) -> String {
 }
 
 /// A receiver that already holds a failed output.
-fn failed_now(text: String) -> Receiver<(ToolOutput, Vec<UndoOp>, bool, Vec<View>)> {
+fn failed_now(text: String) -> Receiver<(ToolOutput, Vec<UndoOp>, bool, Vec<View>, Vec<String>)> {
     let (tx, rx) = channel();
-    let _ = tx.send((ToolOutput::err(text), Vec::new(), false, Vec::new()));
+    let _ = tx.send((ToolOutput::err(text), Vec::new(), false, Vec::new(), Vec::new()));
     rx
 }
 

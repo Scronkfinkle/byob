@@ -905,3 +905,76 @@ fn deleting_a_chat_deletes_its_artifacts() {
     while !matches!(recv(&mut c), ServerMsg::ChatDeleted { .. }) {}
     assert!(!folder.exists(), "the artifact outlived its chat");
 }
+
+/// A tool that shows the model an image (like `look_at_image`).
+struct Eyes;
+
+impl Tool for Eyes {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: "eyes".into(), description: "test".into(), parameters: json!({"type":"object"}) }
+    }
+    fn title(&self, _args: &Value) -> String {
+        "Looked".into()
+    }
+    fn access(&self, _args: &Value) -> Access {
+        Access::Read
+    }
+    fn run(&self, _args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
+        assert!(ctx.show_image("data:image/png;base64,AAAA".into()));
+        ToolOutput::ok("Image a.png.")
+    }
+}
+
+/// An engine with the `eyes` tool; `vision`: the URL of a `vision` model role.
+fn eyes_harness(script: Vec<Reply>, vision: Option<String>) -> Harness {
+    let script = if script.is_empty() { vec![call("eyes", r#"{"question":"what colour?"}"#), Reply::Text("It is red.")] } else { script };
+    let (url, requests) = fake_llm(script, "final answer");
+    let mut tools = Registry::default();
+    tools.register(Arc::new(Eyes));
+    let mut models = std::collections::BTreeMap::new();
+    if let Some(v) = vision {
+        models.insert(crate::turn::VISION_ROLE.to_owned(), InferenceConfig { base_url: v, ..Default::default() });
+    }
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = PathBuf::from("/ws");
+    config.tools = tools;
+    config.models = models;
+    config.auto_title = false;
+    Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests, runs: Arc::new(AtomicUsize::new(0)) }
+}
+
+#[test]
+fn shown_images_follow_the_results_for_a_model_that_sees() {
+    let h = eyes_harness(Vec::new(), None);
+    let (mut c, _) = client(&h);
+    let view = run_turn(&mut c, "what colour is a.png?", |_, _| panic!("reads must not ask"));
+    assert_eq!(view.error, Some(None));
+    assert_eq!(view.reply().content, "It is red.");
+    let reqs = h.requests.lock().unwrap();
+    let second = messages(&reqs[1]);
+    let tool = &second[second.len() - 2];
+    assert!(tool["content"].as_str().unwrap().starts_with("Image a.png.\n(The image is attached below."), "{tool}");
+    let images = &second[second.len() - 1];
+    assert_eq!(images["role"], "user");
+    assert_eq!(images["content"][1]["image_url"]["url"], "data:image/png;base64,AAAA");
+    // The first request carried no image.
+    assert!(messages(&reqs[0]).iter().all(|m| m["content"].is_string()));
+}
+
+#[test]
+fn a_vision_role_answers_for_the_model() {
+    // The vision role's server: every request without tools gets "a red square".
+    let (vision_url, vision_reqs) = fake_llm(vec![Reply::Text("unused")], "a red square");
+    let h = eyes_harness(Vec::new(), Some(vision_url));
+    let (mut c, _) = client(&h);
+    let view = run_turn(&mut c, "what colour is a.png?", |_, _| panic!("reads must not ask"));
+    assert_eq!(view.error, Some(None));
+    let reqs = h.requests.lock().unwrap();
+    let results = tool_results(&reqs[1]);
+    assert_eq!(results[0], "Image a.png.\nThe vision model looked at it for \"what colour?\":\na red square");
+    // The main model got no image; the vision model got the question and the image.
+    assert!(messages(&reqs[1]).iter().all(|m| m["content"].is_string() || m["content"].is_null()));
+    let asked = vision_reqs.lock().unwrap();
+    let parts = &asked[0]["messages"][0]["content"];
+    assert_eq!((parts[0]["text"].as_str(), parts[1]["image_url"]["url"].as_str()), (Some("what colour?"), Some("data:image/png;base64,AAAA")));
+}

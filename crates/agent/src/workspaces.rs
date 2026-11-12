@@ -291,6 +291,13 @@ impl Engine {
         Ok(client)
     }
 
+    /// A client for the `vision` model role (settings `models.vision`), if one is set: it
+    /// answers questions about images tools show when a chat's model can't see.
+    pub(crate) fn vision_role(&self) -> Option<byob_llm::Client> {
+        let config = self.models.get(crate::turn::VISION_ROLE)?;
+        byob_llm::Client::new(config.clone()).map_err(|e| log::warn!("model role {}: {e}", crate::turn::VISION_ROLE)).ok()
+    }
+
     /// The prompt parts of `chat`'s last turn (byob's defaults before its first).
     pub(crate) fn chat_prompt(&self, chat: &str) -> crate::ChatPrompt {
         self.chat_prompts.get(chat).cloned().unwrap_or_else(|| crate::ChatPrompt { hooks: self.default_hooks.clone(), compaction: true, ..Default::default() })

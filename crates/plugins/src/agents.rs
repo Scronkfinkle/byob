@@ -106,7 +106,7 @@ fn parse_tools(raw: &str) -> Vec<String> {
 /// counterpart (`WebSearch`, `Task`) map to nothing.
 pub fn tool_aliases(name: &str) -> Vec<&str> {
     match name {
-        "Read" | "NotebookRead" => vec!["read_file", "read_artifact"],
+        "Read" | "NotebookRead" => vec!["read_file", "read_artifact", "look_at_image"],
         "Write" => vec!["write_file", "create_artifact"],
         "Edit" | "MultiEdit" => vec!["edit_file", "update_artifact"],
         "NotebookEdit" => vec!["write_file", "update_artifact"],
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn claude_tools_map_to_yah_tools() {
-        assert_eq!(tool_aliases("Read"), ["read_file", "read_artifact"]);
+        assert_eq!(tool_aliases("Read"), ["read_file", "read_artifact", "look_at_image"]);
         assert_eq!(tool_aliases("Bash"), ["run_command"]);
         assert!(tool_aliases("WebSearch").is_empty());
         assert_eq!(tool_aliases("run_python"), ["run_python"]);
