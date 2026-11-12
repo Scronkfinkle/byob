@@ -1,0 +1,19 @@
+{
+  "id": "plan",
+  "name": "Plan",
+  "version": "1.0.0",
+  "description": "The update_plan tool: the model keeps a short step list for a multi-step task, shown as a card in the chat and restated to it before each request while a step is open (a before_request hook). Kept per chat in .byob/plans.",
+  "icon": "list-checks",
+  "tools": [
+    {
+      "native": "update_plan"
+    }
+  ],
+  "hooks": [
+    {
+      "event": "before_request",
+      "native": "plan",
+      "priority": 200
+    }
+  ]
+}
