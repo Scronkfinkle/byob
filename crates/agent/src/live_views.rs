@@ -228,7 +228,8 @@ impl Engine {
         }
         live.asked = true;
         live.asker = Some(id);
-        let mut params = json!({"site": t.site.label(), "view": r.view, "key": r.key, "client": id, "chat": t.chat});
+        let workspace = self.ext_workspace(t.chat.as_deref(), Some(id)).display().to_string();
+        let mut params = json!({"site": t.site.label(), "view": r.view, "key": r.key, "client": id, "chat": t.chat, "workspace": workspace});
         if let Some(a) = artifact {
             params["artifact"] = a;
         }
@@ -273,9 +274,10 @@ impl Engine {
                 return;
             }
         };
+        let workspace = self.ext_workspace(t.chat.as_deref(), Some(id)).display().to_string();
         let mut msg = json!({
             "type": "event", "event": "view", "view": r.view, "site": t.site.label(), "key": r.key, "client": id, "chat": t.chat,
-            "action": event.action, "values": event.values, "edit": event.edit,
+            "workspace": workspace, "action": event.action, "values": event.values, "edit": event.edit,
         });
         // Whatever else the event carries (a grid's op, fields a newer client adds).
         if let (Ok(Value::Object(extra)), Some(m)) = (serde_json::to_value(&event), msg.as_object_mut()) {

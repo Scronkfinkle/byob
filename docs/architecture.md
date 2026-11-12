@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-11 (spreadsheets: the `sheets` plugin is native only; web surfaces: the page bridge, MCP Apps, plugin web views; view-backed artifact renderers, the `grid` node, bundled plugins materialized to disk, spreadsheets as a bundled plugin)
+Last updated: 2026-11-12 (memory, plan and ask-user as bundled plugins; question cards, protocol 13.8; spreadsheets: the `sheets` plugin is native only; web surfaces: the page bridge, MCP Apps, plugin web views; view-backed artifact renderers, the `grid` node, bundled plugins materialized to disk, spreadsheets as a bundled plugin)
 
 ## Shape
 
@@ -38,7 +38,8 @@ bumps (`crates/protocol/src/version.rs`, `view.rs`).
   ignored. Today: `views`, `plugin_channel`, `view_sites`, `bundled_scope`, `web_bridge`. Minors so far: 1 —
   `Artifact::content_type`; 2 — `PluginInfo::backend`; 3 — render sites (`PluginInfo::views`, `View::owner`,
   `OpenView`/`CloseView`/`ViewEvent`, `LiveView`); 4 — bundled plugins; 5 — web surfaces (`WebCall`/
-  `WebReply`/`WebPush`, `ViewDecl::html`, step views `byob.mcp_app` and `byob.web`).
+  `WebReply`/`WebPush`, `ViewDecl::html`, step views `byob.mcp_app` and `byob.web`); 6 — artifact-site views;
+  7 — `provides`, native backends; 8 — question cards (`Ask::choice`, `ClientMsg::AnswerQuestion`).
 - **Compatibility rules.** Bump the major only for changes an older peer can't survive (a
   renamed/removed field, a changed meaning). Everything else is additive: new fields are
   `#[serde(default)]` (and skipped when empty); new messages and features go behind a cap
@@ -634,7 +635,8 @@ is refused with a notice and the UI shows "always on"; a fork with the same id s
 the others switch like any plugin. Since the hooks phase they also include `prompt` (locked:
 the base prompt, plugins' prompt parts, the user's instructions), `workspace-instructions`
 (AGENTS.md), `compaction`, `subagents` (`delegate`) and `environments` (nix, pixi, mise,
-containers); see Hooks below. Authoring tools (make_tool & co.) and `use_skill` stay kernel,
+containers); see Hooks below. Then `memory`, `plan` and `ask-user` (Memory, plan and
+questions below). Authoring tools (make_tool & co.) and `use_skill` stay kernel,
 never plugins.
 
 **Materialized to disk.** A bundled plugin that runs code (a `backend`, script tools) gets its
@@ -755,6 +757,7 @@ What is kernel and what is a bundled plugin on these registries:
 | child turns (`TurnHost`, a `ToolContext` capability) | `subagents`: `delegate` (a native turn tool) + agents section (500) |
 | environment provider registry (`byob_exec::env::EnvProvider`) | `environments`: nix, pixi, mise, container providers |
 | renderer primitives | `compaction`: `before_request` hook + `/compact`; `core-tools` (locked), `html-apps`, `charts`, `markdown`, `images` |
+| question cards (`Asker::ask_user`, `ClientMsg::AnswerQuestion`) | `memory` (native backend: hook, tools, pane), `plan` (`update_plan` + `before_request` hook), `ask-user` (`ask_user`) |
 
 With the defaults the system prompt is byte-identical to before: the contributors join their
 non-blank sections, trimmed, with blank lines, in the old order (base, plugin sections,
@@ -811,6 +814,38 @@ are drawn at render sites (above).
 `python.requirements` get a cached venv per requirements hash under `<data>/plugin-python`
 (uv, else venv + pip; `byob_plugins::pyenv`), used by the backend and the plugin's script
 tools, which all have byob's `byob_plugin.py` helper on `PYTHONPATH`.
+
+### Memory, plan and questions (bundled `memory`, `plan`, `ask-user`)
+
+All three ship on and switch like any plugin; each tool schema is a few dozen tokens.
+
+- **`memory`** (`crates/memory`, native backend `memory`, registered by the app with byob's
+  config folder). Plain Markdown the user can edit anywhere: `<config>/memory.md` (every
+  chat) and `<workspace>/.byob/memory.md`; each `- ` line is a note, other text is kept. A
+  backend `before_prompt` hook (priority 350, between AGENTS.md and the user's instructions)
+  adds a short section: when to save, then the first 4 KB of each file.
+  `remember(text, scope?: global|workspace)` appends a note (duplicates skipped, 500
+  characters, a file over 64 KB refuses), `forget(text, scope?)` removes one by its text, a
+  unique part of it or its number; both are `"access": "write"`, so the default policy asks.
+  The `Memory` pane lists both files' notes with Forget buttons and an Add field, for the
+  workspace of the chat the client last opened (`chat_opened` and view requests carry
+  `workspace`).
+- **`plan`**: `update_plan(steps: [{text, status: pending|doing|done}])` (native tool,
+  `byob_tools::plan`) replaces the chat's plan, kept in `<workspace>/.byob/plans/<chat>.json`,
+  and shows it as a `byob.tree` card on its step. The native `before_request` hook `plan`
+  (priority 200, after compaction) appends the plan, one line per step, to the newest message
+  while a step is open: a tool result in later rounds (`[Current plan]`), the user's message
+  at a turn's start ("your plan in this chat so far"). Never right after `update_plan` (its
+  result is the plan) and never for subagents. Text only goes at the end, so the server's
+  prompt cache keeps everything before it.
+- **`ask-user`**: `ask_user(question, options?)` (native tool) puts a question card up through
+  the turn's `Asker`, like the questions tools ask mid-call, and blocks the turn the same
+  way: a step with `Ask { always: true, choice: Some(Choice { options, free_text, answer }) }`
+  that only a person answers (no policy or `--auto-approve`). The client draws the options as
+  buttons, a field for the user's own answer and Skip; `ClientMsg::AnswerQuestion { step,
+  text }` answers (first answer wins; `Verdict::Replied`), Skip is `Approve … Deny`. The
+  tool's result is "The user answered: …" (or that they skipped, or nobody could). A client
+  without 13.8 shows Allow/Deny; Allow then counts as skipped.
 
 ### For clients (protocol 13)
 

@@ -983,7 +983,12 @@ impl Tool for BackendTool {
     }
 
     fn access(&self, _args: &Value) -> Access {
-        Access::Execute
+        match self.decl.access.as_deref() {
+            Some("read") => Access::Read,
+            Some("write") => Access::Write,
+            Some("network") => Access::Network,
+            _ => Access::Execute,
+        }
     }
 
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {

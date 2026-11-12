@@ -113,7 +113,9 @@ fn transcript(ui: &mut egui::Ui, t: &Tokens, th: Thread<'_>, cache: &mut markdow
             Segment::Steps(range) => {
                 ui.add_space(2.0);
                 for step in th.steps.get(range).unwrap_or_default() {
-                    if step.status == StepStatus::Waiting {
+                    if step.status == StepStatus::Waiting && step.ask.as_ref().is_some_and(|a| a.choice.is_some()) {
+                        msg = msg.or(question_card(ui, t, step, th.agent));
+                    } else if step.status == StepStatus::Waiting {
                         msg = msg.or(approval_card(ui, t, step, th.agent));
                     } else if let Some(d) = step.delegation.as_deref() {
                         msg = msg.or(delegation(ui, t, step, d, cache, cards));
@@ -517,6 +519,57 @@ fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step, agent: Option<&str>
     answer.map(|answer| ClientMsg::Approve { step: step.id, answer })
 }
 
+/// A question the model asks (`ask_user`): its options as buttons, a field for the user's
+/// own answer, and Skip. Answers are `AnswerQuestion`; Skip is a Deny.
+fn question_card(ui: &mut egui::Ui, t: &Tokens, step: &Step, agent: Option<&str>) -> Option<ClientMsg> {
+    let ask = step.ask.as_deref()?;
+    let choice = ask.choice.as_ref()?;
+    let mut msg = None;
+    let fill = mix(t.assistant_bubble, t.accent, 0.05);
+    egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, mix(t.border, t.accent, 0.6))).corner_radius(t.radius).inner_margin(10.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let who = agent.map_or_else(|| "The assistant asks".to_owned(), |a| format!("Subagent {a} asks"));
+        ui.label(RichText::new(who).small().color(t.text_dim));
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            icon(ui, t, Icon::Waiting, 16.0);
+            let q = if ask.text.is_empty() { &step.title } else { &ask.text };
+            ui.add(egui::Label::new(RichText::new(q).family(bold_family()).size(t.text_size(15.0)).color(t.text_strong)).wrap());
+        });
+        ui.add_space(6.0);
+        if !choice.options.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for o in &choice.options {
+                    let b = egui::Button::new(RichText::new(o).color(t.on_accent)).fill(t.accent);
+                    if ui.add(b).clicked() {
+                        msg = Some(ClientMsg::AnswerQuestion { step: step.id, text: o.clone() });
+                    }
+                }
+            });
+            ui.add_space(4.0);
+        }
+        ui.horizontal(|ui| {
+            if choice.free_text {
+                let id = egui::Id::unique(("byob-question", step.id));
+                let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_default();
+                let hint = if choice.options.is_empty() { "Your answer" } else { "Or type your own answer" };
+                let field = ui.add(egui::TextEdit::singleline(&mut text).hint_text(hint).desired_width((ui.available_width() - 120.0).max(120.0)));
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let send = ui.add_enabled(!text.trim().is_empty(), egui::Button::new("Send")).clicked();
+                if (enter || send) && !text.trim().is_empty() {
+                    msg = Some(ClientMsg::AnswerQuestion { step: step.id, text: text.trim().to_owned() });
+                    text.clear();
+                }
+                ui.data_mut(|d| d.insert_temp(id, text));
+            }
+            if ui.button(RichText::new("Skip").color(t.text_dim)).on_hover_text("Let the assistant go on without an answer").clicked() {
+                msg = Some(ClientMsg::Approve { step: step.id, answer: ApprovalAnswer::Deny });
+            }
+        });
+    });
+    msg
+}
+
 fn code_frame(ui: &mut egui::Ui, t: &Tokens, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, t.code_border)).corner_radius(t.round(4.0)).inner_margin(t.pad(6.0)).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -791,5 +844,47 @@ mod tests {
             assert_eq!(body(ui, &Tokens::dark(), &e, &mut cache, &mut |_, _| {}), None);
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn a_question_card_sends_the_choice_the_typed_answer_or_skip() {
+        use egui::{Event, Pos2, Rect};
+        let ctx = egui::Context::default();
+        let mut q = step(7, StepStatus::Waiting);
+        q.tool = "ask_user".into();
+        q.access = ToolAccess::Read;
+        q.ask = Some(Box::new(byob_protocol::Ask {
+            text: "Which units?".into(),
+            warning: None,
+            always: true,
+            choice: Some(byob_protocol::Choice { options: vec!["Metric".into(), "Imperial".into()], free_text: true, answer: None }),
+        }));
+        let e = entry(vec![q]);
+        let mut cache = markdown::Cache::default();
+        let t = Tokens::dark();
+        let mut run = |events: Vec<Event>| {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(700.0, 900.0))), events, ..Default::default() };
+            let mut sent = None;
+            let mut out = ctx.run_ui(input, |ui| sent = body(ui, &t, &e, &mut cache, &mut |_, _| {}));
+            out.textures_delta.clear();
+            (crate::plugins::tests::texts_of(&out), sent)
+        };
+        run(vec![]);
+        let (texts, _) = run(vec![]);
+        let at = |label: &str| texts.iter().find(|(s, _)| s == label).unwrap_or_else(|| panic!("no {label:?} in {texts:?}")).1.center();
+        assert!(texts.iter().any(|(s, _)| s == "Which units?"));
+        assert!(!texts.iter().any(|(s, _)| s == "Allow"), "no Allow on a question");
+        let press = |p: Pos2, down| Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: down, modifiers: egui::Modifiers::NONE };
+        let click = |run: &mut dyn FnMut(Vec<Event>) -> (crate::plugins::tests::Texts, Option<ClientMsg>), p: Pos2| {
+            run(vec![Event::PointerMoved(p), press(p, true)]);
+            run(vec![press(p, false)]).1
+        };
+        assert_eq!(click(&mut run, at("Imperial")), Some(ClientMsg::AnswerQuestion { step: 7, text: "Imperial".into() }));
+        assert_eq!(click(&mut run, at("Skip")), Some(ClientMsg::Approve { step: 7, answer: ApprovalAnswer::Deny }));
+        // Type an answer of their own and press Enter.
+        click(&mut run, at("Or type your own answer"));
+        run(vec![Event::Text("Both, please".into())]);
+        let enter = Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        assert_eq!(run(vec![enter]).1, Some(ClientMsg::AnswerQuestion { step: 7, text: "Both, please".into() }));
     }
 }

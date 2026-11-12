@@ -633,6 +633,7 @@ dependencies = [
  "byob-agent",
  "byob-artifact-wire",
  "byob-exec",
+ "byob-memory",
  "byob-plugins",
  "byob-protocol",
  "byob-sandbox",
@@ -659,6 +660,7 @@ dependencies = [
  "byob-bundled",
  "byob-exec",
  "byob-llm",
+ "byob-memory",
  "byob-plugins",
  "byob-protocol",
  "byob-sandbox",
@@ -719,6 +721,16 @@ dependencies = [
  "thiserror 2.0.21",
  "ureq",
  "url",
+]
+
+[[package]]
+name = "byob-memory"
+version = "0.3.1"
+dependencies = [
+ "byob-plugins",
+ "byob-protocol",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

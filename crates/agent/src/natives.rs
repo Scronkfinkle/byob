@@ -78,6 +78,7 @@ impl Natives {
             n.hooks.insert(id.to_owned(), NativeHookReg { hook: Arc::new(PromptPart { id, pick }), defaults: vec![(Event::BeforePrompt, priority)] });
         }
         n = n.hook(crate::compact::HOOK, Arc::new(crate::compact::CompactionHook), &[(Event::BeforeRequest, crate::compact::HOOK_PRIORITY)]);
+        n = n.hook(crate::plan_hook::HOOK, Arc::new(crate::plan_hook::PlanHook), &[(Event::BeforeRequest, crate::plan_hook::PRIORITY)]);
         n.turn_tools.insert(crate::delegate::TOOL.to_owned());
         n.environments.extend(["nix", "pixi", "mise", "container"].map(str::to_owned));
         n

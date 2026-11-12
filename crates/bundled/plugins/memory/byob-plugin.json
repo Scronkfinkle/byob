@@ -1,0 +1,47 @@
+{
+  "id": "memory",
+  "name": "Memory",
+  "version": "1.0.0",
+  "description": "Notes kept across chats in plain Markdown you can edit: memory.md in your config folder (every chat) and .byob/memory.md in a workspace. Their start goes into the system prompt; the model adds and removes notes with remember and forget; the Memory pane shows and edits them.",
+  "icon": "brain",
+  "backend": { "native": "memory" },
+  "hooks": [
+    {
+      "event": "before_prompt",
+      "priority": 350
+    }
+  ],
+  "views": [{ "site": "pane", "id": "memory", "title": "Memory", "icon": "brain" }],
+  "tools": [
+    {
+      "name": "remember",
+      "title": "Remembered: {text}",
+      "description": "Save a short note for future chats: a lasting preference or fact the user stated.",
+      "run": "backend",
+      "access": "write",
+      "params": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "scope": { "type": "string", "enum": ["global", "workspace"], "description": "global (default): every chat; workspace: this project only." }
+        },
+        "required": ["text"]
+      }
+    },
+    {
+      "name": "forget",
+      "title": "Forgot: {text}",
+      "description": "Delete a saved note, by its text or a unique part of it.",
+      "run": "backend",
+      "access": "write",
+      "params": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "scope": { "type": "string", "enum": ["global", "workspace"] }
+        },
+        "required": ["text"]
+      }
+    }
+  ]
+}

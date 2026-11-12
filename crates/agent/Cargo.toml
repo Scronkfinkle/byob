@@ -29,6 +29,8 @@ tempfile.workspace = true
 byob-exec.workspace = true
 # native_backend_tests: the native sheets backend in a real engine (dev only: layers allow it)
 byob-sheets.workspace = true
+# the native memory backend in a real engine (dev only)
+byob-memory.workspace = true
 
 [lints]
 workspace = true

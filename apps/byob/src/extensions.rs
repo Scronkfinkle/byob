@@ -59,6 +59,8 @@ pub fn load(tools: &mut Registry, artifact_types: &byob_tools::ArtifactTypes, li
     // The bundled `sheets` plugin's backend: spreadsheets in-process.
     #[cfg(feature = "native-sheets")]
     let natives = natives.backend(byob_sheets::ID, byob_sheets::factory());
+    // The bundled `memory` plugin's backend: memory.md files in the config folder and workspaces.
+    let natives = natives.backend(byob_memory::ID, byob_memory::factory(paths.as_ref().ok().map(|p| p.config_dir.clone())));
     let mut plugins = PluginsConfig {
         linked,
         python: byob_plugins::default_python(),

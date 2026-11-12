@@ -239,6 +239,9 @@ pub struct ManifestTool {
     /// A native tool this build may not have (e.g. `install_packages` without a package
     /// manager): missing isn't a problem.
     pub optional: bool,
+    /// What a backend tool's calls do, for the permission gate: `read`, `write`, `network`
+    /// or `execute` (the default: backends can do anything).
+    pub access: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -932,7 +935,17 @@ fn parse_tool(t: &Value, i: usize) -> R<ManifestTool> {
         v => Some(req_str(v, &format!("{f}.title"))?),
     };
     let optional = t.get("optional") == Some(&Value::Bool(true));
-    Ok(ManifestTool { name, description, params, kind, title, optional })
+    let access = match t.get("access") {
+        None => None,
+        v => {
+            let a = req_str(v, &format!("{f}.access"))?;
+            if !matches!(a.as_str(), "read" | "write" | "network" | "execute") {
+                return Err(format!("{f}.access must be read, write, network or execute"));
+            }
+            Some(a)
+        }
+    };
+    Ok(ManifestTool { name, description, params, kind, title, optional, access })
 }
 
 fn parse_servers(v: Option<&Value>) -> R<BTreeMap<String, McpServerConfig>> {
@@ -1116,6 +1129,15 @@ mod tests {
         assert_eq!(s.default.as_deref(), Some("/a\n/b"));
         assert!(m.starters[0].file);
         assert_eq!(m.prompt.map(|p| p.chars().count()), Some(600));
+    }
+
+    #[test]
+    fn backend_tools_may_say_what_they_do() {
+        let tool = |access: Value| json!({"id": "m", "name": "M", "backend": "b.py", "tools": [{"name": "t", "description": "d", "run": "backend", "access": access}]});
+        assert_eq!(parse_user(tool(json!("write"))).unwrap().tools[0].access.as_deref(), Some("write"));
+        let none = json!({"id": "m", "name": "M", "backend": "b.py", "tools": [{"name": "t", "description": "d", "run": "backend"}]});
+        assert_eq!(parse_user(none).unwrap().tools[0].access, None);
+        assert_eq!(parse_user(tool(json!("root"))).unwrap_err(), "byob-plugin.json: tools[0].access must be read, write, network or execute");
     }
 
     #[test]

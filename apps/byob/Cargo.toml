@@ -28,6 +28,7 @@ byob-plugins.workspace = true
 byob-sandbox.workspace = true
 byob-exec.workspace = true
 byob-sheets = { workspace = true, optional = true }
+byob-memory.workspace = true
 byob-store.workspace = true
 byob-server.workspace = true
 byob-ui-egui.workspace = true
