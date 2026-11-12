@@ -14,8 +14,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use byob_llm::{ChatMessage, LlmError, StreamEvent, ToolCall, ToolCallFilter, Usage, toolprompt};
-use byob_protocol::{Ask, FileChange, Step, StepStatus, ToolAccess, TurnStats, View};
-use byob_tools::{Access, Answer, Asker, Journal, Question, Registry, Tool, ToolContext, ToolOutput, UndoOp};
+use byob_protocol::{Ask, Choice, FileChange, Step, StepStatus, ToolAccess, TurnStats, View};
+use byob_tools::{Access, Answer, Asker, Journal, Question, Registry, Tool, ToolContext, ToolOutput, UndoOp, UserQuestion, UserReply};
 use serde_json::Value;
 
 use crate::hooks::{self, Decision, Flow, Hooks, PromptInputs};
@@ -62,13 +62,15 @@ pub enum Verdict {
     Deny(String),
     /// A person answered the approval card: allowed or not.
     Answered(bool),
+    /// A person answered a question card (`Ask::choice`) with this text.
+    Replied(String),
 }
 
 impl Verdict {
     /// Why it may not run, if it may not.
     pub fn denied(&self) -> Option<String> {
         match self {
-            Self::Allow | Self::Answered(true) => None,
+            Self::Allow | Self::Answered(true) | Self::Replied(_) => None,
             Self::Deny(reason) => Some(reason.clone()),
             Self::Answered(false) => Some(USER_SAID_NO.into()),
         }
@@ -495,6 +497,8 @@ impl Turn {
             entry: self.s.entry,
             round,
             child: self.s.child.is_some(),
+            chat: &self.s.chat,
+            workspace: self.s.workspace.as_path(),
             messages: &mut self.messages,
             specs,
             llm: &self.s.llm,
@@ -818,7 +822,7 @@ impl Turn {
             Decision::Ask(message) => {
                 let text = if message.is_empty() { "A plugin asks you to confirm this call.".to_owned() } else { prefix(&message, MAX_ASK_TEXT).to_owned() };
                 let warning = step.ask.take().and_then(|a| a.warning);
-                step.ask = Some(Box::new(Ask { text, warning, always: true }));
+                step.ask = Some(Box::new(Ask { text, warning, always: true, choice: None }));
                 self.gate(&step)
             }
             Decision::Allow | Decision::Continue => self.gate(&step),
@@ -942,7 +946,7 @@ impl Turn {
         // A call a person must confirm every time (installing system-wide).
         let ask = catch_unwind(AssertUnwindSafe(|| tool.always_ask(args)))
             .unwrap_or_else(|_| Some("this tool must be confirmed".into()))
-            .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true }));
+            .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true, choice: None }));
         (one_line(&title, DETAIL_CHARS), access, preview, ask)
     }
 
@@ -1034,6 +1038,7 @@ impl Asker for TurnAsker {
                 text: prefix(&q.text, MAX_ASK_TEXT).to_owned(),
                 warning: q.warning.as_deref().map(|w| prefix(w, MAX_ASK_TEXT).to_owned()),
                 always: q.always_ask,
+                choice: None,
             })),
             views: vec![],
         };
@@ -1044,7 +1049,7 @@ impl Asker for TurnAsker {
         let answer = match &verdict {
             Verdict::Allow => Answer::AutoYes,
             Verdict::Deny(_) => Answer::AutoNo,
-            Verdict::Answered(true) => Answer::Yes,
+            Verdict::Answered(true) | Verdict::Replied(_) => Answer::Yes,
             Verdict::Answered(false) => Answer::No,
         };
         step.status = if answer.allowed() { StepStatus::Done } else { StepStatus::Denied };
@@ -1053,6 +1058,61 @@ impl Asker for TurnAsker {
         }
         emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step });
         answer
+    }
+
+    /// A question card: like [`Asker::ask`]'s card, but only a person answers it (no policy
+    /// or `--auto-approve`), with the options or their own text.
+    fn ask_user(&self, q: &UserQuestion) -> UserReply {
+        let options: Vec<String> =
+            q.options.iter().take(byob_protocol::MAX_CHOICE_OPTIONS).map(|o| prefix(o, byob_protocol::MAX_ANSWER_CHARS).to_owned()).collect();
+        let mut step = Step {
+            id: self.step_ids.fetch_add(1, Ordering::Relaxed),
+            tool: self.tool.clone(),
+            title: one_line(&q.question, DETAIL_CHARS),
+            access: ToolAccess::Read,
+            status: StepStatus::Running,
+            detail: String::new(),
+            changes: Vec::new(),
+            at: self.at,
+            preview: None,
+            media: Vec::new(),
+            artifacts: Vec::new(),
+            delegation: None,
+            ask: Some(Box::new(Ask {
+                text: prefix(&q.question, MAX_ASK_TEXT).to_owned(),
+                warning: None,
+                always: true,
+                choice: Some(Choice { options, free_text: q.free_text, answer: None }),
+            })),
+            views: vec![],
+        };
+        emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step: step.clone() });
+        let (reply, answer) = channel();
+        emit_to(&self.inbox, self.child, TurnEvent::Gate { id: self.entry, step: step.clone(), reply });
+        let verdict = wait_verdict(&answer, &self.cancel);
+        let reply = match verdict {
+            Verdict::Replied(text) => UserReply::Answered(text),
+            // An older client's Allow: no text to give.
+            Verdict::Answered(true) | Verdict::Allow => UserReply::Answered(String::new()),
+            Verdict::Answered(false) => UserReply::Skipped,
+            Verdict::Deny(_) => UserReply::NoOne,
+        };
+        match &reply {
+            UserReply::Answered(text) => {
+                step.status = StepStatus::Done;
+                step.detail = one_line(text, DETAIL_CHARS);
+                if let Some(c) = step.ask.as_mut().and_then(|a| a.choice.as_mut()) {
+                    c.answer = Some(text.clone());
+                }
+            }
+            UserReply::Skipped => (step.status, step.detail) = (StepStatus::Denied, "skipped".into()),
+            UserReply::NoOne => (step.status, step.detail) = (StepStatus::Denied, "no answer".into()),
+        }
+        emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step });
+        match reply {
+            UserReply::Answered(t) if t.trim().is_empty() => UserReply::Skipped,
+            other => other,
+        }
     }
 }
 

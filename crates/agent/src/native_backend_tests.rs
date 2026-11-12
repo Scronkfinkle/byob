@@ -308,6 +308,84 @@ fn the_sheets_plugin_is_native_and_on_by_default() {
     }
 }
 
+/// The bundled memory, plan and ask-user plugins, on by default: remember writes the global
+/// memory.md, the next turn's system prompt holds it, the pane shows it; update_plan's plan
+/// is restated after later tool calls of the turn.
+#[test]
+fn memory_and_plan_are_bundled_and_on_by_default() {
+    let script = vec![
+        call("remember", r#"{"text": "Prefers metric units"}"#),
+        call("update_plan", r#"{"steps": [{"text": "Look around", "status": "doing"}, {"text": "Report", "status": "pending"}]}"#),
+        call("list_files", "{}"),
+        Reply::Text("noted"),
+        Reply::Text("second"),
+    ];
+    let (url, requests) = fake_llm(script, "final answer");
+    let home = tempfile::tempdir().unwrap();
+    let ws = tempfile::tempdir().unwrap();
+    let config_dir = home.path().join("config");
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = ws.path().canonicalize().unwrap();
+    config.register_workspace = true;
+    config.tools = byob_tools::builtin();
+    config.policy = Some(Policy::ALLOW_ALL);
+    config.paths = Some(Paths::at(home.path()));
+    config.auto_title = false;
+    config.plugins = Some(PluginsConfig {
+        scratch_root: Some(home.path().join("chats")),
+        python: byob_plugins::default_python(),
+        bundled: bundled_plugins(),
+        bundled_cache: Some(home.path().join("bundled-plugins")),
+        natives: Natives::builtin().backend(byob_memory::ID, byob_memory::factory(Some(config_dir.clone()))),
+        ..Default::default()
+    });
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::hello("test"));
+    let e = wait_ext(&mut c, |e| !e.plugins.is_empty());
+    for id in ["memory", "plan", "ask-user"] {
+        let p = info(&e, id);
+        assert!(p.enabled && p.in_use() && p.problems.is_empty(), "{p:?}");
+    }
+    let (entry, _) = turn(&mut c, "remember that I prefer metric, then plan", |_, _| {});
+    let r = step(&entry, "remember");
+    assert_eq!((r.status, r.detail.as_str(), r.title.as_str()), (StepStatus::Done, "Remembered (global).", "Remembered: Prefers metric units"));
+    assert!(std::fs::read_to_string(config_dir.join("memory.md")).unwrap().contains("- Prefers metric units\n"));
+    let plan = step(&entry, "update_plan");
+    assert_eq!(plan.title, "Plan: 0/2 done");
+    assert_eq!(plan.views.first().map(|v| v.kind.as_str()), Some("byob.tree"));
+    let reqs = requests.lock().unwrap().clone();
+    let names = tool_names(&reqs[0]);
+    for t in ["remember", "forget", "update_plan", "ask_user"] {
+        assert!(names.iter().any(|n| n == t), "{t} in {names:?}");
+    }
+    let first_system = reqs[0]["messages"][0]["content"].as_str().unwrap().to_owned();
+    assert!(first_system.contains("Memory: notes kept across chats") && first_system.contains("Nothing is saved yet."), "{first_system}");
+    // After update_plan: its result is the plan (not restated); after list_files it is.
+    let last = |req: &Value| req["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap_or_default().to_owned();
+    assert!(last(&reqs[2]).starts_with("Plan (0/2 done):") && !last(&reqs[2]).contains("[Current plan]"), "{}", last(&reqs[2]));
+    assert!(last(&reqs[3]).ends_with("[Current plan]\nPlan (0/2 done):\n[>] Look around\n[ ] Report"), "{}", last(&reqs[3]));
+    // The next turn: the note is in the system prompt, the open plan on the user message.
+    turn(&mut c, "and now?", |_, _| {});
+    let reqs = requests.lock().unwrap().clone();
+    let req = reqs.last().unwrap();
+    let system = req["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("Everywhere:\n- Prefers metric units"), "{system}");
+    assert!(last(req).starts_with("and now?\n\n(Your plan in this chat so far"), "{}", last(req));
+    // The pane shows it.
+    let v = ViewRef::new("memory", "memory", "");
+    c.send(ClientMsg::OpenView { view: v.clone() });
+    loop {
+        if let ServerMsg::LiveView(lv) = recv(&mut c)
+            && lv.view == v
+        {
+            assert_eq!(lv.error, None);
+            assert!(serde_json::to_string(&lv.tree).unwrap().contains("Prefers metric units"), "{lv:?}");
+            break;
+        }
+    }
+}
+
 #[test]
 fn without_its_backend_built_in_sheets_reports_a_problem() {
     // A byob built without the `native-sheets` feature: the plugin is listed, with a problem.

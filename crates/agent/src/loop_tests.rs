@@ -886,6 +886,58 @@ fn auto_approve_answers_questions_but_not_must_confirm_calls() {
     assert!(view.reply().steps.iter().any(|s| s.status == StepStatus::Denied));
 }
 
+/// `ask_user` puts a question card up (even with `--auto-approve`); the user's choice or
+/// own text is the tool's result, Skip says so, and only question cards take answers.
+#[test]
+fn ask_user_waits_for_the_users_answer() {
+    let all = Policy { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow };
+    let script = vec![
+        call("ask_user", r#"{"question":"Which units?","options":["Metric","Imperial"]}"#),
+        call("ask_user", r#"{"question":"Anything else?"}"#),
+        call("ask_user", r#"{"question":"Sure?"}"#),
+        Reply::Text("done"),
+    ];
+    let (url, requests) = fake_llm(script, "final answer");
+    let mut tools = Registry::default();
+    tools.register(Arc::new(byob_tools::AskUser));
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = PathBuf::from("/ws");
+    config.tools = tools;
+    config.policy = Some(all);
+    config.auto_title = false;
+    config.detect_local = false;
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let mut c = hello(&engine);
+    let mut cards: Vec<Step> = Vec::new();
+    let view = run_turn(&mut c, "go", |step, c| {
+        cards.push(step.clone());
+        match cards.len() {
+            1 => {
+                // An empty answer, or one for a step that isn't waiting, changes nothing.
+                c.send(ClientMsg::AnswerQuestion { step: step.id, text: "  ".into() });
+                c.send(ClientMsg::AnswerQuestion { step: step.id + 1000, text: "x".into() });
+                c.send(ClientMsg::AnswerQuestion { step: step.id, text: "Metric".into() });
+                c.send(ClientMsg::AnswerQuestion { step: step.id, text: "Imperial".into() }); // too late
+            }
+            2 => c.send(ClientMsg::AnswerQuestion { step: step.id, text: "Use kg".into() }),
+            _ => c.send(ClientMsg::Approve { step: step.id, answer: ApprovalAnswer::Deny }),
+        }
+    });
+    assert_eq!(cards.len(), 3, "{cards:?}");
+    let choice = cards[0].ask.as_ref().and_then(|a| a.choice.clone()).unwrap();
+    assert_eq!(choice.options, ["Metric", "Imperial"]);
+    assert!(choice.free_text && cards[0].ask.as_ref().unwrap().always);
+    assert_eq!(cards[0].title, "Which units?");
+    let results = tool_results(requests.lock().unwrap().last().unwrap());
+    assert_eq!(results[0], "The user answered: Metric");
+    assert_eq!(results[1], "The user answered: Use kg");
+    assert!(results[2].starts_with("The user skipped"), "{}", results[2]);
+    // The question steps keep the answer for the transcript.
+    let answered: Vec<Option<String>> =
+        view.reply().steps.iter().filter_map(|s| s.ask.as_ref().and_then(|a| a.choice.as_ref())).map(|c| c.answer.clone()).collect();
+    assert_eq!(answered, [Some("Metric".to_owned()), Some("Use kg".to_owned()), None]);
+}
+
 /// Deleting a chat deletes its artifacts for good (they used to stay in `.byob/artifacts`).
 #[test]
 fn deleting_a_chat_deletes_its_artifacts() {

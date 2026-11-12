@@ -141,6 +141,8 @@ pub struct RequestCtx<'a> {
     pub round: usize,
     /// A subagent's turn.
     pub child: bool,
+    pub chat: &'a str,
+    pub workspace: &'a Path,
     pub messages: &'a mut Vec<ChatMessage>,
     pub specs: &'a mut Vec<ToolSpec>,
     pub llm: &'a byob_llm::Client,
@@ -780,6 +782,8 @@ mod tests {
             entry: 1,
             round: 0,
             child: false,
+            chat: "c",
+            workspace: Path::new("/w"),
             messages: &mut messages,
             specs: &mut specs,
             llm: &llm,

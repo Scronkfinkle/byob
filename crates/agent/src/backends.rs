@@ -367,7 +367,7 @@ impl Engine {
         if subs.is_empty() {
             return;
         }
-        let mut msg = json!({"type": "event", "event": event, "chat": chat});
+        let mut msg = json!({"type": "event", "event": event, "chat": chat, "workspace": ws.display().to_string()});
         if let (Some(o), Value::Object(d)) = (msg.as_object_mut(), data) {
             o.extend(d);
         }

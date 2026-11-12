@@ -35,6 +35,7 @@ byob-artifact-wire = { path = "crates/artifact-wire", version = "0.3.1" }
 byob-sheets = { path = "crates/sheets", version = "0.3.1" }
 byob-web-tools = { path = "crates/web-tools", version = "0.3.1" }
 byob-docs = { path = "crates/docs", version = "0.3.1" }
+byob-memory = { path = "crates/memory", version = "0.3.1" }
 
 # Spreadsheets (byob-sheets): pinned so a bump (and its formula results) is deliberate.
 # MIT OR Apache-2.0.

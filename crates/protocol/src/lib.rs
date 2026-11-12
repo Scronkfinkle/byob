@@ -117,6 +117,13 @@ pub enum ClientMsg {
         step: u64,
         answer: ApprovalAnswer,
     },
+    /// Answer a question card (a waiting [`Step`] whose [`Ask::choice`] is set): one of its
+    /// options or, when it takes one, the user's own text (≤ [`MAX_ANSWER_CHARS`]). Skipping
+    /// it is [`ClientMsg::Approve`] with [`ApprovalAnswer::Deny`]. First answer wins (13.8).
+    AnswerQuestion {
+        step: u64,
+        text: String,
+    },
     /// Reverse the file changes of assistant entry `entry` (see [`Entry::undoable`]). The
     /// engine refuses, changing nothing, if any of those files changed since.
     Undo {
@@ -644,6 +651,30 @@ pub struct Ask {
     /// Only a person can allow it: no policy, grant or `--auto-approve` does.
     #[serde(default)]
     pub always: bool,
+    /// A question for the user (the `ask_user` tool, 13.8): the card offers these choices
+    /// instead of Allow, and is answered with [`ClientMsg::AnswerQuestion`]. A client that
+    /// doesn't know it shows Allow/Deny (Allow then means "no answer").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice: Option<Choice>,
+}
+
+/// Most options on a question card.
+pub const MAX_CHOICE_OPTIONS: usize = 8;
+/// Longest option or answer text (characters).
+pub const MAX_ANSWER_CHARS: usize = 2000;
+
+/// The choices of a question card (see [`Ask::choice`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Choice {
+    /// Buttons, in order (≤ [`MAX_CHOICE_OPTIONS`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    /// The user may type their own answer.
+    #[serde(default)]
+    pub free_text: bool,
+    /// What the user answered, once they did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
 }
 
 /// Most lines in a [`Preview`]'s line lists.
@@ -1250,6 +1281,27 @@ mod tests {
         ] {
             assert!(bad.check_sizes().is_err());
         }
+    }
+
+    #[test]
+    fn question_cards_round_trip_and_older_asks_still_parse() {
+        let c = ClientMsg::AnswerQuestion { step: 4, text: "Metric".into() };
+        assert_eq!(c.to_json(), r#"{"type":"answer_question","step":4,"text":"Metric"}"#);
+        assert_eq!(ClientMsg::from_json(&c.to_json()).unwrap(), c);
+        assert!(c.check_sizes().is_ok());
+        assert!(ClientMsg::AnswerQuestion { step: 4, text: "x".repeat(MAX_ANSWER_CHARS + 1) }.check_sizes().is_err());
+        let ask = Ask {
+            text: "Which units?".into(),
+            warning: None,
+            always: true,
+            choice: Some(Choice { options: vec!["Metric".into(), "Imperial".into()], free_text: true, answer: None }),
+        };
+        let json = serde_json::to_string(&ask).unwrap();
+        assert_eq!(serde_json::from_str::<Ask>(&json).unwrap(), ask);
+        // An ask from before 13.8 has no choice.
+        let old: Ask = serde_json::from_str(r#"{"text":"t","always":true}"#).unwrap();
+        assert!(old.choice.is_none());
+        assert!(!serde_json::to_string(&old).unwrap().contains("choice"));
     }
 
     /// A newer peer's additions decode into fallbacks instead of failing the whole frame.

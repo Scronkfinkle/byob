@@ -13,6 +13,7 @@ pub mod chart;
 pub mod edits;
 mod fs;
 pub mod images;
+pub mod plan;
 pub mod preview;
 pub mod sandbox;
 pub mod undo;
@@ -21,6 +22,7 @@ pub use artifact::{CreateArtifact, ReadArtifact, UpdateArtifact};
 pub use artifact_types::{ArtifactHooks, ArtifactType, ArtifactTypes};
 pub use chart::MakeChart;
 pub use fs::{DEFAULT_TRASH_DIR, DeleteFile, EditFile, ListFiles, LookAtImage, MoveFile, MoveFiles, ReadFile, SearchFiles, WriteFile};
+pub use plan::{AskUser, UpdatePlan};
 pub use preview::Preview;
 pub use undo::{Journal, UndoOp};
 
@@ -193,6 +195,15 @@ impl<'a> ToolContext<'a> {
         self.asker.map_or(Answer::AutoNo, |a| a.ask(q))
     }
 
+    /// Ask the user `q` on a question card, blocking until they answer (see
+    /// [`Asker::ask_user`]). [`UserReply::NoOne`] without an asker.
+    pub fn ask_user(&self, q: &UserQuestion) -> UserReply {
+        if self.cancelled() {
+            return UserReply::NoOne;
+        }
+        self.asker.map_or(UserReply::NoOne, |a| a.ask_user(q))
+    }
+
     /// The chat this call runs in (artifacts belong to a chat).
     #[must_use]
     pub fn with_chat(mut self, chat: &'a str) -> Self {
@@ -289,6 +300,33 @@ impl Answer {
 /// Puts a [`Question`] to the user; the agent provides one per call.
 pub trait Asker: Send + Sync {
     fn ask(&self, q: &Question) -> Answer;
+
+    /// Put a [`UserQuestion`] to the user (a question card), blocking until answered.
+    /// Only a person answers it. The default: nobody to ask.
+    fn ask_user(&self, q: &UserQuestion) -> UserReply {
+        let _ = q;
+        UserReply::NoOne
+    }
+}
+
+/// A question the model asks the user (`ask_user`): a card with the options as buttons and,
+/// with `free_text`, a field for their own answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserQuestion {
+    pub question: String,
+    pub options: Vec<String>,
+    pub free_text: bool,
+}
+
+/// The answer to a [`UserQuestion`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserReply {
+    /// The option picked or the text typed.
+    Answered(String),
+    /// The user closed the card without answering.
+    Skipped,
+    /// Nobody answered: the turn stopped, or there is no one to ask.
+    NoOne,
 }
 
 /// Workspace environment settings the engine shows to clients and lets them change
@@ -427,6 +465,8 @@ pub fn register_builtins_with(reg: &mut Registry, types: &ArtifactTypes) {
     reg.register(Arc::new(CreateArtifact { types: types.clone() }));
     reg.register(Arc::new(UpdateArtifact { types: types.clone() }));
     reg.register(Arc::new(ReadArtifact { types: types.clone() }));
+    reg.register(Arc::new(UpdatePlan));
+    reg.register(Arc::new(AskUser));
 }
 
 /// A registry with just the built-in file tools.
@@ -483,14 +523,14 @@ mod tests {
     #[test]
     fn builtins_are_valid() {
         let reg = builtin();
-        assert_eq!(reg.len(), 13);
+        assert_eq!(reg.len(), 15);
         for spec in reg.specs() {
             assert!(spec.name.len() <= 64 && spec.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
             assert_eq!(spec.parameters["type"], "object");
             let tool = reg.get(&spec.name).unwrap();
             let expected = if matches!(
                 spec.name.as_str(),
-                "list_files" | "read_file" | "search_files" | "look_at_image" | "make_chart" | "create_artifact" | "update_artifact" | "read_artifact"
+                "list_files" | "read_file" | "search_files" | "look_at_image" | "make_chart" | "create_artifact" | "update_artifact" | "read_artifact" | "update_plan" | "ask_user"
             ) {
                 Access::Read
             } else {
