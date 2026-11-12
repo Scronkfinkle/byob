@@ -54,6 +54,9 @@ pub struct Plan {
     /// Tokens kept free for the reply.
     pub reserve: usize,
     pub vision: Option<bool>,
+    /// JPEG quality for images going to the model (0: as they are), from the chat's
+    /// settings; see [`byob_tools::images::compress_data_url`].
+    pub image_quality: u8,
 }
 
 impl Plan {
@@ -195,7 +198,7 @@ impl Endpoints {
             },
         };
         let vision = caps.and_then(|c| c.vision);
-        Plan { key, prompt_tools, fallback, context, reserve, vision }
+        Plan { key, prompt_tools, fallback, context, reserve, vision, image_quality: 0 }
     }
 
     /// How many requests the endpoint runs in parallel, if its probe found out.

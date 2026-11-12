@@ -529,7 +529,15 @@ mod tests {
     use byob_llm::ToolCall;
 
     fn plan(context: usize) -> Plan {
-        Plan { key: String::new(), prompt_tools: false, fallback: false, context, reserve: budget::default_reply_reserve(context), vision: None }
+        Plan {
+            key: String::new(),
+            prompt_tools: false,
+            fallback: false,
+            context,
+            reserve: budget::default_reply_reserve(context),
+            vision: None,
+            image_quality: 0,
+        }
     }
 
     #[test]

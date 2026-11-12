@@ -469,6 +469,8 @@ impl Turn {
             return;
         }
         let (titles, urls): (Vec<String>, Vec<String>) = std::mem::take(&mut self.images).into_iter().unzip();
+        let quality = self.s.plan.image_quality;
+        let urls = urls.iter().map(|u| byob_tools::images::compress_data_url(u, quality)).collect();
         self.messages.push(ChatMessage::user_with_images(format!("{TOOL_IMAGES} {}]", titles.join(", ")), urls));
         let mut live = 0usize;
         for m in self.messages.iter_mut().rev() {

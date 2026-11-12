@@ -198,6 +198,10 @@ pub struct Settings {
     /// Which tool calls run without asking (default: ask before changes).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub approvals: Option<Approvals>,
+    /// JPEG quality for images sent to the model (0: as they are; default
+    /// [`byob_types::config::DEFAULT_IMAGE_QUALITY`]). Workspaces and chats may override it.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub image_quality: Option<u8>,
     /// Added to every chat's system prompt (workspaces and chats add their own after it).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
@@ -276,6 +280,7 @@ impl Settings {
             auto_compact: Some(self.compaction.auto).filter(|a| *a != compaction.auto),
             compact_percent: Some(self.compaction.threshold_percent).filter(|p| *p != compaction.threshold_percent),
             subagents: Some(self.subagents.enabled).filter(|s| *s != subagents.enabled),
+            image_quality: self.image_quality.map(|q| q.min(100)),
             instructions: text(&self.instructions),
             env: None,
             image: None,
@@ -292,6 +297,7 @@ impl Settings {
         self.compaction.auto = l.auto_compact.unwrap_or(defaults.auto);
         self.compaction.threshold_percent = l.compact_percent.unwrap_or(defaults.threshold_percent);
         self.subagents.enabled = l.subagents.unwrap_or(SubagentSettings::default().enabled);
+        self.image_quality = l.image_quality;
         self.instructions.clone_from(&l.instructions);
         self.plugins = l.plugins.clone().unwrap_or_default();
     }

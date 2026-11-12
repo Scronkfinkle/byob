@@ -1563,7 +1563,8 @@ impl Engine {
         let settings = self.chat_settings(Some(&chat), None);
         let llm = self.llm_for(&settings.inference).map_err(|e| format!("inference URL is invalid: {e}"))?;
         let eff = &settings.effective;
-        let plan = self.endpoints.plan_with(&settings.inference, eff.tool_mode.value);
+        let mut plan = self.endpoints.plan_with(&settings.inference, eff.tool_mode.value);
+        plan.image_quality = eff.image_quality.value;
         let workspace_dir = self.live(&chat).map(|l| Arc::clone(&l.workspace)).ok();
         // Plugins: read again where their files changed, then this turn's tools and prompt.
         let composed = self.compose_for(Some(&chat), None, true);
@@ -1619,6 +1620,9 @@ impl Engine {
         let mut history = history;
         if let Some(last) = history.last_mut().filter(|_| !attached.is_empty()) {
             *last = attachments::user_message(&workspace, &model_text, &attached);
+            for url in &mut last.images {
+                *url = byob_tools::images::compress_data_url(url, plan.image_quality);
+            }
         }
         let cancel = Arc::new(AtomicBool::new(false));
         let title_from = (first && self.auto_title && self.provisional.contains_key(&chat)).then(|| text.clone());

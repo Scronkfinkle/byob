@@ -42,6 +42,9 @@ pub const MAX_IMAGE_CHARS: usize = 255;
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8080/v1";
 pub const DEFAULT_MODEL: &str = "default";
 pub const DEFAULT_COMPACT_PERCENT: u8 = 80;
+/// JPEG quality images sent to the model get by default: a light pass, often much smaller
+/// than a PNG screenshot and hard to tell apart.
+pub const DEFAULT_IMAGE_QUALITY: u8 = 85;
 
 /// Where a value comes from, least to most specific.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -195,6 +198,10 @@ pub struct Layer {
     /// Offer the `delegate` tool.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub subagents: Option<bool>,
+    /// Images sent to the model are re-encoded as JPEG at this quality (1..=100) when that
+    /// makes them smaller; 0 sends them as they are (downscaled only).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub image_quality: Option<u8>,
     /// Appended to the system prompt after the less specific levels' instructions.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
@@ -231,19 +238,22 @@ pub enum Field {
     /// `auto_compact` and `compact_percent`.
     Compaction,
     Subagents,
+    /// `image_quality`.
+    ModelImages,
     Instructions,
     Env,
     Image,
 }
 
 impl Field {
-    pub const ALL: [Self; 8] = [Self::Endpoint, Self::ToolMode, Self::Approvals, Self::Compaction, Self::Subagents, Self::Instructions, Self::Env, Self::Image];
+    pub const ALL: [Self; 9] =
+        [Self::Endpoint, Self::ToolMode, Self::Approvals, Self::Compaction, Self::Subagents, Self::ModelImages, Self::Instructions, Self::Env, Self::Image];
 
     /// The levels this setting exists at (besides [`Level::Default`]).
     pub fn levels(self) -> &'static [Level] {
         const ALL: &[Level] = &[Level::Global, Level::Workspace, Level::Chat];
         match self {
-            Self::Endpoint | Self::ToolMode | Self::Approvals | Self::Compaction | Self::Subagents | Self::Instructions => ALL,
+            Self::Endpoint | Self::ToolMode | Self::Approvals | Self::Compaction | Self::Subagents | Self::ModelImages | Self::Instructions => ALL,
             Self::Env => &[Level::Workspace, Level::Chat],
             Self::Image => &[Level::Workspace],
         }
@@ -260,6 +270,7 @@ impl Field {
             Self::Approvals => "Approvals",
             Self::Compaction => "Compaction",
             Self::Subagents => "Subagents",
+            Self::ModelImages => "Images to the model",
             Self::Instructions => "Instructions",
             Self::Env => "Environment",
             Self::Image => "Container image",
@@ -276,6 +287,7 @@ impl Layer {
             Field::Approvals => self.approvals.is_some(),
             Field::Compaction => self.auto_compact.is_some() || self.compact_percent.is_some(),
             Field::Subagents => self.subagents.is_some(),
+            Field::ModelImages => self.image_quality.is_some(),
             Field::Instructions => self.instructions.is_some(),
             Field::Env => self.env.is_some(),
             Field::Image => self.image.is_some(),
@@ -296,6 +308,7 @@ impl Layer {
                 self.compact_percent = None;
             }
             Field::Subagents => self.subagents = None,
+            Field::ModelImages => self.image_quality = None,
             Field::Instructions => self.instructions = None,
             Field::Env => self.env = None,
             Field::Image => self.image = None,
@@ -335,6 +348,7 @@ impl Layer {
             return Err(format!("{i:?} isn't a container image reference (like python:3-slim)"));
         }
         self.compact_percent = self.compact_percent.map(|p| p.clamp(10, 95));
+        self.image_quality = self.image_quality.map(|q| q.min(100));
         if let Some(p) = &self.plugins {
             if p.len() > MAX_PLUGIN_SWITCHES {
                 return Err(format!("at most {MAX_PLUGIN_SWITCHES} plugins can be switched per level"));
@@ -383,6 +397,8 @@ pub struct Effective {
     pub auto_compact: Sourced<bool>,
     pub compact_percent: Sourced<u8>,
     pub subagents: Sourced<bool>,
+    /// JPEG quality for images sent to the model; 0: as they are.
+    pub image_quality: Sourced<u8>,
     /// Every level's instructions, least specific first; all of them apply.
     #[serde(default)]
     pub instructions: Vec<(Level, String)>,
@@ -512,6 +528,7 @@ pub fn resolve(levels: Levels<'_>, keys: Keys, forced: Forced) -> Effective {
         auto_compact: pick(&levels, true, |l| l.auto_compact),
         compact_percent: pick(&levels, DEFAULT_COMPACT_PERCENT, |l| l.compact_percent.map(|p| p.clamp(10, 95))),
         subagents: pick(&levels, true, |l| l.subagents),
+        image_quality: pick(&levels, DEFAULT_IMAGE_QUALITY, |l| l.image_quality.map(|q| q.min(100))),
         instructions,
         env,
         load_project: (ws_env == EnvKind::Nix).then_some(true),
@@ -580,6 +597,16 @@ mod tests {
         let e = resolve(Levels { global: Some(&g), workspace: Some(&w), chat: None }, Keys::default(), Forced::default());
         assert_eq!(e.compact_percent, Sourced { value: 60, from: Level::Workspace });
         // Out-of-range stored thresholds are clamped.
+        assert_eq!(
+            resolve(Levels::default(), Keys::default(), Forced::default()).image_quality,
+            Sourced { value: DEFAULT_IMAGE_QUALITY, from: Level::Default }
+        );
+        let as_is = layer(|l| l.image_quality = Some(0));
+        let e = resolve(Levels { workspace: Some(&as_is), ..Default::default() }, Keys::default(), Forced::default());
+        assert_eq!(e.image_quality, Sourced { value: 0, from: Level::Workspace });
+        let wild_q = layer(|l| l.image_quality = Some(250));
+        assert_eq!(resolve(Levels { chat: Some(&wild_q), ..Default::default() }, Keys::default(), Forced::default()).image_quality.value, 100);
+        assert_eq!(wild_q.clone().validated(Level::Chat).unwrap().image_quality, Some(100));
         let wild = layer(|l| l.compact_percent = Some(200));
         assert_eq!(resolve(Levels { chat: Some(&wild), ..Default::default() }, Keys::default(), Forced::default()).compact_percent.value, 95);
     }

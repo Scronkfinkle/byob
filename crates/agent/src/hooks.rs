@@ -763,7 +763,7 @@ mod tests {
     fn replacing_the_messages_forgets_which_entries_they_came_from() {
         let b = native("p", 0, 0, Push("x", Flow::Continue));
         let llm = byob_llm::Client::new(byob_types::InferenceConfig::default()).unwrap();
-        let plan = adapt::Plan { key: String::new(), prompt_tools: false, fallback: false, context: 1000, reserve: 0, vision: None };
+        let plan = adapt::Plan { key: String::new(), prompt_tools: false, fallback: false, context: 1000, reserve: 0, vision: None, image_quality: 0 };
         let (mut messages, mut specs, mut usage, mut calls, mut state) =
             (vec![ChatMessage::system("s"), ChatMessage::user("u")], Vec::new(), Usage::default(), 0, BTreeMap::new());
         let ids = [0, 7];

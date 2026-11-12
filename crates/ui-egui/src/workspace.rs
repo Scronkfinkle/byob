@@ -14,12 +14,33 @@ use crate::envpanel::EnvPanel;
 use crate::theme::{self, Tokens};
 
 /// Settings a chat can change (and the order they're shown in).
-pub const CHAT_FIELDS: &[Field] = &[Field::Endpoint, Field::Env, Field::Approvals, Field::ToolMode, Field::Compaction, Field::Subagents, Field::Instructions];
+pub const CHAT_FIELDS: &[Field] =
+    &[Field::Endpoint, Field::Env, Field::Approvals, Field::ToolMode, Field::Compaction, Field::Subagents, Field::ModelImages, Field::Instructions];
 /// Settings of a workspace.
-pub const WORKSPACE_FIELDS: &[Field] =
-    &[Field::Env, Field::Image, Field::Endpoint, Field::Approvals, Field::ToolMode, Field::Compaction, Field::Subagents, Field::Instructions];
+pub const WORKSPACE_FIELDS: &[Field] = &[
+    Field::Env,
+    Field::Image,
+    Field::Endpoint,
+    Field::Approvals,
+    Field::ToolMode,
+    Field::Compaction,
+    Field::Subagents,
+    Field::ModelImages,
+    Field::Instructions,
+];
 /// Defaults in Settings (the endpoint has its own form there).
-pub const GLOBAL_FIELDS: &[Field] = &[Field::Approvals, Field::ToolMode, Field::Compaction, Field::Subagents, Field::Instructions];
+pub const GLOBAL_FIELDS: &[Field] = &[Field::Approvals, Field::ToolMode, Field::Compaction, Field::Subagents, Field::ModelImages, Field::Instructions];
+
+/// The choices for images sent to the model: JPEG qualities, and 0 (as they are).
+const IMAGE_QUALITIES: [u8; 5] = [0, 95, 85, 70, 50];
+
+fn image_quality_label(q: u8) -> String {
+    match q {
+        0 => "As they are".into(),
+        85 => "JPEG 85 % (light)".into(),
+        q => format!("JPEG {q} %"),
+    }
+}
 
 fn level_of(scope: &ConfigScope) -> Level {
     match scope {
@@ -144,6 +165,7 @@ impl LayerEditor {
             Field::Approvals => e.approvals.from,
             Field::Compaction => e.auto_compact.from.max(e.compact_percent.from),
             Field::Subagents => e.subagents.from,
+            Field::ModelImages => e.image_quality.from,
             Field::Instructions => level,
             Field::Env => e.env.from,
             Field::Image => Level::Workspace,
@@ -251,6 +273,27 @@ impl LayerEditor {
                         .on_hover_text("Whether the model may hand tasks to subagents (the delegate tool)");
                     if v != self.draft.subagents {
                         self.draft.subagents = v;
+                        out = Some(self.send(None));
+                    }
+                }
+                Field::ModelImages => {
+                    let mut v = self.draft.image_quality;
+                    let shown = |q: Option<u8>| q.map_or_else(|| format!("{inh} ({})", image_quality_label(e.image_quality.value)), image_quality_label);
+                    egui::ComboBox::from_id_salt(("image_quality", level))
+                        .selected_text(shown(v))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut v, None, shown(None));
+                            for q in IMAGE_QUALITIES {
+                                ui.selectable_value(&mut v, Some(q), image_quality_label(q));
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Images the model looks at (attachments, and images it reads) are re-encoded as JPEG when that makes them smaller: \
+                             smaller requests, nearly the same picture. Transparency becomes white.",
+                        );
+                    if v != self.draft.image_quality {
+                        self.draft.image_quality = v;
                         out = Some(self.send(None));
                     }
                 }
