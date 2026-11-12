@@ -435,6 +435,11 @@ through a forgiving tokenizer (no DOM, no recursion, open-element stack capped a
   reply is a numbered list (title, URL, date when known, a ≤ 300-character snippet; 5
   results, ≤ 10) and names the providers it skipped and why. No engine's HTML is scraped
   (DuckDuckGo/Bing/Google terms forbid it and they answer scripts with captchas).
+- **Privacy warnings.** Exa and Jina Reader are third parties that see queries and URLs. The
+  plugin's description in Settings → Plugins starts by saying so, and the first search that
+  goes to Exa and the first page read through Jina Reader in a run each show the user a
+  notice naming the service and how to avoid it (own SearXNG/Brave/Tavily, the reader switch,
+  or switching the plugin off).
 - **Fetch** turns HTML into Markdown-ish text: the `main`/`article` content if marked, else
   the body without `nav`/`header`/`footer`/`aside`, forms, scripts, hidden elements and
   class/id chrome (cookie banners, sidebars, share bars); headings, lists, tables and `pre`

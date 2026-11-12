@@ -72,6 +72,9 @@ impl Default for Reader {
     }
 }
 
+/// How a page read through the reader service is marked in the text the model gets.
+pub const VIA_READER: &str = "(Read through r.jina.ai";
+
 #[derive(Default)]
 pub struct Fetcher {
     cache: Vec<Page>,
@@ -285,7 +288,8 @@ fn window(page: &Page, start: usize, max: usize) -> String {
         out.push_str(&format!("Title: {}\n", truncate(&page.title, 200)));
     }
     if page.via_reader {
-        out.push_str("(Read through r.jina.ai: the page needed JavaScript or refused scripts.)\n");
+        out.push_str(VIA_READER);
+        out.push_str(": the page needed JavaScript or refused scripts.)\n");
     }
     if start >= total && total > 0 {
         out.push_str(&format!("\n[Nothing at start={start}: the page has {total} characters.]"));
