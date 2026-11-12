@@ -1,9 +1,11 @@
 //! Built-in file tools. Every path goes through [`crate::sandbox`]; output is bounded.
 
 mod delete;
+mod edit;
 mod list;
 mod moves;
 mod read;
+mod search;
 mod write;
 
 #[cfg(test)]
@@ -14,9 +16,11 @@ use std::path::Path;
 use serde_json::Value;
 
 pub use delete::{DEFAULT_TRASH_DIR, DeleteFile};
+pub use edit::EditFile;
 pub use list::ListFiles;
 pub use moves::{MoveFile, MoveFiles};
 pub use read::ReadFile;
+pub use search::SearchFiles;
 pub use write::WriteFile;
 
 use crate::sandbox::{self, Resolved};

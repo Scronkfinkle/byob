@@ -16,6 +16,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 log.workspace = true
 image.workspace = true
+ignore.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

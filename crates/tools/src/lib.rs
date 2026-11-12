@@ -10,6 +10,7 @@
 pub mod artifact;
 pub mod artifact_types;
 pub mod chart;
+pub mod edits;
 mod fs;
 pub mod images;
 pub mod preview;
@@ -19,7 +20,7 @@ pub mod undo;
 pub use artifact::{CreateArtifact, ReadArtifact, UpdateArtifact};
 pub use artifact_types::{ArtifactHooks, ArtifactType, ArtifactTypes};
 pub use chart::MakeChart;
-pub use fs::{DEFAULT_TRASH_DIR, DeleteFile, ListFiles, MoveFile, MoveFiles, ReadFile, WriteFile};
+pub use fs::{DEFAULT_TRASH_DIR, DeleteFile, EditFile, ListFiles, MoveFile, MoveFiles, ReadFile, SearchFiles, WriteFile};
 pub use preview::Preview;
 pub use undo::{Journal, UndoOp};
 
@@ -385,8 +386,8 @@ impl Registry {
     }
 }
 
-/// Add the built-in file tools (`list_files`, `read_file`, `write_file`, `move_file`,
-/// `move_files`, `delete_file`), `make_chart` and the artifact tools (for byob's own
+/// Add the built-in file tools (`list_files`, `read_file`, `search_files`, `write_file`,
+/// `edit_file`, `move_file`, `move_files`, `delete_file`), `make_chart` and the artifact tools (for byob's own
 /// artifact types). Deleted files go to [`DEFAULT_TRASH_DIR`].
 pub fn register_builtins(reg: &mut Registry) {
     register_builtins_with(reg, &ArtifactTypes::builtin());
@@ -396,7 +397,9 @@ pub fn register_builtins(reg: &mut Registry) {
 pub fn register_builtins_with(reg: &mut Registry, types: &ArtifactTypes) {
     reg.register(Arc::new(ListFiles));
     reg.register(Arc::new(ReadFile));
+    reg.register(Arc::new(SearchFiles));
     reg.register(Arc::new(WriteFile));
+    reg.register(Arc::new(EditFile));
     reg.register(Arc::new(MoveFile));
     reg.register(Arc::new(MoveFiles));
     reg.register(Arc::new(DeleteFile::default()));
@@ -460,13 +463,15 @@ mod tests {
     #[test]
     fn builtins_are_valid() {
         let reg = builtin();
-        assert_eq!(reg.len(), 10);
+        assert_eq!(reg.len(), 12);
         for spec in reg.specs() {
             assert!(spec.name.len() <= 64 && spec.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
             assert_eq!(spec.parameters["type"], "object");
             let tool = reg.get(&spec.name).unwrap();
-            let expected = if matches!(spec.name.as_str(), "list_files" | "read_file" | "make_chart" | "create_artifact" | "update_artifact" | "read_artifact")
-            {
+            let expected = if matches!(
+                spec.name.as_str(),
+                "list_files" | "read_file" | "search_files" | "make_chart" | "create_artifact" | "update_artifact" | "read_artifact"
+            ) {
                 Access::Read
             } else {
                 Access::Write
