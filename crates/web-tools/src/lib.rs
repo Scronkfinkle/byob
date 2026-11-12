@@ -37,7 +37,17 @@ pub struct Web {
     http: Http,
     search: SearchConfig,
     fetcher: Fetcher,
+    /// Third parties this run has already warned about (once each per backend start).
+    warned_exa: bool,
+    warned_reader: bool,
+    /// Notices for the user from the last tool call, sent by `request`.
+    notices: Vec<String>,
 }
+
+/// Said the first time a search goes to Exa: byob's free default sends queries to a third party.
+pub const EXA_WARNING: &str = "Privacy: web searches are going to Exa (exa.ai), a third-party search service, because that is byob's free default. Exa sees every query. To keep searches private, set your own SearXNG (or a Brave or Tavily key) under Settings → Plugins → Web, or switch the Web plugin off.";
+/// Said the first time a page is read through Jina Reader.
+pub const READER_WARNING: &str = "Privacy: a page that needed JavaScript was read through Jina Reader (r.jina.ai), a third-party service that sees the page's address. Turn this off under Settings → Plugins → Web (Read JavaScript-only pages through Jina Reader).";
 
 pub fn factory() -> NativeFactory {
     Arc::new(|| Box::new(Web::default()) as Box<dyn NativeBackend>)
@@ -80,6 +90,10 @@ impl Web {
                 let query: String = query.chars().take(400).collect();
                 let count = uint(args, "count").unwrap_or(5);
                 let (provider, hits, problems) = search::search(&self.http, &self.search, &query, count)?;
+                if provider == Provider::Exa && !self.warned_exa {
+                    self.warned_exa = true;
+                    self.notices.push(EXA_WARNING.into());
+                }
                 Ok(Value::String(search::format(&query, provider, &hits, &problems)))
             }
             "web_fetch" => {
@@ -87,7 +101,12 @@ impl Web {
                 let start = uint(args, "start").unwrap_or(0);
                 let max_chars = uint(args, "max_chars").unwrap_or(DEFAULT_CHARS);
                 let links = args.get("links").is_some_and(|v| v == &Value::Bool(true) || v.as_str() == Some("true"));
-                self.fetcher.fetch(&self.http, &FetchArgs { url, start, max_chars, links }).map(Value::String)
+                let text = self.fetcher.fetch(&self.http, &FetchArgs { url, start, max_chars, links })?;
+                if text.contains(fetch::VIA_READER) && !self.warned_reader {
+                    self.warned_reader = true;
+                    self.notices.push(READER_WARNING.into());
+                }
+                Ok(Value::String(text))
             }
             other => Err(format!("the web backend has no tool {other:?}")),
         }
@@ -106,11 +125,15 @@ impl NativeBackend for Web {
         self.configure(init, Some(out));
     }
 
-    fn request(&mut self, method: &str, params: &Value, _out: &Outbox) -> Result<Value, String> {
+    fn request(&mut self, method: &str, params: &Value, out: &Outbox) -> Result<Value, String> {
         match method {
             "tool" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
-                self.tool(name, params.get("args").unwrap_or(&Value::Null))
+                let result = self.tool(name, params.get("args").unwrap_or(&Value::Null));
+                for n in self.notices.drain(..) {
+                    out.notice(&n, "info");
+                }
+                result
             }
             "hook" => Ok(serde_json::json!({"action": "continue"})),
             other => Err(format!("the web backend doesn't answer {other:?} requests")),
@@ -122,6 +145,38 @@ impl NativeBackend for Web {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_first_search_through_exa_warns_once_and_others_dont() {
+        use crate::fake::{Reply, Server};
+        let server = Server::start(|req| {
+            if req.target.starts_with("/exa") {
+                let text = "Title: A\nURL: https://a.example/\nPublished: N/A\nAuthor: N/A\nHighlights:\nhello";
+                let msg = json!({"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": text}]}});
+                return Reply::new(200, "text/event-stream", format!("event: message\ndata: {msg}\n\n"));
+            }
+            Reply::json(&json!({"query": {"search": [{"title": "B", "snippet": "b"}]}}))
+        });
+        let endpoints = search::Endpoints {
+            exa_mcp: server.url("/exa/mcp"),
+            brave: server.url("/brave"),
+            tavily: server.url("/tavily"),
+            wikipedia: server.url("/w/api.php"),
+        };
+        let mut w = Web::default();
+        w.search.endpoints = endpoints;
+        // Wikipedia chosen: no third-party search service to warn about.
+        w.search.provider = Some(Provider::Wikipedia);
+        w.tool("web_search", &json!({"query": "x"})).unwrap();
+        assert!(w.notices.is_empty(), "{:?}", w.notices);
+        // The default (Exa): warned the first time only.
+        w.search.provider = None;
+        w.tool("web_search", &json!({"query": "x"})).unwrap();
+        assert_eq!(std::mem::take(&mut w.notices), [EXA_WARNING]);
+        w.tool("web_search", &json!({"query": "y"})).unwrap();
+        assert!(w.notices.is_empty(), "once per run");
+        assert!(EXA_WARNING.contains("exa.ai") && EXA_WARNING.contains("Settings → Plugins → Web"));
+    }
 
     #[test]
     fn settings_come_from_init_and_secrets() {

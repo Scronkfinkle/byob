@@ -2,7 +2,7 @@
   "id": "web",
   "name": "Web",
   "version": "1.0.0",
-  "description": "Searches the web and reads pages: web_search (Exa's free endpoint by default; your SearXNG, Brave or Tavily when set) and web_fetch (a page as readable text). Pages that need JavaScript go through Jina Reader unless you turn that off.",
+  "description": "Privacy: by default your web searches go to Exa (exa.ai), a third-party service, and pages that need JavaScript are read through Jina Reader (r.jina.ai); both see what you send them. Set your own SearXNG, Brave or Tavily below, turn the reader off, or switch this plugin off. Gives the model web_search and web_fetch (a page as readable text).",
   "icon": "globe",
   "permissions": { "network": true },
   "backend": { "native": "web" },
