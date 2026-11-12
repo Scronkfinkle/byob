@@ -1,4 +1,5 @@
-//! `read_file`: bounded text preview of a file, by line range.
+//! `read_file`: bounded text preview of a file, by line range; documents (PDF, Word,
+//! PowerPoint) by page through [`super::docs`].
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -27,14 +28,15 @@ impl Tool for ReadFile {
         ToolSpec {
             name: "read_file".into(),
             description:
-                "Read a text file in the workspace. Long files come back in parts: pass offset (first line, from 1) and limit (number of lines) to read more."
+                "Read a file in the workspace: text, PDF, Word (.docx) or PowerPoint (.pptx). Long files come back in parts: pass offset (first line, from 1) and limit (number of lines) to read more, or pages (e.g. \"2-4\") for PDF pages and slides."
                     .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path, relative to the workspace"},
                     "offset": {"type": "integer", "description": "First line to read, starting at 1 (default 1)"},
-                    "limit": {"type": "integer", "description": "How many lines to read (default and max 2000)"}
+                    "limit": {"type": "integer", "description": "How many lines to read (default and max 2000)"},
+                    "pages": {"type": "string", "description": "PDF pages or slides to read, e.g. \"3\" or \"1-3,5\" (default: from the start)"}
                 },
                 "required": ["path"]
             }),
@@ -89,6 +91,16 @@ fn read(args: &Value, ctx: &ToolContext<'_>) -> Result<String, String> {
     (&mut f).take(SNIFF as u64).read_to_end(&mut head).map_err(|e| format!("can't read {name}: {e}"))?;
     if size == 0 || head.is_empty() {
         return Ok(format!("File: {name} (empty)"));
+    }
+    if let Some(kind) = byob_docs::Kind::of(&name, &head) {
+        return super::docs::read(kind, &file.abs, &name, size, args, ctx);
+    }
+    if let Some(mime) = crate::images::sniff_any(&head) {
+        return Ok(format!(
+            "File: {name} ({}, {})\nThis is an image: call look_at_image with path=\"{name}\" to see it.",
+            mime.trim_start_matches("image/").to_uppercase(),
+            bytes(size)
+        ));
     }
     if looks_binary(&head) {
         return Ok(format!("File: {name} ({})\nThis is a binary file; it can't be shown as text.", bytes(size)));
