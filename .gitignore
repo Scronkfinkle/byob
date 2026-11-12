@@ -2,7 +2,7 @@
 /result
 /result-*
 .direnv/
-plan/
+/plan/
 *.swp
 .DS_Store
 .claude/worktrees/
