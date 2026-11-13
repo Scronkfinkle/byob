@@ -10,8 +10,10 @@
 pub mod artifact;
 pub mod artifact_types;
 pub mod chart;
+pub mod edits;
 mod fs;
 pub mod images;
+pub mod plan;
 pub mod preview;
 pub mod sandbox;
 pub mod undo;
@@ -19,7 +21,8 @@ pub mod undo;
 pub use artifact::{CreateArtifact, ReadArtifact, UpdateArtifact};
 pub use artifact_types::{ArtifactHooks, ArtifactType, ArtifactTypes};
 pub use chart::MakeChart;
-pub use fs::{DEFAULT_TRASH_DIR, DeleteFile, ListFiles, MoveFile, MoveFiles, ReadFile, WriteFile};
+pub use fs::{DEFAULT_TRASH_DIR, DeleteFile, EditFile, ListFiles, LookAtImage, MoveFile, MoveFiles, ReadFile, SearchFiles, WriteFile};
+pub use plan::{AskUser, UpdatePlan};
 pub use preview::Preview;
 pub use undo::{Journal, UndoOp};
 
@@ -65,6 +68,7 @@ pub struct ToolContext<'a> {
     env: Option<&'a EnvPlan>,
     host: Option<&'a (dyn std::any::Any + Sync)>,
     views: Option<&'a std::sync::Mutex<Vec<byob_protocol::View>>>,
+    images: Option<&'a std::sync::Mutex<Vec<String>>>,
 }
 
 /// Where a chat's commands run, as its workspace and chat settings decide (the engine
@@ -114,7 +118,7 @@ pub struct CommandEnv {
 
 impl<'a> ToolContext<'a> {
     pub fn new(workspace: &'a Path, cancel: &'a AtomicBool) -> Self {
-        Self { workspace, cancel, journal: None, chat: None, asker: None, env: None, host: None, views: None }
+        Self { workspace, cancel, journal: None, chat: None, asker: None, env: None, host: None, views: None, images: None }
     }
 
     /// Where [`ToolContext::attach_view`] puts views (the engine's turn: on the call's step).
@@ -128,6 +132,24 @@ impl<'a> ToolContext<'a> {
     pub fn attach_view(&self, view: byob_protocol::View) -> bool {
         let Some(v) = self.views else { return false };
         v.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(view);
+        true
+    }
+
+    /// Where [`ToolContext::show_image`] puts images (the engine's turn).
+    #[must_use]
+    pub fn with_images(mut self, images: &'a std::sync::Mutex<Vec<String>>) -> Self {
+        self.images = Some(images);
+        self
+    }
+
+    /// Show the model an image (a `data:image/...;base64,` URL, already downscaled) with
+    /// this call's result. The turn hands it to the chat's model if that can see, else asks
+    /// the `vision` model role about it (the call's `question` argument) and adds the answer
+    /// to the result. Only this turn sees it; later turns see the result text alone.
+    /// `false` if nobody takes images.
+    pub fn show_image(&self, url: String) -> bool {
+        let Some(i) = self.images else { return false };
+        i.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(url);
         true
     }
 
@@ -171,6 +193,15 @@ impl<'a> ToolContext<'a> {
             return Answer::AutoNo;
         }
         self.asker.map_or(Answer::AutoNo, |a| a.ask(q))
+    }
+
+    /// Ask the user `q` on a question card, blocking until they answer (see
+    /// [`Asker::ask_user`]). [`UserReply::NoOne`] without an asker.
+    pub fn ask_user(&self, q: &UserQuestion) -> UserReply {
+        if self.cancelled() {
+            return UserReply::NoOne;
+        }
+        self.asker.map_or(UserReply::NoOne, |a| a.ask_user(q))
     }
 
     /// The chat this call runs in (artifacts belong to a chat).
@@ -269,6 +300,33 @@ impl Answer {
 /// Puts a [`Question`] to the user; the agent provides one per call.
 pub trait Asker: Send + Sync {
     fn ask(&self, q: &Question) -> Answer;
+
+    /// Put a [`UserQuestion`] to the user (a question card), blocking until answered.
+    /// Only a person answers it. The default: nobody to ask.
+    fn ask_user(&self, q: &UserQuestion) -> UserReply {
+        let _ = q;
+        UserReply::NoOne
+    }
+}
+
+/// A question the model asks the user (`ask_user`): a card with the options as buttons and,
+/// with `free_text`, a field for their own answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserQuestion {
+    pub question: String,
+    pub options: Vec<String>,
+    pub free_text: bool,
+}
+
+/// The answer to a [`UserQuestion`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserReply {
+    /// The option picked or the text typed.
+    Answered(String),
+    /// The user closed the card without answering.
+    Skipped,
+    /// Nobody answered: the turn stopped, or there is no one to ask.
+    NoOne,
 }
 
 /// Workspace environment settings the engine shows to clients and lets them change
@@ -388,8 +446,8 @@ impl Registry {
     }
 }
 
-/// Add the built-in file tools (`list_files`, `read_file`, `write_file`, `move_file`,
-/// `move_files`, `delete_file`), `make_chart` and the artifact tools (for byob's own
+/// Add the built-in file tools (`list_files`, `read_file`, `search_files`, `write_file`,
+/// `edit_file`, `move_file`, `move_files`, `delete_file`), `make_chart` and the artifact tools (for byob's own
 /// artifact types). Deleted files go to [`DEFAULT_TRASH_DIR`].
 pub fn register_builtins(reg: &mut Registry) {
     register_builtins_with(reg, &ArtifactTypes::builtin());
@@ -399,7 +457,10 @@ pub fn register_builtins(reg: &mut Registry) {
 pub fn register_builtins_with(reg: &mut Registry, types: &ArtifactTypes) {
     reg.register(Arc::new(ListFiles));
     reg.register(Arc::new(ReadFile));
+    reg.register(Arc::new(SearchFiles));
+    reg.register(Arc::new(LookAtImage));
     reg.register(Arc::new(WriteFile));
+    reg.register(Arc::new(EditFile));
     reg.register(Arc::new(MoveFile));
     reg.register(Arc::new(MoveFiles));
     reg.register(Arc::new(DeleteFile::default()));
@@ -407,6 +468,8 @@ pub fn register_builtins_with(reg: &mut Registry, types: &ArtifactTypes) {
     reg.register(Arc::new(CreateArtifact { types: types.clone() }));
     reg.register(Arc::new(UpdateArtifact { types: types.clone() }));
     reg.register(Arc::new(ReadArtifact { types: types.clone() }));
+    reg.register(Arc::new(UpdatePlan));
+    reg.register(Arc::new(AskUser));
 }
 
 /// A registry with just the built-in file tools.
@@ -463,13 +526,24 @@ mod tests {
     #[test]
     fn builtins_are_valid() {
         let reg = builtin();
-        assert_eq!(reg.len(), 10);
+        assert_eq!(reg.len(), 15);
         for spec in reg.specs() {
             assert!(spec.name.len() <= 64 && spec.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
             assert_eq!(spec.parameters["type"], "object");
             let tool = reg.get(&spec.name).unwrap();
-            let expected = if matches!(spec.name.as_str(), "list_files" | "read_file" | "make_chart" | "create_artifact" | "update_artifact" | "read_artifact")
-            {
+            let expected = if matches!(
+                spec.name.as_str(),
+                "list_files"
+                    | "read_file"
+                    | "search_files"
+                    | "look_at_image"
+                    | "make_chart"
+                    | "create_artifact"
+                    | "update_artifact"
+                    | "read_artifact"
+                    | "update_plan"
+                    | "ask_user"
+            ) {
                 Access::Read
             } else {
                 Access::Write

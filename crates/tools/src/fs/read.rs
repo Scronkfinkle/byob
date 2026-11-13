@@ -1,4 +1,5 @@
-//! `read_file`: bounded text preview of a file, by line range.
+//! `read_file`: bounded text preview of a file, by line range; documents (PDF, Word,
+//! PowerPoint) by page through [`super::docs`].
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -27,14 +28,15 @@ impl Tool for ReadFile {
         ToolSpec {
             name: "read_file".into(),
             description:
-                "Read a text file in the workspace, or look at a PNG/JPEG image. Long files come back in parts: pass offset (first line, from 1) and limit (number of lines) to read more."
+                "Read a file in the workspace: text, PDF, Word (.docx) or PowerPoint (.pptx); an image (PNG, JPEG, GIF, WebP) is shown to you. Long files come back in parts: pass offset (first line, from 1) and limit (number of lines) to read more, or pages (e.g. \"2-4\") for PDF pages and slides."
                     .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path, relative to the workspace"},
                     "offset": {"type": "integer", "description": "First line to read, starting at 1 (default 1)"},
-                    "limit": {"type": "integer", "description": "How many lines to read (default and max 2000)"}
+                    "limit": {"type": "integer", "description": "How many lines to read (default and max 2000)"},
+                    "pages": {"type": "string", "description": "PDF pages or slides to read, e.g. \"3\" or \"1-3,5\" (default: from the start)"}
                 },
                 "required": ["path"]
             }),
@@ -90,13 +92,13 @@ fn read(args: &Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, String> {
     if size == 0 || head.is_empty() {
         return Ok(ToolOutput::ok(format!("File: {name} (empty)")));
     }
-    if crate::images::sniff(&head).is_some() {
-        // A picture: the model gets to look at it (vision models; others are told they can't).
+    if let Some(kind) = byob_docs::Kind::of(&name, &head) {
+        return super::docs::read(kind, &file.abs, &name, size, args, ctx).map(ToolOutput::ok);
+    }
+    if crate::images::sniff_any(&head).is_some() {
+        // A picture: shown to the model (or described by the vision model role).
         return Ok(match crate::images::for_model(&file.abs) {
-            Ok(url) => ToolOutput {
-                images: vec![url],
-                ..ToolOutput::ok(format!("File: {name} ({}, an image; it is shown to you after the tool results)", bytes(size)))
-            },
+            Ok(url) => ToolOutput { images: vec![url], ..ToolOutput::ok(format!("File: {name} ({}, an image)", bytes(size))) },
             Err(e) => ToolOutput::ok(format!("File: {name} ({}, an image)\nIt can't be shown: {e}", bytes(size))),
         });
     }
@@ -248,7 +250,7 @@ mod tests {
         image::RgbImage::from_pixel(3000, 1500, image::Rgb([200, 30, 30])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
         let d = ws_with("sheet.png", &png);
         let out = run(&ReadFile, d.path(), json!({"path": "sheet.png"}));
-        assert!(!out.failed && out.text.contains("an image; it is shown to you"), "{}", out.text);
+        assert!(!out.failed && out.text.contains("an image"), "{}", out.text);
         assert_eq!(out.images.len(), 1);
         let url = &out.images[0];
         let (mime, data) = url.strip_prefix("data:").and_then(|u| u.split_once(";base64,")).unwrap();

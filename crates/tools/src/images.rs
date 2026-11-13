@@ -10,7 +10,7 @@ pub const MODEL_IMAGE_SIDE: u32 = 1024;
 /// Image files larger than this on disk are not decoded.
 pub const MAX_IMAGE_FILE: u64 = 64 * 1024 * 1024;
 
-/// A PNG/JPEG file as a `data:` URL for the model: downscaled to [`MODEL_IMAGE_SIDE`] and
+/// An image file (PNG, JPEG, GIF, WebP) as a `data:` URL for the model: downscaled to [`MODEL_IMAGE_SIDE`] and
 /// [`byob_protocol::media::MAX_IMAGE_BYTES`].
 pub fn for_model(path: &std::path::Path) -> Result<String, String> {
     use std::io::Read as _;
@@ -19,7 +19,7 @@ pub fn for_model(path: &std::path::Path) -> Result<String, String> {
     if bytes.len() as u64 > MAX_IMAGE_FILE {
         return Err("the image is too big to show".into());
     }
-    let (mime, data) = fit(bytes, MODEL_IMAGE_SIDE, byob_protocol::media::MAX_IMAGE_BYTES)?;
+    let (mime, data) = fit_any(bytes, MODEL_IMAGE_SIDE, byob_protocol::media::MAX_IMAGE_BYTES)?;
     Ok(format!("data:{mime};base64,{}", byob_protocol::media::encode(&data)))
 }
 
@@ -32,6 +32,54 @@ pub fn sniff(bytes: &[u8]) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// The MIME type of an image byob can show the model: PNG, JPEG, GIF or WebP.
+pub fn sniff_any(bytes: &[u8]) -> Option<&'static str> {
+    if let Some(m) = sniff(bytes) {
+        return Some(m);
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP".as_slice()) {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// [`fit`] for any image [`sniff_any`] knows: GIF (first frame) and WebP become PNG.
+pub fn fit_any(bytes: Vec<u8>, max_side: u32, max_bytes: usize) -> Result<(&'static str, Vec<u8>), String> {
+    let format = match sniff_any(&bytes) {
+        Some("image/gif") => image::ImageFormat::Gif,
+        Some("image/webp") => image::ImageFormat::WebP,
+        Some(_) => return fit(bytes, max_side, max_bytes),
+        None => return Err("not a PNG, JPEG, GIF or WebP image".into()),
+    };
+    let mut reader = image::ImageReader::new(Cursor::new(&bytes));
+    reader.set_format(format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_SIDE);
+    limits.max_image_height = Some(MAX_DECODE_SIDE);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    reader.limits(limits);
+    let img = reader.decode().map_err(|e| format!("unreadable image: {e}"))?;
+    let mut png = Vec::new();
+    img.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| format!("can't re-encode image: {e}"))?;
+    fit(png, max_side, max_bytes)
+}
+
+/// Width and height of a PNG/JPEG/GIF/WebP, from its header.
+pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    let format = match sniff_any(bytes)? {
+        "image/png" => image::ImageFormat::Png,
+        "image/jpeg" => image::ImageFormat::Jpeg,
+        "image/gif" => image::ImageFormat::Gif,
+        _ => image::ImageFormat::WebP,
+    };
+    let mut reader = image::ImageReader::new(Cursor::new(bytes));
+    reader.set_format(format);
+    reader.into_dimensions().ok()
 }
 
 /// A PNG/JPEG no larger than `max_side` px and `max_bytes`: passed through when it already

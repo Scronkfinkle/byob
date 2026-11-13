@@ -1,6 +1,6 @@
 # byob architecture
 
-Last updated: 2026-11-11 (spreadsheets: the `sheets` plugin is native only; web surfaces: the page bridge, MCP Apps, plugin web views; view-backed artifact renderers, the `grid` node, bundled plugins materialized to disk, spreadsheets as a bundled plugin)
+Last updated: 2026-11-12 (memory, plan and ask-user as bundled plugins; question cards, protocol 13.8; spreadsheets: the `sheets` plugin is native only; web surfaces: the page bridge, MCP Apps, plugin web views; view-backed artifact renderers, the `grid` node, bundled plugins materialized to disk, spreadsheets as a bundled plugin)
 
 ## Shape
 
@@ -38,7 +38,8 @@ bumps (`crates/protocol/src/version.rs`, `view.rs`).
   ignored. Today: `views`, `plugin_channel`, `view_sites`, `bundled_scope`, `web_bridge`. Minors so far: 1 —
   `Artifact::content_type`; 2 — `PluginInfo::backend`; 3 — render sites (`PluginInfo::views`, `View::owner`,
   `OpenView`/`CloseView`/`ViewEvent`, `LiveView`); 4 — bundled plugins; 5 — web surfaces (`WebCall`/
-  `WebReply`/`WebPush`, `ViewDecl::html`, step views `byob.mcp_app` and `byob.web`).
+  `WebReply`/`WebPush`, `ViewDecl::html`, step views `byob.mcp_app` and `byob.web`); 6 — artifact-site views;
+  7 — `provides`, native backends; 8 — question cards (`Ask::choice`, `ClientMsg::AnswerQuestion`).
 - **Compatibility rules.** Bump the major only for changes an older peer can't survive (a
   renamed/removed field, a changed meaning). Everything else is additive: new fields are
   `#[serde(default)]` (and skipped when empty); new messages and features go behind a cap
@@ -174,7 +175,7 @@ cheap. `cargo xtask layers` fails if one of our crates depends directly on `toki
 ```
 L6  apps/byob (desktop, --serve, --headless) · apps/byob-web (wasm)
 L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
-L4  agent: engine, turns, tool loop, permissions, approvals · sheets (native spreadsheets backend)
+L4  agent: engine, turns, tool loop, permissions, approvals · sheets (native spreadsheets backend) · web-tools (web_search/web_fetch backend)
 L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python, install_packages, workspace environments)
 L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
 L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store (SQLite or folder) · artifact-wire (helper protocol)
@@ -419,6 +420,41 @@ of every tool, a 38-formula battery, the grid and CSV/TSV handling (`snapshots.r
 "spreadsheets"`, so a third-party spreadsheets plugin can replace it (see Plugins).
 `tests/bench.rs` (ignored) measures it.
 
+### Web tools (bundled `web` plugin)
+
+`crates/bundled/plugins/web` declares `web_search` and `web_fetch` (`"run": "backend"`,
+`"access": "read"`: they run without asking, like `read_file`) served by native backend `web`
+(`crates/web-tools`, `byob-web-tools`, L4; default feature `native-web-tools`), on blocking
+`ureq` like inference. Every request has a deadline (15 s search, 20 s fetch, 30 s reader), at
+most 5 redirects and a byte cap after decompression (2 MiB search, 4 MiB page); HTML goes
+through a forgiving tokenizer (no DOM, no recursion, open-element stack capped at 256).
+
+- **Search** tries providers in order until one has results: the one `SEARCH_PROVIDER`
+  names, then those with settings (SearXNG URL, Brave key, Tavily key), then **Exa** through
+  its hosted MCP endpoint (`mcp.exa.ai`, `tools/call web_search_exa`, keyless at a shared
+  rate; `EXA_API_KEY` for the user's own), then **Wikipedia** (MediaWiki search API). The
+  reply is a numbered list (title, URL, date when known, a ≤ 300-character snippet; 5
+  results, ≤ 10) and names the providers it skipped and why. No engine's HTML is scraped
+  (DuckDuckGo/Bing/Google terms forbid it and they answer scripts with captchas).
+- **Privacy warnings.** Exa and Jina Reader are third parties that see queries and URLs. The
+  plugin's description in Settings → Plugins starts by saying so, and the first search that
+  goes to Exa and the first page read through Jina Reader in a run each show the user a
+  notice naming the service and how to avoid it (own SearXNG/Brave/Tavily, the reader switch,
+  or switching the plugin off).
+- **Fetch** turns HTML into Markdown-ish text: the `main`/`article` content if marked, else
+  the body without `nav`/`header`/`footer`/`aside`, forms, scripts, hidden elements and
+  class/id chrome (cookie banners, sidebars, share bars); headings, lists, tables and `pre`
+  are kept, links as their text (`links: true` adds `(url)`: on Wikipedia that doubles the
+  size), images left out. JSON is pretty-printed, other text as it is; binary types and PDFs are
+  refused (PDFs go to the reader). A reply is a window (`max_chars`, default 8000, 500–40000)
+  from `start`, cut at a line break, ending with `[Truncated: N more characters. Call
+  web_fetch with start=… to read on.]`; the last 8 pages stay cached 10 minutes, so reading
+  on doesn't fetch again. Pages that come back nearly empty or behind a bot check go through
+  **Jina Reader** (`r.jina.ai/<url>`, keyless at 20/min; it renders JavaScript and reads
+  PDFs) unless `READER_FALLBACK` is off; it sees the URL.
+
+Calls run one at a time on the backend's thread (a slow page delays the next call).
+
 ### Web surfaces: the bridge, MCP Apps, plugin web views
 
 A web surface is HTML that talks to byob: an **MCP App** (an MCP tool whose `_meta.ui.
@@ -627,14 +663,15 @@ byob's own features ship as plugins on the same manifest and registries third pa
 `Plugin::embedded`/`Plugin::read`). They are `artifacts` (create/update/read_artifact, plain
 text, the artifacts prompt section), `html-apps` (`text/html` + `guidance.md` + its check +
 the `web` renderer with Open), `charts` (make_chart, the chart type, `native:chart`),
-`markdown`, `images` and `core-tools` (file tools, run_command/run_python/install_*,
-the code-running section), `sheets` (spreadsheets: a native backend on IronCalc, see
-Spreadsheets below). `artifacts` and `core-tools` are `locked` (always on: their switch
+`markdown`, `images` and `core-tools` (file tools: list/search/read/write/edit/move/delete;
+run_command/run_python/install_*, the code-running section), `sheets` (spreadsheets: a native backend on IronCalc, see
+Spreadsheets below), `web` (web_search and web_fetch: a native backend, see Web tools below). `artifacts` and `core-tools` are `locked` (always on: their switch
 is refused with a notice and the UI shows "always on"; a fork with the same id stays locked);
 the others switch like any plugin. Since the hooks phase they also include `prompt` (locked:
 the base prompt, plugins' prompt parts, the user's instructions), `workspace-instructions`
 (AGENTS.md), `compaction`, `subagents` (`delegate`) and `environments` (nix, pixi, mise,
-containers); see Hooks below. Authoring tools (make_tool & co.) and `use_skill` stay kernel,
+containers); see Hooks below. Then `memory`, `plan` and `ask-user` (Memory, plan and
+questions below). Authoring tools (make_tool & co.) and `use_skill` stay kernel,
 never plugins.
 
 **Materialized to disk.** A bundled plugin that runs code (a `backend`, script tools) gets its
@@ -755,6 +792,7 @@ What is kernel and what is a bundled plugin on these registries:
 | child turns (`TurnHost`, a `ToolContext` capability) | `subagents`: `delegate` (a native turn tool) + agents section (500) |
 | environment provider registry (`byob_exec::env::EnvProvider`) | `environments`: nix, pixi, mise, container providers |
 | renderer primitives | `compaction`: `before_request` hook + `/compact`; `core-tools` (locked), `html-apps`, `charts`, `markdown`, `images` |
+| question cards (`Asker::ask_user`, `ClientMsg::AnswerQuestion`) | `memory` (native backend: hook, tools, pane), `plan` (`update_plan` + `before_request` hook), `ask-user` (`ask_user`) |
 
 With the defaults the system prompt is byte-identical to before: the contributors join their
 non-blank sections, trimmed, with blank lines, in the old order (base, plugin sections,
@@ -811,6 +849,38 @@ are drawn at render sites (above).
 `python.requirements` get a cached venv per requirements hash under `<data>/plugin-python`
 (uv, else venv + pip; `byob_plugins::pyenv`), used by the backend and the plugin's script
 tools, which all have byob's `byob_plugin.py` helper on `PYTHONPATH`.
+
+### Memory, plan and questions (bundled `memory`, `plan`, `ask-user`)
+
+All three ship on and switch like any plugin; each tool schema is a few dozen tokens.
+
+- **`memory`** (`crates/memory`, native backend `memory`, registered by the app with byob's
+  config folder). Plain Markdown the user can edit anywhere: `<config>/memory.md` (every
+  chat) and `<workspace>/.byob/memory.md`; each `- ` line is a note, other text is kept. A
+  backend `before_prompt` hook (priority 350, between AGENTS.md and the user's instructions)
+  adds a short section: when to save, then the first 4 KB of each file.
+  `remember(text, scope?: global|workspace)` appends a note (duplicates skipped, 500
+  characters, a file over 64 KB refuses), `forget(text, scope?)` removes one by its text, a
+  unique part of it or its number; both are `"access": "write"`, so the default policy asks.
+  The `Memory` pane lists both files' notes with Forget buttons and an Add field, for the
+  workspace of the chat the client last opened (`chat_opened` and view requests carry
+  `workspace`).
+- **`plan`**: `update_plan(steps: [{text, status: pending|doing|done}])` (native tool,
+  `byob_tools::plan`) replaces the chat's plan, kept in `<workspace>/.byob/plans/<chat>.json`,
+  and shows it as a `byob.tree` card on its step. The native `before_request` hook `plan`
+  (priority 200, after compaction) appends the plan, one line per step, to the newest message
+  while a step is open: a tool result in later rounds (`[Current plan]`), the user's message
+  at a turn's start ("your plan in this chat so far"). Never right after `update_plan` (its
+  result is the plan) and never for subagents. Text only goes at the end, so the server's
+  prompt cache keeps everything before it.
+- **`ask-user`**: `ask_user(question, options?)` (native tool) puts a question card up through
+  the turn's `Asker`, like the questions tools ask mid-call, and blocks the turn the same
+  way: a step with `Ask { always: true, choice: Some(Choice { options, free_text, answer }) }`
+  that only a person answers (no policy or `--auto-approve`). The client draws the options as
+  buttons, a field for the user's own answer and Skip; `ClientMsg::AnswerQuestion { step,
+  text }` answers (first answer wins; `Verdict::Replied`), Skip is `Approve … Deny`. The
+  tool's result is "The user answered: …" (or that they skipped, or nobody could). A client
+  without 13.8 shows Allow/Deny; Allow then counts as skipped.
 
 ### For clients (protocol 13)
 

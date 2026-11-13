@@ -71,6 +71,10 @@ struct H {
 }
 
 fn harness(script: Vec<Reply>, bundled: Vec<Embedded>, natives: Natives) -> H {
+    harness_with(script, bundled, natives, Policy::ALLOW_ALL)
+}
+
+fn harness_with(script: Vec<Reply>, bundled: Vec<Embedded>, natives: Natives, policy: Policy) -> H {
     let (url, requests) = fake_llm(script, "final answer");
     let home = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();
@@ -78,7 +82,7 @@ fn harness(script: Vec<Reply>, bundled: Vec<Embedded>, natives: Natives) -> H {
     config.workspace = ws.path().canonicalize().unwrap();
     config.register_workspace = true;
     config.tools = byob_tools::builtin();
-    config.policy = Some(Policy::ALLOW_ALL);
+    config.policy = Some(policy);
     config.paths = Some(Paths::at(home.path()));
     config.auto_title = false;
     config.plugins = Some(PluginsConfig {
@@ -185,6 +189,53 @@ fn a_native_backend_is_hosted_like_a_process_one() {
     assert_eq!(h.requests.lock().unwrap().len(), 8);
 }
 
+/// Says what its `init` carried.
+#[derive(Default)]
+struct Peek {
+    init: Value,
+}
+
+impl NativeBackend for Peek {
+    fn init(&mut self, init: &Value, _: &Outbox) {
+        self.init = init.clone();
+    }
+
+    fn request(&mut self, _: &str, _: &Value, _: &Outbox) -> Result<Value, String> {
+        let token = self.init["secrets"]["TOKEN"].as_str().unwrap_or_default();
+        Ok(json!(format!(
+            "token {} chars, city {}, token in settings: {}",
+            token.len(),
+            self.init["settings"]["CITY"],
+            self.init["settings"].get("TOKEN").is_some()
+        )))
+    }
+}
+
+#[test]
+fn a_native_backend_gets_its_secrets_in_init_and_its_read_tools_run_unasked() {
+    let manifest = json!({
+        "id": "keyed", "name": "Keyed", "backend": {"native": "peek"},
+        "settings": [{"key": "TOKEN", "label": "Token", "secret": true}, {"key": "CITY", "label": "City", "default": "Paris"}],
+        "tools": [{"name": "peek", "description": "Peek", "run": "backend", "access": "read"}]
+    });
+    let plugin = Embedded { id: "keyed".into(), files: [("byob-plugin.json".to_owned(), manifest.to_string())].into_iter().collect() };
+    let factory: NativeFactory = Arc::new(|| Box::new(Peek::default()) as Box<dyn NativeBackend>);
+    // The default policy asks before `execute` tools: this one says it only reads.
+    let h = harness_with(vec![call("peek", "{}"), Reply::Text("done")], vec![plugin], Natives::builtin().backend("peek", factory), Policy::default());
+    let mut c = connect(&h);
+    wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "keyed"));
+    let secret = "s3cret-token";
+    c.send(ClientMsg::SetPluginSetting { plugin: "keyed".into(), key: "TOKEN".into(), value: Some(secret.into()) });
+    wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "keyed" && p.settings.iter().all(|s| s.set)));
+    let (entry, seen) = turn(&mut c, "peek", |s, _| panic!("a read tool was asked about: {}", s.title));
+    let s = step(&entry, "peek");
+    assert_eq!(s.status, StepStatus::Done, "{}", s.detail);
+    assert_eq!(s.detail, format!("token {} chars, city \"Paris\", token in settings: false", secret.len()));
+    for m in &seen {
+        assert!(!m.to_json().contains(secret), "a secret went to a client: {}", m.to_json());
+    }
+}
+
 fn sheets_natives() -> Natives {
     Natives::builtin().backend(byob_sheets::ID, byob_sheets::factory())
 }
@@ -257,6 +308,84 @@ fn the_sheets_plugin_is_native_and_on_by_default() {
     }
 }
 
+/// The bundled memory, plan and ask-user plugins, on by default: remember writes the global
+/// memory.md, the next turn's system prompt holds it, the pane shows it; update_plan's plan
+/// is restated after later tool calls of the turn.
+#[test]
+fn memory_and_plan_are_bundled_and_on_by_default() {
+    let script = vec![
+        call("remember", r#"{"text": "Prefers metric units"}"#),
+        call("update_plan", r#"{"steps": [{"text": "Look around", "status": "doing"}, {"text": "Report", "status": "pending"}]}"#),
+        call("list_files", "{}"),
+        Reply::Text("noted"),
+        Reply::Text("second"),
+    ];
+    let (url, requests) = fake_llm(script, "final answer");
+    let home = tempfile::tempdir().unwrap();
+    let ws = tempfile::tempdir().unwrap();
+    let config_dir = home.path().join("config");
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = ws.path().canonicalize().unwrap();
+    config.register_workspace = true;
+    config.tools = byob_tools::builtin();
+    config.policy = Some(Policy::ALLOW_ALL);
+    config.paths = Some(Paths::at(home.path()));
+    config.auto_title = false;
+    config.plugins = Some(PluginsConfig {
+        scratch_root: Some(home.path().join("chats")),
+        python: byob_plugins::default_python(),
+        bundled: bundled_plugins(),
+        bundled_cache: Some(home.path().join("bundled-plugins")),
+        natives: Natives::builtin().backend(byob_memory::ID, byob_memory::factory(Some(config_dir.clone()))),
+        ..Default::default()
+    });
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::hello("test"));
+    let e = wait_ext(&mut c, |e| !e.plugins.is_empty());
+    for id in ["memory", "plan", "ask-user"] {
+        let p = info(&e, id);
+        assert!(p.enabled && p.in_use() && p.problems.is_empty(), "{p:?}");
+    }
+    let (entry, _) = turn(&mut c, "remember that I prefer metric, then plan", |_, _| {});
+    let r = step(&entry, "remember");
+    assert_eq!((r.status, r.detail.as_str(), r.title.as_str()), (StepStatus::Done, "Remembered (global).", "Remembered: Prefers metric units"));
+    assert!(std::fs::read_to_string(config_dir.join("memory.md")).unwrap().contains("- Prefers metric units\n"));
+    let plan = step(&entry, "update_plan");
+    assert_eq!(plan.title, "Plan: 0/2 done");
+    assert_eq!(plan.views.first().map(|v| v.kind.as_str()), Some("byob.tree"));
+    let reqs = requests.lock().unwrap().clone();
+    let names = tool_names(&reqs[0]);
+    for t in ["remember", "forget", "update_plan", "ask_user"] {
+        assert!(names.iter().any(|n| n == t), "{t} in {names:?}");
+    }
+    let first_system = reqs[0]["messages"][0]["content"].as_str().unwrap().to_owned();
+    assert!(first_system.contains("Memory: notes kept across chats") && first_system.contains("Nothing is saved yet."), "{first_system}");
+    // After update_plan: its result is the plan (not restated); after list_files it is.
+    let last = |req: &Value| req["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap_or_default().to_owned();
+    assert!(last(&reqs[2]).starts_with("Plan (0/2 done):") && !last(&reqs[2]).contains("[Current plan]"), "{}", last(&reqs[2]));
+    assert!(last(&reqs[3]).ends_with("[Current plan]\nPlan (0/2 done):\n[>] Look around\n[ ] Report"), "{}", last(&reqs[3]));
+    // The next turn: the note is in the system prompt, the open plan on the user message.
+    turn(&mut c, "and now?", |_, _| {});
+    let reqs = requests.lock().unwrap().clone();
+    let req = reqs.last().unwrap();
+    let system = req["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("Everywhere:\n- Prefers metric units"), "{system}");
+    assert!(last(req).starts_with("and now?\n\n(Your plan in this chat so far"), "{}", last(req));
+    // The pane shows it.
+    let v = ViewRef::new("memory", "memory", "");
+    c.send(ClientMsg::OpenView { view: v.clone() });
+    loop {
+        if let ServerMsg::LiveView(lv) = recv(&mut c)
+            && lv.view == v
+        {
+            assert_eq!(lv.error, None);
+            assert!(serde_json::to_string(&lv.tree).unwrap().contains("Prefers metric units"), "{lv:?}");
+            break;
+        }
+    }
+}
+
 #[test]
 fn without_its_backend_built_in_sheets_reports_a_problem() {
     // A byob built without the `native-sheets` feature: the plugin is listed, with a problem.
@@ -280,4 +409,46 @@ fn the_sheets_manifest_names_the_native_backend() {
     let names: Vec<&str> = m.tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, byob_sheets::TOOLS);
     assert_eq!(m.views.len(), 1);
+}
+
+/// A one-page web server on loopback (no live network in tests).
+fn page_server(body: &'static str) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = s.write_all(head.as_bytes()).and_then(|()| s.write_all(body.as_bytes()));
+        }
+    });
+    base
+}
+
+#[test]
+fn the_web_plugin_is_on_by_default_and_reads_pages_without_asking() {
+    let page = "<html><head><title>Release notes</title></head><body><nav>Home | Blog</nav><main><h1>v2.0</h1>\
+        <p>This release adds a brand new parser, many fixes, and a much faster startup for everyone who uses it daily.</p>\
+        <p>Upgrading is easy: replace the binary, keep your settings, and read the migration notes linked below.</p></main></body></html>";
+    let base = page_server(page);
+    let script = vec![call("web_fetch", &json!({"url": format!("{base}/notes")}).to_string()), Reply::Text("read it")];
+    let natives = Natives::builtin().backend(byob_web_tools::ID, byob_web_tools::factory());
+    // The default policy: web_fetch only reads, so nobody is asked.
+    let h = harness_with(script, bundled_plugins(), natives, Policy::default());
+    let mut c = connect(&h);
+    let e = wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "web"));
+    let web = info(&e, "web");
+    assert!(web.enabled && web.problems.is_empty(), "{:?}", web.problems);
+    assert_eq!(web.tools, ["web_search", "web_fetch"]);
+    let (entry, _) = turn(&mut c, "read the notes", |s, _| panic!("web_fetch was asked about: {}", s.title));
+    let s = step(&entry, "web_fetch");
+    assert_eq!(s.status, StepStatus::Done, "{}", s.detail);
+    assert_eq!(s.title, format!("Read {base}/notes"));
+    let reqs = h.requests.lock().unwrap();
+    let result = reqs[1]["messages"].as_array().unwrap().iter().rev().find(|m| m["role"] == "tool").unwrap()["content"].as_str().unwrap().to_owned();
+    assert!(result.contains("Title: Release notes\n") && result.contains("# v2.0\n\nThis release adds") && !result.contains("Home | Blog"), "{result}");
+    let tools = tool_names(&reqs[0]);
+    assert!(tools.iter().any(|t| t == "web_search") && tools.iter().any(|t| t == "web_fetch"), "{tools:?}");
 }

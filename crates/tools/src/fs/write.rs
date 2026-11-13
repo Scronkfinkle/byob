@@ -22,7 +22,8 @@ impl Tool for WriteFile {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "write_file".into(),
-            description: "Write a text file in the workspace, replacing it if it exists. Creates folders as needed.".into(),
+            description: "Write a text file in the workspace, replacing it if it exists. Creates folders as needed. To change part of a file, use edit_file."
+                .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {

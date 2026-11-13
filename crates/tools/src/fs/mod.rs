@@ -1,9 +1,13 @@
 //! Built-in file tools. Every path goes through [`crate::sandbox`]; output is bounded.
 
 mod delete;
+mod docs;
+mod edit;
 mod list;
+mod look;
 mod moves;
 mod read;
+mod search;
 mod write;
 
 #[cfg(test)]
@@ -14,9 +18,12 @@ use std::path::Path;
 use serde_json::Value;
 
 pub use delete::{DEFAULT_TRASH_DIR, DeleteFile};
+pub use edit::EditFile;
 pub use list::ListFiles;
+pub use look::LookAtImage;
 pub use moves::{MoveFile, MoveFiles};
 pub use read::ReadFile;
+pub use search::SearchFiles;
 pub use write::WriteFile;
 
 use crate::sandbox::{self, Resolved};
@@ -75,6 +82,15 @@ fn short_name(p: &str) -> String {
     let name = Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string());
     let name = if name.is_empty() { "the workspace".to_string() } else { name };
     clip(&name, 60)
+}
+
+/// The longest prefix of `s` that is at most `max` bytes and ends on a char boundary.
+fn prefix(s: &str, max: usize) -> &str {
+    let mut i = max.min(s.len());
+    while !s.is_char_boundary(i) {
+        i = i.saturating_sub(1);
+    }
+    s.get(..i).unwrap_or_default()
 }
 
 /// Strip control characters and cap at `max` characters.

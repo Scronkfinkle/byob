@@ -101,6 +101,8 @@ file)` reads one, and these two fix it in place. Don't make a new plugin beside 
 - `id`: lowercase letters, digits, dashes. Tool names: letters, digits, `_`.
 - A script tool gets its arguments as JSON on stdin and prints its result; settings arrive as
   environment variables (also `BYOB_PLUGIN_DIR`, `BYOB_CHAT_DIR`).
+- A tool that only looks things up can say so: `"access": "read"` runs it without asking
+  (also `write`, `network`; the default `execute` asks the user first).
 - MCP servers: `command`/`args`/`env` for a local program (stdio), or `url` (+ `headers`) for a
   remote one. `${KEY}` is replaced by the setting `KEY`. Their tools appear as
   `<plugin>__<tool>` a moment after the server starts.
@@ -322,7 +324,7 @@ byob's own features are plugins too, built into the app (scope "built in", the l
 specific: any copy with the same id wins): `artifacts` (create/update/read_artifact and the
 prompt part on artifacts), `html-apps` (HTML apps: `guidance.md` is the prompt's rules for
 writing them), `charts` (make_chart, chart artifacts), `markdown`, `images`, `core-tools`
-(file tools, run_command, run_python), `prompt` (the system prompt's base parts),
+(list/search/read/write/edit/move/delete files, run_command, run_python), `prompt` (the system prompt's base parts),
 `workspace-instructions` (AGENTS.md), `compaction`, `subagents` (`delegate`) and
 `environments` (Nix, pixi, mise, dev containers). `artifacts`, `core-tools` and `prompt` are
 always on; the others can be switched off. `plugin_status(plugin="html-apps", file="guidance.md")` shows a

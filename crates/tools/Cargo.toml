@@ -15,7 +15,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 log.workspace = true
-image.workspace = true
+ignore.workspace = true
+regex.workspace = true
+# GIF and WebP too for look_at_image (screenshots and downloads); re-encoded as PNG for the model.
+image = { workspace = true, features = ["gif", "webp"] }
+byob-docs.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

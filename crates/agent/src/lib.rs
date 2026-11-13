@@ -54,6 +54,7 @@ mod loop_tests;
 mod native_backend_tests;
 pub mod natives;
 pub mod permissions;
+mod plan_hook;
 mod plugins;
 mod queue;
 #[cfg(test)]
@@ -1095,6 +1096,7 @@ impl Engine {
                 }
             }
             ClientMsg::Approve { step, answer } => self.answer(step, answer),
+            ClientMsg::AnswerQuestion { step, text } => self.answer_question(step, &text),
             ClientMsg::Undo { entry } => self.undo(id, entry),
             ClientMsg::ListChats { after, limit } => self.send_chats(id, after, usize::try_from(limit).unwrap_or(FIRST_PAGE)),
             ClientMsg::NewChat { workspace } => self.new_chat(id, workspace),
@@ -1363,6 +1365,24 @@ impl Engine {
         }
         // The turn thread may be gone (stopped); the step update still settles the card.
         let _ = reply.send(verdict);
+        self.settle_step(entry, child, step);
+    }
+
+    /// A client answered a question card (a waiting step with `Ask::choice`). Like
+    /// [`Self::answer`], the first answer wins; an approval card (no choice) or an empty
+    /// answer is ignored.
+    fn answer_question(&mut self, step_id: u64, text: &str) {
+        let text = text.trim();
+        if text.is_empty() || !self.pending.get(&step_id).is_some_and(|p| p.step.ask.as_ref().is_some_and(|a| a.choice.is_some())) {
+            return;
+        }
+        let Some(Pending { entry, mut step, reply, child }) = self.pending.remove(&step_id) else { return };
+        let text = limits::prefix(text, byob_protocol::MAX_ANSWER_CHARS).to_owned();
+        if let Some(c) = step.ask.as_mut().and_then(|a| a.choice.as_mut()) {
+            c.answer = Some(text.clone());
+        }
+        step.status = StepStatus::Running;
+        let _ = reply.send(turn::Verdict::Replied(text));
         self.settle_step(entry, child, step);
     }
 
@@ -1667,6 +1687,7 @@ impl Engine {
             env: Arc::new(env_plan),
             hooks: chat_prompt.hooks.clone(),
             prompt: Some(inputs),
+            vision: self.vision_role(),
         };
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });

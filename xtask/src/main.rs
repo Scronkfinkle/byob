@@ -15,6 +15,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("byob-artifact-wire", 1),
     ("byob-llm", 1),
     ("byob-store", 1),
+    // document text and PDF page images (pure Rust; used by read_file and look_at_image)
+    ("byob-docs", 1),
     ("byob-tools", 2),
     ("byob-mcp", 2),
     ("byob-sandbox", 2),
@@ -23,6 +25,10 @@ const LAYERS: &[(&str, u8)] = &[
     ("byob-agent", 4),
     // the native sheets backend: engine-side, registered by the app (never in the UI or wasm)
     ("byob-sheets", 4),
+    // the native web tools backend (web_search, web_fetch): engine-side, registered by the app
+    ("byob-web-tools", 4),
+    // the native memory backend (memory.md files): engine-side, registered by the app
+    ("byob-memory", 4),
     ("byob-server", 5),
     ("byob-ui-egui", 5),
     ("byob", 6),

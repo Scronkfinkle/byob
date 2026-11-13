@@ -14,8 +14,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use byob_llm::{ChatMessage, LlmError, StreamEvent, ToolCall, ToolCallFilter, Usage, toolprompt};
-use byob_protocol::{Ask, FileChange, Step, StepStatus, ToolAccess, TurnStats, View};
-use byob_tools::{Access, Answer, Asker, Journal, Question, Registry, Tool, ToolContext, ToolOutput, UndoOp};
+use byob_protocol::{Ask, Choice, FileChange, Step, StepStatus, ToolAccess, TurnStats, View};
+use byob_tools::{Access, Answer, Asker, Journal, Question, Registry, Tool, ToolContext, ToolOutput, UndoOp, UserQuestion, UserReply};
 use serde_json::Value;
 
 use crate::hooks::{self, Decision, Flow, Hooks, PromptInputs};
@@ -26,12 +26,34 @@ use crate::limits::{DETAIL_CHARS, EXTRA_ROUNDS, MAX_OUTPUT, MAX_REPEATS, REPEAT_
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are byob, a helpful assistant running inside a desktop harness. Be concise and accurate. \
 Use the provided tools when they help; when a tool fails or the user declines it, explain instead of retrying the same call.";
 
-/// How often a turn blocked on an approval re-checks its cancel flag.
+/// The model role (settings `models`) that looks at images for models that can't see.
+pub const VISION_ROLE: &str = "vision";
+/// What the vision model is asked when the call has no `question`.
+const VISION_QUESTION: &str =
+    "Describe this image in detail. Copy out any text in it exactly, in reading order; write tables as Markdown tables and give the values of charts.";
+/// Most images one call may show.
+const MAX_TOOL_IMAGES: usize = 4;
+/// Longest answer kept from the vision model (bytes).
+const MAX_VISION_ANSWER: usize = 8 * 1024;
+
+/// Ask the vision model role `question` about `images`; its answer, capped.
+fn ask_vision(vision: &byob_llm::Client, question: &str, images: Vec<String>, cancel: &AtomicBool) -> Result<String, String> {
+    let messages = [ChatMessage::user_with_images(question, images)];
+    let out = vision.stream_chat(&messages, &[], cancel, |_| {}).map_err(|e| e.to_string())?;
+    if out.cancelled {
+        return Err("stopped".into());
+    }
+    let answer = out.content.trim();
+    if answer.is_empty() {
+        return Err("it gave no answer".into());
+    }
+    Ok(cap(answer.to_owned(), MAX_VISION_ANSWER, "the vision model's answer was cut"))
+}
+
 /// Images from tool calls kept in a turn's messages (the latest ones).
 const MAX_LIVE_IMAGES: usize = 8;
-/// Starts the message that carries tool calls' images.
-const TOOL_IMAGES: &str = "[Images from the tool calls above:";
-const OLD_IMAGE_NOTE: &str = "[an image shown earlier, no longer kept; read it again to look again]";
+const OLD_IMAGE_NOTE: &str = "[an image shown earlier, no longer kept; look at it again if you need it]";
+/// How often a turn blocked on an approval re-checks its cancel flag.
 const APPROVAL_POLL: Duration = Duration::from_millis(50);
 
 /// The engine's answer to a [`TurnEvent::Gate`].
@@ -43,13 +65,15 @@ pub enum Verdict {
     Deny(String),
     /// A person answered the approval card: allowed or not.
     Answered(bool),
+    /// A person answered a question card (`Ask::choice`) with this text.
+    Replied(String),
 }
 
 impl Verdict {
     /// Why it may not run, if it may not.
     pub fn denied(&self) -> Option<String> {
         match self {
-            Self::Allow | Self::Answered(true) => None,
+            Self::Allow | Self::Answered(true) | Self::Replied(_) => None,
             Self::Deny(reason) => Some(reason.clone()),
             Self::Answered(false) => Some(USER_SAID_NO.into()),
         }
@@ -175,6 +199,9 @@ pub struct Setup {
     /// What the `before_prompt` hooks build the system prompt from, before the first
     /// request (`None`: keep `history`'s, as child turns do).
     pub prompt: Option<PromptInputs>,
+    /// The `vision` model role, if set: it answers questions about images tools show
+    /// ([`ToolContext::show_image`]) when the turn's own model can't see.
+    pub vision: Option<byob_llm::Client>,
 }
 
 /// A turn's tools, swappable between rounds (never during a call: a round works on the
@@ -319,8 +346,8 @@ struct Turn {
     content: String,
     /// Tools that ran, with counts.
     ran: BTreeMap<String, usize>,
-    /// Images this round's calls returned (title, `data:` URL), shown after their results.
-    images: Vec<(String, String)>,
+    /// Images tools showed this round, for the model after the round's results.
+    round_images: Vec<String>,
 }
 
 /// A call that passed the checks and the gate, about to run.
@@ -336,7 +363,7 @@ struct Opened {
 /// A concurrent call running on its own thread.
 struct Started {
     opened: Opened,
-    done: Receiver<(ToolOutput, Vec<UndoOp>, bool, Vec<View>)>,
+    done: Receiver<(ToolOutput, Vec<UndoOp>, bool, Vec<View>, Vec<String>)>,
 }
 
 /// What a running tool can reach of its turn ([`ToolContext::host`]): enough to start a
@@ -362,6 +389,8 @@ pub(crate) struct TurnHost {
     pub child: bool,
     /// The tool reported the step itself (the turn doesn't finish it).
     pub owns_step: AtomicBool,
+    /// The turn's vision model role (child turns use it too).
+    pub vision: Option<byob_llm::Client>,
 }
 
 impl Turn {
@@ -390,7 +419,7 @@ impl Turn {
             answer: String::new(),
             content: String::new(),
             ran: BTreeMap::new(),
-            images: Vec::new(),
+            round_images: Vec::new(),
         }
     }
 
@@ -454,38 +483,12 @@ impl Turn {
             for (call, result) in calls.iter().zip(self.call_all(&calls)) {
                 self.messages.push(if prompt { toolprompt::fallback_tool_result(call, &result) } else { ChatMessage::tool_result(call.id.clone(), result) });
             }
-            self.show_images();
+            self.show_round_images(prompt);
             if self.cancelled() {
                 return Err(End::Stopped);
             }
         }
         Err(End::Error(format!("stopped after {max_rounds} model requests without an answer")))
-    }
-
-    /// Images the round's calls returned go to the model in a user message after the tool
-    /// results (OpenAI-style tool results carry text only). Only the latest
-    /// [`MAX_LIVE_IMAGES`] stay in the turn's messages; older ones leave a note.
-    fn show_images(&mut self) {
-        if self.images.is_empty() {
-            return;
-        }
-        let (titles, urls): (Vec<String>, Vec<String>) = std::mem::take(&mut self.images).into_iter().unzip();
-        let quality = self.s.plan.image_quality;
-        let urls = urls.iter().map(|u| byob_tools::images::compress_data_url(u, quality)).collect();
-        self.messages.push(ChatMessage::user_with_images(format!("{TOOL_IMAGES} {}]", titles.join(", ")), urls));
-        let mut live = 0usize;
-        for m in self.messages.iter_mut().rev() {
-            if m.images.is_empty() || m.role != "user" || !m.content.as_deref().is_some_and(|c| c.starts_with(TOOL_IMAGES)) {
-                continue;
-            }
-            // Keep this message's latest images that still fit; note the dropped ones.
-            let keep = MAX_LIVE_IMAGES.saturating_sub(live).min(m.images.len());
-            let dropped: Vec<String> = m.images.drain(..m.images.len().saturating_sub(keep)).collect();
-            for _ in dropped {
-                m.content = m.content.take().map(|c| format!("{c}\n{OLD_IMAGE_NOTE}"));
-            }
-            live = live.saturating_add(keep);
-        }
     }
 
     /// The `before_request` hooks (compaction among them) may change the messages and
@@ -498,6 +501,8 @@ impl Turn {
             entry: self.s.entry,
             round,
             child: self.s.child.is_some(),
+            chat: &self.s.chat,
+            workspace: self.s.workspace.as_path(),
             messages: &mut self.messages,
             specs,
             llm: &self.s.llm,
@@ -639,10 +644,11 @@ impl Turn {
         }
         for (i, started) in running {
             // The call's thread always answers; a closed channel means it crashed.
-            let (output, ops, owned, views) = started.done.recv().unwrap_or_else(|_| (ToolOutput::err("the tool crashed"), Vec::new(), false, Vec::new()));
+            let (output, ops, owned, views, images) =
+                started.done.recv().unwrap_or_else(|_| (ToolOutput::err("the tool crashed"), Vec::new(), false, Vec::new(), Vec::new()));
             let mut opened = started.opened;
             attach_views(&mut opened.step, views);
-            results[i] = Some(self.close(opened, output, ops, owned));
+            results[i] = Some(self.close(opened, output, ops, owned, images));
         }
         results.into_iter().map(Option::unwrap_or_default).collect()
     }
@@ -674,18 +680,21 @@ impl Turn {
         let host = self.host(&opened.step);
         let asker = self.asker(&opened.name);
         let views = Mutex::new(Vec::new());
+        let images = Mutex::new(Vec::new());
         let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel)
             .with_journal(&self.journal)
             .with_chat(&self.s.chat)
             .with_asker(&asker)
             .with_env(&self.s.env)
             .with_host(&host)
-            .with_views(&views);
+            .with_views(&views)
+            .with_images(&images);
         let output = catch_unwind(AssertUnwindSafe(|| opened.tool.run(&opened.args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
         let ops = self.journal.take();
         let owned = host.owns_step.load(Ordering::Relaxed);
         attach_views(&mut opened.step, views.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner));
-        self.close(opened, output, ops, owned)
+        let images = images.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.close(opened, output, ops, owned, images)
     }
 
     /// Start a concurrent call on a thread of its own (with its own undo journal).
@@ -699,16 +708,19 @@ impl Turn {
         let spawned = thread::Builder::new().name("byob-tool".into()).spawn(move || {
             let journal = Journal::new(workspace.as_path(), &tag);
             let views = Mutex::new(Vec::new());
+            let images = Mutex::new(Vec::new());
             let ctx = ToolContext::new(workspace.as_path(), &cancel)
                 .with_journal(&journal)
                 .with_chat(&chat)
                 .with_asker(&asker)
                 .with_env(&env)
                 .with_host(&host)
-                .with_views(&views);
+                .with_views(&views)
+                .with_images(&images);
             let output = catch_unwind(AssertUnwindSafe(|| tool.run(&args, &ctx))).unwrap_or_else(|_| ToolOutput::err("the tool crashed"));
             let views = views.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let _ = tx.send((output, journal.take(), host.owns_step.load(Ordering::Relaxed), views));
+            let images = images.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = tx.send((output, journal.take(), host.owns_step.load(Ordering::Relaxed), views, images));
         });
         match spawned {
             Ok(_) => Ok(Started { opened, done: rx }),
@@ -743,6 +755,7 @@ impl Turn {
             hooks: self.s.hooks.clone(),
             child: self.s.child.is_some(),
             owns_step: AtomicBool::new(false),
+            vision: self.s.vision.clone(),
         }
     }
 
@@ -815,7 +828,7 @@ impl Turn {
             Decision::Ask(message) => {
                 let text = if message.is_empty() { "A plugin asks you to confirm this call.".to_owned() } else { prefix(&message, MAX_ASK_TEXT).to_owned() };
                 let warning = step.ask.take().and_then(|a| a.warning);
-                step.ask = Some(Box::new(Ask { text, warning, always: true }));
+                step.ask = Some(Box::new(Ask { text, warning, always: true, choice: None }));
                 self.gate(&step)
             }
             Decision::Allow | Decision::Continue => self.gate(&step),
@@ -834,8 +847,15 @@ impl Turn {
 
     /// After a call: undo information, the `after_tool_call` hooks, the step's final state,
     /// and the text the model gets. `owned`: the tool reported its step itself.
-    fn close(&mut self, opened: Opened, output: ToolOutput, ops: Vec<UndoOp>, owned: bool) -> String {
+    fn close(&mut self, opened: Opened, mut output: ToolOutput, ops: Vec<UndoOp>, owned: bool, images: Vec<String>) -> String {
         let Opened { tool, name, args, key, mut step } = opened;
+        // Images the tool showed (ToolContext::show_image) or returned (ToolOutput::images).
+        let mut images = images;
+        images.append(&mut output.images);
+        let showed_images = !images.is_empty() && !output.failed;
+        if showed_images {
+            self.route_images(&args, images, &mut output);
+        }
         let (ops, complete) = crate::steps::undo_ops(ops, &output.changes);
         if !ops.is_empty() || !complete {
             self.emit(TurnEvent::Undo { id: self.s.entry, ops, complete });
@@ -875,15 +895,74 @@ impl Turn {
         if output.failed && !text.starts_with("Error") {
             text.insert_str(0, "Error: ");
         }
-        if !output.failed && !output.images.is_empty() {
-            let title = catch_unwind(AssertUnwindSafe(|| tool.title(&args))).unwrap_or_else(|_| name.clone());
-            let title = one_line(&title, DETAIL_CHARS);
-            self.images.extend(output.images.into_iter().take(MAX_LIVE_IMAGES).map(|url| (title.clone(), url)));
-        } else {
+        if !showed_images {
             // Looking at an image again is allowed (it may have left the context).
             self.seen.insert(key, text.clone());
         }
         text
+    }
+
+    /// Images a call showed: to this turn's model if it can see (after the round's
+    /// results), else to the `vision` model role, whose answer joins the result. A model
+    /// that can't see and no vision role: the call fails, saying so.
+    fn route_images(&mut self, args: &Value, images: Vec<String>, output: &mut ToolOutput) {
+        let quality = self.s.plan.image_quality;
+        let images: Vec<String> = images.into_iter().take(MAX_TOOL_IMAGES).map(|u| byob_tools::images::compress_data_url(&u, quality)).collect();
+        let sees = match self.s.plan.vision {
+            Some(v) => v,
+            // Unknown: a vision role is the safer bet (a server without vision errors).
+            None => self.s.vision.is_none(),
+        };
+        if sees {
+            output.text.push_str("\n(The image is attached below. Later turns don't keep it: look again if you need it.)");
+            self.round_images.extend(images);
+            return;
+        }
+        let Some(vision) = self.s.vision.clone() else {
+            output.failed = true;
+            output.text = "This model can't see images, and no vision model is set up (a \"vision\" model role in settings). Tell the user; work from the text instead if you can.".into();
+            return;
+        };
+        let question = args.get("question").and_then(Value::as_str).map(str::trim).filter(|q| !q.is_empty()).unwrap_or(VISION_QUESTION);
+        match ask_vision(&vision, question, images, &self.s.cancel) {
+            Ok(answer) => {
+                let asked = if question == VISION_QUESTION { String::new() } else { format!(" for \"{}\"", one_line(question, 200)) };
+                output.text.push_str(&format!("\nThe vision model looked at it{asked}:\n{answer}"));
+            }
+            Err(e) => {
+                output.failed = true;
+                output.text = format!("The vision model couldn't look at it: {e}");
+            }
+        }
+    }
+
+    /// The images of this round's calls, for the model, after their results: as a user
+    /// message (tool messages can't carry images on most servers), or in prompt mode with
+    /// the last result (which is a user message already).
+    fn show_round_images(&mut self, prompt: bool) {
+        if self.round_images.is_empty() {
+            return;
+        }
+        let images = std::mem::take(&mut self.round_images);
+        match self.messages.last_mut().filter(|m| prompt && m.role == "user") {
+            Some(last) => last.images.extend(images),
+            None => self.messages.push(ChatMessage::user_with_images("[The image(s) from the tool results above]", images)),
+        }
+        // Only the latest MAX_LIVE_IMAGES stay; older ones leave a note (attachments too:
+        // they are saved in the workspace and can be looked at again).
+        let mut live = 0usize;
+        for m in self.messages.iter_mut().rev() {
+            if m.images.is_empty() {
+                continue;
+            }
+            let keep = MAX_LIVE_IMAGES.saturating_sub(live).min(m.images.len());
+            let dropped = m.images.len().saturating_sub(keep);
+            m.images.drain(..dropped);
+            for _ in 0..dropped {
+                m.content = Some(format!("{}\n{OLD_IMAGE_NOTE}", m.content.take().unwrap_or_default()));
+            }
+            live = live.saturating_add(keep);
+        }
     }
 
     /// A call's title, access, preview and must-confirm card, from its arguments. Tool code
@@ -896,7 +975,7 @@ impl Turn {
         // A call a person must confirm every time (installing system-wide).
         let ask = catch_unwind(AssertUnwindSafe(|| tool.always_ask(args)))
             .unwrap_or_else(|_| Some("this tool must be confirmed".into()))
-            .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true }));
+            .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true, choice: None }));
         (one_line(&title, DETAIL_CHARS), access, preview, ask)
     }
 
@@ -935,9 +1014,9 @@ fn cap_call(text: String) -> String {
 }
 
 /// A receiver that already holds a failed output.
-fn failed_now(text: String) -> Receiver<(ToolOutput, Vec<UndoOp>, bool, Vec<View>)> {
+fn failed_now(text: String) -> Receiver<(ToolOutput, Vec<UndoOp>, bool, Vec<View>, Vec<String>)> {
     let (tx, rx) = channel();
-    let _ = tx.send((ToolOutput::err(text), Vec::new(), false, Vec::new()));
+    let _ = tx.send((ToolOutput::err(text), Vec::new(), false, Vec::new(), Vec::new()));
     rx
 }
 
@@ -988,6 +1067,7 @@ impl Asker for TurnAsker {
                 text: prefix(&q.text, MAX_ASK_TEXT).to_owned(),
                 warning: q.warning.as_deref().map(|w| prefix(w, MAX_ASK_TEXT).to_owned()),
                 always: q.always_ask,
+                choice: None,
             })),
             views: vec![],
         };
@@ -998,7 +1078,7 @@ impl Asker for TurnAsker {
         let answer = match &verdict {
             Verdict::Allow => Answer::AutoYes,
             Verdict::Deny(_) => Answer::AutoNo,
-            Verdict::Answered(true) => Answer::Yes,
+            Verdict::Answered(true) | Verdict::Replied(_) => Answer::Yes,
             Verdict::Answered(false) => Answer::No,
         };
         step.status = if answer.allowed() { StepStatus::Done } else { StepStatus::Denied };
@@ -1007,6 +1087,61 @@ impl Asker for TurnAsker {
         }
         emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step });
         answer
+    }
+
+    /// A question card: like [`Asker::ask`]'s card, but only a person answers it (no policy
+    /// or `--auto-approve`), with the options or their own text.
+    fn ask_user(&self, q: &UserQuestion) -> UserReply {
+        let options: Vec<String> =
+            q.options.iter().take(byob_protocol::MAX_CHOICE_OPTIONS).map(|o| prefix(o, byob_protocol::MAX_ANSWER_CHARS).to_owned()).collect();
+        let mut step = Step {
+            id: self.step_ids.fetch_add(1, Ordering::Relaxed),
+            tool: self.tool.clone(),
+            title: one_line(&q.question, DETAIL_CHARS),
+            access: ToolAccess::Read,
+            status: StepStatus::Running,
+            detail: String::new(),
+            changes: Vec::new(),
+            at: self.at,
+            preview: None,
+            media: Vec::new(),
+            artifacts: Vec::new(),
+            delegation: None,
+            ask: Some(Box::new(Ask {
+                text: prefix(&q.question, MAX_ASK_TEXT).to_owned(),
+                warning: None,
+                always: true,
+                choice: Some(Choice { options, free_text: q.free_text, answer: None }),
+            })),
+            views: vec![],
+        };
+        emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step: step.clone() });
+        let (reply, answer) = channel();
+        emit_to(&self.inbox, self.child, TurnEvent::Gate { id: self.entry, step: step.clone(), reply });
+        let verdict = wait_verdict(&answer, &self.cancel);
+        let reply = match verdict {
+            Verdict::Replied(text) => UserReply::Answered(text),
+            // An older client's Allow: no text to give.
+            Verdict::Answered(true) | Verdict::Allow => UserReply::Answered(String::new()),
+            Verdict::Answered(false) => UserReply::Skipped,
+            Verdict::Deny(_) => UserReply::NoOne,
+        };
+        match &reply {
+            UserReply::Answered(text) => {
+                step.status = StepStatus::Done;
+                step.detail = one_line(text, DETAIL_CHARS);
+                if let Some(c) = step.ask.as_mut().and_then(|a| a.choice.as_mut()) {
+                    c.answer = Some(text.clone());
+                }
+            }
+            UserReply::Skipped => (step.status, step.detail) = (StepStatus::Denied, "skipped".into()),
+            UserReply::NoOne => (step.status, step.detail) = (StepStatus::Denied, "no answer".into()),
+        }
+        emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step });
+        match reply {
+            UserReply::Answered(t) if t.trim().is_empty() => UserReply::Skipped,
+            other => other,
+        }
     }
 }
 

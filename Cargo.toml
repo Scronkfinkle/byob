@@ -33,10 +33,20 @@ byob-agent = { path = "crates/agent", version = "0.3.1" }
 byob-ui-egui = { path = "crates/ui-egui", version = "0.3.1" }
 byob-artifact-wire = { path = "crates/artifact-wire", version = "0.3.1" }
 byob-sheets = { path = "crates/sheets", version = "0.3.1" }
+byob-web-tools = { path = "crates/web-tools", version = "0.3.1" }
+byob-docs = { path = "crates/docs", version = "0.3.1" }
+byob-memory = { path = "crates/memory", version = "0.3.1" }
 
 # Spreadsheets (byob-sheets): pinned so a bump (and its formula results) is deliberate.
 # MIT OR Apache-2.0.
 ironcalc = "=0.9.1"
+
+# Documents (byob-docs). hayro: pure-Rust PDF parser and rasteriser (MIT OR Apache-2.0; its
+# embedded standard-font substitutes are Foxit's, BSD). zip + quick-xml read .docx/.pptx
+# (MIT; ironcalc already links both).
+hayro = "0.9"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+quick-xml = "0.42"
 
 # Foundation.
 thiserror = "2"
@@ -96,6 +106,11 @@ png = "0.18"
 # (rustix's `unshare` is `unsafe`, and the workspace forbids unsafe code).
 landlock = "0.4"
 nix = { version = "0.31", default-features = false, features = ["sched", "signal", "resource", "user", "process"] }
+
+# search_files: ripgrep's walker (.gitignore rules; Unlicense OR MIT) and the regex
+# engine (linear time, so hostile patterns can't hang a turn).
+ignore = "0.4"
+regex = "1"
 
 # Testing.
 proptest = "1"

@@ -23,15 +23,19 @@ use crate::{EngineConfig, EngineHandle, LocalConnection, Policy};
 const EXEC: &str = "Running code: run_command and run_python run in a sandbox.";
 
 fn natives() -> Natives {
-    Natives::builtin().prompt("exec", |_| EXEC.to_owned()).backend(byob_sheets::ID, byob_sheets::factory())
+    Natives::builtin()
+        .prompt("exec", |_| EXEC.to_owned())
+        .backend(byob_sheets::ID, byob_sheets::factory())
+        .backend(byob_web_tools::ID, byob_web_tools::factory())
+        .backend(byob_memory::ID, byob_memory::factory(None))
 }
 
 /// The bundled plugins byob had before spreadsheets (P5): with them the prompt and tools must
-/// be what they were. `sheets` adds its own (tested in
-/// `bundled_plugins_load_with_no_files_on_disk` and `native_backend_tests`).
+/// be what they were. `sheets`, `web`, `memory`, `plan` and `ask-user` add their own (tested in
+/// `bundled_plugins_load_with_no_files_on_disk`, `native_backend_tests` and below).
 fn config(home: &Path, bundled: bool) -> PluginsConfig {
     let mut c = config_all(home, bundled);
-    c.bundled.retain(|e| e.id != "sheets");
+    c.bundled.retain(|e| !matches!(e.id.as_str(), "sheets" | "web" | "memory" | "plan" | "ask-user"));
     c
 }
 
@@ -75,6 +79,7 @@ fn bundled_plugins_load_with_no_files_on_disk() {
         ids,
         [
             "artifacts",
+            "ask-user",
             "charts",
             "compaction",
             "core-tools",
@@ -82,9 +87,12 @@ fn bundled_plugins_load_with_no_files_on_disk() {
             "html-apps",
             "images",
             "markdown",
+            "memory",
+            "plan",
             "prompt",
             "sheets",
             "subagents",
+            "web",
             "workspace-instructions"
         ]
     );
@@ -106,7 +114,11 @@ fn bundled_plugins_load_with_no_files_on_disk() {
     assert_eq!(charts.tools, ["make_chart"]);
     // Every tool of the base is offered (run_command & co. are optional: not in this base).
     let mut have: Vec<String> = c.tools.specs().into_iter().map(|s| s.name).collect();
-    have.retain(|n| n != "use_skill");
+    have.retain(|n| !matches!(n.as_str(), "use_skill" | "remember" | "forget"));
+    let memory = c.infos.iter().find(|p| p.id == "memory").unwrap();
+    assert_eq!(memory.views.len(), 1, "its pane");
+    assert_eq!(c.infos.iter().find(|p| p.id == "plan").unwrap().tools, ["update_plan"]);
+    assert_eq!(c.infos.iter().find(|p| p.id == "ask-user").unwrap().tools, ["ask_user"]);
     let base: Vec<String> = byob_tools::builtin().specs().into_iter().map(|s| s.name).collect();
     assert_eq!(have, base);
 }
