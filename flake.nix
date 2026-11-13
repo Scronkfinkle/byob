@@ -100,7 +100,7 @@
 
         byob-artifact-host = rustPlatform.buildRustPackage {
           pname = "byob-artifact-host";
-          version = "0.3.1";
+          version = "0.3.2";
           src = lib.fileset.toSource {
             root = ./.;
             fileset = lib.fileset.unions [

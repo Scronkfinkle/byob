@@ -28,6 +28,9 @@ that draws its own interface on the GPU, with no Electron.
   images and HTML apps, each with its version history.
 - **Hands, with a leash.** File tools, `run_command` and `run_python` (sandboxed on Linux); approval
   cards with diffs; undo per turn.
+- **Reads, searches and remembers.** PDF, Word and PowerPoint files; images, for models that can see;
+  web search and page reading (Exa by default, or your own SearXNG, Brave or Tavily); notes kept
+  across chats in plain Markdown; a step plan for long tasks.
 - **Workspaces.** A folder with its own settings and where commands run: this machine, a Nix dev
   shell or a Docker/Podman container. Settings layer global → workspace → chat.
 - **Everywhere you are.** `byob --serve` opens that session to browsers too; with
