@@ -78,6 +78,8 @@ jobs:
         with:
           workspaces: host/artifact-host
           key: helper-${{ matrix.target }}
+          # A Servo build takes up to half an hour: keep it even if packaging fails after.
+          cache-on-failure: true
       - name: Build
         run: cargo build --release --locked --manifest-path host/artifact-host/Cargo.toml --target ${{ matrix.target }}
       # Windows draws through ANGLE (Cargo.toml): its two DLLs go next to the helper, with
@@ -91,8 +93,17 @@ jobs:
           cp "$rel"/byob-artifact-host* helper-out/ 2>/dev/null || true
           rm -f helper-out/*.d helper-out/*.pdb
           if [[ "$RUNNER_OS" == Windows ]]; then
-            egl=$(find "$rel/build" -path '*mozangle-*/out/libEGL.dll' | head -1)
-            cp "$egl" "$(dirname "$egl")/libGLESv2.dll" helper-out/
+            # mozangle's build script links them into its OUT_DIR; look anywhere in target/ (a
+            # cached build and a fresh one needn't agree on where).
+            egl=$(find host/artifact-host/target -iname libEGL.dll | head -1)
+            gles=$(find host/artifact-host/target -iname libGLESv2.dll | head -1)
+            if [[ -z "$egl" || -z "$gles" ]]; then
+              echo "::error::ANGLE's DLLs weren't built (libEGL: '$egl', libGLESv2: '$gles')"
+              find host/artifact-host/target -ipath '*mozangle*' -maxdepth 6 | head -40
+              find host/artifact-host/target -iname '*.dll' | head -40
+              exit 1
+            fi
+            cp "$egl" "$gles" helper-out/
             cp "$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path '*mozangle-*/gfx/angle/checkout/LICENSE' | head -1)" helper-out/LICENSE-ANGLE
           fi
           ls -la helper-out
