@@ -1663,7 +1663,7 @@ impl Engine {
             prior,
             child: None,
             parent_cancel: None,
-            max_calls: limits::MAX_CALLS,
+            max_calls: limits::call_limit(eff.max_tool_calls.value),
             env: Arc::new(env_plan),
             hooks: chat_prompt.hooks.clone(),
             prompt: Some(inputs),

@@ -21,7 +21,7 @@ use serde_json::Value;
 use crate::hooks::{self, Decision, Flow, Hooks, PromptInputs};
 use crate::{Input, adapt};
 
-use crate::limits::{DETAIL_CHARS, MAX_OUTPUT, MAX_REPEATS, MAX_ROUNDS, REPEAT_QUOTE, TURN_OUTPUT_BUDGET, cap, one_line, prefix};
+use crate::limits::{DETAIL_CHARS, EXTRA_ROUNDS, MAX_OUTPUT, MAX_REPEATS, REPEAT_QUOTE, cap, one_line, prefix};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are byob, a helpful assistant running inside a desktop harness. Be concise and accurate. \
 Use the provided tools when they help; when a tool fails or the user declines it, explain instead of retrying the same call.";
@@ -417,7 +417,8 @@ impl Turn {
                 *first = ChatMessage::system(text);
             }
         }
-        for round in 0..MAX_ROUNDS {
+        let max_rounds = self.s.max_calls.saturating_add(EXTRA_ROUNDS);
+        for round in 0..max_rounds {
             // Plugins may have changed since the last round (the model made a tool).
             self.tools = self.s.tools.snapshot();
             let tools_on = self.tools_on();
@@ -458,7 +459,7 @@ impl Turn {
                 return Err(End::Stopped);
             }
         }
-        Err(End::Error(format!("stopped after {MAX_ROUNDS} model requests without an answer")))
+        Err(End::Error(format!("stopped after {max_rounds} model requests without an answer")))
     }
 
     /// Images the round's calls returned go to the model in a user message after the tool
@@ -650,13 +651,15 @@ impl Turn {
     fn count_call(&mut self) -> Option<String> {
         self.calls = self.calls.saturating_add(1);
         let max = self.s.max_calls;
-        (self.calls > max).then(|| format!("Not run: the limit of {max} tool calls per turn is reached. Answer with what you have."))
+        (self.calls > max).then(|| format!(
+            "Not run: the limit of {max} tool calls per turn is reached. Answer with what you have; if there's more to do, say where you stopped: the user can say continue, or raise \"Tool calls per turn\" in the chat's settings."
+        ))
     }
 
     /// Bound a result (already within the per-call cap) by what is left of the turn's
     /// output budget.
     fn charge(&mut self, text: String) -> String {
-        let remaining = TURN_OUTPUT_BUDGET.saturating_sub(self.output_used);
+        let remaining = crate::limits::output_budget(self.s.max_calls).saturating_sub(self.output_used);
         let text = cap(text, remaining, "this turn's tool output budget is used up; answer with what you have");
         self.output_used = self.output_used.saturating_add(text.len());
         text

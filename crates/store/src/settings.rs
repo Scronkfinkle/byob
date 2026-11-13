@@ -202,6 +202,10 @@ pub struct Settings {
     /// [`byob_types::config::DEFAULT_IMAGE_QUALITY`]). Workspaces and chats may override it.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub image_quality: Option<u8>,
+    /// Most tool calls in one turn (0: no limit; default
+    /// [`byob_types::config::DEFAULT_TOOL_CALLS`]). Workspaces and chats may override it.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
     /// Added to every chat's system prompt (workspaces and chats add their own after it).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
@@ -281,6 +285,7 @@ impl Settings {
             compact_percent: Some(self.compaction.threshold_percent).filter(|p| *p != compaction.threshold_percent),
             subagents: Some(self.subagents.enabled).filter(|s| *s != subagents.enabled),
             image_quality: self.image_quality.map(|q| q.min(100)),
+            max_tool_calls: self.max_tool_calls,
             instructions: text(&self.instructions),
             env: None,
             image: None,
@@ -298,6 +303,7 @@ impl Settings {
         self.compaction.threshold_percent = l.compact_percent.unwrap_or(defaults.threshold_percent);
         self.subagents.enabled = l.subagents.unwrap_or(SubagentSettings::default().enabled);
         self.image_quality = l.image_quality;
+        self.max_tool_calls = l.max_tool_calls;
         self.instructions.clone_from(&l.instructions);
         self.plugins = l.plugins.clone().unwrap_or_default();
     }

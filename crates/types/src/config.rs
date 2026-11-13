@@ -45,6 +45,10 @@ pub const DEFAULT_COMPACT_PERCENT: u8 = 80;
 /// JPEG quality images sent to the model get by default: a light pass, often much smaller
 /// than a PNG screenshot and hard to tell apart.
 pub const DEFAULT_IMAGE_QUALITY: u8 = 85;
+/// Tool calls one turn may make by default (`max_tool_calls`; 0 is no limit).
+pub const DEFAULT_TOOL_CALLS: u32 = 30;
+/// Largest limit that can be set short of none.
+pub const MAX_TOOL_CALLS: u32 = 100_000;
 
 /// Where a value comes from, least to most specific.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -202,6 +206,9 @@ pub struct Layer {
     /// makes them smaller; 0 sends them as they are (downscaled only).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub image_quality: Option<u8>,
+    /// Most tool calls in one turn; 0: no limit.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
     /// Appended to the system prompt after the less specific levels' instructions.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
@@ -240,20 +247,39 @@ pub enum Field {
     Subagents,
     /// `image_quality`.
     ModelImages,
+    /// `max_tool_calls`.
+    ToolCalls,
     Instructions,
     Env,
     Image,
 }
 
 impl Field {
-    pub const ALL: [Self; 9] =
-        [Self::Endpoint, Self::ToolMode, Self::Approvals, Self::Compaction, Self::Subagents, Self::ModelImages, Self::Instructions, Self::Env, Self::Image];
+    pub const ALL: [Self; 10] = [
+        Self::Endpoint,
+        Self::ToolMode,
+        Self::Approvals,
+        Self::Compaction,
+        Self::Subagents,
+        Self::ToolCalls,
+        Self::ModelImages,
+        Self::Instructions,
+        Self::Env,
+        Self::Image,
+    ];
 
     /// The levels this setting exists at (besides [`Level::Default`]).
     pub fn levels(self) -> &'static [Level] {
         const ALL: &[Level] = &[Level::Global, Level::Workspace, Level::Chat];
         match self {
-            Self::Endpoint | Self::ToolMode | Self::Approvals | Self::Compaction | Self::Subagents | Self::ModelImages | Self::Instructions => ALL,
+            Self::Endpoint
+            | Self::ToolMode
+            | Self::Approvals
+            | Self::Compaction
+            | Self::Subagents
+            | Self::ToolCalls
+            | Self::ModelImages
+            | Self::Instructions => ALL,
             Self::Env => &[Level::Workspace, Level::Chat],
             Self::Image => &[Level::Workspace],
         }
@@ -271,6 +297,7 @@ impl Field {
             Self::Compaction => "Compaction",
             Self::Subagents => "Subagents",
             Self::ModelImages => "Images to the model",
+            Self::ToolCalls => "Tool calls per turn",
             Self::Instructions => "Instructions",
             Self::Env => "Environment",
             Self::Image => "Container image",
@@ -288,6 +315,7 @@ impl Layer {
             Field::Compaction => self.auto_compact.is_some() || self.compact_percent.is_some(),
             Field::Subagents => self.subagents.is_some(),
             Field::ModelImages => self.image_quality.is_some(),
+            Field::ToolCalls => self.max_tool_calls.is_some(),
             Field::Instructions => self.instructions.is_some(),
             Field::Env => self.env.is_some(),
             Field::Image => self.image.is_some(),
@@ -309,6 +337,7 @@ impl Layer {
             }
             Field::Subagents => self.subagents = None,
             Field::ModelImages => self.image_quality = None,
+            Field::ToolCalls => self.max_tool_calls = None,
             Field::Instructions => self.instructions = None,
             Field::Env => self.env = None,
             Field::Image => self.image = None,
@@ -349,6 +378,7 @@ impl Layer {
         }
         self.compact_percent = self.compact_percent.map(|p| p.clamp(10, 95));
         self.image_quality = self.image_quality.map(|q| q.min(100));
+        self.max_tool_calls = self.max_tool_calls.map(|n| n.min(MAX_TOOL_CALLS));
         if let Some(p) = &self.plugins {
             if p.len() > MAX_PLUGIN_SWITCHES {
                 return Err(format!("at most {MAX_PLUGIN_SWITCHES} plugins can be switched per level"));
@@ -399,6 +429,8 @@ pub struct Effective {
     pub subagents: Sourced<bool>,
     /// JPEG quality for images sent to the model; 0: as they are.
     pub image_quality: Sourced<u8>,
+    /// Most tool calls in one turn; 0: no limit.
+    pub max_tool_calls: Sourced<u32>,
     /// Every level's instructions, least specific first; all of them apply.
     #[serde(default)]
     pub instructions: Vec<(Level, String)>,
@@ -529,6 +561,7 @@ pub fn resolve(levels: Levels<'_>, keys: Keys, forced: Forced) -> Effective {
         compact_percent: pick(&levels, DEFAULT_COMPACT_PERCENT, |l| l.compact_percent.map(|p| p.clamp(10, 95))),
         subagents: pick(&levels, true, |l| l.subagents),
         image_quality: pick(&levels, DEFAULT_IMAGE_QUALITY, |l| l.image_quality.map(|q| q.min(100))),
+        max_tool_calls: pick(&levels, DEFAULT_TOOL_CALLS, |l| l.max_tool_calls.map(|n| n.min(MAX_TOOL_CALLS))),
         instructions,
         env,
         load_project: (ws_env == EnvKind::Nix).then_some(true),
@@ -607,6 +640,12 @@ mod tests {
         let wild_q = layer(|l| l.image_quality = Some(250));
         assert_eq!(resolve(Levels { chat: Some(&wild_q), ..Default::default() }, Keys::default(), Forced::default()).image_quality.value, 100);
         assert_eq!(wild_q.clone().validated(Level::Chat).unwrap().image_quality, Some(100));
+        let calls = |n| layer(|l| l.max_tool_calls = Some(n));
+        assert_eq!(resolve(Levels::default(), Keys::default(), Forced::default()).max_tool_calls.value, DEFAULT_TOOL_CALLS);
+        let (none, many) = (calls(0), calls(u32::MAX));
+        let e = resolve(Levels { global: Some(&many), chat: Some(&none), ..Default::default() }, Keys::default(), Forced::default());
+        assert_eq!(e.max_tool_calls, Sourced { value: 0, from: Level::Chat });
+        assert_eq!(resolve(Levels { global: Some(&many), ..Default::default() }, Keys::default(), Forced::default()).max_tool_calls.value, MAX_TOOL_CALLS);
         let wild = layer(|l| l.compact_percent = Some(200));
         assert_eq!(resolve(Levels { chat: Some(&wild), ..Default::default() }, Keys::default(), Forced::default()).compact_percent.value, 95);
     }

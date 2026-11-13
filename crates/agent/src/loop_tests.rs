@@ -150,6 +150,17 @@ fn harness_with(script: Vec<Reply>, tool: &'static str, access: Access, reply: O
 }
 
 fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Option<String>, paths: Option<byob_store::Paths>) -> Harness {
+    harness_defaults(script, tool, access, reply, paths, crate::Layer::default())
+}
+
+fn harness_defaults(
+    script: Vec<Reply>,
+    tool: &'static str,
+    access: Access,
+    reply: Option<String>,
+    paths: Option<byob_store::Paths>,
+    defaults: crate::Layer,
+) -> Harness {
     let (url, requests) = fake_llm(script, "final answer");
     let runs = Arc::new(AtomicUsize::new(0));
     let mut tools = Registry::default();
@@ -159,7 +170,7 @@ fn harness_at(script: Vec<Reply>, tool: &'static str, access: Access, reply: Opt
         workspace: PathBuf::from("/ws"),
         tools,
         policy: None,
-        defaults: crate::Layer::default(),
+        defaults,
         scoped_keys: Default::default(),
         workspaces_root: None,
         register_workspace: false,
@@ -424,6 +435,32 @@ fn repeated_identical_calls_are_not_rerun_and_end_the_loop() {
     assert_eq!(reqs.len(), 1 + crate::limits::MAX_REPEATS + 1);
     assert!(reqs.last().unwrap().get("tools").is_none(), "tools are switched off after repeats");
     assert!(tool_results(&reqs[2]).last().unwrap().contains("already called echo"));
+}
+
+#[test]
+fn the_tool_call_limit_follows_the_settings_and_can_be_lifted() {
+    // `rounds` model replies of `per` calls each (all different), then the answer; every
+    // result is 1 KB.
+    let run = |limit: u32, rounds: usize, per: usize| {
+        let mut script: Vec<Reply> =
+            (0..rounds).map(|r| Reply::Calls((0..per).map(|i| ("echo".to_owned(), format!(r#"{{"text":"{r}-{i}"}}"#))).collect())).collect();
+        script.push(Reply::Text("done"));
+        let defaults = crate::Layer { max_tool_calls: Some(limit), ..Default::default() };
+        let h = harness_defaults(script, "echo", Access::Read, Some("x".repeat(1024)), None, defaults);
+        let (mut c, _) = client(&h);
+        let view = run_turn(&mut c, "go", |_, _| {});
+        let reqs = h.requests.lock().unwrap();
+        let results: Vec<String> = reqs.iter().flat_map(tool_results).collect();
+        let last = tool_results(reqs.last().unwrap()).last().cloned().unwrap_or_default();
+        (h.runs.load(Ordering::SeqCst), last, view.reply().content.clone(), results.iter().any(|r| r.contains("budget")))
+    };
+    let (ran, last, _, _) = run(5, 1, 8);
+    assert_eq!(ran, 5);
+    assert!(last.contains("limit of 5 tool calls") && last.contains("Tool calls per turn"), "{last}");
+    // No limit: three times the default, and 90 KB of results, past the default 60 KB
+    // budget, none of them cut (compaction keeps the context in check instead).
+    let (ran, _, answer, cut) = run(0, 3, 30);
+    assert_eq!((ran, answer.as_str(), cut), (90, "done", false));
 }
 
 #[test]

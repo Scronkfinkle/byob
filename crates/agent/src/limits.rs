@@ -1,13 +1,33 @@
 //! Caps that keep a turn bounded no matter what the model or a tool does.
 
-/// Most tool calls per turn (as hob). Further calls are refused and tools are switched off.
-pub const MAX_CALLS: usize = 30;
-/// Most model requests per turn: a hard stop even if a server ignores "no tools".
-pub const MAX_ROUNDS: usize = MAX_CALLS + 5;
+/// Most tool calls per turn by default (the chat's settings may change it, or lift it).
+/// Further calls are refused and tools are switched off.
+#[cfg(test)]
+pub const MAX_CALLS: usize = byob_types::config::DEFAULT_TOOL_CALLS as usize;
+/// Model requests a turn may make beyond its tool-call limit: a hard stop even if a
+/// server ignores "no tools".
+pub const EXTRA_ROUNDS: usize = 5;
 /// Most bytes of one tool result the model sees.
 pub const MAX_OUTPUT: usize = 16 * 1024;
-/// Most bytes of tool results per turn (hob used 60k characters).
+/// Most bytes of tool results per turn at the default call limit (hob used 60k
+/// characters); it grows with a higher limit (see [`output_budget`]).
 pub const TURN_OUTPUT_BUDGET: usize = 60_000;
+
+/// A turn's tool-call limit from the setting (0: none).
+pub fn call_limit(setting: u32) -> usize {
+    if setting == 0 { usize::MAX } else { usize::try_from(setting).unwrap_or(usize::MAX) }
+}
+
+/// The tool-output budget of a turn allowed `max_calls` calls: [`TURN_OUTPUT_BUDGET`] for
+/// up to the default limit, in proportion above it; none without a limit (compaction and
+/// the request budget keep the context in check).
+pub fn output_budget(max_calls: usize) -> usize {
+    let default = byob_types::config::DEFAULT_TOOL_CALLS as usize;
+    if max_calls == usize::MAX {
+        return usize::MAX;
+    }
+    TURN_OUTPUT_BUDGET.saturating_mul(max_calls.max(default)) / default
+}
 /// After this many exact repeats of an earlier call, tools are switched off for the turn.
 pub const MAX_REPEATS: usize = 3;
 /// Longest step detail shown to clients.

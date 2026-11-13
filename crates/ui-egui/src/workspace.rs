@@ -14,8 +14,17 @@ use crate::envpanel::EnvPanel;
 use crate::theme::{self, Tokens};
 
 /// Settings a chat can change (and the order they're shown in).
-pub const CHAT_FIELDS: &[Field] =
-    &[Field::Endpoint, Field::Env, Field::Approvals, Field::ToolMode, Field::Compaction, Field::Subagents, Field::ModelImages, Field::Instructions];
+pub const CHAT_FIELDS: &[Field] = &[
+    Field::Endpoint,
+    Field::Env,
+    Field::Approvals,
+    Field::ToolMode,
+    Field::Compaction,
+    Field::Subagents,
+    Field::ToolCalls,
+    Field::ModelImages,
+    Field::Instructions,
+];
 /// Settings of a workspace.
 pub const WORKSPACE_FIELDS: &[Field] = &[
     Field::Env,
@@ -25,11 +34,20 @@ pub const WORKSPACE_FIELDS: &[Field] = &[
     Field::ToolMode,
     Field::Compaction,
     Field::Subagents,
+    Field::ToolCalls,
     Field::ModelImages,
     Field::Instructions,
 ];
 /// Defaults in Settings (the endpoint has its own form there).
-pub const GLOBAL_FIELDS: &[Field] = &[Field::Approvals, Field::ToolMode, Field::Compaction, Field::Subagents, Field::ModelImages, Field::Instructions];
+pub const GLOBAL_FIELDS: &[Field] =
+    &[Field::Approvals, Field::ToolMode, Field::Compaction, Field::Subagents, Field::ToolCalls, Field::ModelImages, Field::Instructions];
+
+/// The choices for tool calls per turn; 0 is no limit.
+const TOOL_CALL_LIMITS: [u32; 5] = [10, 30, 100, 300, 0];
+
+fn tool_calls_label(n: u32) -> String {
+    if n == 0 { "No limit".into() } else { format!("{n}") }
+}
 
 /// The choices for images sent to the model: JPEG qualities, and 0 (as they are).
 const IMAGE_QUALITIES: [u8; 5] = [0, 95, 85, 70, 50];
@@ -166,6 +184,7 @@ impl LayerEditor {
             Field::Compaction => e.auto_compact.from.max(e.compact_percent.from),
             Field::Subagents => e.subagents.from,
             Field::ModelImages => e.image_quality.from,
+            Field::ToolCalls => e.max_tool_calls.from,
             Field::Instructions => level,
             Field::Env => e.env.from,
             Field::Image => Level::Workspace,
@@ -273,6 +292,24 @@ impl LayerEditor {
                         .on_hover_text("Whether the model may hand tasks to subagents (the delegate tool)");
                     if v != self.draft.subagents {
                         self.draft.subagents = v;
+                        out = Some(self.send(None));
+                    }
+                }
+                Field::ToolCalls => {
+                    let mut v = self.draft.max_tool_calls;
+                    let shown = |n: Option<u32>| n.map_or_else(|| format!("{inh} ({})", tool_calls_label(e.max_tool_calls.value)), tool_calls_label);
+                    egui::ComboBox::from_id_salt(("tool_calls", level))
+                        .selected_text(shown(v))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut v, None, shown(None));
+                            for n in TOOL_CALL_LIMITS {
+                                ui.selectable_value(&mut v, Some(n), tool_calls_label(n));
+                            }
+                        })
+                        .response
+                        .on_hover_text("How many tools the model may call in one reply before it has to answer; long jobs (many files, many images) need more");
+                    if v != self.draft.max_tool_calls {
+                        self.draft.max_tool_calls = v;
                         out = Some(self.send(None));
                     }
                 }
