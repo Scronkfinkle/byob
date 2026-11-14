@@ -25,7 +25,7 @@ use crate::{Input, adapt};
 use crate::limits::{DETAIL_CHARS, EXTRA_ROUNDS, MAX_OUTPUT, MAX_REPEATS, REPEAT_QUOTE, cap, one_line, prefix};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are byob, a helpful assistant running inside a desktop harness. Be concise and accurate. \
-Use the provided tools when they help; when a tool fails or the user declines it, explain instead of retrying the same call.";
+Use the provided tools when they help; when a tool fails, read the error, fix the call and carry on; when the user declines a call, don't repeat it: explain instead.";
 
 /// The model role (settings `models`) that looks at images for models that can't see.
 pub const VISION_ROLE: &str = "vision";
@@ -559,9 +559,56 @@ impl Turn {
         let _ = crate::plugins::request(&self.s.inbox, &self.s.chat, op, &self.s.cancel);
     }
 
+    /// One model request, through [`Self::model_call_once`]. A request the server failed (a 5xx, or an error in the stream: often the model wrote
+    /// a tool call the server couldn't parse) is tried again, up to [`MODEL_RETRIES`] times;
+    /// for a parse error the model is told what was wrong first.
+    fn model_call(&mut self, specs: &[byob_llm::ToolSpec]) -> Result<byob_llm::ChatOutcome, End> {
+        let mut tries = 0usize;
+        loop {
+            match self.model_call_once(specs) {
+                Err(e) if tries < MODEL_RETRIES && !self.cancelled() && retryable(&e) => {
+                    let e = e.to_string();
+                    tries = tries.saturating_add(1);
+                    log::warn!("model request failed ({e}); trying again ({tries}/{MODEL_RETRIES})");
+                    if unparsed_reply(&e) {
+                        self.note_for_model(format!(
+                            "[byob: the server couldn't read your last reply ({}). Write it again; give any tool call's arguments as one valid JSON object.]",
+                            one_line(&e, 300)
+                        ));
+                    } else if !self.wait(RETRY_PAUSE.saturating_mul(u32::try_from(tries).unwrap_or(1))) {
+                        return Err(End::Stopped);
+                    }
+                }
+                Err(e) if tries > 0 => return Err(End::Error(format!("{e} (tried {} times)", tries.saturating_add(1)))),
+                result => return result.map_err(|e| End::Error(e.to_string())),
+            }
+        }
+    }
+
+    /// Add `text` for the model: onto the last user message, or as a new one (some chat
+    /// templates refuse two user messages in a row).
+    fn note_for_model(&mut self, text: String) {
+        match self.messages.last_mut().filter(|m| m.role == "user") {
+            Some(last) => last.content = Some(format!("{}\n\n{text}", last.content.take().unwrap_or_default())),
+            None => self.messages.push(ChatMessage::user(text)),
+        }
+    }
+
+    /// Sleep `d` unless the turn is stopped; false if it was.
+    fn wait(&self, d: Duration) -> bool {
+        let until = Instant::now() + d;
+        while Instant::now() < until {
+            if self.cancelled() {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        !self.cancelled()
+    }
+
     /// One model request. If the server rejects native tools and the plan allows it, switch
     /// this turn (and, via the engine, the endpoint) to prompt-based tool calling and retry once.
-    fn model_call(&mut self, specs: &[byob_llm::ToolSpec]) -> Result<byob_llm::ChatOutcome, End> {
+    fn model_call_once(&mut self, specs: &[byob_llm::ToolSpec]) -> Result<byob_llm::ChatOutcome, LlmError> {
         match self.stream(specs) {
             Err(e) if !specs.is_empty() && !self.s.plan.prompt_tools && self.s.plan.fallback && adapt::rejects_tools(&e) => {
                 log::warn!("server rejected native tools ({e}); retrying with prompt-based tool calling");
@@ -569,9 +616,9 @@ impl Turn {
                 self.s.plan.fallback = false;
                 self.messages = toolprompt::to_fallback(&self.messages);
                 let _ = self.s.inbox.send(Input::Adapt(adapt::Event::ToolsRejected { key: self.s.plan.key.clone() }));
-                self.stream(specs).map_err(|e| End::Error(e.to_string()))
+                self.stream(specs)
             }
-            result => result.map_err(|e| End::Error(e.to_string())),
+            result => result,
         }
     }
 
@@ -1018,6 +1065,32 @@ impl Turn {
 /// Bound one call's result by the per-call cap.
 fn cap_call(text: String) -> String {
     cap(text, MAX_OUTPUT, "the tool's output is longer than one call may return")
+}
+
+/// Times a failed model request is tried again.
+const MODEL_RETRIES: usize = 2;
+/// Pause before trying again after a server error (doubled the second time).
+const RETRY_PAUSE: Duration = Duration::from_secs(2);
+
+/// A failed request worth trying again: the server broke (5xx) or the stream did. Not a
+/// 4xx (the request itself is wrong), a server refusing tools, or an unreachable server.
+fn retryable(e: &LlmError) -> bool {
+    // Refusing tools (forced native mode) is the setup, not a hiccup.
+    if adapt::rejects_tools(e) {
+        return false;
+    }
+    match e {
+        LlmError::Http { status, .. } => *status >= 500,
+        LlmError::Stream(m) => !m.starts_with("encoding request"),
+        LlmError::BadUrl(_) | LlmError::Transport { .. } => false,
+    }
+}
+
+/// The server couldn't parse what the model wrote (llama.cpp: "Failed to parse input at
+/// pos …", "Failed to parse tool call arguments …").
+fn unparsed_reply(e: &str) -> bool {
+    let e = e.to_ascii_lowercase();
+    e.contains("parse") || e.contains("invalid json") || e.contains("malformed")
 }
 
 /// A receiver that already holds a failed output.

@@ -105,7 +105,9 @@ impl Plan {
 pub fn rejects_tools(err: &LlmError) -> bool {
     let LlmError::Http { status, message } = err else { return false };
     let m = message.to_ascii_lowercase();
-    *status >= 400 && ["tool", "jinja", "function"].iter().any(|w| m.contains(w))
+    // "Failed to parse tool call …" is the model's output going wrong, not the server
+    // refusing tools: that request is tried again instead.
+    *status >= 400 && ["tool", "jinja", "function"].iter().any(|w| m.contains(w)) && !m.contains("parse")
 }
 
 /// Cache key of an endpoint: base URL and model.

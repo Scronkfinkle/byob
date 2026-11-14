@@ -20,8 +20,11 @@ pub(crate) enum Reply {
     Calls(Vec<(String, String)>),
     /// Text, then one call.
     Mixed(&'static str, &'static str, &'static str),
-    /// An error in the stream (the request fails).
-    Error(&'static str),
+    /// An HTTP error with this status and message (from [`fake_llm`]; elsewhere, an error in
+    /// the stream).
+    Http(u16, &'static str),
+    /// An error frame in the stream.
+    StreamError(&'static str),
 }
 
 pub(crate) fn call(name: &str, args: &str) -> Reply {
@@ -54,7 +57,7 @@ pub(crate) fn sse(reply: &Reply) -> String {
             out += &frame(json!({"choices":[{"delta":{"content": text}}]}));
             out += &frame(json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"m0","type":"function","function":{"name":name,"arguments":args}}]}}]}));
         }
-        Reply::Error(message) => out += &frame(json!({"error": {"message": message}})),
+        Reply::Http(_, m) | Reply::StreamError(m) => out += &frame(json!({"error":{"message": m}})),
     }
     out + "data: [DONE]\n\n"
 }
@@ -78,6 +81,11 @@ pub(crate) fn fake_llm(script: Vec<Reply>, no_tools: &'static str) -> (String, R
             seen.lock().unwrap().push(body);
             let reply = if has_tools { script.get(n).or(script.last()).cloned().unwrap_or(Reply::Text("ok")) } else { Reply::Text(no_tools) };
             n += 1;
+            if let Reply::Http(status, m) = reply {
+                let body = json!({"error":{"code":status,"message":m}}).to_string();
+                let _ = write!(s, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                continue;
+            }
             let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{}", sse(&reply));
         }
     });
@@ -499,6 +507,45 @@ fn malformed_arguments_and_unknown_tools_fail_visibly() {
     assert!(results[1].contains("no tool called \"nope\""));
     assert!(results[2].contains("JSON object"));
     assert_eq!(view.reply().content, "sorry");
+}
+
+#[test]
+fn a_reply_the_server_cannot_parse_is_tried_again_with_a_note() {
+    // llama-server answers a broken tool call with a 500 (or an error in the stream): the
+    // turn goes on, the model is told why, and native tools stay on.
+    let bad = "Failed to parse input at pos 12: <tool_call>{\"name\": \"echo\"";
+    let h = harness(vec![Reply::Http(500, bad), Reply::StreamError(bad), call("echo", r#"{"text":"a"}"#), Reply::Text("Done.")], "echo", Access::Read);
+    let (mut c, _) = client(&h);
+    let view = run_turn(&mut c, "go", |_, _| {});
+    assert_eq!(view.error, Some(None), "the turn ended without an error");
+    assert_eq!(h.runs.load(Ordering::SeqCst), 1);
+    assert!(view.reply().content.ends_with("Done."), "{}", view.reply().content);
+    let reqs = h.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 4);
+    let last_user = |r: &Value| messages(r).iter().rev().find(|m| m["role"] == "user").map(|m| m["content"].to_string()).unwrap_or_default();
+    assert!(!last_user(&reqs[0]).contains("couldn't read"));
+    assert!(last_user(&reqs[1]).contains("couldn't read your last reply"), "{}", last_user(&reqs[1]));
+    assert_eq!(last_user(&reqs[2]).matches("couldn't read").count(), 2, "one note per failure, on the same message");
+    assert!(reqs.iter().all(|r| r.get("tools").is_some()), "a parse failure doesn't turn native tools off");
+}
+
+#[test]
+fn a_server_that_keeps_failing_ends_the_turn_after_three_tries() {
+    let h = harness(vec![Reply::StreamError("Failed to parse tool call")], "echo", Access::Read);
+    let (mut c, _) = client(&h);
+    let view = run_turn(&mut c, "go", |_, _| {});
+    let error = view.error.flatten().unwrap_or_default();
+    assert!(error.contains("tried 3 times"), "{error}");
+    assert_eq!(h.requests.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn a_bad_request_is_not_tried_again() {
+    let h = harness(vec![Reply::Http(400, "context too long")], "echo", Access::Read);
+    let (mut c, _) = client(&h);
+    let view = run_turn(&mut c, "go", |_, _| {});
+    assert!(view.error.flatten().unwrap_or_default().contains("context too long"));
+    assert_eq!(h.requests.lock().unwrap().len(), 1);
 }
 
 #[test]

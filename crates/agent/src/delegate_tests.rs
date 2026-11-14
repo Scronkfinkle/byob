@@ -666,12 +666,13 @@ fn failed_turns_and_subagents_free_their_slots() {
     let parents = Arc::new(AtomicUsize::new(0));
     let route: Route = Arc::new(move |req: &Value| {
         if is_child(req) {
-            return (if task_of(req).contains("fail") { Reply::Error("boom") } else { Reply::Text("fine") }, Duration::ZERO);
+            return (if task_of(req).contains("fail") { Reply::StreamError("boom") } else { Reply::Text("fine") }, Duration::ZERO);
         }
         let reply = match parents.fetch_add(1, Ordering::SeqCst) {
-            0 => Reply::Error("the server fell over"),
-            1 => Reply::Calls(vec![delegate_call("this will fail")]),
-            3 => Reply::Calls(vec![delegate_call("this will work")]),
+            // A failed request is tried three times (turn::MODEL_RETRIES).
+            0..=2 => Reply::StreamError("the server fell over"),
+            3 => Reply::Calls(vec![delegate_call("this will fail")]),
+            5 => Reply::Calls(vec![delegate_call("this will work")]),
             _ => Reply::Text("noted"),
         };
         (reply, Duration::ZERO)
@@ -686,9 +687,9 @@ fn failed_turns_and_subagents_free_their_slots() {
     let reqs = requests(&seen);
     let parent: Vec<Option<u64>> = reqs.iter().filter(|r| !is_child(r)).map(slot_of).collect();
     let child: Vec<Option<u64>> = reqs.iter().filter(|r| is_child(r)).map(slot_of).collect();
-    assert_eq!((parent.len(), child.len()), (5, 2));
+    assert_eq!((parent.len(), child.len()), (7, 4), "the failing subagent tried three times");
     assert!(parent[0].is_some() && parent.iter().all(|s| *s == parent[0]), "the failed turn gave its slot back: {parent:?}");
-    assert!(child[0].is_some() && child[1] == child[0], "the failed subagent gave its slot back: {child:?}");
+    assert!(child[0].is_some() && child.iter().all(|s| *s == child[0]), "the failed subagent gave its slot back: {child:?}");
 }
 
 crate::test_store::folder_too!(

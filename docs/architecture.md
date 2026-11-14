@@ -749,8 +749,8 @@ the model; a switch that makes a plugin lose stops its backend (its views reset 
 reopen them on the winner).
 
 **Starters.** Manifest `starters [{title, prompt}]` reach clients as `PluginInfo::starters`;
-an empty chat lists the switched-on plugins' starters (up to 6), and a click puts the prompt
-in the composer.
+an empty chat lists the switched-on plugins' starters (up to 6), and a click sends the prompt
+(into the composer instead while a file is still uploading).
 
 Deferred to later phases: plugins replacing render sites; hooks for the trust question and
 for clients' views.
