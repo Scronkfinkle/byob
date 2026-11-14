@@ -153,6 +153,10 @@ pub struct ChatRequest<'a> {
     tools: Vec<Value>,
     stream: bool,
     stream_options: Value,
+    /// llama.cpp: run in this server slot (keeps that slot's prompt cache). Only for servers
+    /// that reported `total_slots`; others may reject unknown fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id_slot: Option<u64>,
 }
 
 impl<'a> ChatRequest<'a> {
@@ -161,7 +165,12 @@ impl<'a> ChatRequest<'a> {
             .iter()
             .map(|t| serde_json::json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}))
             .collect();
-        Self { model, messages, tools, stream: true, stream_options: serde_json::json!({"include_usage": true}) }
+        Self { model, messages, tools, stream: true, stream_options: serde_json::json!({"include_usage": true}), id_slot: None }
+    }
+
+    /// Ask a llama.cpp server for slot `slot` (`None`: let the server pick).
+    pub fn in_slot(self, slot: Option<u64>) -> Self {
+        Self { id_slot: slot, ..self }
     }
 }
 

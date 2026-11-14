@@ -98,6 +98,19 @@ fn streams_content_reasoning_and_usage() {
     assert!(req.starts_with("POST /v1/chat/completions"));
     assert!(req.to_ascii_lowercase().contains("authorization: bearer sk-test"));
     assert!(req.contains(r#""stream":true"#));
+    assert!(!req.contains("id_slot"), "no slot unless asked");
+}
+
+#[test]
+fn sends_the_slot_only_when_given() {
+    let ok = || sse(&[r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#]);
+    let (url, req) = fake_server(200, "text/event-stream", ok());
+    let out = client(url).stream_chat_in_slot(&[ChatMessage::user("hi")], &[], Some(2), &AtomicBool::new(false), |_| {}).unwrap();
+    assert_eq!(out.content, "ok");
+    assert!(req.recv().unwrap().contains(r#""id_slot":2"#));
+    let (url, req) = fake_server(200, "text/event-stream", ok());
+    client(url).stream_chat_in_slot(&[ChatMessage::user("hi")], &[], None, &AtomicBool::new(false), |_| {}).unwrap();
+    assert!(!req.recv().unwrap().contains("id_slot"));
 }
 
 #[test]

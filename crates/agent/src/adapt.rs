@@ -57,6 +57,9 @@ pub struct Plan {
     /// JPEG quality for images going to the model (0: as they are), from the chat's
     /// settings; see [`byob_tools::images::compress_data_url`].
     pub image_quality: u8,
+    /// Parallel slots the endpoint reported (llama.cpp `total_slots`); only then do
+    /// requests name one (see [`crate::slot_leases`]).
+    pub slots: Option<u64>,
 }
 
 impl Plan {
@@ -198,7 +201,7 @@ impl Endpoints {
             },
         };
         let vision = caps.and_then(|c| c.vision);
-        Plan { key, prompt_tools, fallback, context, reserve, vision, image_quality: 0 }
+        Plan { key, prompt_tools, fallback, context, reserve, vision, image_quality: 0, slots: caps.and_then(|c| c.slots) }
     }
 
     /// How many requests the endpoint runs in parallel, if its probe found out.

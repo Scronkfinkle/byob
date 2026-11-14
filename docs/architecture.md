@@ -604,6 +604,15 @@ list_files · 4.1 s]`), is the tool result, so the parent's context grows only b
   children at the endpoint's slots minus one for the main thread (llama.cpp `/props`
   `total_slots`, 2 assumed when unknown, at least 1; `subagents.max_parallel` overrides).
   Extra delegations wait in "queued".
+- **Server slots.** When an endpoint reported `total_slots`, requests name the llama.cpp
+  slot they run in (`"id_slot"`, `slot_leases::SlotTable` in the engine, keyed per endpoint
+  URL + model). A turn leases a slot for its whole run, preferring the one its chat had
+  last time (so the slot's prompt cache is reused); a subagent leases one no running turn
+  or subagent holds, preferring slots no chat's cache is in, so a parent waiting on
+  `delegate` keeps its cache. Leases are dropped when the turn or subagent ends (error,
+  stop and panic included). With every slot leased, or for an endpoint the probe didn't
+  report slots for (hosted APIs reject unknown fields; a subagent's role or model id is
+  another endpoint), no `id_slot` is sent and the server picks. Automatic, no setting.
 - **Shared world.** Children run in the chat's workspace with its permission policy, grants
   and sandbox. Their steps go through the same gate; approval cards sit in the child's
   transcript (labelled "Subagent explorer asks") and are answered with the usual `Approve`

@@ -537,6 +537,7 @@ mod tests {
             reserve: budget::default_reply_reserve(context),
             vision: None,
             image_quality: 0,
+            slots: None,
         }
     }
 

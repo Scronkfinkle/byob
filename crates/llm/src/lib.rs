@@ -136,6 +136,20 @@ impl Client {
         self.stream_chat_until(messages, tools, StopWhen { cancel, also: None, deadline: None }, on_event)
     }
 
+    /// [`Client::stream_chat`] in llama.cpp server slot `slot` (`"id_slot"`, so the slot's
+    /// prompt cache is reused); `None` sends no slot. Only pass a slot to a server that
+    /// reported `total_slots` ([`Capabilities::slots`]): others may reject the field.
+    pub fn stream_chat_in_slot(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        slot: Option<u64>,
+        cancel: &AtomicBool,
+        on_event: impl FnMut(StreamEvent),
+    ) -> Result<ChatOutcome, LlmError> {
+        self.stream(messages, tools, slot, StopWhen { cancel, also: None, deadline: None }, on_event)
+    }
+
     /// [`Client::stream_chat`] that also stops on a second flag (e.g. a caller's own size
     /// limit set from `on_event`) or at a deadline. All are checked every 50 ms, so they
     /// work even while the server sends nothing.
@@ -144,10 +158,21 @@ impl Client {
         messages: &[ChatMessage],
         tools: &[ToolSpec],
         stop_when: StopWhen<'_>,
+        on_event: impl FnMut(StreamEvent),
+    ) -> Result<ChatOutcome, LlmError> {
+        self.stream(messages, tools, None, stop_when, on_event)
+    }
+
+    fn stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        slot: Option<u64>,
+        stop_when: StopWhen<'_>,
         mut on_event: impl FnMut(StreamEvent),
     ) -> Result<ChatOutcome, LlmError> {
         let cancel = &stop_when;
-        let request = ChatRequest::new(&self.config.model, messages, tools);
+        let request = ChatRequest::new(&self.config.model, messages, tools).in_slot(slot);
         let body = serde_json::to_vec(&request).map_err(|e| LlmError::Stream(format!("encoding request: {e}")))?;
         if cancel.now() {
             return Ok(ChatOutcome { cancelled: true, ..ChatOutcome::default() });

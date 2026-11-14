@@ -531,6 +531,166 @@ fn bad_delegations_are_explained_to_the_model() {
     assert!(view.reply().steps.iter().all(|s| s.status == StepStatus::Failed));
 }
 
+// Server slots (`id_slot`, see `slot_leases`).
+
+/// An engine like [`engine`] whose endpoint reported `slots` parallel slots; `tweak` may
+/// change the config first (model roles, agents).
+fn slotted(url: String, workspace: &Path, slots: u64, parallel: Option<usize>, tweak: impl FnOnce(&mut EngineConfig)) -> EngineHandle {
+    let mut tools = Registry::default();
+    tools.register(Arc::new(Fake { name: "echo", access: Access::Read, runs: Arc::default(), reply: None, change: false }));
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = workspace.to_path_buf();
+    config.tools = tools;
+    config.auto_title = false;
+    config.subagents = SubagentOptions { max_parallel: parallel, ..SubagentOptions::default() };
+    tweak(&mut config);
+    let inference = config.inference.clone();
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    engine.probed(&inference, byob_llm::Capabilities { slots: Some(slots), ..Default::default() });
+    engine
+}
+
+fn slot_of(req: &Value) -> Option<u64> {
+    req.get("id_slot").and_then(Value::as_u64)
+}
+
+fn requests(seen: &Shared) -> Vec<Value> {
+    seen.lock().unwrap().requests.clone()
+}
+
+#[test]
+fn id_slot_goes_only_to_endpoints_that_reported_slots() {
+    let ws = temp();
+    // No total_slots: never a slot (hosted APIs reject unknown fields).
+    let (url, seen) = routed(script(&["look"], |_, _| Reply::Text("seen"), Duration::ZERO));
+    let s = engine(url, ws.path(), None, Access::Write, Some(2));
+    let (mut c, _) = hello(&s.engine);
+    assert_eq!(run(&mut c, "go", |_, _| {}).finished, Some(None));
+    let reqs = requests(&seen);
+    assert_eq!(reqs.len(), 3);
+    assert!(reqs.iter().all(|r| r.get("id_slot").is_none()), "{reqs:?}");
+
+    // With total_slots the chat gets one, but subagents on other endpoints (a model role,
+    // a raw model id on the same URL) don't: the probe said nothing about those.
+    let route: Route = Arc::new(|req: &Value| {
+        if is_child(req) {
+            return (Reply::Text("done"), Duration::ZERO);
+        }
+        if results(req).is_empty() {
+            let calls = ["roled", "raw"].iter().map(|a| ("delegate".to_owned(), json!({"agent": a, "task": format!("as {a}")}).to_string())).collect();
+            (Reply::Calls(calls), Duration::ZERO)
+        } else {
+            (Reply::Text("All done."), Duration::ZERO)
+        }
+    });
+    let (url, seen) = routed(route);
+    let agent = |name: &str, model: &str| byob_plugins::AgentDef {
+        name: name.into(),
+        description: "d".into(),
+        tools: None,
+        model: Some(model.into()),
+        prompt: "p".into(),
+        source: std::path::PathBuf::new(),
+        meta: Default::default(),
+    };
+    let role = InferenceConfig { base_url: url.clone(), model: "fast-model".into(), api_key: None };
+    let engine = slotted(url, ws.path(), 4, Some(2), |c| {
+        c.models.insert("fast".into(), role);
+        c.agents = vec![agent("roled", "fast"), agent("raw", "some-model-id")];
+    });
+    let (mut c, _) = hello(&engine);
+    assert_eq!(run(&mut c, "go", |_, _| {}).finished, Some(None));
+    let reqs = requests(&seen);
+    let (children, parents): (Vec<&Value>, Vec<&Value>) = reqs.iter().partition(|r| is_child(r));
+    assert_eq!((children.len(), parents.len()), (2, 2));
+    assert!(parents.iter().all(|r| slot_of(r).is_some()), "{parents:?}");
+    assert!(children.iter().all(|r| r.get("id_slot").is_none()), "{children:?}");
+}
+
+#[test]
+fn a_chats_turns_keep_one_slot() {
+    let ws = temp();
+    let (url, seen) = routed(Arc::new(|_: &Value| (Reply::Text("hi there"), Duration::ZERO)));
+    let engine = slotted(url, ws.path(), 4, None, |_| {});
+    let (mut c, _) = hello(&engine);
+    for text in ["one", "two"] {
+        assert_eq!(run(&mut c, text, |_, _| {}).finished, Some(None));
+    }
+    c.send(ClientMsg::NewChat { workspace: None });
+    assert_eq!(run(&mut c, "other chat", |_, _| {}).finished, Some(None));
+    let slots: Vec<Option<u64>> = requests(&seen).iter().map(slot_of).collect();
+    assert_eq!(slots.len(), 3);
+    assert!(slots[0].is_some() && slots[0] == slots[1], "the chat's turns share its slot: {slots:?}");
+    assert!(slots[2].is_some() && slots[2] != slots[0], "another chat gets another slot: {slots:?}");
+}
+
+#[test]
+fn a_subagent_runs_in_another_slot_than_its_parent() {
+    let ws = temp();
+    let child = |_: &str, round: usize| if round == 0 { call("echo", r#"{"text":"x"}"#) } else { Reply::Text("found it") };
+    let (url, seen) = routed(script(&["look around"], child, Duration::ZERO));
+    let engine = slotted(url, ws.path(), 2, None, |_| {});
+    let (mut c, _) = hello(&engine);
+    assert_eq!(run(&mut c, "go", |_, _| {}).finished, Some(None));
+    let reqs = requests(&seen);
+    let parent: Vec<Option<u64>> = reqs.iter().filter(|r| !is_child(r)).map(slot_of).collect();
+    let child: Vec<Option<u64>> = reqs.iter().filter(|r| is_child(r)).map(slot_of).collect();
+    assert_eq!((parent.len(), child.len()), (2, 2));
+    assert!(parent[0].is_some() && parent[0] == parent[1], "{parent:?}");
+    assert!(child[0].is_some() && child[0] == child[1], "{child:?}");
+    assert_ne!(child[0], parent[0], "the subagent must not take the waiting parent's slot");
+}
+
+#[test]
+fn concurrent_subagents_get_distinct_slots() {
+    let ws = temp();
+    let (url, seen) = routed(script(&["task one", "task two", "task three"], |_, _| Reply::Text("ok"), Duration::from_millis(300)));
+    // 4 slots: the chat and three subagents at once.
+    let engine = slotted(url, ws.path(), 4, None, |_| {});
+    let (mut c, _) = hello(&engine);
+    assert_eq!(run(&mut c, "go", |_, _| {}).finished, Some(None));
+    assert!(seen.lock().unwrap().max_active >= 2, "they ran side by side");
+    let reqs = requests(&seen);
+    let parent = slot_of(reqs.iter().find(|r| !is_child(r)).unwrap());
+    let mut all: Vec<Option<u64>> = reqs.iter().filter(|r| is_child(r)).map(slot_of).collect();
+    all.push(parent);
+    assert!(all.iter().all(Option::is_some), "{all:?}");
+    all.sort_unstable();
+    all.dedup();
+    assert_eq!(all.len(), 4, "every running request has its own slot");
+}
+
+#[test]
+fn failed_turns_and_subagents_free_their_slots() {
+    let ws = temp();
+    let parents = Arc::new(AtomicUsize::new(0));
+    let route: Route = Arc::new(move |req: &Value| {
+        if is_child(req) {
+            return (if task_of(req).contains("fail") { Reply::Error("boom") } else { Reply::Text("fine") }, Duration::ZERO);
+        }
+        let reply = match parents.fetch_add(1, Ordering::SeqCst) {
+            0 => Reply::Error("the server fell over"),
+            1 => Reply::Calls(vec![delegate_call("this will fail")]),
+            3 => Reply::Calls(vec![delegate_call("this will work")]),
+            _ => Reply::Text("noted"),
+        };
+        (reply, Duration::ZERO)
+    });
+    let (url, seen) = routed(route);
+    // Two slots: the chat's and one for a subagent; a leaked lease would leave none.
+    let engine = slotted(url, ws.path(), 2, None, |_| {});
+    let (mut c, _) = hello(&engine);
+    assert!(run(&mut c, "first", |_, _| {}).finished.unwrap().is_some(), "the first turn fails");
+    assert_eq!(run(&mut c, "second", |_, _| {}).finished, Some(None));
+    assert_eq!(run(&mut c, "third", |_, _| {}).finished, Some(None));
+    let reqs = requests(&seen);
+    let parent: Vec<Option<u64>> = reqs.iter().filter(|r| !is_child(r)).map(slot_of).collect();
+    let child: Vec<Option<u64>> = reqs.iter().filter(|r| is_child(r)).map(slot_of).collect();
+    assert_eq!((parent.len(), child.len()), (5, 2));
+    assert!(parent[0].is_some() && parent.iter().all(|s| *s == parent[0]), "the failed turn gave its slot back: {parent:?}");
+    assert!(child[0].is_some() && child[1] == child[0], "the failed subagent gave its slot back: {child:?}");
+}
+
 crate::test_store::folder_too!(
     delegate_runs_a_child_turn_and_returns_its_report,
     delegations_in_one_round_run_in_parallel_up_to_the_slot_cap,

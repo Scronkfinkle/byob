@@ -20,6 +20,8 @@ pub(crate) enum Reply {
     Calls(Vec<(String, String)>),
     /// Text, then one call.
     Mixed(&'static str, &'static str, &'static str),
+    /// An error in the stream (the request fails).
+    Error(&'static str),
 }
 
 pub(crate) fn call(name: &str, args: &str) -> Reply {
@@ -52,6 +54,7 @@ pub(crate) fn sse(reply: &Reply) -> String {
             out += &frame(json!({"choices":[{"delta":{"content": text}}]}));
             out += &frame(json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"m0","type":"function","function":{"name":name,"arguments":args}}]}}]}));
         }
+        Reply::Error(message) => out += &frame(json!({"error": {"message": message}})),
     }
     out + "data: [DONE]\n\n"
 }

@@ -29,6 +29,7 @@ use byob_types::InferenceConfig;
 use serde_json::{Value, json};
 
 use crate::limits::{DETAIL_CHARS, one_line, prefix};
+use crate::slot_leases::SlotTable;
 use crate::turn::{self, TurnEvent};
 use crate::{Input, adapt};
 
@@ -154,6 +155,8 @@ pub struct Env {
     /// Model roles from settings (`fast`, …).
     pub roles: BTreeMap<String, Model>,
     pub slots: Arc<Slots>,
+    /// Server slots: each subagent runs in one no running turn holds.
+    pub leases: Arc<SlotTable>,
     pub opts: SubagentOptions,
 }
 
@@ -425,10 +428,10 @@ pub fn launch_job(env: &Env, job: Job, l: Launch) -> std::io::Result<Receiver<St
         })),
     };
     emit_step(&l, &step);
-    let (slots, opts) = (Arc::clone(&env.slots), env.opts);
+    let (slots, leases, opts) = (Arc::clone(&env.slots), Arc::clone(&env.leases), env.opts);
     let (inbox, entry, mut failed) = (l.inbox.clone(), l.entry, step.clone());
     let spawned = thread::Builder::new().name("byob-subagent".into()).spawn(move || {
-        let ran = catch_unwind(AssertUnwindSafe(|| run(job, &l, &mut step, &slots, opts)));
+        let ran = catch_unwind(AssertUnwindSafe(|| run(job, &l, &mut step, (&slots, &leases), opts)));
         let report = ran.unwrap_or_else(|_| {
             set_state(&mut step, DelegationState::Failed, Some("internal error: the subagent crashed".into()));
             step.status = StepStatus::Failed;
@@ -462,7 +465,7 @@ fn set_state(step: &mut Step, state: DelegationState, error: Option<String>) {
 }
 
 /// The subagent thread: wait for a slot, run the child turn, report.
-fn run(job: Job, l: &Launch, step: &mut Step, slots: &Arc<Slots>, opts: SubagentOptions) -> String {
+fn run(job: Job, l: &Launch, step: &mut Step, (slots, leases): (&Arc<Slots>, &Arc<SlotTable>), opts: SubagentOptions) -> String {
     let started = Instant::now();
     let Some(slot) = slots.acquire(&l.cancel) else {
         set_state(step, DelegationState::Stopped, Some("stopped before it started".into()));
@@ -525,6 +528,8 @@ fn run(job: Job, l: &Launch, step: &mut Step, slots: &Arc<Slots>, opts: Subagent
         hooks: l.hooks.clone(),
         prompt: None,
         vision: l.vision.clone(),
+        // Not the parent's slot (it holds that while it waits): its cache survives.
+        slot: leases.for_subagent(&job.model.plan, job.model.llm.config()),
     };
     let out = turn::run_child(setup);
     done.store(true, Ordering::Relaxed);

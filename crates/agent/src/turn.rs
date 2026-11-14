@@ -19,6 +19,7 @@ use byob_tools::{Access, Answer, Asker, Journal, Question, Registry, Tool, ToolC
 use serde_json::Value;
 
 use crate::hooks::{self, Decision, Flow, Hooks, PromptInputs};
+use crate::slot_leases::SlotLease;
 use crate::{Input, adapt};
 
 use crate::limits::{DETAIL_CHARS, EXTRA_ROUNDS, MAX_OUTPUT, MAX_REPEATS, REPEAT_QUOTE, cap, one_line, prefix};
@@ -202,6 +203,9 @@ pub struct Setup {
     /// The `vision` model role, if set: it answers questions about images tools show
     /// ([`ToolContext::show_image`]) when the turn's own model can't see.
     pub vision: Option<byob_llm::Client>,
+    /// The server slot this turn's requests run in (`None`: the server picks). Held until
+    /// the turn ends; see [`crate::slot_leases`].
+    pub slot: Option<SlotLease>,
 }
 
 /// A turn's tools, swappable between rounds (never during a call: a round works on the
@@ -282,6 +286,8 @@ pub fn spawn(setup: Setup) -> std::io::Result<()> {
         let inbox = setup.inbox.clone();
         let mut turn = Turn::new(setup);
         let result = catch_unwind(AssertUnwindSafe(|| turn.run()));
+        // Free the slot before the chat can start its next turn (which wants it back).
+        drop(turn.s.slot.take());
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let stats =
             TurnStats { prompt_tokens: turn.usage.prompt_tokens, completion_tokens: turn.usage.completion_tokens, elapsed_ms, model_calls: turn.model_calls };
@@ -583,7 +589,8 @@ impl Turn {
         let mut filter = (prompt && !specs.is_empty()).then(ToolCallFilter::default);
         let child = self.s.child;
         let streamed = &mut self.content;
-        let result = self.s.llm.stream_chat(&request, wire_specs, &self.s.cancel, |ev| {
+        let slot = self.s.slot.as_ref().map(SlotLease::id);
+        let result = self.s.llm.stream_chat_in_slot(&request, wire_specs, slot, &self.s.cancel, |ev| {
             let (content, reasoning) = match ev {
                 StreamEvent::Content(t) => (t, String::new()),
                 StreamEvent::Reasoning(t) => (String::new(), t),

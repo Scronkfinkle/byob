@@ -57,7 +57,16 @@ mod tests {
 
     fn run(ws: &Path, chat: &str, round: usize, child: bool, messages: &mut Vec<ChatMessage>) {
         let llm = byob_llm::Client::new(byob_types::InferenceConfig::default()).unwrap();
-        let p = crate::adapt::Plan { key: String::new(), prompt_tools: false, fallback: false, context: 1000, reserve: 0, vision: None, image_quality: 0 };
+        let p = crate::adapt::Plan {
+            key: String::new(),
+            prompt_tools: false,
+            fallback: false,
+            context: 1000,
+            reserve: 0,
+            vision: None,
+            image_quality: 0,
+            slots: None,
+        };
         let (mut specs, mut usage, mut calls, mut state) = (Vec::new(), Usage::default(), 0, BTreeMap::new());
         let mut ctx = RequestCtx {
             entry: 1,

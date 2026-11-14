@@ -45,7 +45,14 @@ impl Engine {
             }
         }
         let configured = byob_plugins::merge_agents([self.agents.clone(), plugin_agents.to_vec()]);
-        Some(delegate::Env { agents: delegate::agents_for(workspace, &configured), main, roles, slots: Arc::clone(&self.slots), opts: self.subagents })
+        Some(delegate::Env {
+            agents: delegate::agents_for(workspace, &configured),
+            main,
+            roles,
+            slots: Arc::clone(&self.slots),
+            leases: Arc::clone(&self.leases),
+            opts: self.subagents,
+        })
     }
 
     /// A `delegate` step was added or changed: record its run when it first appears, and

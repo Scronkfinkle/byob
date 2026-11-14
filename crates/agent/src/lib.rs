@@ -59,6 +59,7 @@ mod plugins;
 mod queue;
 #[cfg(test)]
 mod queue_tests;
+mod slot_leases;
 mod steps;
 mod subagents;
 #[cfg(test)]
@@ -339,6 +340,12 @@ impl EngineHandle {
         let _ = self.inbox.send(Input::Connect { id, tx, wake });
         LocalConnection { id, inbox: self.inbox.clone(), rx }
     }
+
+    /// Pretend the probe of `config`'s endpoint found `caps` (unit tests don't probe).
+    #[cfg(test)]
+    pub(crate) fn probed(&self, config: &InferenceConfig, caps: byob_llm::Capabilities) {
+        let _ = self.inbox.send(Input::Adapt(adapt::Event::Probed { key: adapt::key(config), caps: Box::new(caps) }));
+    }
 }
 
 /// The chat store `config` asks for, via [`byob_store::open_backend`].
@@ -536,6 +543,8 @@ struct Engine {
     subagents: SubagentOptions,
     /// Inference slots subagents may use, shared by every chat.
     slots: Arc<delegate::Slots>,
+    /// Which server slot each running turn and subagent holds (see [`slot_leases`]).
+    leases: Arc<slot_leases::SlotTable>,
     envs: Option<Arc<dyn byob_tools::EnvControl>>,
     /// Whether the current endpoint answers (see [`connect`]).
     link: Link,
@@ -680,6 +689,7 @@ impl Engine {
             models: config.models,
             subagents: config.subagents,
             slots,
+            leases: Arc::default(),
             envs: config.envs,
         };
         engine.check_link();
@@ -1666,6 +1676,7 @@ impl Engine {
         self.chat_changed(&chat);
         self.viewer_states(&chat);
         self.emit(&chat, "turn_started", serde_json::json!({"entry": reply}));
+        let slot = self.leases.for_chat(&plan, llm.config(), &chat);
         let setup = turn::Setup {
             llm,
             history,
@@ -1688,6 +1699,7 @@ impl Engine {
             hooks: chat_prompt.hooks.clone(),
             prompt: Some(inputs),
             vision: self.vision_role(),
+            slot,
         };
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });
