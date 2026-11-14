@@ -210,9 +210,9 @@ fn the_key_follows_only_to_the_same_server() {
 
 #[test]
 fn a_failed_reply_breaks_the_link_and_retry_runs_it_again() {
-    // Down for the first chat request, fine afterwards.
+    // Down for the first chat request and the turn's two tries again, fine afterwards.
     let url = server(|path, n| match (path.ends_with("/chat/completions"), n) {
-        (true, 0) => (503, r#"{"error":{"message":"Loading model"}}"#.into()),
+        (true, 0..=2) => (503, r#"{"error":{"message":"Loading model"}}"#.into()),
         (true, _) => (200, sse("back again")),
         _ => (404, "{}".into()),
     });
