@@ -481,6 +481,17 @@ impl ByobApp {
         self.conn.send(ClientMsg::SendMessage { text, attachments });
     }
 
+    /// A starter was clicked: send its prompt (with any attached files), keeping whatever is
+    /// typed. While a file is still uploading it goes into the composer instead.
+    fn start_with(&mut self, prompt: String) {
+        if self.uploads.busy() {
+            self.input = prompt;
+            self.focus_composer = true;
+        } else {
+            self.submit(prompt);
+        }
+    }
+
     /// Some turn is stopped on an approval card the user has to answer.
     pub fn awaiting_approval(&self) -> bool {
         steps::awaiting_approval(&self.entries)
@@ -870,7 +881,7 @@ impl ByobApp {
             },
             connect::EmptyView::Ready | connect::EmptyView::Waiting => {
                 // Switched-on plugins' starters (`starters` in their manifests): a click
-                // puts the prompt in the composer.
+                // sends the prompt.
                 let starters = self.plugins.starters();
                 if starters.is_empty() {
                     ui.centered_and_justified(|ui| {
@@ -892,8 +903,7 @@ impl ByobApp {
                     }
                 });
                 if let Some(p) = picked {
-                    self.input = p;
-                    self.focus_composer = true;
+                    self.start_with(p);
                 }
             }
         }
@@ -1385,6 +1395,16 @@ mod app_tests {
     fn queued(texts: &[(u64, &str)], paused: Option<byob_protocol::QueuePause>) -> ServerMsg {
         let items = texts.iter().map(|(id, t)| byob_protocol::QueuedMessage { id: *id, text: (*t).into(), attachments: vec![] }).collect();
         ServerMsg::Queue(byob_protocol::ChatQueue { chat: Some("c".into()), items, paused })
+    }
+
+    #[test]
+    fn a_starter_sends_its_prompt_and_keeps_the_draft() {
+        let fake = Fake::default();
+        let mut app = ByobApp::new(Box::new(fake.clone()), "test");
+        app.input = "my draft".into();
+        app.start_with("Make a bar chart".into());
+        assert_eq!(fake.sent.lock().unwrap().last(), Some(&ClientMsg::SendMessage { text: "Make a bar chart".into(), attachments: vec![] }));
+        assert_eq!(app.input, "my draft");
     }
 
     #[test]
