@@ -12,7 +12,7 @@
 //!
 //! Agent definitions are Claude Code compatible Markdown files (see [`byob_plugins::agents`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -43,6 +43,8 @@ const MAX_TASK: usize = 16 * 1024;
 const MAX_REPORT: usize = 12 * 1024;
 /// Agents listed in the main system prompt.
 const MAX_LISTED: usize = 40;
+/// Most plugin guidance added to a subagent's system prompt, in bytes.
+pub const MAX_GUIDANCE: usize = 4 * 1024;
 /// How often a waiting subagent checks for a free slot / its watchdog checks the clock.
 const POLL: Duration = Duration::from_millis(50);
 
@@ -158,6 +160,17 @@ pub struct Env {
     /// Server slots: each subagent runs in one no running turn holds.
     pub leases: Arc<SlotTable>,
     pub opts: SubagentOptions,
+    /// The switched-on plugins' manifest `prompt` texts with the tools each contributed, in
+    /// the main prompt's order.
+    pub guidance: Vec<PluginPrompt>,
+}
+
+/// A plugin's manifest `prompt` and the tools it contributed to the turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginPrompt {
+    pub plugin: String,
+    pub tools: BTreeSet<String>,
+    pub text: String,
 }
 
 /// A checked delegation, ready to start.
@@ -336,7 +349,9 @@ conversation, so say everything it needs (paths, names, what to report back)."
         };
         let tools = child_tools(all, def, asked.as_deref())?;
         let body = def.map_or(WORKER_PROMPT, |d| d.prompt.as_str());
-        let system = format!("{body}\n\n{SUBAGENT_RULES}");
+        // The guidance of the plugins whose tools it has (the main prompt has all of them).
+        let guidance = guidance_for(&self.guidance, &tools, &name);
+        let system = if guidance.is_empty() { format!("{body}\n\n{SUBAGENT_RULES}") } else { format!("{body}\n\n{guidance}\n\n{SUBAGENT_RULES}") };
         let model = self.model_for(def.and_then(|d| d.model.as_deref()));
         Ok(Job { agent: name, task: task.to_owned(), model, tools, system })
     }
@@ -369,6 +384,33 @@ pub fn child_tools(all: &Registry, def: Option<&AgentDef>, asked: Option<&[Strin
         }
     }
     Ok(out)
+}
+
+/// The prompt texts of the plugins that contributed at least one of `tools`, in order, as
+/// many whole texts as fit in [`MAX_GUIDANCE`] bytes (the others are left out and logged).
+pub fn guidance_for(prompts: &[PluginPrompt], tools: &Registry, agent: &str) -> String {
+    let names: BTreeSet<String> = tools.specs().into_iter().map(|s| s.name).collect();
+    let mut out = String::new();
+    let mut dropped = Vec::new();
+    for p in prompts.iter().filter(|p| !p.tools.is_disjoint(&names)) {
+        let text = p.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let sep = usize::from(!out.is_empty());
+        if out.len().saturating_add(sep).saturating_add(text.len()) > MAX_GUIDANCE {
+            dropped.push(p.plugin.as_str());
+            continue;
+        }
+        if sep > 0 {
+            out.push('\n');
+        }
+        out.push_str(text);
+    }
+    if !dropped.is_empty() {
+        log::warn!("subagent {agent}: plugin guidance past {} KB left out of its prompt: {}", MAX_GUIDANCE / 1024, dropped.join(", "));
+    }
+    out
 }
 
 /// The agents a chat in `workspace` can use: `<workspace>/.byob/agents`, then
@@ -637,6 +679,31 @@ mod tests {
         assert!(child_tools(&all, Some(&d), Some(&["write_file".into()])).err().unwrap().contains("none of the tools"));
         // A definition whose tools don't exist here runs without tools.
         assert!(child_tools(&all, Some(&def(Some(&["WebSearch"]))), None).unwrap().is_empty());
+    }
+
+    fn guidance(plugin: &str, tools: &[&str], text: String) -> PluginPrompt {
+        PluginPrompt { plugin: plugin.into(), tools: tools.iter().map(|t| (*t).to_owned()).collect(), text }
+    }
+
+    #[test]
+    fn plugin_guidance_follows_the_tools_and_stays_under_the_cap() {
+        let all = registry();
+        let reader = child_tools(&all, None, Some(&["read_file".into()])).unwrap();
+        let prompts = [
+            guidance("files", &["read_file", "list_files"], "FILES".into()),
+            guidance("shell", &["run_command"], "SHELL".into()),
+            guidance("huge", &["read_file"], "x".repeat(MAX_GUIDANCE)),
+            guidance("small", &["read_file"], "SMALL".into()),
+        ];
+        // Only the plugins of its tools; whole texts in order; what doesn't fit is left out.
+        let g = guidance_for(&prompts, &reader, "explorer");
+        assert_eq!(g, "FILES\nSMALL");
+        let g = guidance_for(&prompts, &all, "general");
+        assert_eq!(g, "FILES\nSHELL\nSMALL");
+        // However many plugins there are, the total stays under the cap.
+        let many: Vec<PluginPrompt> = (0..50).map(|i| guidance(&format!("p{i}"), &["read_file"], "y".repeat(500))).collect();
+        let g = guidance_for(&many, &reader, "explorer");
+        assert!(g.len() <= MAX_GUIDANCE && g.len() > MAX_GUIDANCE - 501, "{}", g.len());
     }
 
     #[test]

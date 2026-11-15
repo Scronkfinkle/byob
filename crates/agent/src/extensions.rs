@@ -271,6 +271,10 @@ pub(crate) struct Composed {
     pub tools: Registry,
     /// Plugin prompt lines, the skills list and the authoring line (no AGENTS.md).
     pub prompt: String,
+    /// The prompt lines again, each with the tools its plugin contributed (for subagents,
+    /// which get the lines of the plugins whose tools they have). Plugins without tools
+    /// here are left out.
+    pub tool_prompts: Vec<crate::delegate::PluginPrompt>,
     pub agents: Vec<AgentDef>,
     pub infos: Vec<PluginInfo>,
     pub errors: Vec<PluginLoadError>,
@@ -685,6 +689,7 @@ impl Extensions {
                     }
                 }
                 tools_of.insert(plugin.dir.clone(), tool_names.iter().cloned().collect());
+                out.tool_prompts.extend(tool_prompt(plugin, &tool_names).filter(|_| on));
                 let mut info = info(plugin, set.scope, input, &tool_names, fp, last);
                 info.servers = servers;
                 info.backend = backend_info;
@@ -966,6 +971,12 @@ enum Section {
 }
 
 /// Read a plugin's `system_prompt`.
+/// A plugin's prompt line with the tools it contributed (none without either).
+fn tool_prompt(plugin: &Plugin, tools: &[String]) -> Option<crate::delegate::PluginPrompt> {
+    let text = plugin.manifest.prompt.as_ref().filter(|_| !tools.is_empty())?;
+    Some(crate::delegate::PluginPrompt { plugin: plugin.id().to_owned(), tools: tools.iter().cloned().collect(), text: text.clone() })
+}
+
 fn section(plugin: &Plugin, src: &PromptSource) -> Result<Section, String> {
     match src {
         PromptSource::Native(n) => Ok(Section::Native(n.clone())),
