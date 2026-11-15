@@ -243,6 +243,36 @@ pub struct ManifestTool {
     /// `write`, `network`, `execute`); `None` is `execute`. Native tools bring their own.
     #[serde(skip)]
     pub access: Option<byob_tools::Access>,
+    /// Calls a person must confirm every time (`"confirm"`), whatever the approvals setting:
+    /// no policy, grant or hook's allow skips the card.
+    #[serde(skip)]
+    pub confirm: Option<Confirm>,
+}
+
+/// A script or backend tool's must-confirm rule (`"confirm": true`, or `{"warning"?,
+/// "when"?: [arg names]}`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Confirm {
+    /// Shown prominently on the card.
+    pub warning: String,
+    /// Only calls that give one of these arguments a value (not null, "", [], {} or false);
+    /// empty: every call.
+    pub when: Vec<String>,
+}
+
+impl Confirm {
+    /// The card's warning if this call must be confirmed.
+    pub fn applies(&self, args: &Value) -> Option<String> {
+        let given = |k: &String| match args.get(k) {
+            None | Some(Value::Null | Value::Bool(false)) => false,
+            Some(Value::String(s)) => !s.trim().is_empty(),
+            Some(Value::Array(a)) => !a.is_empty(),
+            Some(Value::Object(o)) => !o.is_empty(),
+            Some(_) => true,
+        };
+        (self.when.is_empty() || self.when.iter().any(given))
+            .then(|| if self.warning.is_empty() { "this call must be confirmed".to_owned() } else { self.warning.clone() })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -946,7 +976,31 @@ fn parse_tool(t: &Value, i: usize) -> R<ManifestTool> {
             _ => return Err(format!("{f}.access must be one of read, write, network, execute")),
         }),
     };
-    Ok(ManifestTool { name, description, params, kind, title, optional, access })
+    let confirm = match t.get("confirm") {
+        None | Some(Value::Null | Value::Bool(false)) => None,
+        Some(Value::Bool(true)) => Some(Confirm::default()),
+        Some(Value::Object(c)) => {
+            let warning = match c.get("warning") {
+                None => String::new(),
+                w => req_str(w, &format!("{f}.confirm.warning"))?.chars().take(300).collect(),
+            };
+            let when = match c.get("when") {
+                None => Vec::new(),
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .map(|v| v.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| format!("{f}.confirm.when must list argument names"))?,
+                Some(_) => return Err(format!("{f}.confirm.when must list argument names")),
+            };
+            Some(Confirm { warning, when })
+        }
+        Some(_) => return Err(format!("{f}.confirm must be true or {{\"warning\", \"when\"}}")),
+    };
+    if confirm.is_some() && matches!(kind, ToolKind::Native(_)) {
+        return Err(format!("{f}.confirm is for script and backend tools (native tools bring their own)"));
+    }
+    Ok(ManifestTool { name, description, params, kind, title, optional, access, confirm })
 }
 
 fn parse_servers(v: Option<&Value>) -> R<BTreeMap<String, McpServerConfig>> {
@@ -1148,6 +1202,16 @@ mod tests {
         let bad =
             parse_user(json!({"id": "a", "name": "x", "backend": "b.py", "tools": [{"name": "t", "description": "d", "run": "backend", "access": "root"}]}));
         assert_eq!(bad.unwrap_err(), "byob-plugin.json: tools[0].access must be one of read, write, network, execute");
+        // Must-confirm calls: every call, or only when some arguments are given.
+        let tool = |confirm: Value| json!({"id": "a", "name": "x", "backend": "b.py", "tools": [{"name": "t", "description": "d", "run": "backend", "confirm": confirm}]});
+        let always = parse_user(tool(json!(true))).unwrap().tools[0].confirm.clone().unwrap();
+        assert_eq!(always.applies(&json!({})).as_deref(), Some("this call must be confirmed"));
+        let when = parse_user(tool(json!({"warning": "emails people", "when": ["to", "cc"]}))).unwrap().tools[0].confirm.clone().unwrap();
+        assert_eq!(when.applies(&json!({"to": [], "cc": " ", "x": 1})), None);
+        assert_eq!(when.applies(&json!({"cc": ["b@x"]})).as_deref(), Some("emails people"));
+        assert_eq!(parse_user(tool(json!(false))).unwrap().tools[0].confirm, None);
+        assert!(parse_user(tool(json!({"when": "to"}))).unwrap_err().contains("confirm.when must list argument names"));
+        assert!(parse_user(tool(json!("yes"))).unwrap_err().contains("confirm must be true"));
         let m = parse_user(json!({"id": "a", "name": "x", "backend": {"command": "node", "args": ["s.js"], "events": ["turn_finished"]}})).unwrap();
         let b = m.backend.unwrap();
         assert_eq!((b.run, b.args, b.events), (BackendRun::Command("node".into()), vec!["s.js".to_string()], vec!["turn_finished".to_string()]));

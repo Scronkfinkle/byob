@@ -309,6 +309,10 @@ impl Tool for PythonTool {
         self.decl.access.unwrap_or(Access::Execute)
     }
 
+    fn always_ask(&self, args: &Value) -> Option<String> {
+        self.decl.confirm.as_ref()?.applies(args)
+    }
+
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
         if ctx.cancelled() {
             return ToolOutput::err("Stopped by the user.");
