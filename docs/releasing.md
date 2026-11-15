@@ -6,6 +6,17 @@ HTML app renderer), `byob-slim-…`, and on macOS `byob-<version>-<target>.dmg`,
 `.sha256`. Running the workflow by hand (`gh workflow run release.yml --ref BRANCH`) builds the
 same files as run artifacts and publishes nothing.
 
+Checklist:
+1. Bump `version` in `Cargo.toml` (the workspace and its `byob-*` dependencies),
+   `crates/artifact-wire/Cargo.toml`, `host/artifact-host/Cargo.toml` and `flake.nix`; update
+   both lockfiles; bump `v=` in the README's macOS `curl` line.
+2. `cargo xtask ci`, commit, push, and wait for CI.
+3. Tag and push the tag; when the release is up, set its notes (`gh release edit vX.Y.Z
+   --notes-file …`; say the macOS builds are unsigned while they are).
+4. Publish to crates.io by hand: a release made by the workflow doesn't trigger
+   `publish.yml` (GitHub doesn't start workflows from a workflow's own events), so run
+   `gh workflow run publish.yml --ref vX.Y.Z -f dry_run=false`.
+
 ## The macOS app
 
 `scripts/macos-bundle.sh` builds `byob.app` (bundle id `io.github.scronkfinkle.byob`) and the

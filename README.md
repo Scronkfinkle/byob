@@ -67,10 +67,21 @@ browser UI and `byob-artifact-host`, which draws HTML apps inline; keep it next 
 `byob-slim-…` is byob alone. `cargo install` doesn't build the renderer; without it, HTML apps
 open in your browser with one click. On Linux byob needs no GUI toolkit (file dialogs go through
 the XDG desktop portal or zenity; without either, drop files onto the window), and the renderer
-draws with the system's OpenGL (Mesa). On macOS, `byob-…-apple-darwin.dmg` has `byob.app` to drag
-into Applications; it isn't signed by a developer yet, so open it the first time with right-click
-→ Open (macOS 15+: System Settings → Privacy & Security → Open Anyway), or run
-`xattr -dr com.apple.quarantine /Applications/byob.app`.
+draws with the system's OpenGL (Mesa).
+
+On macOS the builds aren't signed by an Apple developer yet. Fetched from a terminal, a release
+archive never meets Gatekeeper (use `x86_64` instead of `aarch64` on an Intel Mac):
+
+```sh
+v=0.3.3; curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-aarch64-apple-darwin.tar.gz | tar xz
+./byob-$v-aarch64-apple-darwin/byob
+```
+
+Or take `byob-…-apple-darwin.dmg` and drag `byob.app` into Applications. Downloaded with a
+browser, macOS refuses to open it at first: try once, then System Settings → Privacy & Security →
+Open Anyway (on macOS 14 and older, right-click → Open), or run
+`xattr -dr com.apple.quarantine /Applications/byob.app`. Opened from Finder, byob starts in your
+home folder and finds your shell's tools (Homebrew, Nix).
 
 ## Use
 
