@@ -684,6 +684,7 @@ version = "0.3.4"
 dependencies = [
  "byob-agent",
  "byob-artifact-wire",
+ "byob-calendar",
  "byob-exec",
  "byob-memory",
  "byob-plugins",
@@ -711,6 +712,7 @@ name = "byob-agent"
 version = "0.3.4"
 dependencies = [
  "byob-bundled",
+ "byob-calendar",
  "byob-exec",
  "byob-llm",
  "byob-memory",
@@ -738,6 +740,21 @@ version = "0.3.4"
 [[package]]
 name = "byob-bundled"
 version = "0.3.4"
+
+[[package]]
+name = "byob-calendar"
+version = "0.3.4"
+dependencies = [
+ "base64 0.22.1",
+ "byob-plugins",
+ "chrono",
+ "chrono-tz",
+ "iana-time-zone",
+ "quick-xml 0.42.0",
+ "serde_json",
+ "ureq",
+ "url",
+]
 
 [[package]]
 name = "byob-docs"

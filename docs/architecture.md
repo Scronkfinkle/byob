@@ -455,6 +455,17 @@ through a forgiving tokenizer (no DOM, no recursion, open-element stack capped a
 
 Calls run one at a time on the backend's thread (a slow page delays the next call).
 
+### Calendar (bundled `calendar` plugin)
+
+`crates/bundled/plugins/calendar` (shipped off; it needs an account) declares six
+`calendar_*` tools served by native backend `calendar` (`crates/calendar`, `byob-calendar`,
+L4): a blocking CalDAV client on `ureq` (discovery, calendar-query REPORTs, GET/PUT/DELETE
+with ETags; https, or http only to localhost), a small iCalendar reader/writer, and its own
+RRULE expansion, with times shown in the user's zone with the offset. The password is a
+secret setting. Creating or updating with attendees and every delete are must-confirm
+(`"confirm"` in the manifest); the plugin's `before_tool_call` hook also asks before changing
+an event that already has attendees. Details: `docs/calendar.md`.
+
 ### Web surfaces: the bridge, MCP Apps, plugin web views
 
 A web surface is HTML that talks to byob: an **MCP App** (an MCP tool whose `_meta.ui.

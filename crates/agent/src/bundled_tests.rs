@@ -28,6 +28,7 @@ fn natives() -> Natives {
         .backend(byob_sheets::ID, byob_sheets::factory())
         .backend(byob_web_tools::ID, byob_web_tools::factory())
         .backend(byob_memory::ID, byob_memory::factory(None))
+        .backend(byob_calendar::ID, byob_calendar::factory())
 }
 
 /// The bundled plugins byob had before spreadsheets (P5): with them the prompt and tools must
@@ -80,6 +81,7 @@ fn bundled_plugins_load_with_no_files_on_disk() {
         [
             "artifacts",
             "ask-user",
+            "calendar",
             "charts",
             "compaction",
             "core-tools",
@@ -97,7 +99,8 @@ fn bundled_plugins_load_with_no_files_on_disk() {
         ]
     );
     for p in &c.infos {
-        assert_eq!((p.scope, p.origin, p.enabled), (PluginScope::Bundled, PluginOrigin::Bundled, true), "{}", p.id);
+        // the calendar ships off: it needs an account
+        assert_eq!((p.scope, p.origin, p.enabled), (PluginScope::Bundled, PluginOrigin::Bundled, p.id != "calendar"), "{}", p.id);
         assert!(p.problems.is_empty(), "{}: {:?}", p.id, p.problems);
         assert!(!Path::new(&p.dir).exists(), "{} is in the binary, not at {}", p.id, p.dir);
     }

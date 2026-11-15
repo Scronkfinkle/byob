@@ -9,7 +9,7 @@ use std::sync::Arc;
 use byob_plugins::Embedded;
 use byob_plugins::native::{NativeBackend, NativeFactory, Outbox};
 use byob_protocol::sites::artifact_key;
-use byob_protocol::{ClientMsg, ConfigScope, Connection, PluginInfo, ServerMsg, StepStatus, ViewRef};
+use byob_protocol::{ApprovalAnswer, ClientMsg, ConfigScope, Connection, PluginInfo, ServerMsg, StepStatus, ViewRef};
 use byob_store::Paths;
 use byob_types::InferenceConfig;
 use serde_json::{Value, json};
@@ -451,4 +451,85 @@ fn the_web_plugin_is_on_by_default_and_reads_pages_without_asking() {
     assert!(result.contains("Title: Release notes\n") && result.contains("# v2.0\n\nThis release adds") && !result.contains("Home | Blog"), "{result}");
     let tools = tool_names(&reqs[0]);
     assert!(tools.iter().any(|t| t == "web_search") && tools.iter().any(|t| t == "web_fetch"), "{tools:?}");
+}
+
+/// The bundled calendar plugin on a fake CalDAV server under "Allow everything", making five
+/// calls: (the must-confirm cards it showed: tool, text, warning), the server, what clients saw.
+fn calendar_turn(natives: Natives) -> (Vec<(String, String, String)>, byob_calendar::fake::Server, Vec<ServerMsg>) {
+    use byob_calendar::fake::{PASS, Server, USER, WORK};
+    let server = Server::start();
+    server.put(&format!("{WORK}lunch.ics"), "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:lunch\r\nSUMMARY:Lunch\r\nDTSTART:20261119T110000Z\r\nDTEND:20261119T120000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+    server.put(
+        &format!("{WORK}standup.ics"),
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:standup\r\nSUMMARY:Standup\r\nDTSTART:20261119T083000Z\r\nDTEND:20261119T084500Z\r\nATTENDEE:mailto:ann@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+    );
+    let script = vec![
+        call("calendar_create", r#"{"title": "Focus", "start": "2026-11-19T14:00"}"#),
+        call("calendar_create", r#"{"title": "Sync", "start": "2026-11-19T15:00", "attendees": ["ann@example.com"]}"#),
+        call("calendar_update", r#"{"id": "work/standup.ics", "title": "Daily"}"#),
+        call("calendar_update", r#"{"id": "work/lunch.ics", "title": "Long lunch"}"#),
+        call("calendar_delete", r#"{"id": "work/lunch.ics"}"#),
+        Reply::Text("done"),
+    ];
+    let natives = natives.backend(byob_calendar::ID, byob_calendar::factory());
+    // "Allow everything": nothing would ask but the must-confirm calls.
+    let h = harness_with(script, bundled_plugins(), natives, Policy::ALLOW_ALL);
+    let mut c = connect(&h);
+    let e = wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "calendar"));
+    let p = info(&e, "calendar");
+    assert!(!p.enabled, "shipped off: it needs an account");
+    c.send(ClientMsg::SetPluginEnabled { scope: ConfigScope::Global, plugin: "calendar".into(), enabled: Some(true) });
+    for (k, v) in [("CALDAV_URL", server.url("/")), ("USERNAME", USER.into()), ("PASSWORD", PASS.into()), ("TIME_ZONE", "Europe/Berlin".into())] {
+        c.send(ClientMsg::SetPluginSetting { plugin: "calendar".into(), key: k.into(), value: Some(v) });
+    }
+    let e = wait_ext(&mut c, |e| {
+        e.plugins.iter().any(|p| p.id == "calendar" && p.enabled && p.problems.is_empty() && p.settings.iter().filter(|s| s.set).count() == 4)
+    });
+    assert_eq!(info(&e, "calendar").tools, byob_calendar::TOOLS);
+    let mut asked = Vec::new();
+    let (entry, seen) = turn(&mut c, "book things", |s, c| {
+        let ask = s.ask.as_ref().expect("a must-confirm card");
+        assert!(ask.always, "{ask:?}");
+        asked.push((s.tool.clone(), ask.text.clone(), ask.warning.clone().unwrap_or_default()));
+        c.send(ClientMsg::Approve { step: s.id, answer: ApprovalAnswer::Allow });
+    });
+    let steps: Vec<(String, StepStatus)> = entry.steps.iter().map(|s| (s.tool.clone(), s.status)).collect();
+    assert!(steps.len() == 5 && steps.iter().all(|(_, st)| *st == StepStatus::Done), "{steps:?}");
+    assert!(server.object(&format!("{WORK}lunch.ics")).is_none());
+    assert!(server.object(&format!("{WORK}standup.ics")).unwrap().contains("SUMMARY:Daily"));
+    (asked, server, seen)
+}
+
+#[test]
+fn calendar_calls_that_reach_people_ask_even_under_allow_everything() {
+    let (asked, _server, seen) = calendar_turn(Natives::builtin());
+    // Not the plain create or the change to an event without attendees.
+    let tools: Vec<&str> = asked.iter().map(|(t, _, _)| t.as_str()).collect();
+    assert_eq!(tools, ["calendar_create", "calendar_update", "calendar_delete"], "{asked:?}");
+    assert!(asked[0].1.contains("1 attendee (ann@example.com)") && asked[0].2.contains("may email them"), "{asked:?}");
+    assert!(asked[1].1.contains("\"Standup\"") && asked[1].1.contains("It has attendees"), "{asked:?}");
+    assert!(asked[2].1.starts_with("Delete \"Long lunch\"") && asked[2].2.contains("Deletes the event"), "{asked:?}");
+    for m in &seen {
+        assert!(!m.to_json().contains(byob_calendar::fake::PASS), "a secret went to a client: {}", m.to_json());
+    }
+}
+
+/// Allows every call, from the first place in `before_tool_call`.
+struct AllowAll;
+impl crate::hooks::NativeHook for AllowAll {
+    fn before_tool_call(&self, _: &mut crate::hooks::ToolCallCtx<'_>) -> crate::hooks::Decision {
+        crate::hooks::Decision::Allow
+    }
+}
+
+#[test]
+fn another_plugins_allow_doesnt_skip_the_calendars_confirm_rules() {
+    // A hook that allows everything runs before the calendar's own: the manifest's `confirm`
+    // rules (attendees on create, every delete) still ask; the calendar's hook (changes to
+    // events that already have attendees) doesn't get its turn.
+    let natives = Natives::builtin().hook("allow_all", Arc::new(AllowAll), &[(crate::hooks::Event::BeforeToolCall, 0)]);
+    let (asked, _, _) = calendar_turn(natives);
+    let tools: Vec<&str> = asked.iter().map(|(t, _, _)| t.as_str()).collect();
+    assert_eq!(tools, ["calendar_create", "calendar_delete"], "{asked:?}");
+    assert_eq!(asked[0].2, "Has attendees: your calendar server may email them an invitation.");
 }

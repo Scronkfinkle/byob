@@ -29,6 +29,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("byob-web-tools", 4),
     // the native memory backend (memory.md files): engine-side, registered by the app
     ("byob-memory", 4),
+    // the native calendar backend (CalDAV): engine-side, registered by the app
+    ("byob-calendar", 4),
     ("byob-server", 5),
     ("byob-ui-egui", 5),
     ("byob", 6),
