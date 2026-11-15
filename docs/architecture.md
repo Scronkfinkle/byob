@@ -175,7 +175,7 @@ cheap. `cargo xtask layers` fails if one of our crates depends directly on `toki
 ```
 L6  apps/byob (desktop, --serve, --headless) · apps/byob-web (wasm)
 L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
-L4  agent: engine, turns, tool loop, permissions, approvals · sheets (native spreadsheets backend) · web-tools (web_search/web_fetch backend) · mail (IMAP/SMTP backend)
+L4  agent: engine, turns, tool loop, permissions, approvals · sheets (native spreadsheets backend) · web-tools (web_search/web_fetch backend) · mail (IMAP/SMTP backend) · help (byob_help over the user docs)
 L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python, install_packages, workspace environments)
 L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
 L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store (SQLite or folder) · artifact-wire (helper protocol)
@@ -475,6 +475,16 @@ an event that already has attendees. Details: `docs/calendar.md`.
 the plugin's settings; the password is a secret setting. Blocking `imap` (over our own rustls
 stream) and lettre's sync SMTP transport; mail-parser for MIME. Details, limits and the live
 test: `docs/mail.md`.
+
+### Help (bundled `help` plugin)
+
+`crates/bundled/plugins/help` (on by default; read-only and local) serves `byob_help` from
+native backend `help` (`crates/help`, `byob-help`, L4): no arguments lists topics, `topic`
+reads a doc (`section`, `start` and an 8000-character cap per call), `query` returns the
+best keyword-scored sections. Its docs are copies in `crates/help/docs` (so the published
+crate carries them) of README.md's user sections and the user docs under `docs/`, minus their
+developer sections. The repo files are the source: `cargo xtask help-docs` rewrites the
+copies, and `cargo xtask ci` fails while one is stale.
 
 ### Web surfaces: the bridge, MCP Apps, plugin web views
 

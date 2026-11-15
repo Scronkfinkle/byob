@@ -37,6 +37,8 @@ byob-memory.workspace = true
 byob-calendar = { workspace = true, features = ["fake-server"] }
 # the bundled mail plugin's must-confirm send in a real engine (dev only)
 byob-mail.workspace = true
+# the bundled help plugin (byob_help) in a real engine (dev only)
+byob-help.workspace = true
 
 [lints]
 workspace = true

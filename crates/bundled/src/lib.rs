@@ -55,6 +55,7 @@ mod tests {
                 "compaction",
                 "core-tools",
                 "environments",
+                "help",
                 "html-apps",
                 "images",
                 "mail",

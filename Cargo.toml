@@ -38,6 +38,7 @@ byob-docs = { path = "crates/docs", version = "0.3.4" }
 byob-memory = { path = "crates/memory", version = "0.3.4" }
 byob-calendar = { path = "crates/calendar", version = "0.3.4" }
 byob-mail = { path = "crates/mail", version = "0.3.4" }
+byob-help = { path = "crates/help", version = "0.3.4" }
 
 # Spreadsheets (byob-sheets): pinned so a bump (and its formula results) is deliberate.
 # MIT OR Apache-2.0.

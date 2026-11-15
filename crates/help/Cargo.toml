@@ -1,0 +1,16 @@
+[package]
+name = "byob-help"
+description = "byob's user guide for the model: the bundled help plugin's byob_help tool over byob's own docs, embedded (L4)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+byob-plugins.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

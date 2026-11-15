@@ -454,6 +454,24 @@ fn the_web_plugin_is_on_by_default_and_reads_pages_without_asking() {
     assert!(tools.iter().any(|t| t == "web_search") && tools.iter().any(|t| t == "web_fetch"), "{tools:?}");
 }
 
+#[test]
+fn the_help_plugin_is_on_by_default_and_answers_from_byobs_docs() {
+    let script = vec![call("byob_help", &json!({"query": "gmail app password"}).to_string()), Reply::Text("use an app password")];
+    let natives = Natives::builtin().backend(byob_help::ID, byob_help::factory());
+    let h = harness_with(script, bundled_plugins(), natives, Policy::default());
+    let mut c = connect(&h);
+    let e = wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "help"));
+    let help = info(&e, "help");
+    assert!(help.enabled && help.problems.is_empty(), "{:?}", help.problems);
+    assert_eq!(help.tools, ["byob_help"]);
+    let (entry, _) = turn(&mut c, "how do I connect my Gmail?", |s, _| panic!("byob_help was asked about: {}", s.title));
+    assert_eq!(step(&entry, "byob_help").status, StepStatus::Done);
+    let reqs = h.requests.lock().unwrap();
+    assert!(crate::extensions_tests::system(&reqs[0]).contains("look it up with byob_help"));
+    let result = reqs[1]["messages"].as_array().unwrap().iter().rev().find(|m| m["role"] == "tool").unwrap()["content"].as_str().unwrap().to_owned();
+    assert!(result.contains("section \"Gmail\"") && result.contains("2-Step Verification"), "{result}");
+}
+
 /// The bundled calendar plugin on a fake CalDAV server under "Allow everything", making five
 /// calls: (the must-confirm cards it showed: tool, text, warning), the server, what clients saw.
 fn calendar_turn(natives: Natives) -> (Vec<(String, String, String)>, byob_calendar::fake::Server, Vec<ServerMsg>) {

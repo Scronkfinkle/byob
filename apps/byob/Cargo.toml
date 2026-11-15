@@ -34,6 +34,7 @@ byob-exec.workspace = true
 byob-sheets = { workspace = true, optional = true }
 byob-web-tools = { workspace = true, optional = true }
 byob-memory.workspace = true
+byob-help.workspace = true
 byob-calendar.workspace = true
 byob-mail = { workspace = true, optional = true }
 byob-store.workspace = true
