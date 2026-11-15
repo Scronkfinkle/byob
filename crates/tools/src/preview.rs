@@ -203,6 +203,43 @@ pub fn args(args: &Value) -> Preview {
     Preview::Args { fields, code, more }
 }
 
+/// Most bytes of arguments a must-confirm card shows. A call with more isn't shown cut: it
+/// is refused (a person can't approve what they can't read).
+pub const MAX_CONFIRM_BYTES: usize = 100 * 1024;
+
+/// Text for a must-confirm card: whole, newlines kept, other control characters dropped.
+fn full_text(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control() || *c == '\n' || *c == '\t').collect()
+}
+
+/// Every argument in full, for a card a person must answer (the multi-line or command one as
+/// the code block). `Err(bytes)` when they come to more than [`MAX_CONFIRM_BYTES`].
+pub fn full_args(args: &Value) -> Result<Preview, usize> {
+    let Value::Object(map) = args else {
+        let t = full_text(&args.to_string());
+        return if t.len() > MAX_CONFIRM_BYTES { Err(t.len()) } else { Ok(Preview::Args { fields: vec![("arguments".into(), t)], code: None, more: 0 }) };
+    };
+    let code_key = CODE_KEYS
+        .iter()
+        .find_map(|k| map.iter().find(|(name, v)| name.eq_ignore_ascii_case(k) && v.is_string()).map(|(name, _)| name.clone()))
+        .or_else(|| map.iter().find(|(_, v)| v.as_str().is_some_and(|s| s.contains('\n'))).map(|(name, _)| name.clone()));
+    let code = code_key.as_ref().and_then(|k| map.get(k)).and_then(Value::as_str).map(full_text);
+    let mut total = code.as_ref().map_or(0, String::len);
+    let mut fields = Vec::new();
+    for (name, v) in map.iter().filter(|(name, v)| Some(*name) != code_key.as_ref() && !v.is_null()) {
+        let text = match v {
+            Value::String(s) => full_text(s),
+            other => full_text(&other.to_string()),
+        };
+        total = total.saturating_add(name.len()).saturating_add(text.len());
+        fields.push((full_text(name), text));
+    }
+    if total > MAX_CONFIRM_BYTES {
+        return Err(total);
+    }
+    Ok(Preview::Args { fields, code, more: 0 })
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -276,5 +313,25 @@ mod tests {
         let Preview::Args { fields, more, .. } = args(&Value::Object(many)) else { panic!() };
         assert_eq!((fields.len(), more), (MAX_FIELDS, 12));
         assert!(matches!(args(&json!([1, 2])), Preview::Args { .. }));
+    }
+
+    #[test]
+    fn must_confirm_cards_show_everything_or_refuse() {
+        // A body far past the ordinary preview's 40 lines / 4000 characters, and a long
+        // one-line field: shown whole.
+        let body: String = (0..300).map(|i| format!("line {i}: {}\n", "x".repeat(50))).collect();
+        let long = "y".repeat(5000);
+        let Ok(Preview::Args { fields, code, more }) = full_args(&json!({"to": "a@b.c", "body": body, "note": long, "n": 3, "gone": null})) else { panic!() };
+        assert_eq!(code.as_deref(), Some(body.as_str()));
+        assert_eq!(fields, [("n".to_owned(), "3".to_owned()), ("note".to_owned(), long), ("to".to_owned(), "a@b.c".to_owned())]);
+        assert_eq!(more, 0);
+        let Preview::Args { code: cut, .. } = args(&json!({"body": body})) else { panic!() };
+        assert!(cut.unwrap().len() < body.len(), "the ordinary preview is cut");
+        // control characters go, newlines and tabs stay
+        let Ok(Preview::Args { fields, .. }) = full_args(&json!({"s": "a\u{1b}[2Jb\tc"})) else { panic!() };
+        assert_eq!(fields[0].1, "a[2Jb\tc");
+        // too much to read: refused, with the size
+        let huge = "z".repeat(MAX_CONFIRM_BYTES + 1);
+        assert_eq!(full_args(&json!({"body": huge, "to": "a"})).unwrap_err(), "body".len() + MAX_CONFIRM_BYTES + 1 + "to".len() + 1, "every field counts");
     }
 }

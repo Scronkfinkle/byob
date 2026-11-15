@@ -1,6 +1,6 @@
 //! byob's bundled plugins: the built-in features (artifacts, HTML apps, charts, markdown,
 //! images, the file and code-running tools, the system prompt, compaction, subagents,
-//! workspace environments, web search, memory, the plan and questions to the user) as plugins on the same manifest third parties
+//! workspace environments, web search, memory, email, calendars, the plan and questions to the user) as plugins on the same manifest third parties
 //! use. Their sources are `plugins/<id>/` in this crate, embedded at build time (`build.rs`),
 //! so `cargo install` needs no extra files. Their native parts (tools, artifact types,
 //! renderers, prompt builders) are in-tree Rust, named by id in the manifests and resolved
@@ -50,12 +50,14 @@ mod tests {
             [
                 "artifacts",
                 "ask-user",
+                "calendar",
                 "charts",
                 "compaction",
                 "core-tools",
                 "environments",
                 "html-apps",
                 "images",
+                "mail",
                 "markdown",
                 "memory",
                 "plan",

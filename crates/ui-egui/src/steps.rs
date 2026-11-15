@@ -629,6 +629,9 @@ fn diff_line(ui: &mut egui::Ui, t: &Tokens, l: &DiffLine) {
     ui.add(egui::Label::new(text).wrap());
 }
 
+/// Tallest an argument preview grows before it scrolls.
+const ARGS_MAX_HEIGHT: f32 = 320.0;
+
 fn preview(ui: &mut egui::Ui, t: &Tokens, p: &Preview) {
     let summary = preview_summary(p);
     if !summary.is_empty() {
@@ -657,22 +660,26 @@ fn preview(ui: &mut egui::Ui, t: &Tokens, p: &Preview) {
         Preview::Delete { path, .. } => code_frame(ui, t, |ui| {
             ui.add(egui::Label::new(RichText::new(path).monospace().small().color(t.code_text)).wrap());
         }),
+        // A must-confirm card carries its arguments whole (up to 100 KB): they scroll.
         Preview::Args { fields, code, more } => {
-            if let Some(code) = code {
-                code_frame(ui, t, |ui| {
-                    ui.add(egui::Label::new(RichText::new(code).monospace().small().color(t.code_text)).selectable(true).wrap());
-                });
-            }
-            if !fields.is_empty() {
-                ui.add_space(2.0);
-                egui::Grid::new(ui.next_auto_id()).num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
-                    for (k, v) in fields {
-                        ui.label(RichText::new(k).small().color(t.text_dim));
-                        ui.add(egui::Label::new(RichText::new(v).small().color(t.text)).selectable(true).wrap());
-                        ui.end_row();
-                    }
-                });
-            }
+            let id = ui.next_auto_id();
+            egui::ScrollArea::vertical().id_salt(id).max_height(ARGS_MAX_HEIGHT).auto_shrink([false, true]).show(ui, |ui| {
+                if let Some(code) = code {
+                    code_frame(ui, t, |ui| {
+                        ui.add(egui::Label::new(RichText::new(code).monospace().small().color(t.code_text)).selectable(true).wrap());
+                    });
+                }
+                if !fields.is_empty() {
+                    ui.add_space(2.0);
+                    egui::Grid::new(id.with("fields")).num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
+                        for (k, v) in fields {
+                            ui.label(RichText::new(k).small().color(t.text_dim));
+                            ui.add(egui::Label::new(RichText::new(v).small().color(t.text)).selectable(true).wrap());
+                            ui.end_row();
+                        }
+                    });
+                }
+            });
             more_line(ui, t, *more, "arguments");
         }
         Preview::Other => {}

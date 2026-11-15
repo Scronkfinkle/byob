@@ -1,0 +1,33 @@
+[package]
+name = "byob-mail"
+description = "Email over IMAP and SMTP as a native plugin backend: the bundled mail plugin's backend (L4)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+byob-plugins.workspace = true
+serde_json.workspace = true
+log.workspace = true
+chrono.workspace = true
+# IMAP client over any blocking Read + Write stream (we bring our own rustls). MIT OR Apache-2.0.
+imap = { version = "3.0.0-alpha.15", default-features = false }
+# Its response types (special-use folder flags, capabilities). MIT OR Apache-2.0.
+imap-proto = "0.16"
+# Modified UTF-7 folder names.
+base64.workspace = true
+# Sync SMTP transport and the message builder; rustls with ring, like ureq. MIT.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "rustls", "ring", "webpki-roots"] }
+# MIME parsing (charsets, quoted-printable, HTML to text). MIT OR Apache-2.0.
+mail-parser = { version = "0.11", features = ["full_encoding"] }
+# TLS for IMAP (the same rustls/ring/webpki-roots ureq already links). Apache-2.0/ISC/MIT; CDLA-Permissive-2.0 roots.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1"
+
+[dev-dependencies]
+
+[lints]
+workspace = true

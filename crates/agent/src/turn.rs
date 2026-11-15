@@ -883,8 +883,9 @@ impl Turn {
                 let text = if message.is_empty() { "A plugin asks you to confirm this call.".to_owned() } else { prefix(&message, MAX_ASK_TEXT).to_owned() };
                 let warning = step.ask.take().and_then(|a| a.warning);
                 step.ask = Some(Box::new(Ask { text, warning, always: true, choice: None }));
-                self.gate(&step)
+                self.confirm_gate(&mut step, &args)
             }
+            Decision::Allow | Decision::Continue if step.ask.as_ref().is_some_and(|a| a.always) => self.confirm_gate(&mut step, &args),
             Decision::Allow | Decision::Continue => self.gate(&step),
         };
         if let Some(reason) = verdict.denied() {
@@ -1031,6 +1032,25 @@ impl Turn {
             .unwrap_or_else(|_| Some("this tool must be confirmed".into()))
             .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true, choice: None }));
         (one_line(&title, DETAIL_CHARS), access, preview, ask)
+    }
+
+    /// The gate for a card only a person may answer: its arguments are shown in full (the
+    /// ordinary preview is cut), and a call with more than a person can be shown is refused
+    /// rather than approved unread. Tools with their own preview (a diff) keep it.
+    fn confirm_gate(&self, step: &mut Step, args: &Value) -> Verdict {
+        if matches!(step.preview, None | Some(byob_protocol::Preview::Args { .. })) {
+            match byob_tools::preview::full_args(args) {
+                Ok(p) => step.preview = Some(p),
+                Err(bytes) => {
+                    return Verdict::Deny(format!(
+                        "its arguments are {} KB, too long to show in full on the card a person must approve (the limit is {} KB); make it shorter",
+                        bytes.div_ceil(1024),
+                        byob_tools::preview::MAX_CONFIRM_BYTES / 1024
+                    ));
+                }
+            }
+        }
+        self.gate(step)
     }
 
     /// Ask the engine for permission; blocks until answered or the turn is cancelled.
