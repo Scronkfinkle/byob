@@ -12,7 +12,7 @@
     {
       "key": "PROVIDER",
       "label": "Provider",
-      "help": "fastmail, icloud, gmail, outlook or custom (default). A provider fills in the servers below; anything you fill in wins. Gmail and iCloud need an app password."
+      "help": "fastmail, icloud, gmail or custom (default). A provider fills in the servers below; anything you fill in wins. Gmail and iCloud need an app password. Outlook and Microsoft 365 aren't supported yet (they need OAuth)."
     },
     { "key": "USERNAME", "label": "Username", "required": true, "help": "Usually your full email address." },
     { "key": "PASSWORD", "label": "Password", "secret": true, "required": true, "help": "An app password from your provider (not your main password where it offers them)." },

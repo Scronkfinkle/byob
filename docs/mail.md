@@ -10,7 +10,7 @@ the account.
 
 | Key | | |
 |---|---|---|
-| `PROVIDER` | text | `fastmail`, `icloud`, `gmail`, `outlook` or `custom` (default). Fills in the servers; anything set below wins. |
+| `PROVIDER` | text | `fastmail`, `icloud`, `gmail` or `custom` (default). Fills in the servers; anything set below wins. |
 | `USERNAME` | required | Usually the full address. |
 | `PASSWORD` | required, **secret** | An app password where the provider has them (Gmail and iCloud require one). Stored in `secrets.json`, sent to the backend in `init.secrets`, never to clients. |
 | `FROM_ADDRESS`, `FROM_NAME` | | `From:`; the address defaults to the username when it is one. |
@@ -106,3 +106,18 @@ To try it in the app, point the plugin at the same server (`IMAP_HOST` 127.0.0.1
 
 OAuth (Gmail/Outlook without app passwords), more than one account, an inbox pane, push
 (IDLE), sending attachments, HTML mail, saving attachments to the workspace.
+
+## Gmail
+
+Use `PROVIDER` `gmail` and an **app password** (Google Account → Security → App passwords; it
+needs 2-Step Verification on). Google no longer accepts the account password over IMAP, and a
+Workspace admin can turn IMAP or app passwords off. Gmail shows labels as folders
+(`[Gmail]/All Mail`, `[Gmail]/Sent Mail`, one per label), so one message can turn up in several
+folders; moving a message adds a label, and moving it out of `INBOX` archives it. Gmail files
+sent mail itself, so byob doesn't append a copy (`SAVE_SENT` `auto`). Searches use standard IMAP
+`SEARCH`, not Gmail's own syntax.
+
+## Not supported yet
+
+Outlook.com and Microsoft 365: Microsoft has turned off password sign-in for IMAP and SMTP, and
+app passwords don't bring it back; they need OAuth, which byob doesn't do yet.

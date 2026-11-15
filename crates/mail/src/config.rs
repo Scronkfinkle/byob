@@ -52,11 +52,11 @@ impl std::fmt::Debug for Account {
 }
 
 /// Known providers: (name, IMAP host, SMTP host, SMTP security). IMAP is TLS on 993 for all.
+/// No Outlook / Microsoft 365: Microsoft turned off password sign-in for IMAP and SMTP (OAuth only).
 const PRESETS: &[(&str, &str, &str, Security)] = &[
     ("fastmail", "imap.fastmail.com", "smtp.fastmail.com", Security::Tls),
     ("icloud", "imap.mail.me.com", "smtp.mail.me.com", Security::StartTls),
     ("gmail", "imap.gmail.com", "smtp.gmail.com", Security::Tls),
-    ("outlook", "outlook.office365.com", "smtp.office365.com", Security::StartTls),
 ];
 
 /// Hosts whose SMTP servers file sent mail in Sent themselves.
@@ -85,7 +85,7 @@ impl Account {
             Some(p) => match PRESETS.iter().find(|(n, ..)| *n == p) {
                 Some(found) => Some(*found),
                 None => {
-                    a.problems.push(format!("PROVIDER {p:?} isn't one of fastmail, icloud, gmail, outlook, custom; using the hosts below"));
+                    a.problems.push(format!("PROVIDER {p:?} isn't one of fastmail, icloud, gmail, custom; using the hosts below"));
                     None
                 }
             },
