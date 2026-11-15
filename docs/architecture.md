@@ -610,6 +610,16 @@ definition's `tools` and the call's `tools`, at most 25 tool calls and 15 minute
 bounded (12 KB) and headed with what it did (`[subagent explorer · 3 tool calls: read_file ×2,
 list_files · 4.1 s]`), is the tool result, so the parent's context grows only by the report.
 
+- **Its system prompt.** `WORKER_PROMPT` (or the agent definition's body), then the manifest
+  `prompt` line of each switched-on plugin that contributed at least one of the child's tools
+  (`Composed::tool_prompts` → `delegate::Env::guidance`, in the main prompt's order; a
+  read-only child with only `read_file` doesn't get mail's line), then the subagent rules.
+  Whole lines only, at most 4 KB (`MAX_GUIDANCE`); lines that don't fit are left out and
+  logged. Only the manifest lines: `before_prompt` hooks (natives and backends) run once per
+  top-level turn and build the main prompt as a whole, so they aren't run for children, and
+  `system_prompt` sections (artifacts, code running) stay in the main prompt. The lines are
+  taken when the turn starts, like the main prompt.
+
 - **An ordinary tool.** `delegate` is `delegate::DelegateTool`, made per turn (it holds the
   turn's agents and models) and offered while the bundled `subagents` plugin is on (manifest
   `tools: [{native: "delegate"}]`, a `Natives::turn_tools` name; its `before_prompt` hook adds

@@ -1601,12 +1601,13 @@ impl Engine {
         // `/name args`: what the model gets instead (the transcript keeps what was typed).
         let model_text = composed.as_ref().and_then(|c| extensions::expand_slash(&text, c)).unwrap_or_else(|| text.clone());
         let plugin_agents = composed.as_ref().map(|c| c.agents.clone()).unwrap_or_default();
+        let plugin_guidance = composed.as_ref().map(|c| c.tool_prompts.clone()).unwrap_or_default();
         // `delegate` is offered while a plugin that names it (bundled `subagents`) is on.
         let delegate_on = composed.as_ref().is_none_or(|c| !c.turn_tools_off.contains(delegate::TOOL));
         let delegation = workspace_dir
             .as_deref()
             .filter(|_| eff.subagents.value && delegate_on)
-            .and_then(|ws| self.delegation_env(&settings.inference, &llm, &plan, ws, &plugin_agents))
+            .and_then(|ws| self.delegation_env(&settings.inference, &llm, &plan, ws, &plugin_agents, plugin_guidance))
             .map(Arc::new);
         let chat_prompt = ChatPrompt {
             plugin_sections: composed.as_ref().map(|c| c.sections.clone()).unwrap_or_default(),

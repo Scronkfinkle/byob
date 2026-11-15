@@ -22,7 +22,8 @@ fn new_run_id() -> String {
 
 impl Engine {
     /// What a turn in `workspace` needs to delegate, if subagents are on and there are tools.
-    /// `main` is the chat's own endpoint (subagents without a model role use it).
+    /// `main` is the chat's own endpoint (subagents without a model role use it); `guidance`
+    /// is the plugins' prompt lines with their tools (`Composed::tool_prompts`).
     pub(crate) fn delegation_env(
         &self,
         main: &byob_types::InferenceConfig,
@@ -30,6 +31,7 @@ impl Engine {
         plan: &adapt::Plan,
         workspace: &Path,
         plugin_agents: &[byob_plugins::AgentDef],
+        guidance: Vec<delegate::PluginPrompt>,
     ) -> Option<delegate::Env> {
         if !self.subagents.enabled || self.tools.is_empty() {
             return None;
@@ -52,6 +54,7 @@ impl Engine {
             slots: Arc::clone(&self.slots),
             leases: Arc::clone(&self.leases),
             opts: self.subagents,
+            guidance,
         })
     }
 
