@@ -7,3 +7,6 @@
 *.png binary
 *.jpg binary
 *.ico binary
+
+# Copies of the user docs for byob_help, written by `cargo xtask help-docs`.
+crates/help/docs/*.md linguist-generated

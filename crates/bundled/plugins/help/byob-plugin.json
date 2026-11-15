@@ -1,0 +1,27 @@
+{
+  "id": "help",
+  "name": "Help",
+  "version": "1.0.0",
+  "description": "byob's own user guide for the model: the byob_help tool looks up installing byob, connecting a model, settings, workspaces and plugins (mail, calendar, environments, writing plugins) in the docs that ship with byob. Read-only and local.",
+  "icon": "life-buoy",
+  "backend": { "native": "help" },
+  "prompt": "For questions about byob itself (installing it, connecting a model, its settings, workspaces, plugins such as mail and calendar, writing plugins), look it up with byob_help before answering and give the user the steps from it; don't guess at byob's settings.",
+  "tools": [
+    {
+      "name": "byob_help",
+      "title": "Read byob's help",
+      "description": "byob's user guide. No arguments: the topics. topic: read one (long ones come in parts: section, a name or number, or start). query: the best-matching sections across all topics, e.g. \"gmail app password\".",
+      "run": "backend",
+      "access": "read",
+      "params": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Keywords to search every topic for." },
+          "topic": { "type": "string", "description": "A topic name from the list, e.g. \"mail\"." },
+          "section": { "type": "string", "description": "With topic: one section, by its heading or number." },
+          "start": { "type": "integer", "description": "With topic: character offset to read on from." }
+        }
+      }
+    }
+  ]
+}

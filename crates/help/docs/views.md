@@ -1,0 +1,299 @@
+<!-- Generated from docs/views.md by `cargo xtask help-docs`. Edit docs/views.md, not this copy. -->
+# View trees (schema v1)
+
+A view tree is UI described as JSON. byob draws it natively, in the user's theme, on the
+desktop and in the browser. You describe *what* to show (cards, text, buttons, fields,
+tables, charts); byob decides how it looks. When the user clicks or edits something, your
+code gets an **event** and answers with a new view or a few **patches**.
+
+The code lives in `byob_protocol::tree` (schema, decoding, patches, diff) and
+`byob_ui_egui::tree` (the renderer). This page is the authoring guide.
+
+## Views in a plugin (render sites)
+
+A plugin declares its views in `byob-plugin.json` and draws them in its backend
+(`docs/plugins-backend.md`) with byob's helper `byob_plugin`. A to-do pane beside the chat
+and a chip in the header with the count:
+
+`byob-plugin.json`:
+```json
+{
+  "id": "todo",
+  "name": "To-do",
+  "backend": "backend.py",
+  "views": [
+    {"site": "pane", "id": "list", "title": "To-do"},
+    {"site": "status", "id": "count"}
+  ]
+}
+```
+
+`backend.py`:
+```python
+import byob_plugin as byob
+
+items = []
+
+@byob.view("list")                 # draws the view with id "list"
+def todo_list():
+    rows = []
+    for i, text in enumerate(items):
+        rows.append({"type": "row", "children": [
+            {"type": "text", "text": text},
+            {"type": "button", "label": "Done", "action": f"done:{i}"}]})
+    return {"type": "column", "children": [
+        {"type": "row", "children": [
+            {"type": "input", "name": "new", "placeholder": "New item", "submit": "add"},
+            {"type": "button", "label": "Add", "action": "add", "primary": True}]},
+        *rows]}
+
+@byob.on_event("list")             # a click or Enter in that view
+def list_event(event):
+    action = event["action"]
+    if action == "add":
+        text = event["values"].get("new", "").strip()
+        if text:
+            items.append(text)
+        return {"values": {"new": ""}}   # clear the input
+    if action.startswith("done:"):
+        items.pop(int(action[5:]))
+
+@byob.view("count")                # the chip in the header
+def count():
+    return {"type": "chip", "text": f"{len(items)} to do", "tone": "accent"}
+
+byob.run()
+```
+
+- **Sites:** `pane` (a tab of the side pane beside the chat, opened from its title in the
+  header), `status` (a header item: one `chip` or a short `text`), `settings` (a section
+  under the plugin in Settings → Plugins), `card` (on a step of one of the plugin's backend
+  tools: `return byob.card(text, "<card view id>", key=...)`, drawn by a `@byob.view` that
+  takes the key).
+- **One owner.** byob's engine keeps every view's tree; each window or tab shows the same
+  thing and keeps only what is being typed, scroll positions and selections. A view is
+  redrawn whole after every event; byob sends windows only what changed.
+- **Mistakes** become faults in the plugin's status (`plugin_status`) and a warning line at
+  the site; a view that can't be had at all (the backend crashed, a traceback in the view
+  function) shows a small error box.
+
+When a tree isn't enough, a pane or card view can be an HTML page instead (`"html":
+"ui/index.html"`, with a `window.byob` API to the plugin's backend and the model): see Web
+views in `docs/plugins-backend.md`.
+
+`examples/plugins/todo-demo` in byob's repository has every site, a settings section and
+cards (run byob with `--plugin examples/plugins/todo-demo`).
+
+## A view process in Python (low level)
+
+Outside a plugin backend, a view process is a Python 3 script (standard library only) that
+talks JSON lines on stdin/stdout.
+
+- On start, print ONE line: `{"view": <node>}`.
+- Then loop over stdin lines. Each line is an event:
+  `{"action": "<string>", "values": {"<field name>": <value>, ...}, "edit": {...}}`
+  (`edit` only for table edits). `values` always holds the current value of EVERY named
+  field (input, toggle, select, table selection) in the view.
+- For each event print ONE line: `{"view": <node>}` (replace everything) or
+  `{"patch": [ ... ]}`. **Always `print(..., flush=True)`**, or byob waits forever for a
+  reply stuck in Python's buffer. Never print anything else to stdout (use stderr for
+  debugging: `print("debug", file=sys.stderr)`).
+
+```python
+import json, sys
+
+count = 0
+
+def view():
+    return {"type": "card", "title": "Counter", "children": [
+        {"type": "text", "text": f"Clicked {count} times"},
+        {"type": "button", "label": "Click", "action": "click", "primary": True}]}
+
+print(json.dumps({"view": view()}), flush=True)
+for line in sys.stdin:
+    ev = json.loads(line)
+    if ev.get("action") == "click":
+        count += 1
+    print(json.dumps({"view": view()}), flush=True)
+```
+
+Sending the whole view after every event is always fine and the simplest thing to do: byob
+works out what changed and sends only that to the window.
+
+## Nodes
+
+Every node is an object with a `"type"`. Any node may have a `"key"` (any string, unique in
+the view): patches find the node by it, and byob keeps its scroll position and selection
+under it. Unknown fields are ignored.
+
+| type | fields |
+|---|---|
+| `column` | `children: [node]` — stacked top to bottom |
+| `row` | `children: [node]` — side by side, wrapping; a row of `card`s or `column`s splits the width equally |
+| `card` | `title?: str`, `children: [node]` — a framed box |
+| `text` | `text: str`, `style?: "body" \| "heading" \| "strong" \| "small" \| "mono"`, `tone?` |
+| `markdown` | `text: str` — bold, lists, links, code, tables |
+| `chip` | `text: str`, `tone?` — a small status pill |
+| `button` | `label: str`, `action: str` (sent as the event's action), `primary?: bool`, `danger?: bool` |
+| `input` | `name: str`, `value?: str`, `placeholder?: str`, `submit?: str` (action sent when Enter is pressed) |
+| `toggle` | `name: str`, `label?: str`, `value?: bool`, `action?: str` (sent when flipped) |
+| `select` | `name: str`, `options: [str]`, `value?: str`, `action?: str` (sent when the choice changes) |
+| `progress` | `value: 0..1`, `label?: str` |
+| `table` | `name?: str`, `columns: [{"key": str, "label"?: str, "width"?: num, "editable"?: bool}]`, `rows: [[cell, ...]]`, `height?: num`, `select?: str` |
+| `chart` | `spec`: a chart, the same JSON as `.chart.json` files: `{"version": 1, "type": "bar" \| "line" \| "area" \| "pie" \| "scatter", "title": str, "x": str, "series": [{"key": str, "label": str}], "data": [{...}]}` |
+| `separator` | (no fields) — a line |
+| `image` | `media?: str` (a workspace path) or `artifact?: str` (an artifact id), `alt?: str`, `width?: num`, `height?: num` |
+| `canvas` | `width: num`, `height: num`, `shapes: [shape]`, `action?: str` — a drawing (see below) |
+| `grid` | `name: str`, `rows: int`, `cols: int`, `blocks: [{"row", "col", "cells": [[cell, ...]]}]`, `frozen_rows?`, `frozen_cols?`, `widths?`, `default_width?`, `editable?`, `headers?`, `height?`, `selection?` — a spreadsheet (see below) |
+
+`tone` is one of `"normal"`, `"dim"`, `"accent"`, `"success"`, `"warning"`, `"danger"`.
+These are colour *roles*: the theme picks the actual colours. There is no way to give a
+colour directly, except on a canvas.
+
+### Tables
+
+`rows` are lists of cells in column order; a cell is a string, number, boolean or null. A row
+may also be an object by column key (`{"sku": "A1", "qty": 3}`). Tables can hold 100,000
+rows: only the rows on screen are drawn. `height` is the most the table takes before it
+scrolls (300 by default). Columns without a `width` share the space left.
+
+- Clicking a row selects it: `values[name]` is its index (or null), and the `select` action is
+  sent if there is one.
+- Double-clicking a cell of an `editable` column edits it. Enter (or clicking away) sends
+  `{"action": "edit", "edit": {"table": name, "row": i, "column": key, "value": "text"}}`;
+  Escape cancels. `value` is always text: convert it yourself. The new text shows until your
+  reply arrives; reply with the corrected row (or the whole view).
+
+### Grids
+
+A grid is a spreadsheet: a `rows` × `cols` sheet (up to 1,048,576 × 16,384) of which you send
+only the part around what shows, as `blocks`. Only the cells on screen are drawn, so a sheet
+that size costs what a small one does.
+
+```json
+{"type": "grid", "key": "g", "name": "sheet", "rows": 1000, "cols": 26, "editable": true,
+ "frozen_rows": 1, "widths": {"0": 140}, "height": 400,
+ "blocks": [{"row": 0, "col": 0, "cells": [
+   [{"v": "Item", "b": true}, {"v": "Cost", "b": true}],
+   ["Rent", 1200],
+   [{"v": "Total", "b": true}, {"v": "1200", "i": "=SUM(B2:B2)", "t": "n"}]]}]}
+```
+
+- `blocks`: rectangles of known cells, `cells` row by row from (`row`, `col`), 0-based. At
+  most 16 blocks and 50,000 cells in all. Cells in no block aren't loaded (drawn blank).
+- A cell is null, a string, a number (right-aligned), a bool (`TRUE`/`FALSE`, centred), or
+  `{"v": shown text, "i"?: input (what the formula bar shows and editing starts with, e.g.
+  "=SUM(B2:B9)"), "t"?: "s" | "n" | "b" | "e" (an error, drawn in the danger colour), "b"?:
+  bold, "it"?: italic, "fill"?: colour, "color"?: colour, "align"?: "left" | "center" |
+  "right"}`. Colours as on a canvas. Text is cut to 4,096 characters.
+- `frozen_rows` / `frozen_cols`: rows from the top and columns from the left that stay while
+  the rest scrolls. `headers` (default true): column letters and row numbers.
+- `widths`: column index → points (`{"0": 140}`); other columns are `default_width` (90).
+- `height`: the most the grid takes; without it, what the place it is in gives.
+- `selection`: `{"row", "col", "to_row"?, "to_col"?}`, taken like a field's `value` (only when
+  your view changes it). `values[name]` always holds the current selection in that shape;
+  `row`, `col` is the active cell.
+- `editable` (default false): typing, F2 or double-click edits a cell; Enter (down), Tab
+  (right) or clicking away commits, Escape cancels; the formula bar edits too. Delete clears
+  the selection, Ctrl+V pastes. Read-only grids still select, scroll and copy (Ctrl+C copies
+  the selection as tab-separated text).
+
+Grid events have `"action"` set to the operation and a `"grid"` object
+`{"name", "op", "row", "col", ...}`:
+
+| op | when | fields |
+|---|---|---|
+| `edit` | a cell edit was committed | `row`, `col`, `value` (the typed text; `=…` is a formula: work it out yourself) |
+| `select` | the selection changed | `row`, `col` (the active cell), `to_row`, `to_col` (the other corner) |
+| `window` | cells that show aren't loaded | `row`, `col`, `rows`, `cols`: what to send |
+| `paste` | Ctrl+V | `row`, `col` (the selection's top left), `text` (tab-separated rows) |
+| `clear` | Delete on the selection | `row`, `col`, `to_row`, `to_col` |
+
+**The window protocol.** When the user scrolls to cells no block has, the grid sends one
+`window` event: the visible range plus about a screen (at least 50 rows and 10 columns) each
+way. Answer with the grid's blocks covering it, plus the frozen rows and columns (e.g. one
+block for the header row, one for the window). It doesn't ask again for that range until
+your view changes or the user scrolls past it. An edit's new text shows until your reply.
+
+### Canvas
+
+A canvas draws shapes in a `width` × `height` box (scaled down if the window is narrower).
+Each shape has a `"type"`:
+
+| shape | fields |
+|---|---|
+| `rect` | `x, y, w, h`, `fill?`, `stroke?`, `radius?` |
+| `circle` | `x, y, r`, `fill?`, `stroke?` |
+| `line` | `points: [[x, y], ...]`, `stroke?`, `width?` (1) |
+| `text` | `x, y, text`, `color?`, `size?` (14) — `x, y` is the top left |
+
+Colours are theme role names (`"accent"`, `"text"`, `"text_dim"`, `"border"`, `"success"`,
+`"danger"`, `"field_bg"`, …), `"chart1"` … `"chart8"`, or `"#rrggbb"`. A click on a canvas with
+an `action` sends it with the point in `values._x` / `values._y` (canvas units).
+
+## Events
+
+```json
+{"action": "save", "values": {"city": "Lisbon", "units": "metric", "alerts": true}}
+```
+
+- `action` is the button's `action`, an input's `submit`, a toggle's or select's `action`,
+  a table's `select`, a canvas's `action`, `"edit"` for a table cell edit, or a grid's
+  operation (with a `grid` object, see Grids).
+- `values` holds every named field: input text (string), toggle (bool), select (string),
+  table selection (row index or null). Typing sends nothing: the text arrives with the next
+  event.
+- To tell several similar buttons apart, put the index in the action: `"remove:3"`.
+
+## Replies
+
+```json
+{"view": {...}}
+{"patch": [...]}
+{"view": {...}, "values": {"new": ""}}
+```
+
+- `view` replaces the whole view.
+- `patch` changes parts of it (below).
+- `values` sets fields to what you say, over what the user typed. A reply never changes text
+  the user is typing otherwise — even a new `view` keeps it — unless the field's `value` in
+  your view changed. So to clear an input after "Add", send `"values": {"new": ""}`.
+
+## Patches
+
+Each patch is an object with one operation. Most find their node by `key` (or by `path`, a
+JSON pointer through `children` like `/children/0/children/2`):
+
+| patch | does |
+|---|---|
+| `{"set": {"key": k, "fields": {"text": "3 left", "tone": "success"}}}` | change some fields of a node |
+| `{"replace": {"key": k, "node": node}}` | replace a node |
+| `{"append": {"key": k, "nodes": [node, ...]}}` | add children to the end of a column, row or card |
+| `{"remove": {"key": k}}` | remove a node |
+| `{"rows": {"key": k, "start": i, "rows": [[...], ...], "len": n}}` | write table rows from `start` (growing the table); `len` (optional) cuts or grows it to `n` rows |
+| `{"put": {"path": "/children/0/text", "value": "hi"}}` | set what a JSON pointer into the view points at: a node, a field, a table row (`/rows/7`) or cell (`/rows/7/2`) |
+
+Patches apply in order; one that can't apply (no such key, wrong type) is skipped and
+reported, the rest still apply.
+
+## Limits and mistakes
+
+byob never rejects a view. It draws what it can and reports what it had to fix, as
+`path: message` lines (the path is a JSON pointer into what you sent), e.g.
+``/children/2: button: missing field `action` ``. When byob shows you such problems, fix them.
+
+- A node byob doesn't know is left out, or shown as its `"fallback"` text if it has one
+  (`{"type": "slider", "fallback": "Volume: 7"}`). A node missing a required field is
+  treated the same way.
+- At most 32 levels of nesting and 20,000 nodes; table rows (100,000), columns (64), select
+  options (1,000), canvas shapes (20,000), grid blocks (16) and cells (50,000), and a grid's
+  size (1,048,576 rows × 16,384 columns) are capped; text longer than 65,536 characters (4,096
+  in a grid cell) is cut.
+- Unknown tones and styles are the defaults.
+
+## On steps
+
+A tree can be shown on a step of a reply as a view of kind `byob.tree` (version 1; the tree
+is the view's `data`, a markdown summary its fallback for clients that can't draw trees).
+A plugin's card carries its `owner` (plugin, view, key): clients that can show live views
+draw the live one and send its events to the plugin; others show the stored tree.

@@ -2,9 +2,12 @@
 //!   layers  — enforce the crate layering in docs/architecture.md
 //!   web     — build the browser UI into apps/byob-web/dist (wasm-bindgen + wasm-opt)
 //!   wasm    — check that the browser-side crates build for wasm32
-//!   ci      — fmt, clippy, tests, doc tests, layers, wasm (the full local gate)
+//!   help-docs — copy byob's user docs into crates/help/docs (`--check`: fail if that copy is stale)
+//!   ci      — help-docs --check, fmt, clippy, tests, doc tests, layers, wasm (the full local gate)
 
 use std::process::{Command, ExitCode};
+
+mod help_docs;
 
 /// Every workspace crate and its layer. Dependencies may only point downward.
 const LAYERS: &[(&str, u8)] = &[
@@ -33,6 +36,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("byob-calendar", 4),
     // the native mail backend (IMAP/SMTP): engine-side, registered by the app
     ("byob-mail", 4),
+    // the native help backend (byob_help over byob's own user docs): engine-side, registered by the app
+    ("byob-help", 4),
     ("byob-server", 5),
     ("byob-ui-egui", 5),
     ("byob", 6),
@@ -61,8 +66,9 @@ fn main() -> ExitCode {
         "layers" => layers(),
         "wasm" => wasm(),
         "web" => web(),
+        "help-docs" => help_docs(std::env::args().nth(2).as_deref() == Some("--check")),
         "ci" => ci(),
-        _ => Err(format!("unknown command {cmd:?}; expected one of: layers, wasm, web, ci")),
+        _ => Err(format!("unknown command {cmd:?}; expected one of: layers, wasm, web, help-docs, ci")),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -235,6 +241,7 @@ fn run(args: &[&str]) -> Result<(), String> {
 }
 
 fn ci() -> Result<(), String> {
+    help_docs(true)?;
     run(&["fmt", "--all", "--check"])?;
     run(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"])?;
     let has_nextest = Command::new(env!("CARGO")).args(["nextest", "--version"]).output().is_ok_and(|o| o.status.success());
@@ -246,6 +253,23 @@ fn ci() -> Result<(), String> {
     run(&["test", "--workspace", "--doc"])?;
     layers()?;
     wasm()
+}
+
+/// Copy the user docs into byob-help (`check`: only report copies that are out of date).
+fn help_docs(check: bool) -> Result<(), String> {
+    let root = std::path::Path::new(".");
+    if !check {
+        help_docs::write(root)?;
+        println!("help-docs: wrote {}", help_docs::DIR);
+        return Ok(());
+    }
+    let problems = help_docs::stale(root)?;
+    if problems.is_empty() {
+        println!("help-docs: ok");
+        Ok(())
+    } else {
+        Err(format!("{}\nrun `cargo xtask help-docs` to copy the docs again", problems.join("\n")))
+    }
 }
 
 /// `byob_protocol::PROTOCOL_MAJOR`, read from its source (xtask doesn't build the crate).

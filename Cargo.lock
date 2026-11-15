@@ -698,6 +698,7 @@ dependencies = [
  "byob-artifact-wire",
  "byob-calendar",
  "byob-exec",
+ "byob-help",
  "byob-mail",
  "byob-memory",
  "byob-plugins",
@@ -727,6 +728,7 @@ dependencies = [
  "byob-bundled",
  "byob-calendar",
  "byob-exec",
+ "byob-help",
  "byob-llm",
  "byob-mail",
  "byob-memory",
@@ -790,6 +792,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "byob-help"
+version = "0.3.4"
+dependencies = [
+ "byob-plugins",
+ "serde_json",
 ]
 
 [[package]]
