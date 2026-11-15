@@ -64,6 +64,9 @@ pub fn load(tools: &mut Registry, artifact_types: &byob_tools::ArtifactTypes, li
     let natives = natives.backend(byob_web_tools::ID, byob_web_tools::factory());
     // The bundled `memory` plugin's backend: memory.md files in the config folder and workspaces.
     let natives = natives.backend(byob_memory::ID, byob_memory::factory(paths.as_ref().ok().map(|p| p.config_dir.clone())));
+    // The bundled `mail` plugin's backend: one IMAP + SMTP account.
+    #[cfg(feature = "native-mail")]
+    let natives = natives.backend(byob_mail::ID, byob_mail::factory());
     let mut plugins = PluginsConfig {
         linked,
         python: byob_plugins::default_python(),

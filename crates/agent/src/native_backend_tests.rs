@@ -9,7 +9,7 @@ use std::sync::Arc;
 use byob_plugins::Embedded;
 use byob_plugins::native::{NativeBackend, NativeFactory, Outbox};
 use byob_protocol::sites::artifact_key;
-use byob_protocol::{ClientMsg, ConfigScope, Connection, PluginInfo, ServerMsg, StepStatus, ViewRef};
+use byob_protocol::{ApprovalAnswer, ClientMsg, ConfigScope, Connection, PluginInfo, ServerMsg, StepStatus, ViewRef};
 use byob_store::Paths;
 use byob_types::InferenceConfig;
 use serde_json::{Value, json};
@@ -451,4 +451,78 @@ fn the_web_plugin_is_on_by_default_and_reads_pages_without_asking() {
     assert!(result.contains("Title: Release notes\n") && result.contains("# v2.0\n\nThis release adds") && !result.contains("Home | Blog"), "{result}");
     let tools = tool_names(&reqs[0]);
     assert!(tools.iter().any(|t| t == "web_search") && tools.iter().any(|t| t == "web_fetch"), "{tools:?}");
+}
+
+/// The bundled mail plugin's `mail_send` is `"confirm"`: every call waits for a person,
+/// even under "Allow everything" and after an "always allow everywhere" answer; a no
+/// sends nothing. Its card shows the recipients, subject and body; the password (a secret
+/// setting) never reaches a client.
+#[test]
+fn mail_send_always_waits_for_a_person_even_when_everything_is_allowed() {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // An SMTP server that counts connections and turns every one away.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let seen_conn = Arc::clone(&connections);
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            seen_conn.fetch_add(1, Ordering::SeqCst);
+            let _ = s.write_all(b"554 not today\r\n");
+        }
+    });
+    let send = |subject: &str| json!({"to": "Ada <ada@example.org>", "subject": subject, "body": "Hi Ada,\nsee you Friday."}).to_string();
+    let script = vec![call("mail_send", &send("Engine notes")), call("mail_send", &send("Engine notes, again")), Reply::Text("done")];
+    let natives = Natives::builtin().backend(byob_mail::ID, byob_mail::factory());
+    let h = harness_with(script, bundled_plugins(), natives, Policy::ALLOW_ALL);
+    let mut c = connect(&h);
+    let e = wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "mail"));
+    assert!(!info(&e, "mail").enabled, "mail ships switched off");
+    c.send(ClientMsg::SetPluginEnabled { scope: ConfigScope::Global, plugin: "mail".into(), enabled: Some(true) });
+    let password = "hunter2-mail-pass";
+    let smtp_port = port.to_string();
+    for (k, v) in [
+        ("USERNAME", "me@example.com"),
+        ("PASSWORD", password),
+        ("SMTP_HOST", "127.0.0.1"),
+        ("SMTP_PORT", smtp_port.as_str()),
+        ("SMTP_SECURITY", "none"),
+        ("SAVE_SENT", "never"),
+    ] {
+        c.send(ClientMsg::SetPluginSetting { plugin: "mail".into(), key: k.into(), value: Some(v.into()) });
+    }
+    let e = wait_ext(&mut c, |e| {
+        e.plugins
+            .iter()
+            .any(|p| p.id == "mail" && p.enabled && p.tools.iter().any(|t| t == "mail_send") && p.settings.iter().any(|s| s.key == "PASSWORD" && s.set))
+    });
+    assert_eq!(info(&e, "mail").tools, byob_mail::TOOLS);
+    let mut cards = Vec::new();
+    let (entry, seen) = turn(&mut c, "email Ada", |s, c| {
+        cards.push(s.clone());
+        // "Always, everywhere" the first time: it must not stick.
+        let answer = if cards.len() == 1 { ApprovalAnswer::AlwaysEverywhere } else { ApprovalAnswer::Deny };
+        c.send(ClientMsg::Approve { step: s.id, answer });
+    });
+    assert_eq!(cards.len(), 2, "both sends asked: {cards:?}");
+    for (card, subject) in cards.iter().zip(["Engine notes", "Engine notes, again"]) {
+        let ask = card.ask.as_ref().expect("a must-confirm card");
+        assert!(ask.always && ask.warning.as_deref() == Some("Sends this email from your account. It can't be unsent."), "{ask:?}");
+        let Some(byob_protocol::Preview::Args { fields, code, .. }) = &card.preview else { panic!("no preview: {card:?}") };
+        assert!(
+            fields.contains(&("to".to_owned(), "Ada <ada@example.org>".to_owned())) && fields.contains(&("subject".to_owned(), subject.to_owned())),
+            "{fields:?}"
+        );
+        assert_eq!(code.as_deref(), Some("Hi Ada,\nsee you Friday."));
+    }
+    let steps: Vec<_> = entry.steps.iter().filter(|s| s.tool == "mail_send").collect();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0].status, StepStatus::Failed, "allowed: it ran (and the server refused): {}", steps[0].detail);
+    assert!(steps[0].detail.contains("Not sent"), "{}", steps[0].detail);
+    assert_eq!(steps[1].status, StepStatus::Denied);
+    assert_eq!(connections.load(Ordering::SeqCst), 1, "the denied send never connected");
+    for m in &seen {
+        assert!(!m.to_json().contains(password), "the password went to a client: {}", m.to_json());
+    }
 }

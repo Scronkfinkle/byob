@@ -20,6 +20,8 @@ pub const OLD_MANIFEST: &str = "hob-plugin.json";
 /// Prompt length caps (characters), as in hob: built-in plugins carry longer how-tos.
 const PROMPT_MAX: usize = 600;
 const PROMPT_MAX_BUILTIN: usize = 1500;
+/// Most characters of a tool's `confirm` warning.
+const MAX_CONFIRM_CHARS: usize = 300;
 
 /// A checked plugin manifest with defaults filled in.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -243,6 +245,10 @@ pub struct ManifestTool {
     /// `write`, `network`, `execute`); `None` is `execute`. Native tools bring their own.
     #[serde(skip)]
     pub access: Option<byob_tools::Access>,
+    /// A script or backend tool a person must approve on every call (`"confirm"`: the
+    /// warning on its approval card, e.g. sending email): no policy, "always allow" grant
+    /// or `--auto-approve` lets it run. `None`: the usual permission gate.
+    pub confirm: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -946,7 +952,17 @@ fn parse_tool(t: &Value, i: usize) -> R<ManifestTool> {
             _ => return Err(format!("{f}.access must be one of read, write, network, execute")),
         }),
     };
-    Ok(ManifestTool { name, description, params, kind, title, optional, access })
+    let confirm = match t.get("confirm") {
+        None | Some(Value::Null) => None,
+        v => {
+            let w = req_str(v, &format!("{f}.confirm"))?;
+            if matches!(kind, ToolKind::Native(_)) {
+                return Err(format!("{f}.confirm is for script and backend tools (native tools bring their own)"));
+            }
+            Some(w.chars().take(MAX_CONFIRM_CHARS).collect())
+        }
+    };
+    Ok(ManifestTool { name, description, params, kind, title, optional, access, confirm })
 }
 
 fn parse_servers(v: Option<&Value>) -> R<BTreeMap<String, McpServerConfig>> {
@@ -1148,6 +1164,15 @@ mod tests {
         let bad =
             parse_user(json!({"id": "a", "name": "x", "backend": "b.py", "tools": [{"name": "t", "description": "d", "run": "backend", "access": "root"}]}));
         assert_eq!(bad.unwrap_err(), "byob-plugin.json: tools[0].access must be one of read, write, network, execute");
+        assert_eq!(m.tools[0].confirm, None);
+        let m = parse_user(
+            json!({"id": "a", "name": "x", "backend": "b.py", "tools": [{"name": "t", "description": "d", "run": "backend", "confirm": " sends email "}]}),
+        )
+        .unwrap();
+        assert_eq!(m.tools[0].confirm.as_deref(), Some("sends email"));
+        let bad =
+            parse_user(json!({"id": "a", "name": "x", "backend": "b.py", "tools": [{"name": "t", "description": "d", "run": "backend", "confirm": true}]}));
+        assert_eq!(bad.unwrap_err(), "byob-plugin.json: tools[0].confirm must be text");
         let m = parse_user(json!({"id": "a", "name": "x", "backend": {"command": "node", "args": ["s.js"], "events": ["turn_finished"]}})).unwrap();
         let b = m.backend.unwrap();
         assert_eq!((b.run, b.args, b.events), (BackendRun::Command("node".into()), vec!["s.js".to_string()], vec!["turn_finished".to_string()]));

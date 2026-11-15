@@ -986,6 +986,10 @@ impl Tool for BackendTool {
         self.decl.access.unwrap_or(Access::Execute)
     }
 
+    fn always_ask(&self, _args: &Value) -> Option<String> {
+        self.decl.confirm.clone()
+    }
+
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
         let args = if args.is_object() { args.clone() } else { Value::Object(serde_json::Map::new()) };
         let params = json!({

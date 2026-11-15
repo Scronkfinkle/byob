@@ -175,7 +175,7 @@ cheap. `cargo xtask layers` fails if one of our crates depends directly on `toki
 ```
 L6  apps/byob (desktop, --serve, --headless) · apps/byob-web (wasm)
 L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
-L4  agent: engine, turns, tool loop, permissions, approvals · sheets (native spreadsheets backend) · web-tools (web_search/web_fetch backend)
+L4  agent: engine, turns, tool loop, permissions, approvals · sheets (native spreadsheets backend) · web-tools (web_search/web_fetch backend) · mail (IMAP/SMTP backend)
 L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python, install_packages, workspace environments)
 L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
 L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store (SQLite or folder) · artifact-wire (helper protocol)
@@ -454,6 +454,16 @@ through a forgiving tokenizer (no DOM, no recursion, open-element stack capped a
   PDFs) unless `READER_FALLBACK` is off; it sees the URL.
 
 Calls run one at a time on the backend's thread (a slow page delays the next call).
+
+### Mail (bundled `mail` plugin)
+
+`crates/bundled/plugins/mail` (shipped switched off, `"enabled": false`) serves `mail_folders`,
+`mail_search`, `mail_read` (`read`), `mail_draft`, `mail_mark` (`write`) and `mail_send`
+(`network`, `"confirm"`: a person approves every call, see Plugins) from native backend `mail`
+(`crates/mail`, `byob-mail`, L4; default feature `native-mail`). One IMAP + SMTP account from
+the plugin's settings; the password is a secret setting. Blocking `imap` (over our own rustls
+stream) and lettre's sync SMTP transport; mail-parser for MIME. Details, limits and the live
+test: `docs/mail.md`.
 
 ### Web surfaces: the bridge, MCP Apps, plugin web views
 
@@ -777,7 +787,8 @@ always between rounds or calls, never in the middle of a tool call:
   global > bundled), then plugin id. Each returns continue, modify (natives change things in
   place, backends return the fields to change) or stop (no later hooks; `before_request`:
   the turn ends with the reason). In `before_tool_call` the first allow/deny/ask decides.
-  `allow` skips the gate except for must-confirm calls (`always_ask`); `ask` makes the step
+  `allow` skips the gate except for must-confirm calls (`always_ask`; a manifest tool's
+  `"confirm"`); `ask` makes the step
   a must-confirm card, so neither grants nor `--auto-approve` answer it; `deny` refuses with
   the hook's message ("Not run: …").
 - **Faults**: a backend that errors, times out or answers nonsense is a fault in its

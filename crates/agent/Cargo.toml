@@ -33,6 +33,8 @@ byob-sheets.workspace = true
 byob-web-tools.workspace = true
 # the native memory backend in a real engine (dev only)
 byob-memory.workspace = true
+# the bundled mail plugin's must-confirm send in a real engine (dev only)
+byob-mail.workspace = true
 
 [lints]
 workspace = true

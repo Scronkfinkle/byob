@@ -33,6 +33,10 @@ byob_plugin.py` (the Python helper), `crates/plugins/src/pyenv.rs` (Python envir
 - A script or backend tool may say what it does for the permission gate: `"access"`:
   `read` (runs without asking by default), `write`, `network` or `execute` (the default:
   asks). The bundled `memory` plugin's `remember`/`forget` are `write`.
+- `"confirm": "<warning>"` on a script or backend tool makes every call wait for a person:
+  the approval card shows the warning, and no policy, "always allow" grant or
+  `--auto-approve` ("Allow everything") answers it. Only switching its access level off
+  refuses it. The bundled `mail` plugin's `mail_send` uses it.
 - `python.requirements` (≤ 64 pip specs; relative `./x.whl` paths are the plugin's): byob
   makes a virtual environment for them under `<data>/plugin-python/venvs/<hash>`, keyed by
   the interpreter and the sorted list, so plugins with the same list share one. It is built
