@@ -77,7 +77,7 @@
     },
     {
       "name": "mail_draft",
-      "title": "Saved a draft: {subject}",
+      "title": "Saved an email draft",
       "description": "Save a plain-text email in the Drafts folder (nothing is sent). For a reply give in_reply_to: it threads the draft, and to and subject default to the sender and Re: subject.",
       "run": "backend",
       "access": "write",
@@ -96,7 +96,7 @@
     },
     {
       "name": "mail_send",
-      "title": "Sent email: {subject}",
+      "title": "Sent an email to {to}",
       "description": "Send a plain-text email now. The user sees exactly this message and must approve it first. Give in_reply_to for a reply (threads it), and draft to remove a draft it replaces.",
       "run": "backend",
       "access": "network",
