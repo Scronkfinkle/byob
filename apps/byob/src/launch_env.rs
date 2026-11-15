@@ -146,6 +146,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // Unix paths and `:`-separated PATHs; the code only runs on macOS
     fn merged_keeps_order_drops_duplicates_and_missing_extras() {
         let extra = [PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/nix/var/nix/profiles/default/bin"), PathBuf::from("/missing")];
         let got = merged(Some(OsStr::new("/opt/homebrew/bin:/usr/bin")), Some(OsStr::new("/usr/bin:/bin:/usr/sbin:relative")), &extra, |d| {
