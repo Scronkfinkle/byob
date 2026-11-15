@@ -145,8 +145,9 @@ fn a_native_backend_is_hosted_like_a_process_one() {
     let s = step(&entry, "poke");
     assert_eq!(s.status, StepStatus::Done, "{}", s.detail);
     assert!(s.detail.contains("poked 1 times, restart 0, plugin echo"), "{}", s.detail);
-    let e = ext_after(&mut c, seen, |e| info(e, "echo").backend.as_ref().is_some_and(|b| b.state == "running"));
-    assert!(info(&e, "echo").backend.as_ref().unwrap().stderr.contains("(log) echo is up"));
+    // Its log line comes in its own update, after the state changes.
+    let e = ext_after(&mut c, seen, |e| info(e, "echo").backend.as_ref().is_some_and(|b| b.stderr.contains("(log) echo is up")));
+    assert!(info(&e, "echo").backend.as_ref().is_some_and(|b| b.starts == 1), "started once");
 
     // A panic is a crash: the call fails, a fault is kept, the next use starts a fresh one.
     let (entry, seen) = turn(&mut c, "panic", |_, _| {});
