@@ -169,8 +169,24 @@ fn refuse(mut stream: TcpStream, why: &str) {
     drain(&mut stream);
     let _ = http::respond(&mut stream, 503, "text/plain", why.as_bytes());
     let _ = stream.shutdown(std::net::Shutdown::Write);
-    drain(&mut stream);
+    // The request may still be on its way: wait (briefly) for the client to read the reply
+    // and close, draining as it comes. Windows resets on close with unread input and then
+    // discards the reply the client hadn't read yet.
+    let deadline = Instant::now() + REFUSE_LINGER;
+    let mut buf = [0u8; 4096];
+    while Instant::now() < deadline {
+        match stream.read(&mut buf) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(5)),
+            Err(_) => return,
+        }
+    }
 }
+
+/// Longest [`refuse`] waits for the client to close (it holds up the accept loop, which is
+/// fine: it only runs when no thread could be started).
+const REFUSE_LINGER: Duration = Duration::from_millis(250);
 
 fn handle(mut stream: TcpStream, engine: &EngineHandle, config: &ServerConfig, ui: &webui::UiCheck) -> io::Result<()> {
     let peer = stream.peer_addr()?;
@@ -425,6 +441,28 @@ mod tests {
         hand_off(stream, |_job| Err(io::Error::other("out of threads")), |_| panic!("ran without a thread"));
         let out = client.join().unwrap();
         assert!(out.starts_with("HTTP/1.1 503") && out.ends_with("server busy"), "{out}");
+    }
+
+    /// Regression (Windows CI): a request that arrives after the 503 was written still lets
+    /// the client read it, instead of the close resetting the connection under it.
+    #[test]
+    fn a_late_request_still_reads_the_503() {
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut s = TcpStream::connect(addr).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            let _ = s.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+            let mut out = Vec::new();
+            let read = s.read_to_end(&mut out);
+            (read.map_err(|e| e.to_string()), String::from_utf8_lossy(&out).into_owned())
+        });
+        let (stream, _) = listener.accept().unwrap();
+        hand_off(stream, |_job| Err(io::Error::other("out of threads")), |_| panic!("ran without a thread"));
+        let (read, out) = client.join().unwrap();
+        assert!(out.starts_with("HTTP/1.1 503") && out.ends_with("server busy"), "{read:?} {out}");
+        assert!(read.is_ok(), "the connection was reset: {read:?}");
     }
 
     #[test]
