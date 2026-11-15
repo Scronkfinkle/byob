@@ -692,7 +692,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "byob"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-agent",
  "byob-artifact-wire",
@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "byob-agent"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-bundled",
  "byob-calendar",
@@ -751,15 +751,15 @@ dependencies = [
 
 [[package]]
 name = "byob-artifact-wire"
-version = "0.3.4"
+version = "0.3.5"
 
 [[package]]
 name = "byob-bundled"
-version = "0.3.4"
+version = "0.3.5"
 
 [[package]]
 name = "byob-calendar"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "base64 0.22.1",
  "byob-plugins",
@@ -774,7 +774,7 @@ dependencies = [
 
 [[package]]
 name = "byob-docs"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "hayro",
  "quick-xml 0.42.0",
@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "byob-exec"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-protocol",
  "byob-sandbox",
@@ -796,7 +796,7 @@ dependencies = [
 
 [[package]]
 name = "byob-help"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-plugins",
  "serde_json",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "byob-llm"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-types",
  "log",
@@ -817,7 +817,7 @@ dependencies = [
 
 [[package]]
 name = "byob-mail"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "base64 0.22.1",
  "byob-plugins",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "byob-mcp"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "log",
  "serde",
@@ -846,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "byob-memory"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-plugins",
  "byob-protocol",
@@ -856,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "byob-plugins"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-mcp",
  "byob-protocol",
@@ -871,7 +871,7 @@ dependencies = [
 
 [[package]]
 name = "byob-protocol"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "base64 0.22.1",
  "byob-types",
@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "byob-sandbox"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "landlock",
  "log",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "byob-server"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-agent",
  "byob-protocol",
@@ -912,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "byob-sheets"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-plugins",
  "ironcalc",
@@ -922,7 +922,7 @@ dependencies = [
 
 [[package]]
 name = "byob-store"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-types",
  "chrono",
@@ -937,7 +937,7 @@ dependencies = [
 
 [[package]]
 name = "byob-tools"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-docs",
  "byob-protocol",
@@ -955,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "byob-types"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "chrono",
  "serde",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "byob-ui-egui"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-protocol",
  "byob-types",
@@ -989,7 +989,7 @@ dependencies = [
 
 [[package]]
 name = "byob-web"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-ui-egui",
  "eframe",
@@ -1002,11 +1002,11 @@ dependencies = [
 
 [[package]]
 name = "byob-web-assets"
-version = "0.3.4"
+version = "0.3.5"
 
 [[package]]
 name = "byob-web-tools"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "byob-plugins",
  "log",
