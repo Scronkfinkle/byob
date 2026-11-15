@@ -54,6 +54,7 @@
 mod apphost;
 mod extensions;
 mod gpu;
+mod launch_env;
 mod testing;
 
 use std::net::SocketAddr;
@@ -273,6 +274,8 @@ fn main() -> ExitCode {
     if let Some(code) = byob_sandbox::dispatch_helper() {
         return code;
     }
+    // Started from Finder: the home folder and the login shell's PATH (may exec itself again).
+    launch_env::adopt();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     match run() {
         Ok(()) => ExitCode::SUCCESS,

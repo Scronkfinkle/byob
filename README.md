@@ -67,7 +67,10 @@ browser UI and `byob-artifact-host`, which draws HTML apps inline; keep it next 
 `byob-slim-…` is byob alone. `cargo install` doesn't build the renderer; without it, HTML apps
 open in your browser with one click. On Linux byob needs no GUI toolkit (file dialogs go through
 the XDG desktop portal or zenity; without either, drop files onto the window), and the renderer
-draws with the system's OpenGL (Mesa).
+draws with the system's OpenGL (Mesa). On macOS, `byob-…-apple-darwin.dmg` has `byob.app` to drag
+into Applications; it isn't signed by a developer yet, so open it the first time with right-click
+→ Open (macOS 15+: System Settings → Privacy & Security → Open Anyway), or run
+`xattr -dr com.apple.quarantine /Applications/byob.app`.
 
 ## Use
 

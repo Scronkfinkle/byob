@@ -1,7 +1,17 @@
 # Push a tag like v0.2.0 (matching Cargo.toml's version) to build binaries for every platform
 # and publish a GitHub release with them. Two archives per platform: `byob-…` with the browser
 # UI compiled in (`byob --serve` just works) and the HTML app renderer (byob-artifact-host, the
-# Servo helper, next to byob, with its MPL NOTICE), and `byob-slim-…` with neither.
+# Servo helper, next to byob, with its MPL NOTICE), and `byob-slim-…` with neither. On macOS
+# also `byob-<version>-<target>.dmg`: byob.app (byob and the helper in Contents/MacOS, the
+# licences and NOTICE in Contents/Resources) built by scripts/macos-bundle.sh.
+#
+# macOS signing and notarization (docs/releasing.md) are off until these repository secrets
+# exist; without MACOS_CERTIFICATE the app is signed ad hoc and users must allow it once:
+#   MACOS_CERTIFICATE           base64 of a "Developer ID Application" certificate + key (.p12)
+#   MACOS_CERTIFICATE_PASSWORD  the .p12's password
+#   MACOS_NOTARY_KEY            an App Store Connect API key (the AuthKey_XXXX.p8 file's text)
+#   MACOS_NOTARY_KEY_ID         that key's ID
+#   MACOS_NOTARY_ISSUER_ID      the App Store Connect issuer ID (Users and Access → Integrations)
 name: Release
 
 on:
@@ -128,6 +138,9 @@ jobs:
           - { target: x86_64-pc-windows-msvc, os: windows-latest, smoke: true }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      # Sign and notarize the macOS app only once the certificate is there (see the top).
+      MACOS_SIGNING: ${{ secrets.MACOS_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Linux build dependencies
@@ -201,6 +214,57 @@ jobs:
           slim=$(pack "byob-slim-$VERSION-$TARGET" "target/slim/$TARGET/release/$exe")
           echo "full=$full" >> "$GITHUB_OUTPUT"
           echo "slim=$slim" >> "$GITHUB_OUTPUT"
+      # A throwaway keychain with the Developer ID certificate, for codesign in the next step.
+      - name: Import the signing certificate (macOS)
+        if: runner.os == 'macOS' && env.MACOS_SIGNING == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kc_pass=$(uuidgen)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$kc_pass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_pass" "$kc"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$kc" > /dev/null
+          # Searched first, the login keychain still after it.
+          read -ra others <<< "$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')"
+          security list-keychains -d user -s "$kc" "${others[@]}"
+          identity=$(security find-identity -v -p codesigning "$kc" | awk -F'"' '/Developer ID Application/ { print $2; exit }')
+          [[ -n "$identity" ]] || { echo "::error::no Developer ID Application identity in MACOS_CERTIFICATE"; exit 1; }
+          echo "MACOS_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: App bundle and disk image (macOS)
+        id: dmg
+        if: runner.os == 'macOS'
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          dmg=$(scripts/macos-bundle.sh "target/$TARGET/release/byob" helper/byob-artifact-host "$VERSION" "$TARGET")
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+      - name: Notarize (macOS)
+        if: runner.os == 'macOS' && env.MACOS_SIGNING == 'true'
+        env:
+          DMG: ${{ steps.dmg.outputs.dmg }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/AuthKey_$MACOS_NOTARY_KEY_ID.p8"
+          printf '%s\n' "$MACOS_NOTARY_KEY" > "$key"
+          xcrun notarytool submit "$DMG" --key "$key" --key-id "$MACOS_NOTARY_KEY_ID" --issuer "$MACOS_NOTARY_ISSUER_ID" --wait --timeout 1h
+          rm -f "$key"
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+      - name: Remove the signing keychain (macOS)
+        if: always() && runner.os == 'macOS' && env.MACOS_SIGNING == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
       # Each archive is its own artifact, as is (not zipped again): a download is the archive.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -210,6 +274,12 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           path: ${{ steps.package.outputs.slim }}
+          archive: false
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: runner.os == 'macOS'
+        with:
+          path: ${{ steps.dmg.outputs.dmg }}
           archive: false
           if-no-files-found: error
 
@@ -228,11 +298,12 @@ jobs:
           # The archives as uploaded; a .zip would otherwise be unpacked into a folder.
           skip-decompress: true
       - name: Checksums
-        run: for f in byob-*.tar.gz byob-*.zip; do sha256sum "$f" > "$f.sha256"; done
+        run: for f in byob-*.tar.gz byob-*.zip byob-*.dmg; do sha256sum "$f" > "$f.sha256"; done
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: |
             byob-*.tar.gz
             byob-*.zip
+            byob-*.dmg
             byob-*.sha256
           generate_release_notes: true
