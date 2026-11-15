@@ -249,7 +249,7 @@ pub struct ManifestTool {
     pub confirm: Option<Confirm>,
 }
 
-/// A script or backend tool's must-confirm rule (`"confirm": true`, or `{"warning"?,
+/// A script or backend tool's must-confirm rule (`"confirm": true`, `"<warning>"`, or `{"warning"?,
 /// "when"?: [arg names]}`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Confirm {
@@ -979,6 +979,7 @@ fn parse_tool(t: &Value, i: usize) -> R<ManifestTool> {
     let confirm = match t.get("confirm") {
         None | Some(Value::Null | Value::Bool(false)) => None,
         Some(Value::Bool(true)) => Some(Confirm::default()),
+        Some(Value::String(w)) => Some(Confirm { warning: w.trim().chars().take(300).collect(), when: Vec::new() }),
         Some(Value::Object(c)) => {
             let warning = match c.get("warning") {
                 None => String::new(),
@@ -995,7 +996,7 @@ fn parse_tool(t: &Value, i: usize) -> R<ManifestTool> {
             };
             Some(Confirm { warning, when })
         }
-        Some(_) => return Err(format!("{f}.confirm must be true or {{\"warning\", \"when\"}}")),
+        Some(_) => return Err(format!("{f}.confirm must be true, a warning, or {{\"warning\", \"when\"}}")),
     };
     if confirm.is_some() && matches!(kind, ToolKind::Native(_)) {
         return Err(format!("{f}.confirm is for script and backend tools (native tools bring their own)"));
@@ -1211,7 +1212,8 @@ mod tests {
         assert_eq!(when.applies(&json!({"cc": ["b@x"]})).as_deref(), Some("emails people"));
         assert_eq!(parse_user(tool(json!(false))).unwrap().tools[0].confirm, None);
         assert!(parse_user(tool(json!({"when": "to"}))).unwrap_err().contains("confirm.when must list argument names"));
-        assert!(parse_user(tool(json!("yes"))).unwrap_err().contains("confirm must be true"));
+        assert_eq!(parse_user(tool(json!(" sends email "))).unwrap().tools[0].confirm.clone().unwrap().applies(&json!({})).as_deref(), Some("sends email"));
+        assert!(parse_user(tool(json!(3))).unwrap_err().contains("confirm must be true, a warning"));
         let m = parse_user(json!({"id": "a", "name": "x", "backend": {"command": "node", "args": ["s.js"], "events": ["turn_finished"]}})).unwrap();
         let b = m.backend.unwrap();
         assert_eq!((b.run, b.args, b.events), (BackendRun::Command("node".into()), vec!["s.js".to_string()], vec!["turn_finished".to_string()]));

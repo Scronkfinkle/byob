@@ -29,6 +29,7 @@ fn natives() -> Natives {
         .backend(byob_web_tools::ID, byob_web_tools::factory())
         .backend(byob_memory::ID, byob_memory::factory(None))
         .backend(byob_calendar::ID, byob_calendar::factory())
+        .backend(byob_mail::ID, byob_mail::factory())
 }
 
 /// The bundled plugins byob had before spreadsheets (P5): with them the prompt and tools must
@@ -88,6 +89,7 @@ fn bundled_plugins_load_with_no_files_on_disk() {
             "environments",
             "html-apps",
             "images",
+            "mail",
             "markdown",
             "memory",
             "plan",
@@ -98,8 +100,13 @@ fn bundled_plugins_load_with_no_files_on_disk() {
             "workspace-instructions"
         ]
     );
-    for p in &c.infos {
-        // the calendar ships off: it needs an account
+    // Mail ships switched off (it needs an account), saying what to fill in.
+    let mail = c.infos.iter().find(|p| p.id == "mail").unwrap();
+    assert!(!mail.enabled && mail.tools.is_empty(), "{mail:?}");
+    assert_eq!(mail.problems, ["needs settings: Username, Password"]);
+    assert!(!c.sections.contains("mail_search"), "no mail prompt while it is off");
+    for p in c.infos.iter().filter(|p| p.id != "mail") {
+        // the calendar ships off too (it needs an account)
         assert_eq!((p.scope, p.origin, p.enabled), (PluginScope::Bundled, PluginOrigin::Bundled, p.id != "calendar"), "{}", p.id);
         assert!(p.problems.is_empty(), "{}: {:?}", p.id, p.problems);
         assert!(!Path::new(&p.dir).exists(), "{} is in the binary, not at {}", p.id, p.dir);

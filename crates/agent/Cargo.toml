@@ -35,6 +35,8 @@ byob-web-tools.workspace = true
 byob-memory.workspace = true
 # the bundled calendar plugin over its native backend (dev only)
 byob-calendar = { workspace = true, features = ["fake-server"] }
+# the bundled mail plugin's must-confirm send in a real engine (dev only)
+byob-mail.workspace = true
 
 [lints]
 workspace = true

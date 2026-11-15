@@ -31,6 +31,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("byob-memory", 4),
     // the native calendar backend (CalDAV): engine-side, registered by the app
     ("byob-calendar", 4),
+    // the native mail backend (IMAP/SMTP): engine-side, registered by the app
+    ("byob-mail", 4),
     ("byob-server", 5),
     ("byob-ui-egui", 5),
     ("byob", 6),

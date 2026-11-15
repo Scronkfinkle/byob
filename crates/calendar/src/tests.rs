@@ -121,6 +121,9 @@ fn refusals_are_sentences() {
     assert!(c.tool("calendar_create", &json!({"title": "x", "start": "tomorrow"})).unwrap_err().contains("isn't a time"));
     assert!(c.tool("calendar_create", &json!({"start": "2026-11-19T10:00"})).unwrap_err().contains("title"));
     assert!(c.tool("calendar_create", &json!({"title": "x", "start": "2026-11-19T10:00", "attendees": ["bob"]})).unwrap_err().contains("isn't an email"));
+    let long = "d".repeat(MAX_DESCRIPTION + 1);
+    let err = c.tool("calendar_create", &json!({"title": "x", "start": "2026-11-19T10:00", "description": long})).unwrap_err();
+    assert!(err.contains("longer than 50000 characters"), "refused, not cut: {err}");
     assert!(c.tool("calendar_update", &json!({"id": "nope"})).unwrap_err().contains("isn't an event id"));
     assert!(c.tool("calendar_update", &json!({"id": "work/../../x"})).is_err());
     assert!(

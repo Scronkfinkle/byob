@@ -66,6 +66,9 @@ pub fn load(tools: &mut Registry, artifact_types: &byob_tools::ArtifactTypes, li
     let natives = natives.backend(byob_memory::ID, byob_memory::factory(paths.as_ref().ok().map(|p| p.config_dir.clone())));
     // The bundled `calendar` plugin's backend: one CalDAV account.
     let natives = natives.backend(byob_calendar::ID, byob_calendar::factory());
+    // The bundled `mail` plugin's backend: one IMAP + SMTP account.
+    #[cfg(feature = "native-mail")]
+    let natives = natives.backend(byob_mail::ID, byob_mail::factory());
     let mut plugins = PluginsConfig {
         linked,
         python: byob_plugins::default_python(),

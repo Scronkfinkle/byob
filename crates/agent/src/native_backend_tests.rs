@@ -456,13 +456,7 @@ fn the_web_plugin_is_on_by_default_and_reads_pages_without_asking() {
 /// The bundled calendar plugin on a fake CalDAV server under "Allow everything", making five
 /// calls: (the must-confirm cards it showed: tool, text, warning), the server, what clients saw.
 fn calendar_turn(natives: Natives) -> (Vec<(String, String, String)>, byob_calendar::fake::Server, Vec<ServerMsg>) {
-    use byob_calendar::fake::{PASS, Server, USER, WORK};
-    let server = Server::start();
-    server.put(&format!("{WORK}lunch.ics"), "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:lunch\r\nSUMMARY:Lunch\r\nDTSTART:20261119T110000Z\r\nDTEND:20261119T120000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
-    server.put(
-        &format!("{WORK}standup.ics"),
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:standup\r\nSUMMARY:Standup\r\nDTSTART:20261119T083000Z\r\nDTEND:20261119T084500Z\r\nATTENDEE:mailto:ann@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
-    );
+    use byob_calendar::fake::WORK;
     let script = vec![
         call("calendar_create", r#"{"title": "Focus", "start": "2026-11-19T14:00"}"#),
         call("calendar_create", r#"{"title": "Sync", "start": "2026-11-19T15:00", "attendees": ["ann@example.com"]}"#),
@@ -471,6 +465,31 @@ fn calendar_turn(natives: Natives) -> (Vec<(String, String, String)>, byob_calen
         call("calendar_delete", r#"{"id": "work/lunch.ics"}"#),
         Reply::Text("done"),
     ];
+    let (server, mut c, _h) = calendar_engine(script, natives);
+    let mut asked = Vec::new();
+    let (entry, seen) = turn(&mut c, "book things", |s, c| {
+        let ask = s.ask.as_ref().expect("a must-confirm card");
+        assert!(ask.always, "{ask:?}");
+        asked.push((s.tool.clone(), ask.text.clone(), ask.warning.clone().unwrap_or_default()));
+        c.send(ClientMsg::Approve { step: s.id, answer: ApprovalAnswer::Allow });
+    });
+    let steps: Vec<(String, StepStatus)> = entry.steps.iter().map(|s| (s.tool.clone(), s.status)).collect();
+    assert!(steps.len() == 5 && steps.iter().all(|(_, st)| *st == StepStatus::Done), "{steps:?}");
+    assert!(server.object(&format!("{WORK}lunch.ics")).is_none());
+    assert!(server.object(&format!("{WORK}standup.ics")).unwrap().contains("SUMMARY:Daily"));
+    (asked, server, seen)
+}
+
+/// An engine under "Allow everything" with the calendar plugin on, pointed at a fake CalDAV
+/// server holding a lunch (no attendees) and a standup (one attendee).
+fn calendar_engine(script: Vec<Reply>, natives: Natives) -> (byob_calendar::fake::Server, LocalConnection, H) {
+    use byob_calendar::fake::{PASS, Server, USER, WORK};
+    let server = Server::start();
+    server.put(&format!("{WORK}lunch.ics"), "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:lunch\r\nSUMMARY:Lunch\r\nDTSTART:20261119T110000Z\r\nDTEND:20261119T120000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+    server.put(
+        &format!("{WORK}standup.ics"),
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:standup\r\nSUMMARY:Standup\r\nDTSTART:20261119T083000Z\r\nDTEND:20261119T084500Z\r\nATTENDEE:mailto:ann@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+    );
     let natives = natives.backend(byob_calendar::ID, byob_calendar::factory());
     // "Allow everything": nothing would ask but the must-confirm calls.
     let h = harness_with(script, bundled_plugins(), natives, Policy::ALLOW_ALL);
@@ -486,18 +505,31 @@ fn calendar_turn(natives: Natives) -> (Vec<(String, String, String)>, byob_calen
         e.plugins.iter().any(|p| p.id == "calendar" && p.enabled && p.problems.is_empty() && p.settings.iter().filter(|s| s.set).count() == 4)
     });
     assert_eq!(info(&e, "calendar").tools, byob_calendar::TOOLS);
-    let mut asked = Vec::new();
-    let (entry, seen) = turn(&mut c, "book things", |s, c| {
-        let ask = s.ask.as_ref().expect("a must-confirm card");
-        assert!(ask.always, "{ask:?}");
-        asked.push((s.tool.clone(), ask.text.clone(), ask.warning.clone().unwrap_or_default()));
+    (server, c, h)
+}
+
+#[test]
+fn must_confirm_cards_show_the_whole_text_and_refuse_what_cant_be_shown() {
+    // A description far past the ordinary preview's cut, and one past what a card shows.
+    let long: String = (0..200).map(|i| format!("Line {i} of the agenda, which the user must be able to read.\n")).collect();
+    let huge = "x".repeat(byob_tools::preview::MAX_CONFIRM_BYTES + 10);
+    let args = |d: &str| json!({"title": "Sync", "start": "2026-11-19T15:00", "attendees": ["ann@example.com"], "description": d}).to_string();
+    let script = vec![call("calendar_create", &args(&long)), call("calendar_create", &args(&huge)), Reply::Text("done")];
+    let (server, mut c, _h) = calendar_engine(script, Natives::builtin());
+    let mut cards = Vec::new();
+    let (entry, _) = turn(&mut c, "book it", |s, c| {
+        cards.push(s.clone());
         c.send(ClientMsg::Approve { step: s.id, answer: ApprovalAnswer::Allow });
     });
-    let steps: Vec<(String, StepStatus)> = entry.steps.iter().map(|s| (s.tool.clone(), s.status)).collect();
-    assert!(steps.len() == 5 && steps.iter().all(|(_, st)| *st == StepStatus::Done), "{steps:?}");
-    assert!(server.object(&format!("{WORK}lunch.ics")).is_none());
-    assert!(server.object(&format!("{WORK}standup.ics")).unwrap().contains("SUMMARY:Daily"));
-    (asked, server, seen)
+    assert_eq!(cards.len(), 1, "the oversized call never reached a person");
+    let Some(byob_protocol::Preview::Args { code, fields, more }) = &cards[0].preview else { panic!("{:?}", cards[0].preview) };
+    assert_eq!((code.as_deref(), *more), (Some(long.as_str()), 0), "the whole description, not the first 40 lines");
+    assert!(fields.iter().any(|(k, v)| k == "attendees" && v.contains("ann@example.com")), "{fields:?}");
+    let refused = &entry.steps[1];
+    assert_eq!(refused.status, StepStatus::Denied);
+    assert!(refused.detail.contains("too long to show in full") && refused.detail.contains("limit is 100 KB"), "{}", refused.detail);
+    let stored: Vec<String> = server.state.lock().unwrap().objects.values().map(|(_, t)| t.replace("\r\n ", "")).collect();
+    assert!(stored.iter().any(|t| t.contains("Line 199 of the agenda")) && !stored.iter().any(|t| t.contains("xxxxxxxxxx")), "only the shown one was saved");
 }
 
 #[test]
@@ -532,4 +564,78 @@ fn another_plugins_allow_doesnt_skip_the_calendars_confirm_rules() {
     let tools: Vec<&str> = asked.iter().map(|(t, _, _)| t.as_str()).collect();
     assert_eq!(tools, ["calendar_create", "calendar_delete"], "{asked:?}");
     assert_eq!(asked[0].2, "Has attendees: your calendar server may email them an invitation.");
+}
+
+/// The bundled mail plugin's `mail_send` is `"confirm"`: every call waits for a person,
+/// even under "Allow everything" and after an "always allow everywhere" answer; a no
+/// sends nothing. Its card shows the recipients, subject and body; the password (a secret
+/// setting) never reaches a client.
+#[test]
+fn mail_send_always_waits_for_a_person_even_when_everything_is_allowed() {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // An SMTP server that counts connections and turns every one away.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let seen_conn = Arc::clone(&connections);
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            seen_conn.fetch_add(1, Ordering::SeqCst);
+            let _ = s.write_all(b"554 not today\r\n");
+        }
+    });
+    let send = |subject: &str| json!({"to": "Ada <ada@example.org>", "subject": subject, "body": "Hi Ada,\nsee you Friday."}).to_string();
+    let script = vec![call("mail_send", &send("Engine notes")), call("mail_send", &send("Engine notes, again")), Reply::Text("done")];
+    let natives = Natives::builtin().backend(byob_mail::ID, byob_mail::factory());
+    let h = harness_with(script, bundled_plugins(), natives, Policy::ALLOW_ALL);
+    let mut c = connect(&h);
+    let e = wait_ext(&mut c, |e| e.plugins.iter().any(|p| p.id == "mail"));
+    assert!(!info(&e, "mail").enabled, "mail ships switched off");
+    c.send(ClientMsg::SetPluginEnabled { scope: ConfigScope::Global, plugin: "mail".into(), enabled: Some(true) });
+    let password = "hunter2-mail-pass";
+    let smtp_port = port.to_string();
+    for (k, v) in [
+        ("USERNAME", "me@example.com"),
+        ("PASSWORD", password),
+        ("SMTP_HOST", "127.0.0.1"),
+        ("SMTP_PORT", smtp_port.as_str()),
+        ("SMTP_SECURITY", "none"),
+        ("SAVE_SENT", "never"),
+    ] {
+        c.send(ClientMsg::SetPluginSetting { plugin: "mail".into(), key: k.into(), value: Some(v.into()) });
+    }
+    let e = wait_ext(&mut c, |e| {
+        e.plugins
+            .iter()
+            .any(|p| p.id == "mail" && p.enabled && p.tools.iter().any(|t| t == "mail_send") && p.settings.iter().any(|s| s.key == "PASSWORD" && s.set))
+    });
+    assert_eq!(info(&e, "mail").tools, byob_mail::TOOLS);
+    let mut cards = Vec::new();
+    let (entry, seen) = turn(&mut c, "email Ada", |s, c| {
+        cards.push(s.clone());
+        // "Always, everywhere" the first time: it must not stick.
+        let answer = if cards.len() == 1 { ApprovalAnswer::AlwaysEverywhere } else { ApprovalAnswer::Deny };
+        c.send(ClientMsg::Approve { step: s.id, answer });
+    });
+    assert_eq!(cards.len(), 2, "both sends asked: {cards:?}");
+    for (card, subject) in cards.iter().zip(["Engine notes", "Engine notes, again"]) {
+        let ask = card.ask.as_ref().expect("a must-confirm card");
+        assert!(ask.always && ask.warning.as_deref() == Some("Sends this email from your account. It can't be unsent."), "{ask:?}");
+        let Some(byob_protocol::Preview::Args { fields, code, .. }) = &card.preview else { panic!("no preview: {card:?}") };
+        assert!(
+            fields.contains(&("to".to_owned(), "Ada <ada@example.org>".to_owned())) && fields.contains(&("subject".to_owned(), subject.to_owned())),
+            "{fields:?}"
+        );
+        assert_eq!(code.as_deref(), Some("Hi Ada,\nsee you Friday."));
+    }
+    let steps: Vec<_> = entry.steps.iter().filter(|s| s.tool == "mail_send").collect();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0].status, StepStatus::Failed, "allowed: it ran (and the server refused): {}", steps[0].detail);
+    assert!(steps[0].detail.contains("Not sent"), "{}", steps[0].detail);
+    assert_eq!(steps[1].status, StepStatus::Denied);
+    assert_eq!(connections.load(Ordering::SeqCst), 1, "the denied send never connected");
+    for m in &seen {
+        assert!(!m.to_json().contains(password), "the password went to a client: {}", m.to_json());
+    }
 }

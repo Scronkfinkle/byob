@@ -33,12 +33,17 @@ byob_plugin.py` (the Python helper), `crates/plugins/src/pyenv.rs` (Python envir
 - A script or backend tool may say what it does for the permission gate: `"access"`:
   `read` (runs without asking by default), `write`, `network` or `execute` (the default:
   asks). The bundled `memory` plugin's `remember`/`forget` are `write`.
-- `"confirm": true` (or `{"warning"?, "when"?: [arg names]}`) makes a script or backend
-  tool's calls must-confirm: a person approves each one, whatever the approvals setting
-  (`--auto-approve` and "Allow everything" included), and no grant or hook's `allow` skips
-  the card. With `when`, only calls that give one of those arguments a value (not null, `""`,
-  `[]`, `{}` or `false`); `warning` (≤ 300 characters) is shown on the card. The bundled
-  `calendar` plugin confirms events with attendees and every delete this way.
+- `"confirm"` on a script or backend tool makes its calls must-confirm: a person approves
+  each one, whatever the approvals setting (`--auto-approve` and "Allow everything"
+  included); no "always allow" grant or hook's `allow` skips the card, and only switching
+  its access level off refuses it. `"confirm": "<warning>"` asks on every call with that
+  warning on the card; `true` the same with a generic one; `{"warning"?, "when"?: [arg
+  names]}` only for calls that give one of those arguments a value (not null, `""`, `[]`,
+  `{}` or `false`). Warnings are cut at 300 characters. The bundled `mail` plugin's
+  `mail_send` asks always; the `calendar` plugin asks for events with attendees and every
+  delete. Such a card (and any a hook's `ask` makes) shows the arguments in full, scrolling,
+  instead of the usual cut preview; a call whose arguments come to more than 100 KB is
+  refused unseen ("too long to show in full"), never shown cut.
 - `python.requirements` (≤ 64 pip specs; relative `./x.whl` paths are the plugin's): byob
   makes a virtual environment for them under `<data>/plugin-python/venvs/<hash>`, keyed by
   the interpreter and the sorted list, so plugins with the same list share one. It is built

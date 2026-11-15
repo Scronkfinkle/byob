@@ -45,6 +45,8 @@ pub const TOOLS: [&str; 6] = ["calendar_list", "calendar_events", "calendar_free
 pub const MAX_LISTED: usize = 80;
 /// Longest range one call reads.
 const MAX_RANGE_DAYS: i64 = 400;
+/// Longest event description written (characters); longer is refused, not cut.
+pub const MAX_DESCRIPTION: usize = 50_000;
 /// Most free slots listed.
 const MAX_SLOTS: usize = 40;
 
@@ -501,20 +503,22 @@ impl Calendar {
             Some(Value::String(s)) => Some(s.split([',', ';']).filter(|x| !x.trim().is_empty()).map(event::parse_attendee).collect::<Result<Vec<_>, _>>()?),
             Some(_) => return Err("attendees must be a list of email addresses".into()),
         };
-        let text = |k: &str, max: usize| -> Option<String> {
-            match args.get(k)? {
-                Value::String(s) => Some(s.chars().take(max).collect()),
-                _ => None,
+        // Too long is refused, never cut: the user may have approved the whole text.
+        let text = |k: &str, max: usize| -> Result<Option<String>, String> {
+            match args.get(k) {
+                Some(Value::String(s)) if s.chars().count() > max => Err(format!("The {k} is longer than {max} characters; shorten it.")),
+                Some(Value::String(s)) => Ok(Some(s.clone())),
+                _ => Ok(None),
             }
         };
         Ok(Fields {
-            title: text("title", 300),
+            title: text("title", 300)?,
             start: time("start")?,
             end: time("end")?,
             duration: arg_uint(args, "duration_minutes").map(|m| Duration::minutes(i64::try_from(m.min(366 * 24 * 60)).unwrap_or(60))),
             all_day: arg_bool(args, "all_day"),
-            location: text("location", 500),
-            description: text("description", 8000),
+            location: text("location", 1000)?,
+            description: text("description", MAX_DESCRIPTION)?,
             attendees,
         })
     }
