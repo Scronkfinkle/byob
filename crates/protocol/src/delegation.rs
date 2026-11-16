@@ -48,6 +48,9 @@ pub struct Delegation {
     /// The model it runs on.
     #[serde(default)]
     pub model: String,
+    /// The name of the saved model (profile) it runs on, if it is one (since 13.10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     #[serde(default)]
     pub state: DelegationState,
     /// The child's streamed reply text (all rounds).

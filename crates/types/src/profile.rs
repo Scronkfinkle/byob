@@ -6,8 +6,8 @@
 //! `roles.<role>` → profile id) say which profile does what: [`ROLE_MAIN`] is the default
 //! model of every chat, [`ROLE_VISION`] looks at images for a model that can't.
 //!
-//! Some fields are stored and round-tripped but not used yet ([`Profile::subagents`],
-//! [`Profile::max_parallel`], [`Profile::context`], [`Profile::params`]); unknown fields
+//! Some fields are stored and round-tripped but not used yet ([`Profile::context`],
+//! [`Profile::params`]); unknown fields
 //! are kept in [`Profile::extra`] so a newer byob's additions survive.
 //!
 //! This module is pure (no I/O): the store, the engine and the UI share it.
@@ -23,7 +23,8 @@ use crate::{ApiKind, InferenceConfig};
 
 /// The default model of every chat (the "Connection" of older builds).
 pub const ROLE_MAIN: &str = "main";
-/// The model subagents use unless their agent names another (stored; used from a later build).
+/// The model subagents use unless the `delegate` call, their agent or a workspace or chat
+/// names another (the global level's subagent model).
 pub const ROLE_SUBAGENTS: &str = "subagents";
 /// Looks at images for a chat whose model can't.
 pub const ROLE_VISION: &str = "vision";
@@ -108,10 +109,11 @@ pub struct Profile {
     /// How tools are passed to this model; when set it beats the levels' tool mode.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub tool_mode: Option<ToolMode>,
-    /// Offered to the model for delegation (a later build).
+    /// Offered to the main model as a `delegate` `model` choice (its description says when).
     #[serde(default, deserialize_with = "lenient_or_default", skip_serializing_if = "is_false")]
     pub subagents: bool,
-    /// Most requests at once on this model (a later build).
+    /// Most subagents running on this model at once (besides the global cap and the
+    /// server's free slots).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub max_parallel: Option<u16>,
     /// Context window, overriding what the probe found (a later build).
@@ -327,6 +329,16 @@ pub fn resolve_with<'a>(
         chat: own(cp, *c_gone, keys.chat),
     };
     let mut effective = resolve(applied, keys, forced);
+    // The subagent model: the most specific level's that still exists.
+    effective.subagent_profile = None;
+    for (from, layer) in [(Level::Chat, levels.chat), (Level::Workspace, levels.workspace), (Level::Global, levels.global)] {
+        let Some(id) = layer.and_then(|l| l.subagent_profile.as_deref()) else { continue };
+        if find(profiles, Some(id)).is_some() {
+            effective.subagent_profile = Some(Sourced { value: id.to_owned(), from });
+            break;
+        }
+        missing.push(id.to_owned());
+    }
     let from = effective.base_url.from;
     let profile = match from {
         Level::Global => *gp,
@@ -479,5 +491,28 @@ mod tests {
         assert_eq!(new_id("x", |id| id == "x" || id == "x-2"), "x-3");
         assert!(id_ok("qwen-3_b.1") && !id_ok("Qwen") && !id_ok("-a") && !id_ok(""));
         assert!(same_url("HTTP://h:1/v1/", "http://h:1/v1"));
+    }
+
+    #[test]
+    fn the_subagent_model_is_the_most_specific_levels_that_exists() {
+        let ps: BTreeMap<String, Profile> =
+            [("role".to_owned(), profile("role", "http://r/v1", "r")), ("ws".to_owned(), profile("ws", "http://w/v1", "w"))].into();
+        let g = Layer { subagent_profile: Some("role".into()), ..Layer::default() };
+        let w = Layer { subagent_profile: Some("ws".into()), ..Layer::default() };
+        let c = Layer { subagent_profile: Some("gone".into()), ..Layer::default() };
+        let at = |levels: Levels<'_>| {
+            let r = resolve_with(levels, Keys::default(), Forced::default(), &ps, |_| false);
+            (r.effective.subagent_profile.map(|s| (s.value, s.from)), r.missing)
+        };
+        let some = |id: &str, l: Level| Some((id.to_owned(), l));
+        assert_eq!(at(Levels { global: Some(&g), workspace: None, chat: None }), (some("role", Level::Global), vec![]));
+        assert_eq!(at(Levels { global: Some(&g), workspace: Some(&w), chat: None }), (some("ws", Level::Workspace), vec![]));
+        // The chat's is deleted: the workspace's applies, and the chat's is reported.
+        assert_eq!(at(Levels { global: Some(&g), workspace: Some(&w), chat: Some(&c) }), (some("ws", Level::Workspace), vec!["gone".to_owned()]));
+        assert_eq!(at(Levels { global: None, workspace: None, chat: Some(&c) }), (None, vec!["gone".to_owned()]));
+        assert_eq!(at(Levels::default()), (None, vec![]));
+        // Checked like a level's own profile.
+        assert!(Layer { subagent_profile: Some("Not An Id".into()), ..Layer::default() }.validated(Level::Chat).is_err());
+        assert_eq!(Layer { subagent_profile: Some(" ".into()), ..Layer::default() }.validated(Level::Chat).unwrap().subagent_profile, None);
     }
 }

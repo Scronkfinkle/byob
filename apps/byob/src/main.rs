@@ -223,7 +223,8 @@ fn parse_args() -> Result<Args, String> {
                     || v.starts_with("plugin-pane:")
                     || v.starts_with("plugin:")
                     || v.starts_with("artifact:")
-                    || v.starts_with("add-models:");
+                    || v.starts_with("add-models:")
+                    || v.starts_with("edit-model:");
                 if !plugin_panel && !byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == v) {
                     return Err(format!("unknown panel {v:?} ({}, {})", byob_ui_egui::ByobApp::PANELS, byob_ui_egui::ByobApp::PLUGIN_PANELS));
                 }

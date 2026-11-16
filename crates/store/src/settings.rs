@@ -313,6 +313,8 @@ impl Settings {
         let (compaction, subagents) = (CompactionSettings::default(), SubagentSettings::default());
         Layer {
             profile: None,
+            // The `subagents` role; the engine fills it in.
+            subagent_profile: None,
             base_url: text(&self.inference.base_url),
             model: text(&self.inference.model),
             tool_mode: self.tool_mode,

@@ -22,7 +22,7 @@ use serde_json::Value;
 /// Bumped on a change an older peer can't survive (see the module docs).
 pub const PROTOCOL_MAJOR: u32 = 13;
 /// Bumped on additive changes; peers with the same major but another minor still talk.
-pub const PROTOCOL_MINOR: u32 = 9;
+pub const PROTOCOL_MINOR: u32 = 10;
 // Minors: 1 — `Artifact::content_type` (open artifact types; `kind` stays for 13.0 clients);
 // 2 — `PluginInfo::backend` (plugin backend processes); 3 — render sites: `PluginInfo::views`,
 // `View::owner`, `OpenView`/`CloseView`/`ViewEvent`, `LiveView` (cap `view_sites`); 4 — bundled
@@ -38,6 +38,8 @@ pub const PROTOCOL_MINOR: u32 = 9;
 // `DuplicateProfile`, `SetRole`, `TestProfile`, `SetLevelProfile`, `ServerMsg::Profiles`/
 // `ProfileTested` (cap `profiles`), `Layer::profile`, `ChatEndpoint::profile`,
 // `EndpointInfo::slots`.
+// 10 — subagent models: `Layer::subagent_profile`, `Effective::subagent_profile`,
+// `Delegation::profile`.
 
 /// Cap: the peer handles [`crate::ClientMsg::Plugin`] / [`crate::ServerMsg::Plugin`].
 pub const CAP_PLUGIN_CHANNEL: &str = "plugin_channel";

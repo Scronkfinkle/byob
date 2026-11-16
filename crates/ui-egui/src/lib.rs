@@ -419,7 +419,8 @@ impl ByobApp {
     /// Scripted runs: open a workspace view: `new-workspace`, `new-workspace-container`,
     /// `workspace-settings` (of the chat in view's workspace), `chat-settings`, `more-menu` (the
     /// header's "⋯" menu), `model-menu` (the header's model switch), `models` (Settings →
-    /// Models), `add-models:<url>` (its Add form, listing that server), `plugins` (Settings → Plugins). False for an
+    /// Models), `add-models:<url>` (its Add form, listing that server), `edit-model:<id>` (a
+    /// profile's edit form there), `plugins` (Settings → Plugins). False for an
     /// unknown name, or a workspace view before the workspace list arrived.
     pub fn open_panel(&mut self, name: &str) -> bool {
         use byob_protocol::workspace::EnvKind;
@@ -436,6 +437,10 @@ impl ByobApp {
             "more-menu" => self.header_rects.open_menu = true,
             "model-menu" => self.header_rects.open_model_menu = true,
             "models" => self.open_connection(),
+            _ if name.starts_with("edit-model:") => {
+                self.models.start_edit(name.trim_start_matches("edit-model:"));
+                self.open_connection();
+            }
             _ if name.starts_with("add-models:") => {
                 self.models.start_add(name.trim_start_matches("add-models:"));
                 self.open_connection();

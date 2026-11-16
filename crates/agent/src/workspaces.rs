@@ -231,6 +231,7 @@ impl Engine {
     pub(crate) fn global_layer(&self) -> Layer {
         Layer {
             profile: self.main_profile().map(|p| p.id.clone()),
+            subagent_profile: self.roles.get(byob_types::profile::ROLE_SUBAGENTS).cloned(),
             base_url: Some(self.config.base_url.clone()),
             model: Some(self.config.model.clone()),
             ..self.defaults.clone()
@@ -596,6 +597,8 @@ impl Engine {
                 layer.profile = None;
                 layer.base_url = None;
                 layer.model = None;
+                // The global subagent model is the `subagents` role (SetRole).
+                layer.subagent_profile = None;
                 // Plugin switches change through SetPluginEnabled only.
                 layer.plugins.clone_from(&self.defaults.plugins);
                 if let Some(paths) = &self.paths {
@@ -607,6 +610,7 @@ impl Engine {
                 let mut layer = layer.validated(Level::Workspace)?;
                 let old = self.workspaces.get(id).ok_or("that workspace no longer exists")?.clone();
                 layer.plugins.clone_from(&old.config.plugins);
+                self.check_subagent_profile(&layer, &old.config)?;
                 let scope_key = format!("workspace:{id}");
                 let key = match self.pick_profile(&mut layer)? {
                     Some(key) => key,
@@ -629,6 +633,7 @@ impl Engine {
                         let scope_key = format!("chat:{chat}");
                         let old = self.workspaces.chat_config(&chat).cloned().unwrap_or_default();
                         layer.plugins.clone_from(&old.plugins);
+                        self.check_subagent_profile(&layer, &old)?;
                         let key = match self.pick_profile(&mut layer)? {
                             Some(key) => key,
                             None => next_key(
@@ -642,6 +647,8 @@ impl Engine {
                         self.set_scoped_key(&scope_key, key);
                     }
                     None => {
+                        let before = self.clients.get(&client).map(|c| c.new_layer.clone()).unwrap_or_default();
+                        self.check_subagent_profile(&layer, &before)?;
                         let picked = self.pick_profile(&mut layer)?;
                         let Some(c) = self.clients.get_mut(&client) else { return Ok(()) };
                         layer.plugins.clone_from(&c.new_layer.plugins);
@@ -655,6 +662,17 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// A level's subagent model must exist, unless it is the one it had (a client sending
+    /// the level back after its subagent model was deleted).
+    fn check_subagent_profile(&self, layer: &Layer, old: &Layer) -> Result<(), String> {
+        match layer.subagent_profile.as_deref() {
+            Some(id) if old.subagent_profile.as_deref() != Some(id) && byob_types::profile::find(&self.profiles, Some(id)).is_none() => {
+                Err("that model no longer exists; pick another".into())
+            }
+            _ => Ok(()),
+        }
     }
 
     /// A level that picks a profile keeps a copy of its URL and model (for older builds);
