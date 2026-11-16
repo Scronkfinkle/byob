@@ -83,6 +83,8 @@ pub struct Rects {
     pub title: Rect,
     /// Scripted runs: open the "⋯" menu on the next frame.
     pub open_menu: bool,
+    /// Scripted runs: open the model switch on the next frame.
+    pub open_model_menu: bool,
 }
 
 impl Default for Rects {
@@ -98,6 +100,7 @@ impl Default for Rects {
             home: Rect::NOTHING,
             title: Rect::NOTHING,
             open_menu: false,
+            open_model_menu: false,
         }
     }
 }
@@ -207,6 +210,58 @@ impl ByobApp {
         self.plugins.sites.status_items(ui, t);
     }
 
+    /// The profile the chat in view uses: its own or its workspace's, else the default one
+    /// (when the engine runs it).
+    pub(crate) fn chat_profile(&self) -> Option<byob_protocol::Profile> {
+        let (list, state) = (self.models.list.as_ref()?, self.state.as_ref()?);
+        let view = match &state.chat_endpoint {
+            Some(e) => list.get(e.profile.as_deref()?)?,
+            None => list.role(byob_protocol::profiles::ROLE_MAIN).filter(|v| v.profile.points_at(&state.inference_base_url, &state.inference_model))?,
+        };
+        Some(view.profile.clone())
+    }
+
+    /// The header's model switch: the saved models for this chat, and a way to manage them.
+    fn model_menu(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, current: Option<&str>) {
+        ui.set_min_width(260.0);
+        let Some(list) = self.models.list.clone() else { return };
+        ui.label(egui::RichText::new("Model for this chat").small().color(t.text_dim));
+        let chat_sets = self.state.as_ref().and_then(|s| s.chat_endpoint.as_ref()).is_some_and(|e| e.from == byob_protocol::workspace::Level::Chat);
+        let mut picked = None;
+        for v in &list.items {
+            let p = &v.profile;
+            let on = current == Some(p.id.as_str());
+            let mut job = egui::text::LayoutJob::default();
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let small = egui::TextStyle::Small.resolve(ui.style());
+            let fmt = |font: egui::FontId, color| egui::TextFormat { font_id: font, color, ..Default::default() };
+            job.append(if on { "✓ " } else { "    " }, 0.0, fmt(font.clone(), t.accent));
+            job.append(p.label(), 0.0, fmt(font, t.text_strong));
+            job.append(&format!("   {} · {}", p.model, connect::short_url(&p.base_url)), 0.0, fmt(small, t.text_faint));
+            let r = ui.selectable_label(on, job);
+            let r = if p.description.is_empty() { r } else { r.on_hover_text(&p.description) };
+            if r.clicked() {
+                picked = Some(Some(p.id.clone()));
+                ui.close();
+            }
+        }
+        if chat_sets {
+            ui.separator();
+            if ui.button("Use the workspace's model").on_hover_text("Stop choosing a model for this chat").clicked() {
+                picked = Some(None);
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui.button("Manage models…").clicked() {
+            self.open_connection();
+            ui.close();
+        }
+        if let Some(p) = picked {
+            self.conn.send(byob_protocol::ClientMsg::SetLevelProfile { scope: byob_protocol::ConfigScope::Chat, profile: p });
+        }
+    }
+
     /// The "⋯" menu: every settings entry point by name, and the artifact actions.
     fn more_menu(&mut self, ui: &mut egui::Ui) {
         ui.set_min_width(220.0);
@@ -222,7 +277,7 @@ impl ByobApp {
             self.workspaces.open_settings(&ws.0, false);
             ui.close();
         }
-        if ui.button("Connection…").on_hover_text("The model server byob talks to").clicked() {
+        if ui.button(if self.models.available() { "Models…" } else { "Connection…" }).on_hover_text("The models and servers byob talks to").clicked() {
             self.open_connection();
             ui.close();
         }
@@ -275,18 +330,32 @@ impl ByobApp {
         ui.add_space(4.0);
         // The connection: its status dot, model and server; a click opens its settings.
         let room = ui.available_width();
-        let clicked = ui
+        // With saved models, the chip switches this chat's model.
+        let current = self.chat_profile();
+        let switch = self.models.list.as_ref().is_some_and(|l| !l.items.is_empty());
+        let name = current.as_ref().map(|p| p.label().to_owned());
+        let (resp, clicked) = ui
             .scope(|ui| {
                 ui.set_max_width((room * 0.6).max(16.0));
                 match &self.state {
-                    Some(s) => connect::chip(ui, t, s, layout.chip),
+                    Some(s) => {
+                        let (r, c) = connect::chip(ui, t, s, layout.chip, name.as_deref(), switch);
+                        (Some(r), c)
+                    }
                     None => {
                         ui.label(egui::RichText::new("connecting…").color(t.text_dim));
-                        None
+                        (None, None)
                     }
                 }
             })
             .inner;
+        if let Some(resp) = resp.filter(|_| switch) {
+            if std::mem::take(&mut self.header_rects.open_model_menu) {
+                egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&resp));
+            }
+            let current = current.map(|p| p.id);
+            egui::Popup::menu(&resp).show(|ui| self.model_menu(ui, t, current.as_deref()));
+        }
         match clicked {
             Some(connect::ChipClick::Connection) => self.open_connection(),
             Some(connect::ChipClick::ChatSettings) if self.workspaces.chat.is_none() => self.workspaces.toggle_chat(),

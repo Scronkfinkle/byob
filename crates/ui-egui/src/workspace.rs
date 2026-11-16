@@ -6,6 +6,7 @@
 //! ("from workspace"), and a Reset that makes the level inherit again. The engine resolves
 //! and validates; this only edits one level's [`Layer`] and sends it.
 
+use byob_protocol::profiles::{Profile, ProfileList};
 use byob_protocol::workspace::{Approvals, EnvKind, Field, Layer, Level, ToolMode};
 use byob_protocol::{ClientMsg, ConfigScope, ConfigView, EnvSupport, FolderList, NewFolder, ServerMsg, WorkspaceSummary};
 use egui::RichText;
@@ -95,6 +96,8 @@ pub struct LayerEditor {
     key: String,
     instructions: String,
     image: String,
+    /// The engine's model profiles (`None`: an engine without them; the endpoint is typed).
+    pub profiles: Option<ProfileList>,
 }
 
 impl LayerEditor {
@@ -110,6 +113,7 @@ impl LayerEditor {
             key: String::new(),
             instructions: String::new(),
             image: String::new(),
+            profiles: None,
         }
     }
 
@@ -119,7 +123,7 @@ impl LayerEditor {
             return false;
         }
         self.draft = v.own.clone();
-        self.endpoint_open = v.own.base_url.is_some() || v.own.model.is_some();
+        self.endpoint_open = self.profiles.is_none() && (v.own.base_url.is_some() || v.own.model.is_some());
         self.url = v.own.base_url.clone().unwrap_or_else(|| v.effective.base_url.value.clone());
         self.model = v.own.model.clone().unwrap_or_else(|| v.effective.model.value.clone());
         self.key.clear();
@@ -413,6 +417,96 @@ impl LayerEditor {
 
     /// The endpoint: what applies, or this level's own URL, model and key.
     fn endpoint(&mut self, ui: &mut egui::Ui, t: &Tokens, view: &ConfigView) -> Option<ClientMsg> {
+        match self.profiles.clone() {
+            Some(list) => self.profile_picker(ui, t, view, &list),
+            None => self.typed_endpoint(ui, t, view),
+        }
+    }
+
+    /// Pick one of the saved models, inherit, or type one ("Custom…", saved as a model).
+    fn profile_picker(&mut self, ui: &mut egui::Ui, t: &Tokens, view: &ConfigView, list: &ProfileList) -> Option<ClientMsg> {
+        let e = &view.effective;
+        let own = view.own.profile.clone();
+        let named = |p: &Profile| crate::models::menu_label(p);
+        // What a level inheriting the endpoint gets, by its profile's name if it is one.
+        let inherited = list
+            .items
+            .iter()
+            .find(|v| v.profile.points_at(&e.base_url.value, &e.model.value))
+            .map_or_else(|| e.model.value.clone(), |v| v.profile.label().to_owned());
+        let typed = own.is_none() && (view.own.base_url.is_some() || view.own.model.is_some());
+        let current = match &own {
+            Some(id) => list.get(id).map_or_else(|| "A deleted model".to_owned(), |v| named(&v.profile)),
+            None if typed => format!("{} · {}", e.model.value, short_url(&e.base_url.value)),
+            None => format!("Inherit ({inherited})"),
+        };
+        let mut out = None;
+        ui.vertical(|ui| {
+            let mut picked: Option<Option<String>> = None;
+            let mut custom = false;
+            let width = ui.available_width().min(300.0);
+            egui::ComboBox::from_id_salt(("profile", format!("{:?}", self.scope))).selected_text(current).width(width).show_ui(ui, |ui| {
+                if ui.selectable_label(own.is_none() && !typed, format!("Inherit ({inherited})")).clicked() {
+                    picked = Some(None);
+                }
+                for v in &list.items {
+                    let r = ui.selectable_label(own.as_deref() == Some(v.profile.id.as_str()), named(&v.profile));
+                    let r = if v.profile.description.is_empty() { r } else { r.on_hover_text(&v.profile.description) };
+                    if r.clicked() {
+                        picked = Some(Some(v.profile.id.clone()));
+                    }
+                }
+                ui.separator();
+                if ui
+                    .selectable_label(self.endpoint_open, "Custom…")
+                    .on_hover_text("Type a server and model; it is saved as a model you can pick again")
+                    .clicked()
+                {
+                    custom = true;
+                }
+            });
+            if custom {
+                self.endpoint_open = true;
+                self.url.clone_from(&e.base_url.value);
+                self.model.clear();
+            }
+            if let Some(p) = picked {
+                self.endpoint_open = false;
+                if p != own {
+                    out = Some(ClientMsg::SetLevelProfile { scope: self.scope.clone(), profile: p });
+                }
+            }
+            if own.as_ref().is_some_and(|id| list.get(id).is_none()) {
+                ui.label(RichText::new("The model picked here was deleted, so it inherits one.").small().color(t.warning));
+            } else if typed {
+                ui.label(RichText::new("Typed here before models could be saved.").small().color(t.text_faint));
+            }
+            if self.endpoint_open {
+                let w = ui.available_width().min(340.0);
+                ui.add(egui::TextEdit::singleline(&mut self.url).hint_text("http://127.0.0.1:8080/v1").desired_width(w));
+                ui.add(egui::TextEdit::singleline(&mut self.model).hint_text("model, as the server names it").desired_width(w));
+                ui.add(egui::TextEdit::singleline(&mut self.key).password(true).hint_text("API key, if the server needs one").desired_width(w));
+                ui.horizontal(|ui| {
+                    let ok = !self.url.trim().is_empty() && !self.model.trim().is_empty();
+                    if ui.add_enabled(ok, egui::Button::new("Save and use")).on_hover_text("Saved under Settings → Models too").clicked() {
+                        let model = self.model.trim().to_owned();
+                        let profile = Profile { name: model.clone(), base_url: self.url.trim().to_owned(), model, ..Profile::default() };
+                        let api_key = Some(std::mem::take(&mut self.key)).map(|k| k.trim().to_owned()).filter(|k| !k.is_empty());
+                        out = Some(ClientMsg::CreateProfile { profile, api_key, assign: Some(self.scope.clone()), make_main: false });
+                        self.endpoint_open = false;
+                    }
+                    if ui.small_button("Cancel").clicked() {
+                        self.endpoint_open = false;
+                    }
+                });
+                ui.label(RichText::new("The key stays on the machine byob runs on and is only sent to this server.").small().color(t.text_faint));
+            }
+        });
+        out
+    }
+
+    /// An engine without model profiles: type this level's endpoint.
+    fn typed_endpoint(&mut self, ui: &mut egui::Ui, t: &Tokens, view: &ConfigView) -> Option<ClientMsg> {
         let e = &view.effective;
         if !self.endpoint_open {
             ui.label(RichText::new(format!("{} · {}", e.model.value, short_url(&e.base_url.value))).color(t.text_dim));
@@ -866,6 +960,8 @@ pub struct WorkspaceUi {
     pub chat: Option<LayerEditor>,
     /// Settings → Defaults for every chat.
     pub defaults: LayerEditor,
+    /// The engine's model profiles, for the editors' model pickers.
+    profiles: Option<ProfileList>,
     /// Counts openings, so a window opened again starts at its usual place (a window keeps
     /// where it was dragged only while it stays open).
     opens: u64,
@@ -880,12 +976,30 @@ impl Default for WorkspaceUi {
             window: None,
             chat: None,
             defaults: LayerEditor::new(ConfigScope::Global),
+            profiles: None,
             opens: 0,
         }
     }
 }
 
 impl WorkspaceUi {
+    /// The engine's profiles changed: every editor's model picker shows them.
+    pub fn set_profiles(&mut self, list: &ProfileList) {
+        self.profiles = Some(list.clone());
+        self.defaults.profiles = Some(list.clone());
+        if let Some(w) = &mut self.window {
+            w.editor.profiles = Some(list.clone());
+        }
+        if let Some(c) = &mut self.chat {
+            c.profiles = Some(list.clone());
+        }
+    }
+
+    /// The profiles, if the engine has them.
+    pub fn profiles(&self) -> Option<&ProfileList> {
+        self.profiles.as_ref()
+    }
+
     /// Apply a message meant for these views; false if it isn't one.
     pub fn apply(&mut self, msg: &ServerMsg) -> bool {
         match msg {
@@ -942,7 +1056,9 @@ impl WorkspaceUi {
     }
 
     pub fn open_settings(&mut self, id: &str, remove: bool) {
-        self.window = Some(WorkspaceWindow::new(id, remove));
+        let mut w = WorkspaceWindow::new(id, remove);
+        w.editor.profiles.clone_from(&self.profiles);
+        self.window = Some(w);
         self.opens += 1;
     }
 
@@ -955,7 +1071,11 @@ impl WorkspaceUi {
     pub fn toggle_chat(&mut self) {
         self.chat = match self.chat.take() {
             Some(_) => None,
-            None => Some(LayerEditor::new(ConfigScope::Chat)),
+            None => {
+                let mut e = LayerEditor::new(ConfigScope::Chat);
+                e.profiles.clone_from(&self.profiles);
+                Some(e)
+            }
         };
         self.opens += 1;
     }

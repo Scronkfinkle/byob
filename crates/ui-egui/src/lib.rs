@@ -13,6 +13,7 @@ mod highlight;
 mod icons;
 pub mod markdown;
 pub mod media;
+pub mod models;
 pub mod pane;
 pub mod plugins;
 pub mod queue;
@@ -79,6 +80,8 @@ pub struct ByobApp {
     reveal_connection: bool,
     /// The connection form (welcome screen and settings).
     connect: connect::ConnectForm,
+    /// Settings → Models (profiles), and the header's model switch.
+    models: models::ModelsUi,
     /// Where the header's buttons were last drawn.
     header_rects: header::Rects,
     /// Charts and images shown in the transcript.
@@ -131,6 +134,7 @@ impl ByobApp {
             show_settings: false,
             reveal_connection: false,
             connect: connect::ConnectForm::default(),
+            models: models::ModelsUi::default(),
             header_rects: header::Rects::default(),
             media: media::Cache::default(),
             uploads: upload::Uploads::default(),
@@ -233,6 +237,12 @@ impl ByobApp {
             if let ServerMsg::Extensions(e) = &msg {
                 self.artifacts.renderers_mut().apply_plugins(&e.plugins);
             }
+            if let ServerMsg::Profiles(l) = &msg {
+                self.workspaces.set_profiles(l);
+            }
+            if self.models.apply(&msg) {
+                continue;
+            }
             if self.usage.apply(&msg) || self.workspaces.apply(&msg) || self.sidebar.apply(&msg) || self.artifacts.apply(&msg) || self.plugins.apply(&msg) {
                 continue;
             }
@@ -293,7 +303,12 @@ impl ByobApp {
                 ServerMsg::Artifacts { .. } | ServerMsg::ArtifactUpdated(_) | ServerMsg::ArtifactFile { .. } => {}
                 // Handled by the usage meter above.
                 ServerMsg::Usage(_) | ServerMsg::Compactions { .. } | ServerMsg::Compacted(_) => {}
-                ServerMsg::InferenceTested(test) => self.connect.tested(test),
+                ServerMsg::InferenceTested(test) => {
+                    self.models.tested(&test);
+                    self.connect.tested(test);
+                }
+                // Handled by the models section above.
+                ServerMsg::Profiles(_) | ServerMsg::ProfileTested(_) => {}
                 // Handled by the queue above.
                 ServerMsg::Queue(_) => {}
                 // Handled by the plugins above.
@@ -403,7 +418,8 @@ impl ByobApp {
 
     /// Scripted runs: open a workspace view: `new-workspace`, `new-workspace-container`,
     /// `workspace-settings` (of the chat in view's workspace), `chat-settings`, `more-menu` (the
-    /// header's "⋯" menu), `plugins` (Settings → Plugins). False for an
+    /// header's "⋯" menu), `model-menu` (the header's model switch), `models` (Settings →
+    /// Models), `add-models:<url>` (its Add form, listing that server), `plugins` (Settings → Plugins). False for an
     /// unknown name, or a workspace view before the workspace list arrived.
     pub fn open_panel(&mut self, name: &str) -> bool {
         use byob_protocol::workspace::EnvKind;
@@ -418,6 +434,12 @@ impl ByobApp {
                 None => return false,
             },
             "more-menu" => self.header_rects.open_menu = true,
+            "model-menu" => self.header_rects.open_model_menu = true,
+            "models" => self.open_connection(),
+            _ if name.starts_with("add-models:") => {
+                self.models.start_add(name.trim_start_matches("add-models:"));
+                self.open_connection();
+            }
             "plugins" => {
                 self.plugins.open_on_trouble();
                 self.show_settings = true;
@@ -456,7 +478,7 @@ impl ByobApp {
     }
 
     /// The names [`ByobApp::open_panel`] knows.
-    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu, plugins";
+    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu, model-menu, models, plugins";
     /// Names [`ByobApp::open_panel`] takes once plugins are known: `plugin-pane` (the first
     /// plugin pane), `plugin-pane:<plugin>[/<view>]`, `plugin:<id>` (Settings → Plugins, open
     /// on that plugin).
@@ -704,6 +726,8 @@ impl ByobApp {
         let (msgs, notices) = self.artifacts.take_output();
         self.send_all(msgs);
         let msgs = self.connect.take();
+        self.send_all(msgs);
+        let msgs = self.models.take();
         self.send_all(msgs);
         let msgs = self.plugins.take();
         self.send_all(msgs);
