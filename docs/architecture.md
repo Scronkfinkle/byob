@@ -1174,16 +1174,30 @@ first. Clients' messages are size-checked first (`ClientMsg::check_sizes`); the 
 the rest (unknown ids, settings that don't exist at a level, relative or missing folders, the
 filesystem root, image references).
 
-**UI.** The chat list groups chats by workspace (collapsible; most recently active first; a
-`+` per group; a `…` menu: New chat here, Workspace settings, Rename, Remove), pinned chats
-stay on top. Groups fill as the recent-first pages arrive; a group with more chats than loaded
-offers "N more…". **+ Workspace** opens the form: name, a fresh folder in the workspaces folder
-or an existing one (Browse… lists the engine's folders, Choose… is the desktop's own dialog),
-and where commands run (Container: devcontainer.json or an image, and a check that Docker or
-Podman answers). Workspace settings and the chat settings popover (the sliders button next to
-the chat title, or ⋯ → Chat settings) show each value's source with a Reset per field; the app
-Settings (gear in the header and at the bottom of the chat list, Ctrl/Cmd+,) has the global
-defaults. Moving a chat to another workspace isn't offered: its transcript, artifacts
+**UI** (`ui-egui/src/sidebar.rs`, the form in `workspace.rs`). The chat list, top to bottom:
+one **New chat** button (Ctrl/Cmd+N on the desktop; Ctrl/Cmd+Shift+O everywhere, since a
+browser keeps Ctrl+N) that sends `NewChat` for the workspace in view, its caret menu (New
+workspace…, New chat in any workspace); a **search** box (Ctrl/Cmd+F; byob-web keeps the
+browser's find bar from taking it) that filters the loaded chats by title and workspace name in
+place, Enter opening the first match and Esc clearing it; pinned chats; **Workspaces** (a `+`
+there makes one), one collapsible group per workspace, most recently active first, showing its
+5 newest chats and "Show all (k)", which pages on until the group is complete; chats outside any
+workspace under "Other chats"; Settings at the bottom. Row actions show on hover only, in space
+every row keeps for them so titles never move: a workspace's `+` (new chat there) and `⋯` (New
+chat here, Workspace settings, Rename, Copy folder path, Remove), a chat's `⋯` (Rename, Pin,
+Delete); a right click (long press) opens the same menus; on phones they always show. Collapsed
+groups and each chat's unsent draft (`chat:<id>`, or `new:<workspace>` for the new chat about to
+start) are kept per device (`SidebarPrefs`, eframe storage / localStorage). A new chat has no
+form: it is an empty transcript with the composer focused, created by its first message.
+**New workspace** asks one thing, which folder: **Open a folder…** (the desktop's dialog opens
+at once; Browse… lists the engine's folders, which works from a browser) names it after the
+folder; **Start empty** makes a fresh folder in the workspaces folder from the name typed. A
+folder dropped on the desktop window opens the form on it. Where commands run is under a closed
+**Advanced** (Auto; Container: devcontainer.json or an image, and a check that Docker or Podman
+answers). On success the engine opens a new chat in the workspace and the composer has the
+keyboard. Workspace settings and the chat settings popover (the sliders button next to the chat
+title, or ⋯ → Chat settings) show each value's source with a Reset per field; the app Settings
+(⋯ menu and the bottom of the chat list, Ctrl/Cmd+,) has the global defaults. Moving a chat to another workspace isn't offered: its transcript, artifacts
 (`.byob/artifacts` in the folder), uploads and undo backups refer to the old folder.
 
 ## Inference

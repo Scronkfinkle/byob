@@ -16,6 +16,7 @@ fn main() {
         let Some(canvas) = document.get_element_by_id("byob").and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok()) else {
             return;
         };
+        keep_ctrl_f(&document);
         let result = eframe::WebRunner::new()
             .start(
                 canvas,
@@ -34,6 +35,12 @@ fn main() {
                     {
                         ui.artifacts_mut().set_pane_prefs(pane);
                     }
+                    // And the chat list: collapsed workspaces, unsent drafts.
+                    if let Some(list) =
+                        cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::sidebar::SidebarPrefs>(s, byob_ui_egui::sidebar::SidebarPrefs::STORAGE_KEY))
+                    {
+                        ui.set_sidebar_prefs(&list);
+                    }
                     Ok(Box::new(App { ui, link, panel: panel_from_hash(), redraws: 0 }))
                 }),
             )
@@ -42,6 +49,20 @@ fn main() {
             log::error!("failed to start byob: {e:?}");
         }
     });
+}
+
+/// Ctrl/Cmd+F searches the chat list: keep the browser's find bar (which can't see text on
+/// a canvas anyway) from opening too.
+#[cfg(target_arch = "wasm32")]
+fn keep_ctrl_f(document: &web_sys::Document) {
+    use wasm_bindgen::JsCast as _;
+    let on_key = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(|e: web_sys::KeyboardEvent| {
+        if (e.ctrl_key() || e.meta_key()) && !e.shift_key() && !e.alt_key() && e.key().eq_ignore_ascii_case("f") {
+            e.prevent_default();
+        }
+    });
+    let _ = document.add_event_listener_with_callback("keydown", on_key.as_ref().unchecked_ref());
+    on_key.forget();
 }
 
 /// `ws(s)://<same host>/ws` — the page is always served by the byob server it talks to.
@@ -105,6 +126,7 @@ impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, byob_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
         eframe::set_value(storage, byob_ui_egui::pane::PanePrefs::STORAGE_KEY, &self.ui.pane_prefs());
+        eframe::set_value(storage, byob_ui_egui::sidebar::SidebarPrefs::STORAGE_KEY, &self.ui.sidebar_prefs());
     }
 }
 

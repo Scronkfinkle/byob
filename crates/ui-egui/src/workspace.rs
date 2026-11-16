@@ -9,7 +9,7 @@
 use byob_protocol::profiles::{Profile, ProfileList};
 use byob_protocol::workspace::{Approvals, EnvKind, Field, Layer, Level, ToolMode};
 use byob_protocol::{ClientMsg, ConfigScope, ConfigView, EnvSupport, FolderList, NewFolder, ServerMsg, WorkspaceSummary};
-use egui::RichText;
+use egui::{RichText, vec2};
 
 use crate::envpanel::EnvPanel;
 use crate::theme::{self, Tokens};
@@ -564,21 +564,44 @@ fn slug(name: &str) -> String {
     if s.is_empty() { "workspace".into() } else { s }
 }
 
-/// "New workspace": a name, a folder (fresh, or an existing one on the engine's machine),
-/// and where its commands run.
+/// The last part of a folder path (`/home/me/Projects/Alpha/` → `Alpha`): a new
+/// workspace's name until the user types one.
+pub fn folder_name(path: &str) -> String {
+    path.trim().trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or_default().to_owned()
+}
+
+/// Where a new workspace's folder comes from: the one decision the form asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// Not chosen yet.
+    Choose,
+    /// A folder that exists (or is made) where the user says.
+    Folder,
+    /// A fresh folder under the workspaces folder.
+    Empty,
+}
+
+/// "New workspace": which folder (one you have, or a fresh one); its name defaults to the
+/// folder's. Where its commands run waits under Advanced (Auto unless changed).
 pub struct NewWorkspaceForm {
     pub name: String,
-    fresh: bool,
+    /// The user typed the name: picking another folder keeps it.
+    name_edited: bool,
+    pub source: Source,
     pub path: String,
     browser: Option<FolderList>,
     browsing: bool,
     pub env: EnvKind,
+    /// The Advanced section is open.
+    pub advanced: bool,
     use_image: bool,
     image: String,
     check: Option<(bool, String)>,
     checking: bool,
     creating: bool,
     error: Option<String>,
+    /// Put the keyboard in the name field on the next frame.
+    focus_name: bool,
     #[cfg(not(target_arch = "wasm32"))]
     picked: (std::sync::mpsc::Sender<Option<String>>, std::sync::mpsc::Receiver<Option<String>>),
 }
@@ -587,17 +610,20 @@ impl Default for NewWorkspaceForm {
     fn default() -> Self {
         Self {
             name: String::new(),
-            fresh: true,
+            name_edited: false,
+            source: Source::Choose,
             path: String::new(),
             browser: None,
             browsing: false,
             env: EnvKind::Auto,
+            advanced: false,
             use_image: false,
             image: String::new(),
             check: None,
             checking: false,
             creating: false,
             error: None,
+            focus_name: false,
             #[cfg(not(target_arch = "wasm32"))]
             picked: std::sync::mpsc::channel(),
         }
@@ -612,16 +638,34 @@ pub struct FormOutput {
 }
 
 impl NewWorkspaceForm {
-    /// Start with the Container environment chosen (scripted runs).
+    /// Start with an environment chosen (scripted runs): another than Auto starts empty,
+    /// with Advanced open on it.
     pub fn with_env(env: EnvKind) -> Self {
-        Self { env, ..Self::default() }
+        let other = env != EnvKind::Auto;
+        Self { env, advanced: other, source: if other { Source::Empty } else { Source::Choose }, ..Self::default() }
+    }
+
+    /// Start on a folder (dropped on the window, or scripted): named after it.
+    pub fn with_folder(path: &str) -> Self {
+        let mut f = Self { source: Source::Folder, ..Self::default() };
+        f.set_path(path);
+        f
+    }
+
+    /// The folder changed (picked, browsed, typed): the name follows it until typed.
+    pub fn set_path(&mut self, path: &str) {
+        path.clone_into(&mut self.path);
+        if !self.name_edited {
+            self.name = folder_name(path);
+        }
     }
 
     fn apply(&mut self, msg: &ServerMsg) -> bool {
         match msg {
             ServerMsg::Folders(list) => {
                 if list.error.is_none() {
-                    self.path.clone_from(&list.path);
+                    let path = list.path.clone();
+                    self.set_path(&path);
                 }
                 self.browser = Some(list.clone());
                 self.browsing = false;
@@ -652,17 +696,23 @@ impl NewWorkspaceForm {
     pub fn create_msg(&mut self) -> ClientMsg {
         self.creating = true;
         self.error = None;
-        let folder = if self.fresh { NewFolder::Create } else { NewFolder::Existing { path: self.path.trim().to_owned() } };
+        let folder = match self.source {
+            Source::Folder => NewFolder::Existing { path: self.path.trim().to_owned() },
+            Source::Empty | Source::Choose => NewFolder::Create,
+        };
         ClientMsg::CreateWorkspace { name: self.name.trim().to_owned(), folder, config: self.layer() }
     }
 
     /// Why Create can't be pressed yet, if so.
     fn problem(&self, support: &EnvSupport) -> Option<String> {
+        if self.source == Source::Choose {
+            return Some("Open a folder, or start empty.".into());
+        }
+        if self.source == Source::Folder && self.path.trim().is_empty() {
+            return Some("Pick a folder.".into());
+        }
         if self.name.trim().is_empty() {
             return Some("Give it a name.".into());
-        }
-        if !self.fresh && self.path.trim().is_empty() {
-            return Some("Pick a folder.".into());
         }
         if self.env == EnvKind::Container {
             if support.runtime.is_none() {
@@ -680,89 +730,139 @@ impl NewWorkspaceForm {
         #[cfg(not(target_arch = "wasm32"))]
         while let Ok(p) = self.picked.1.try_recv() {
             if let Some(p) = p {
-                self.path = p;
+                self.set_path(&p);
                 self.browser = None;
+                self.focus_name = true;
             }
         }
-        let field_w = ui.available_width().min(420.0);
-        ui.label(RichText::new("Name").color(t.text));
-        let name = ui.add(egui::TextEdit::singleline(&mut self.name).hint_text("e.g. Data analysis").desired_width(field_w));
-        if self.name.is_empty() && !name.has_focus() && ui.memory(|m| m.focused().is_none()) {
-            name.request_focus();
-        }
-        ui.add_space(6.0);
-        ui.label(RichText::new("Folder").color(t.text));
+        let field_w = ui.available_width().min(520.0);
+        ui.label(
+            RichText::new("A workspace is a folder byob works in, with its own settings. Its chats can read and change the files there.").color(t.text_dim),
+        );
+        ui.add_space(10.0);
+        // The one decision: which folder.
         let root_shown = if root.is_empty() { "~/byob-workspaces".to_owned() } else { root.trim_end_matches('/').to_owned() };
-        ui.radio_value(&mut self.fresh, true, format!("New folder: {root_shown}/{}", slug(&self.name)));
-        ui.radio_value(&mut self.fresh, false, "A folder of your choice").on_hover_text("Made if it doesn't exist yet");
-        if !self.fresh {
-            ui.horizontal_wrapped(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.path).hint_text("/home/me/project").desired_width((field_w - 150.0).max(140.0)));
-                if ui.button("Browse…").on_hover_text("List folders on the machine byob runs on").clicked() {
-                    self.browsing = true;
-                    let path = Some(self.path.trim().to_owned()).filter(|p| !p.is_empty());
-                    out.msgs.push(ClientMsg::ListFolders { path });
+        let cards = [
+            (Source::Folder, crate::icons::folder as crate::icons::Paint, "Open a folder…", "A folder you already have".to_owned()),
+            (Source::Empty, crate::icons::folder_plus, "Start empty", format!("New folder in {}", folder_name(&root_shown))),
+        ];
+        let side_by_side = field_w >= 400.0;
+        let card_w = if side_by_side { (field_w - 8.0) / 2.0 } else { field_w };
+        let mut clicked = None;
+        let draw_cards = |ui: &mut egui::Ui, clicked: &mut Option<Source>| {
+            for (source, icon, title, sub) in &cards {
+                if choice_card(ui, t, card_w, self.source == *source, *icon, title, sub).clicked() {
+                    *clicked = Some(*source);
                 }
+            }
+        };
+        if side_by_side {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                draw_cards(ui, &mut clicked);
+            });
+        } else {
+            ui.vertical(|ui| draw_cards(ui, &mut clicked));
+        }
+        match clicked {
+            Some(Source::Folder) => {
+                self.source = Source::Folder;
+                // On the desktop the system's folder dialog opens straight away.
                 #[cfg(not(target_arch = "wasm32"))]
-                if crate::export::dialog_unavailable_reason().is_none() && ui.button("Choose…").on_hover_text("The system's folder dialog").clicked() {
+                if crate::export::dialog_unavailable_reason().is_none() {
                     pick_folder(ui.ctx(), self.picked.0.clone());
                 }
-            });
-            if self.browsing {
-                theme::spinner(ui, t, None);
             }
-            if let Some(list) = self.browser.clone()
-                && let Some(go) = browser(ui, t, &list, field_w)
-            {
-                match go {
-                    Some(path) => {
-                        self.browsing = true;
-                        out.msgs.push(ClientMsg::ListFolders { path: Some(path) });
-                    }
-                    None => self.browser = None,
-                }
+            Some(Source::Empty) => {
+                self.source = Source::Empty;
+                self.focus_name = true;
             }
-        }
-        ui.add_space(6.0);
-        ui.label(RichText::new("Where commands run").color(t.text));
-        ui.horizontal_wrapped(|ui| {
-            for k in EnvKind::ALL {
-                // Icon and choice wrap as one.
-                let r = ui
-                    .horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 3.0;
-                        crate::icons::env_icon(ui, t, k, t.text_size(14.0));
-                        ui.radio_value(&mut self.env, k, k.label())
-                    })
-                    .inner;
-                if r.changed() && k == EnvKind::Container && support.runtime.is_some() && self.check.is_none() && !self.checking {
-                    self.checking = true;
-                    out.msgs.push(ClientMsg::CheckContainers);
-                }
-            }
-        });
-        ui.label(RichText::new(env_help(self.env)).small().color(t.text_dim));
-        match self.env {
-            EnvKind::Nix if !support.nix => {
-                ui.label(RichText::new("Nix isn't installed on the machine byob runs on; commands would run without a dev shell.").small().color(t.warning));
-            }
-            EnvKind::Container => self.container_rows(ui, t, support, field_w, &mut out),
             _ => {}
         }
-        ui.add_space(8.0);
+        ui.add_space(10.0);
+        let label_w = 64.0;
+        let mut enter = false;
+        match self.source {
+            Source::Choose => {}
+            Source::Folder => {
+                form_row(ui, t, label_w, field_w, "Folder", |ui| {
+                    // The buttons on the right; the path takes the rest.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Browse…").on_hover_text("List folders on the machine byob runs on").clicked() {
+                            self.browsing = true;
+                            let path = Some(self.path.trim().to_owned()).filter(|p| !p.is_empty());
+                            out.msgs.push(ClientMsg::ListFolders { path });
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if crate::export::dialog_unavailable_reason().is_none() && ui.button("Choose…").on_hover_text("The system's folder dialog").clicked()
+                        {
+                            pick_folder(ui.ctx(), self.picked.0.clone());
+                        }
+                        let before = self.path.clone();
+                        let mut path = self.path.clone();
+                        ui.add(egui::TextEdit::singleline(&mut path).hint_text("/home/me/project").desired_width(ui.available_width()));
+                        if path != before {
+                            self.set_path(&path);
+                        }
+                    });
+                });
+                if self.browsing {
+                    theme::spinner(ui, t, None);
+                }
+                if let Some(list) = self.browser.clone()
+                    && let Some(go) = browser(ui, t, &list, field_w)
+                {
+                    match go {
+                        Some(path) => {
+                            self.browsing = true;
+                            out.msgs.push(ClientMsg::ListFolders { path: Some(path) });
+                        }
+                        None => {
+                            self.browser = None;
+                            self.focus_name = true;
+                        }
+                    }
+                }
+                ui.add_space(4.0);
+                enter = self.name_row(ui, t, label_w, field_w, "Named after the folder");
+            }
+            Source::Empty => {
+                enter = self.name_row(ui, t, label_w, field_w, "e.g. Data analysis");
+                form_row(ui, t, label_w, field_w, "", |ui| {
+                    ui.label(RichText::new(format!("{root_shown}/{}", slug(&self.name))).small().monospace().color(t.text_faint));
+                });
+            }
+        }
+        if self.source != Source::Choose {
+            ui.add_space(8.0);
+            let summary = format!("Advanced  ·  commands run: {}", self.env.label());
+            let header = egui::CollapsingHeader::new(RichText::new(summary).color(t.text_dim))
+                .id_salt("new-workspace-advanced")
+                .open(Some(self.advanced))
+                .show(ui, |ui| {
+                    self.advanced_rows(ui, t, support, field_w, &mut out);
+                });
+            if header.header_response.clicked() {
+                self.advanced = !self.advanced;
+            }
+        }
+        ui.add_space(12.0);
         let problem = self.problem(support);
         if let Some(e) = &self.error {
             ui.label(RichText::new(e).color(t.danger));
         }
         ui.horizontal(|ui| {
             let can = problem.is_none() && !self.creating;
-            let create = ui.add_enabled(can, egui::Button::new(RichText::new("Create workspace").color(if can { t.text_strong } else { t.text_dim })));
-            let create = match &problem {
-                Some(p) => create.on_disabled_hover_text(p),
-                None => create,
-            };
-            if create.clicked() {
-                out.msgs.push(self.create_msg());
+            if self.source != Source::Choose {
+                let label = RichText::new("Create workspace").color(if can { t.on_accent } else { t.text_dim });
+                let create = ui.add_enabled(can, egui::Button::new(label).fill(if can { t.accent } else { t.button_bg }));
+                let create = match &problem {
+                    Some(p) => create.on_disabled_hover_text(p),
+                    None => create.on_hover_text("Then a new chat opens in it"),
+                };
+                if create.clicked() || (enter && can) {
+                    out.msgs.push(self.create_msg());
+                }
             }
             if ui.button("Cancel").clicked() {
                 out.close = true;
@@ -772,6 +872,47 @@ impl NewWorkspaceForm {
             }
         });
         out
+    }
+
+    /// "Name [field]"; returns whether Enter was pressed in it.
+    fn name_row(&mut self, ui: &mut egui::Ui, t: &Tokens, label_w: f32, field_w: f32, hint: &str) -> bool {
+        form_row(ui, t, label_w, field_w, "Name", |ui| {
+            let name = ui.add(egui::TextEdit::singleline(&mut self.name).hint_text(hint).desired_width(ui.available_width()));
+            if std::mem::take(&mut self.focus_name) {
+                name.request_focus();
+            }
+            if name.changed() {
+                self.name_edited = !self.name.trim().is_empty();
+            }
+            name.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+        })
+    }
+
+    /// Where commands run: one aligned row per choice (radio, icon, name), what it means,
+    /// and the container's options.
+    fn advanced_rows(&mut self, ui: &mut egui::Ui, t: &Tokens, support: &EnvSupport, field_w: f32, out: &mut FormOutput) {
+        ui.label(RichText::new("Where commands run").color(t.text));
+        ui.add_space(2.0);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for k in EnvKind::ALL {
+            if env_row(ui, t, field_w.min(320.0), k, self.env == k).clicked() && self.env != k {
+                self.env = k;
+                if k == EnvKind::Container && support.runtime.is_some() && self.check.is_none() && !self.checking {
+                    self.checking = true;
+                    out.msgs.push(ClientMsg::CheckContainers);
+                }
+            }
+        }
+        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(RichText::new(env_help(self.env)).small().color(t.text_dim)).wrap());
+        match self.env {
+            EnvKind::Nix if !support.nix => {
+                ui.label(RichText::new("Nix isn't installed on the machine byob runs on; commands would run without a dev shell.").small().color(t.warning));
+            }
+            EnvKind::Container => self.container_rows(ui, t, support, field_w, out),
+            _ => {}
+        }
     }
 
     fn container_rows(&mut self, ui: &mut egui::Ui, t: &Tokens, support: &EnvSupport, field_w: f32, out: &mut FormOutput) {
@@ -807,6 +948,82 @@ impl NewWorkspaceForm {
             }
         });
     }
+}
+
+/// A form line: `label` in a left-aligned column `label_w` wide, then `add` filling the
+/// rest of `width`.
+fn form_row<R>(ui: &mut egui::Ui, t: &Tokens, label_w: f32, width: f32, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let h = crate::icons::button_height(ui);
+    ui.allocate_ui_with_layout(vec2(width, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.allocate_ui_with_layout(vec2(label_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_width(label_w);
+            ui.label(RichText::new(label).color(t.text));
+        });
+        add(ui)
+    })
+    .inner
+}
+
+/// One of the form's two big choices: an icon, a title and a line under it.
+fn choice_card(ui: &mut egui::Ui, t: &Tokens, width: f32, selected: bool, icon: crate::icons::Paint, title: &str, sub: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 58.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let fill = if resp.is_pointer_button_down_on() {
+            t.pressed
+        } else if selected {
+            t.selection
+        } else if resp.hovered() {
+            t.hover
+        } else {
+            t.button_bg
+        };
+        let stroke = egui::Stroke::new(1.0, if selected { t.accent } else { t.border });
+        p.rect(rect, t.round(8.0), fill, stroke, egui::StrokeKind::Inside);
+        let icon_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 14.0 + 10.0, rect.center().y), vec2(20.0, 20.0));
+        icon(p, icon_rect, if selected || resp.hovered() { t.text_strong } else { t.text_dim });
+        let x = icon_rect.right() + 12.0;
+        let w = (rect.right() - 10.0 - x).max(10.0);
+        let title_font = egui::FontId::new(egui::TextStyle::Button.resolve(ui.style()).size, theme::bold_or_regular(ui.ctx()));
+        let mut job =
+            egui::text::LayoutJob::single_section(title.to_owned(), egui::TextFormat { font_id: title_font, color: t.text_strong, ..Default::default() });
+        job.wrap = egui::text::TextWrapping::truncate_at_width(w);
+        let title = p.layout_job(job);
+        let mut job = egui::text::LayoutJob::single_section(
+            sub.to_owned(),
+            egui::TextFormat { font_id: egui::TextStyle::Small.resolve(ui.style()), color: t.text_dim, ..Default::default() },
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(w);
+        let sub = p.layout_job(job);
+        let top = rect.center().y - (title.size().y + 2.0 + sub.size().y) / 2.0;
+        let title_h = title.size().y;
+        p.galley(egui::pos2(x, top), title, t.text_strong);
+        p.galley(egui::pos2(x, top + title_h + 2.0), sub, t.text_dim);
+    }
+    resp
+}
+
+/// One "where commands run" choice: a radio dot, the environment's icon and its name, all
+/// on one line (the whole row is the click target).
+fn env_row(ui: &mut egui::Ui, t: &Tokens, width: f32, kind: EnvKind, on: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 26.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        if resp.hovered() {
+            p.rect_filled(rect, t.round(5.0), t.hover);
+        }
+        let dot = egui::pos2(rect.left() + 6.0 + 7.0, rect.center().y);
+        p.circle(dot, 7.0, t.field_bg, egui::Stroke::new(1.0, if on { t.accent } else { t.field_border }));
+        if on {
+            p.circle_filled(dot, 3.5, t.accent);
+        }
+        let icon = egui::Rect::from_center_size(egui::pos2(dot.x + 7.0 + 10.0 + 7.0, rect.center().y), vec2(14.0, 14.0));
+        crate::icons::env(p, icon, kind, crate::icons::env_color(t, kind));
+        let color = if on { t.text_strong } else { t.text };
+        let label = p.layout_no_wrap(kind.label().to_owned(), egui::TextStyle::Body.resolve(ui.style()), color);
+        p.galley(egui::pos2(icon.right() + 8.0, rect.center().y - label.size().y / 2.0), label, color);
+    }
+    resp.on_hover_text(env_help(kind))
 }
 
 /// The engine's folders: up, the subfolders, Use this folder. Returns `Some(Some(path))`
@@ -1055,6 +1272,12 @@ impl WorkspaceUi {
         self.opens += 1;
     }
 
+    /// The New workspace form on `path` (a folder dropped on the window).
+    pub fn open_with_folder(&mut self, path: &str) {
+        self.form = Some(NewWorkspaceForm::with_folder(path));
+        self.opens += 1;
+    }
+
     pub fn open_settings(&mut self, id: &str, remove: bool) {
         let mut w = WorkspaceWindow::new(id, remove);
         w.editor.profiles.clone_from(&self.profiles);
@@ -1107,7 +1330,7 @@ impl WorkspaceUi {
                 .collapsible(false)
                 .fade_in(false)
                 .resizable(false)
-                .default_width(max_w.min(460.0))
+                .default_width(max_w.min(500.0))
                 .max_width(max_w)
                 .max_height(max_h)
                 .pivot(egui::Align2::CENTER_TOP)
@@ -1241,10 +1464,13 @@ mod tests {
     fn the_new_workspace_form_checks_before_creating() {
         let support = EnvSupport { nix: false, installer: None, runtime: Some("docker".into()) };
         let mut f = NewWorkspaceForm::default();
+        assert!(f.problem(&support).is_some_and(|p| p.contains("start empty")), "first, which folder");
+        f.source = Source::Empty;
         assert!(f.problem(&support).is_some_and(|p| p.contains("name")));
         f.name = "Data".into();
+        f.name_edited = true;
         assert!(f.problem(&support).is_none());
-        f.fresh = false;
+        f.source = Source::Folder;
         assert!(f.problem(&support).is_some_and(|p| p.contains("folder")));
         f.path = "/srv/data".into();
         f.env = EnvKind::Container;
@@ -1256,13 +1482,52 @@ mod tests {
         assert!(f.problem(&EnvSupport::default()).is_some_and(|p| p.contains("Docker")));
         // Answers from the engine land in the form.
         f.apply(&ServerMsg::Folders(FolderList { path: "/srv".into(), parent: Some("/".into()), dirs: vec!["data".into()], truncated: false, error: None }));
-        assert_eq!(f.path, "/srv");
+        assert_eq!((f.path.as_str(), f.name.as_str()), ("/srv", "Data"), "a typed name stays");
         f.apply(&ServerMsg::ContainersChecked { ok: false, message: "Docker isn't running".into() });
         assert_eq!(f.check, Some((false, "Docker isn't running".to_owned())));
         assert_eq!(slug("My Data!"), "my-data");
         let mut sent = Vec::new();
         render(|ui| sent = f.show(ui, &Tokens::dark(), "/home/me/byob-workspaces", &support).msgs);
         assert!(sent.is_empty());
+    }
+
+    #[test]
+    fn a_new_workspace_needs_only_its_folder() {
+        assert_eq!(folder_name("/home/me/Projects/Alpha/"), "Alpha");
+        assert_eq!(folder_name(r"C:\Users\me\Beta"), "Beta");
+        assert_eq!(folder_name("  "), "");
+        // A folder picked (or dropped): named after it, commands run Auto, nothing else asked.
+        let support = EnvSupport::default();
+        let mut f = NewWorkspaceForm::with_folder("/home/me/Projects/Alpha");
+        assert_eq!((f.source, f.name.as_str(), f.env, f.advanced), (Source::Folder, "Alpha", EnvKind::Auto, false));
+        assert!(f.problem(&support).is_none());
+        assert_eq!(
+            f.create_msg(),
+            ClientMsg::CreateWorkspace {
+                name: "Alpha".into(),
+                folder: NewFolder::Existing { path: "/home/me/Projects/Alpha".into() },
+                config: Layer::default()
+            }
+        );
+        // Another folder: the name follows, until the user types one.
+        f.set_path("/srv/beta");
+        assert_eq!(f.name, "beta");
+        f.name = "My beta".into();
+        f.name_edited = true;
+        f.set_path("/srv/gamma");
+        assert_eq!(f.name, "My beta");
+        // The form opens on the choice, Advanced closed; Container (scripted) opens it.
+        let f = NewWorkspaceForm::default();
+        assert_eq!((f.source, f.env, f.advanced), (Source::Choose, EnvKind::Auto, false));
+        let f = NewWorkspaceForm::with_env(EnvKind::Container);
+        assert_eq!((f.source, f.advanced), (Source::Empty, true));
+        // Every state draws, narrow and wide, without sending anything.
+        for source in [Source::Choose, Source::Folder, Source::Empty] {
+            let mut f = NewWorkspaceForm { source, advanced: true, ..NewWorkspaceForm::default() };
+            let mut sent = vec![ClientMsg::Cancel];
+            render(|ui| sent = f.show(ui, &Tokens::light(), "", &support).msgs);
+            assert!(sent.is_empty(), "{source:?}: {sent:?}");
+        }
     }
 
     #[test]

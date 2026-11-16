@@ -1,6 +1,7 @@
 //! Small icons drawn with shapes, for glyphs the UI fonts don't have (the app settings
 //! gear, chat settings sliders, the chat list and overflow buttons, a disclosure triangle,
-//! where a workspace runs its commands, the plugins puzzle piece).
+//! where a workspace runs its commands, the plugins puzzle piece, the chat list's plus,
+//! search, clear and folders).
 
 use byob_protocol::workspace::EnvKind;
 use egui::{Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
@@ -83,6 +84,64 @@ pub fn puzzle(painter: &egui::Painter, r: Rect, color: Color32) {
     }
     points.push(at(right, bottom));
     painter.add(Shape::closed_line(points, stroke));
+}
+
+/// "New": a plus.
+pub fn plus(painter: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    let c = r.center();
+    let (h, stroke) = (s * 0.36, Stroke::new((s * 0.11).max(1.3), color));
+    painter.line_segment([c - vec2(h, 0.0), c + vec2(h, 0.0)], stroke);
+    painter.line_segment([c - vec2(0.0, h), c + vec2(0.0, h)], stroke);
+}
+
+/// "Search": a magnifying glass.
+pub fn search(painter: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    let stroke = Stroke::new((s * 0.1).max(1.3), color);
+    let c = r.center() - vec2(s * 0.08, s * 0.08);
+    let radius = s * 0.28;
+    painter.circle_stroke(c, radius, stroke);
+    let d = vec2(1.0, 1.0).normalized();
+    painter.line_segment([c + d * radius, c + d * s * 0.5], Stroke::new(stroke.width * 1.15, color));
+}
+
+/// "Clear" / "close": a small ×.
+pub fn cross(painter: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    let c = r.center();
+    let (h, stroke) = (s * 0.26, Stroke::new((s * 0.1).max(1.3), color));
+    painter.line_segment([c + vec2(-h, -h), c + vec2(h, h)], stroke);
+    painter.line_segment([c + vec2(-h, h), c + vec2(h, -h)], stroke);
+}
+
+/// "Folder": a folder with a tab.
+pub fn folder(painter: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    let stroke = Stroke::new((s * 0.08).max(1.3), color);
+    let o = r.center() - vec2(s * 0.5, s * 0.5);
+    let at = |x: f32, y: f32| o + vec2(x * s, y * s);
+    let outline = vec![at(0.08, 0.2), at(0.38, 0.2), at(0.48, 0.32), at(0.92, 0.32), at(0.92, 0.82), at(0.08, 0.82)];
+    painter.add(Shape::closed_line(outline, stroke));
+    painter.line_segment([at(0.08, 0.42), at(0.92, 0.42)], stroke);
+}
+
+/// "New folder": a folder with a plus in it.
+pub fn folder_plus(painter: &egui::Painter, r: Rect, color: Color32) {
+    folder(painter, r, color);
+    let s = r.width().min(r.height());
+    let c = r.center() + vec2(0.0, s * 0.12);
+    let (h, stroke) = (s * 0.13, Stroke::new((s * 0.08).max(1.3), color));
+    painter.line_segment([c - vec2(h, 0.0), c + vec2(h, 0.0)], stroke);
+    painter.line_segment([c - vec2(0.0, h), c + vec2(0.0, h)], stroke);
+}
+
+/// A small chevron pointing down (menus, split buttons), centred in `rect`.
+pub fn chevron_down(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let c = rect.center();
+    let s = rect.width().min(rect.height()) * 0.22;
+    let stroke = Stroke::new(1.4, color);
+    painter.line(vec![pos2(c.x - s, c.y - s * 0.5), pos2(c.x, c.y + s * 0.5), pos2(c.x + s, c.y - s * 0.5)], stroke);
 }
 
 /// The height of a text button (what egui gives `ui.button`).
@@ -225,13 +284,4 @@ pub fn env_tip(kind: EnvKind) -> &'static str {
         EnvKind::Host => "This machine: commands run here, in byob's sandbox",
         EnvKind::Auto => "Auto: byob checks the folder (flake, devcontainer…) and asks once",
     }
-}
-
-/// An environment icon `size` points square, with its tooltip.
-pub fn env_icon(ui: &mut Ui, t: &Tokens, kind: EnvKind, size: f32) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-    if ui.is_rect_visible(rect) {
-        env(ui.painter(), rect, kind, env_color(t, kind));
-    }
-    resp.on_hover_text(env_tip(kind))
 }

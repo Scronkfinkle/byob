@@ -109,7 +109,25 @@ pub struct ByobApp {
     engine: Option<Welcome>,
     /// Messages skipped so far, logged once each (unknown types, plugins without a handler here).
     skipped: std::collections::BTreeSet<String>,
+    /// Unsent composer text of the chats not in view, by [`draft_key`].
+    drafts: std::collections::BTreeMap<String, String>,
+    /// The [`draft_key`] of what is in view (the composer holds its draft).
+    draft_key: String,
+    /// The first message of a new chat went out: the chat it makes keeps the composer.
+    sent_new: bool,
 }
+
+/// Where a draft is kept: `chat:<id>` for a chat, `new:<workspace>` for the new chat about
+/// to start in a workspace (`new:` where it has none).
+fn draft_key(chat: Option<&str>, workspace: Option<&str>) -> String {
+    match chat {
+        Some(id) => format!("chat:{id}"),
+        None => format!("new:{}", workspace.unwrap_or_default()),
+    }
+}
+
+/// Drafts kept across launches, at most.
+const MAX_DRAFTS: usize = 100;
 
 impl ByobApp {
     pub fn new(mut conn: Box<dyn Connection>, client: &str) -> Self {
@@ -148,6 +166,9 @@ impl ByobApp {
             views: views::ViewRegistry::default(),
             engine: None,
             skipped: std::collections::BTreeSet::new(),
+            drafts: std::collections::BTreeMap::new(),
+            draft_key: String::new(),
+            sent_new: false,
         }
     }
 
@@ -194,6 +215,42 @@ impl ByobApp {
     }
 
     /// Per-device artifact pane state (width, collapsed, tabs per chat), for the app to persist.
+    /// Per-device chat list state (collapsed workspaces) and unsent drafts, for the app to
+    /// persist.
+    pub fn sidebar_prefs(&self) -> sidebar::SidebarPrefs {
+        let mut p = self.sidebar.prefs();
+        let current = (!self.draft_key.is_empty() && !self.input.trim().is_empty()).then(|| (self.draft_key.clone(), self.input.clone()));
+        p.drafts = self.drafts.iter().map(|(k, v)| (k.clone(), v.clone())).chain(current).take(MAX_DRAFTS).collect();
+        p
+    }
+
+    /// Restore them (at startup, before the engine said which chat is in view).
+    pub fn set_sidebar_prefs(&mut self, prefs: &sidebar::SidebarPrefs) {
+        self.sidebar.set_prefs(prefs);
+        self.drafts = prefs.drafts.iter().filter(|(_, v)| !v.trim().is_empty()).take(MAX_DRAFTS).map(|(k, v)| (k.clone(), v.clone())).collect();
+    }
+
+    /// The view changed to `key`: the composer's text is kept as the old view's draft, and
+    /// the new view's draft comes back. The first message of a new chat makes the chat, which
+    /// keeps the composer as it is.
+    fn switch_draft(&mut self, key: String, existing_chat: bool) {
+        if key == self.draft_key {
+            return;
+        }
+        let old = std::mem::replace(&mut self.draft_key, key);
+        if std::mem::take(&mut self.sent_new) && existing_chat && old.starts_with("new:") {
+            self.drafts.remove(&old);
+            return;
+        }
+        let text = std::mem::take(&mut self.input);
+        if text.trim().is_empty() {
+            self.drafts.remove(&old);
+        } else {
+            self.drafts.insert(old, text);
+        }
+        self.input = self.drafts.remove(&self.draft_key).unwrap_or_default();
+    }
+
     pub fn pane_prefs(&self) -> pane::PanePrefs {
         self.artifacts.pane_prefs()
     }
@@ -224,10 +281,16 @@ impl ByobApp {
     fn pump(&mut self) {
         while let Some(msg) = self.conn.try_recv() {
             self.plugins.sites.peek(&msg);
-            if matches!(msg, ServerMsg::ChatOpened { .. }) {
+            if let ServerMsg::ChatOpened { chat, workspace } = &msg {
                 self.workspaces.chat_changed();
                 // The queued message being edited stays queued in the chat we leave.
                 self.end_edit();
+                // Each chat keeps its unsent text (and the new chat its own).
+                self.switch_draft(draft_key(chat.as_ref().map(|c| c.id.as_str()), workspace.as_deref()), chat.is_some());
+                // A new chat: its composer is the form, ready to type in.
+                if chat.is_none() {
+                    self.focus_composer = true;
+                }
             }
             if self.queue.apply(&msg) {
                 self.queue_changed();
@@ -419,12 +482,26 @@ impl ByobApp {
     /// Scripted runs: open a workspace view: `new-workspace`, `new-workspace-container`,
     /// `workspace-settings` (of the chat in view's workspace), `chat-settings`, `more-menu` (the
     /// header's "⋯" menu), `model-menu` (the header's model switch), `models` (Settings →
-    /// Models), `add-models:<url>` (its Add form, listing that server), `plugins` (Settings → Plugins). False for an
-    /// unknown name, or a workspace view before the workspace list arrived.
+    /// Models), `add-models:<url>` (its Add form, listing that server), `plugins` (Settings → Plugins);
+    /// the chat list's `new-chat-menu` (New chat's caret menu), `workspace-menu` (the current
+    /// workspace's "⋯" menu), `sidebar-hover` (its rows as if hovered), `chat-list` (the list
+    /// open, on phones too), `new-chat` (as New chat does), `search:<text>` (typed
+    /// into its search), and `new-workspace-folder:<path>` (the form as if that folder was
+    /// dropped). False for an unknown name, or a workspace view before the workspace list arrived.
     pub fn open_panel(&mut self, name: &str) -> bool {
         use byob_protocol::workspace::EnvKind;
         match name {
             "new-workspace" => self.workspaces.open_new(EnvKind::Auto),
+            _ if name.starts_with("new-workspace-folder:") => self.workspaces.open_with_folder(name.trim_start_matches("new-workspace-folder:")),
+            "new-chat-menu" => self.sidebar.open_new_menu(),
+            "workspace-menu" => return self.sidebar.open_workspace_menu(),
+            "sidebar-hover" => self.sidebar.show_hover(),
+            "chat-list" => self.sidebar.set_open(true),
+            "new-chat" => {
+                let msg = self.sidebar.new_chat_msg();
+                self.conn.send(msg);
+            }
+            _ if name.starts_with("search:") => self.sidebar.set_search(name.trim_start_matches("search:")),
             "new-workspace-container" => {
                 self.workspaces.open_new(EnvKind::Container);
                 self.conn.send(ClientMsg::CheckContainers);
@@ -478,7 +555,10 @@ impl ByobApp {
     }
 
     /// The names [`ByobApp::open_panel`] knows.
-    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu, model-menu, models, plugins";
+    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu, model-menu, models, plugins, new-chat-menu, workspace-menu, sidebar-hover, chat-list, new-chat";
+    /// Names [`ByobApp::open_panel`] takes with an argument: `search:<text>`,
+    /// `new-workspace-folder:<path>`.
+    pub const ARG_PANELS: &'static str = "search:<text>, new-workspace-folder:<path>";
     /// Names [`ByobApp::open_panel`] takes once plugins are known: `plugin-pane` (the first
     /// plugin pane), `plugin-pane:<plugin>[/<view>]`, `plugin:<id>` (Settings → Plugins, open
     /// on that plugin).
@@ -499,6 +579,10 @@ impl ByobApp {
 
     /// Send a user message, as if typed into the composer.
     pub fn submit(&mut self, text: String) {
+        // The first message makes the new chat: the engine opens it next.
+        if self.sidebar.current().is_none() {
+            self.sent_new = true;
+        }
         let attachments = self.uploads.take();
         self.conn.send(ClientMsg::SendMessage { text, attachments });
     }
@@ -617,6 +701,7 @@ impl ByobApp {
     /// Draw one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.pump();
+        self.take_dropped_folders(ui.ctx());
         for e in self.uploads.poll(ui.ctx(), self.conn.as_mut()) {
             self.notice(NoticeLevel::Error, e);
         }
@@ -704,6 +789,22 @@ impl ByobApp {
             self.artifacts.floating_button(ui.ctx(), &t);
         }
         self.end_frame(ui.ctx());
+    }
+
+    /// A folder dropped on the window (desktop) opens the New workspace form on it; files
+    /// are left for the composer to attach. Browsers don't say where a dropped folder is.
+    fn take_dropped_folders(&mut self, ctx: &egui::Context) {
+        if cfg!(target_arch = "wasm32") {
+            return;
+        }
+        let folders: Vec<egui::DroppedFileHandle> = ctx.input_mut(|i| {
+            let (folders, files) = std::mem::take(&mut i.raw.dropped_files).into_iter().partition(|f| f.path().is_dir());
+            i.raw.dropped_files = files;
+            folders
+        });
+        if let Some(f) = folders.first() {
+            self.workspaces.open_with_folder(&f.path().display().to_string());
+        }
     }
 
     /// After drawing: artifact actions and overlays, and what they want sent or shown.
@@ -1451,6 +1552,140 @@ mod app_tests {
     fn queued(texts: &[(u64, &str)], paused: Option<byob_protocol::QueuePause>) -> ServerMsg {
         let items = texts.iter().map(|(id, t)| byob_protocol::QueuedMessage { id: *id, text: (*t).into(), attachments: vec![] }).collect();
         ServerMsg::Queue(byob_protocol::ChatQueue { chat: Some("c".into()), items, paused })
+    }
+
+    fn chat_in(id: &str, ws: &str) -> ChatSummary {
+        ChatSummary { id: id.into(), title: id.to_uppercase(), updated_at: 1, pinned_at: None, busy: false, workspace: Some(ws.into()) }
+    }
+
+    /// Workspaces w1 and w2, chat "a" (in w1) in view.
+    fn two_workspaces() -> (Fake, ByobApp) {
+        let fake = Fake::default();
+        let ws = |id: &str| byob_protocol::WorkspaceSummary {
+            id: id.into(),
+            name: id.to_uppercase(),
+            folder: format!("/{id}"),
+            chats: 1,
+            updated_at: 1,
+            env: byob_protocol::workspace::EnvKind::Auto,
+        };
+        fake.inbox.lock().unwrap().extend([
+            ServerMsg::State(state(Link::Ok, true)),
+            ServerMsg::Workspaces { items: vec![ws("w1"), ws("w2")], current: Some("w1".into()), root: String::new(), support: Default::default() },
+            ServerMsg::ChatOpened { chat: Some(chat_in("a", "w1")), workspace: Some("w1".into()) },
+        ]);
+        let app = ByobApp::new(Box::new(fake.clone()), "test");
+        (fake, app)
+    }
+
+    fn shortcut(ctx: &egui::Context, app: &mut ByobApp, key: egui::Key, modifiers: egui::Modifiers) {
+        let event = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+            events: vec![event],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn ctrl_n_starts_a_chat_in_the_workspace_in_view_and_ctrl_f_searches() {
+        let ctx = egui::Context::default();
+        let (fake, mut app) = two_workspaces();
+        frame(&ctx, &mut app, 1000.0);
+        fake.inbox.lock().unwrap().push(ServerMsg::ChatOpened { chat: Some(chat_in("b", "w2")), workspace: Some("w2".into()) });
+        frame(&ctx, &mut app, 1000.0);
+        app.show_settings = true;
+        shortcut(&ctx, &mut app, egui::Key::N, egui::Modifiers::COMMAND);
+        assert_eq!(fake.sent.lock().unwrap().last(), Some(&ClientMsg::NewChat { workspace: Some("w2".into()) }));
+        assert!(!app.show_settings, "the new chat shows");
+        // The browser's binding works everywhere.
+        shortcut(&ctx, &mut app, egui::Key::O, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
+        let sent = fake.sent.lock().unwrap().clone();
+        assert_eq!(sent.iter().filter(|m| matches!(m, ClientMsg::NewChat { .. })).count(), 2);
+        // The engine answers with the new chat: the composer gets the keyboard.
+        fake.inbox.lock().unwrap().push(ServerMsg::ChatOpened { chat: None, workspace: Some("w2".into()) });
+        frame(&ctx, &mut app, 1000.0);
+        frame(&ctx, &mut app, 1000.0);
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("composer"))));
+        // Ctrl+F: the chat search.
+        shortcut(&ctx, &mut app, egui::Key::F, egui::Modifiers::COMMAND);
+        frame(&ctx, &mut app, 1000.0);
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("sidebar-search"))));
+    }
+
+    #[test]
+    fn drafts_stay_with_their_chat() {
+        let ctx = egui::Context::default();
+        let (fake, mut app) = two_workspaces();
+        frame(&ctx, &mut app, 1000.0);
+        let open = |app: &mut ByobApp, chat: Option<ChatSummary>, ws: &str| {
+            fake.inbox.lock().unwrap().push(ServerMsg::ChatOpened { chat, workspace: Some(ws.into()) });
+            frame(&ctx, app, 1000.0);
+        };
+        app.input = "half a thought for a".into();
+        open(&mut app, Some(chat_in("b", "w2")), "w2");
+        assert_eq!(app.input, "", "b has no draft");
+        app.input = "for b".into();
+        open(&mut app, None, "w1");
+        assert_eq!(app.input, "", "nor the new chat");
+        app.input = "a new idea".into();
+        open(&mut app, Some(chat_in("a", "w1")), "w1");
+        assert_eq!(app.input, "half a thought for a");
+        open(&mut app, Some(chat_in("b", "w2")), "w2");
+        assert_eq!(app.input, "for b");
+        open(&mut app, None, "w1");
+        assert_eq!(app.input, "a new idea", "the new chat's draft comes back too");
+        // Sending it makes the chat: the composer carries on there, nothing stashed.
+        let text = std::mem::take(&mut app.input);
+        app.submit(text);
+        app.input = "typed while it starts".into();
+        open(&mut app, Some(chat_in("new", "w1")), "w1");
+        assert_eq!(app.input, "typed while it starts");
+        // Stored with the device's prefs, and back after a restart.
+        let prefs = app.sidebar_prefs();
+        assert_eq!(prefs.drafts.get("chat:a").map(String::as_str), Some("half a thought for a"));
+        assert_eq!(prefs.drafts.get("chat:new").map(String::as_str), Some("typed while it starts"));
+        let (_, mut again) = two_workspaces();
+        again.set_sidebar_prefs(&serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap());
+        frame(&ctx, &mut again, 1000.0);
+        assert_eq!(again.input, "half a thought for a");
+    }
+
+    #[test]
+    fn a_new_workspace_opens_from_the_list_and_a_dropped_folder_fills_the_form() {
+        let ctx = egui::Context::default();
+        let (_, mut app) = two_workspaces();
+        frame(&ctx, &mut app, 1000.0);
+        app.sidebar.request(sidebar::Request::NewWorkspace);
+        frame(&ctx, &mut app, 1000.0);
+        let form = app.workspaces.form.as_ref().unwrap();
+        assert_eq!((form.source, form.env), (workspace::Source::Choose, byob_protocol::workspace::EnvKind::Auto));
+        // A folder dropped on the window.
+        let dir = std::env::temp_dir().join("byob-drop-test-Alpha");
+        std::fs::create_dir_all(&dir).unwrap();
+        #[derive(Debug)]
+        struct Dropped(std::path::PathBuf);
+        impl egui::DroppedFile for Dropped {
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+            fn bytes(&self) -> Result<Vec<u8>, String> {
+                Err("a folder".into())
+            }
+        }
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+            dropped_files: vec![std::sync::Arc::new(Dropped(dir.clone()))],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+        out.textures_delta.clear();
+        let form = app.workspaces.form.as_ref().unwrap();
+        assert_eq!((form.source, form.name.as_str(), form.path.as_str()), (workspace::Source::Folder, "byob-drop-test-Alpha", dir.to_str().unwrap()));
+        assert!(app.notices.is_empty(), "not attached as a file: {:?}", app.notices);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

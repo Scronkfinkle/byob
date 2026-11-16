@@ -111,10 +111,14 @@ the Anthropic preset (or any URL on `api.anthropic.com`), and byob uses prompt c
 Claude's thinking, and keeps it across a tool loop. For an Anthropic-style endpoint elsewhere (a
 gateway), set `"api": "anthropic"` under `inference` in `settings.json`.
 
-Chats are grouped by **workspace**. **+ Workspace** makes one (a fresh folder or an existing
-one) and picks where commands run. A workspace's `…` menu and the sliders next to a chat's title
-show what's inherited and what's set there: model (one of your saved models), approvals, tool
-calling, compaction, subagents, extra instructions.
+Chats are grouped by **workspace**: a folder byob works in, with its own settings. **New chat**
+(Ctrl/Cmd+N; Ctrl/Cmd+Shift+O in the browser) starts one in the workspace you're in; its arrow, or
+the **+** next to Workspaces, makes a workspace: open a folder you have (or drop one on the
+window) or start an empty one; where commands run waits under Advanced. Each chat keeps its
+unsent draft. **Search** (Ctrl/Cmd+F) filters the list by chat title and workspace name.
+Hover a workspace for **+** (a new chat there) and **⋯** (or right-click it); that menu and the
+sliders next to a chat's title show what's inherited and what's set there: model (one of your
+saved models), approvals, tool calling, compaction, subagents, extra instructions.
 
 ## Plugins
 

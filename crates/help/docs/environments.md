@@ -62,7 +62,7 @@ builds an image. So before the first load byob asks, with an approval card that 
 - **A chosen environment is the answer.** A workspace set to Container (or Nix) never gets
   the question: the person chose it when making the workspace or in its settings, so byob
   records it as the folder's answer too. Nix loads the folder's dev shell without asking.
-- **Workspace settings → Environment state** (the workspace's `…` menu in the chat list,
+- **Workspace settings → Environment state** (the workspace's `⋯` menu in the chat list,
   desktop and browser) shows the folder's project files, the remembered answers, the
   container and its state, with **Load it / Don't load it / Ask again** and **Stop / Remove**
   for the container. Where commands run is the Environment setting above it.
@@ -84,9 +84,9 @@ gated the same way before they run, and the policy can't allow them either.
 Most people who want reproducible tooling reach for dev containers; Nix is one of the few
 exceptions. So byob can run a workspace's `run_command` / `run_python` in a container.
 
-- **Opt-in per workspace.** Choose **Container** when making a workspace (**+ Workspace**
-  in the chat list: name, a fresh or existing folder, where commands run; the form checks
-  that Docker or Podman answers) or later in its settings; the first command then runs in
+- **Opt-in per workspace.** Choose **Container** when making a workspace (New workspace,
+  from the **+** by Workspaces in the chat list: pick a folder, then Advanced → where commands
+  run; the form checks that Docker or Podman answers) or later in its settings; the first command then runs in
   the container with no question. A workspace left on **Auto** with
   `.devcontainer/devcontainer.json` (or `.devcontainer.json`) gets the ask-once question.
   The image: the workspace's own (the Image field), else its devcontainer.json, else

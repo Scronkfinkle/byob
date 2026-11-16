@@ -159,6 +159,23 @@ impl ByobApp {
         if ctx.input_mut(|i| i.consume_shortcut(&SETTINGS_SHORTCUT)) {
             self.show_settings = !self.show_settings;
         }
+        // New chat: Ctrl/Cmd+N (desktop), Ctrl/Cmd+Shift+O (also in the browser, which keeps
+        // Ctrl+N for itself). Search the chats: Ctrl/Cmd+F (not with Shift: that maximizes
+        // the artifact pane).
+        let narrow = ctx.content_rect().width() < crate::sidebar::NARROW;
+        let new_chat = ctx.input_mut(|i| {
+            i.consume_shortcut(&crate::sidebar::NEW_CHAT_SHORTCUT_ALT)
+                || (cfg!(not(target_arch = "wasm32")) && i.consume_shortcut(&crate::sidebar::NEW_CHAT_SHORTCUT))
+        });
+        if new_chat {
+            let msg = self.sidebar.new_chat(narrow);
+            self.show_settings = false;
+            self.conn.send(msg);
+        }
+        if ctx.input_mut(|i| !i.modifiers.shift && i.consume_shortcut(&crate::sidebar::SEARCH_SHORTCUT)) {
+            self.show_settings = false;
+            self.sidebar.focus_search();
+        }
         // Zoom the whole interface, as in a browser: Ctrl + (or Ctrl =), Ctrl −, Ctrl 0.
         use egui::gui_zoom::kb_shortcuts as zoom;
         if ctx.input_mut(|i| i.consume_shortcut(&zoom::ZOOM_RESET)) {

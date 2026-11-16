@@ -254,7 +254,10 @@ pub fn drop_overlay(ctx: &egui::Context, t: &Tokens) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("byob-drop")));
     painter.rect_filled(rect, 0.0, t.app_bg.gamma_multiply(0.85));
     painter.rect_stroke(rect.shrink(24.0), 12.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
-    painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Drop files to attach", egui::FontId::proportional(t.text_size(22.0)), t.text_strong);
+    // A folder (desktop: the window knows its path) becomes a workspace instead.
+    let folder = ctx.input(|i| i.raw.hovered_files.iter().any(|f| f.path.as_ref().is_some_and(|p| p.is_dir())));
+    let text = if folder { "Drop the folder to make it a workspace" } else { "Drop files to attach" };
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(t.text_size(22.0)), t.text_strong);
 }
 
 /// Read a native file with a size cap (never trust a drop to be small).

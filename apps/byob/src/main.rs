@@ -39,7 +39,11 @@
 //!                             folder through the New workspace form, then send the messages in it
 //!     --open-panel NAME       open new-workspace, new-workspace-container, workspace-settings,
 //!                             chat-settings, more-menu (the header's ⋯ menu) or plugins
-//!                             (Settings → Plugins) once the messages are done; also
+//!                             (Settings → Plugins) once the messages are done; the chat
+//!                             list's new-chat-menu, workspace-menu, sidebar-hover (rows as
+//!                             if hovered), chat-list (open, phones too), new-chat,
+//!                             search:TEXT, new-workspace-folder:PATH (the form as if that
+//!                             folder was dropped); also
 //!                             plugin-pane[:PLUGIN[/VIEW]] (a plugin's pane) and plugin:ID
 //!                             (Settings → Plugins open on that plugin), artifact:PREFIX (the
 //!                             newest artifact whose id, title or file name starts so, in the pane)
@@ -223,9 +227,16 @@ fn parse_args() -> Result<Args, String> {
                     || v.starts_with("plugin-pane:")
                     || v.starts_with("plugin:")
                     || v.starts_with("artifact:")
-                    || v.starts_with("add-models:");
+                    || v.starts_with("add-models:")
+                    || v.starts_with("search:")
+                    || v.starts_with("new-workspace-folder:");
                 if !plugin_panel && !byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == v) {
-                    return Err(format!("unknown panel {v:?} ({}, {})", byob_ui_egui::ByobApp::PANELS, byob_ui_egui::ByobApp::PLUGIN_PANELS));
+                    return Err(format!(
+                        "unknown panel {v:?} ({}, {}, {})",
+                        byob_ui_egui::ByobApp::PANELS,
+                        byob_ui_egui::ByobApp::ARG_PANELS,
+                        byob_ui_egui::ByobApp::PLUGIN_PANELS
+                    ));
                 }
                 args.script.open_panel = Some(v);
             }
@@ -270,6 +281,7 @@ impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, byob_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
         eframe::set_value(storage, byob_ui_egui::pane::PanePrefs::STORAGE_KEY, &self.ui.pane_prefs());
+        eframe::set_value(storage, byob_ui_egui::sidebar::SidebarPrefs::STORAGE_KEY, &self.ui.sidebar_prefs());
     }
 }
 
@@ -567,6 +579,11 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
             ui.set_prefs(prefs);
             if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::pane::PanePrefs>(s, byob_ui_egui::pane::PanePrefs::STORAGE_KEY)) {
                 ui.artifacts_mut().set_pane_prefs(pane);
+            }
+            if let Some(list) =
+                cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::sidebar::SidebarPrefs>(s, byob_ui_egui::sidebar::SidebarPrefs::STORAGE_KEY))
+            {
+                ui.set_sidebar_prefs(&list);
             }
             ui.set_settings_open(open_settings);
             if let Some(section) = &section {
