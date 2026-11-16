@@ -1541,11 +1541,37 @@ mod app_tests {
         press(ctx, app, egui::Key::Enter);
     }
 
+    #[test]
+    fn shift_enter_is_a_newline_and_enter_sends() {
+        let fake = Fake::default();
+        fake.inbox.lock().unwrap().push(ServerMsg::State(state(Link::Ok, true)));
+        let ctx = egui::Context::default();
+        let mut app = ByobApp::new(Box::new(fake.clone()), "test");
+        frame(&ctx, &mut app, 1000.0);
+        let sent = |fake: &Fake| fake.sent.lock().unwrap().iter().filter(|m| matches!(m, ClientMsg::SendMessage { .. })).count();
+        app.input = "first line".into();
+        // Put the cursor at the end, as typing would.
+        let id = egui::Id::unique("composer");
+        let mut state = egui::TextEdit::load_state(&ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(10))));
+        egui::TextEdit::store_state(&ctx, id, state);
+        press_with(&ctx, &mut app, egui::Key::Enter, egui::Modifiers::SHIFT);
+        assert_eq!((app.input.as_str(), sent(&fake)), ("first line\n", 0), "Shift+Enter adds a line and doesn't send");
+        press_enter(&ctx, &mut app);
+        assert_eq!(sent(&fake), 1, "Enter sends");
+        assert!(app.input.is_empty());
+    }
+
     /// Focus the composer and press `key` in it.
     fn press(ctx: &egui::Context, app: &mut ByobApp, key: egui::Key) {
+        press_with(ctx, app, key, egui::Modifiers::NONE);
+    }
+
+    /// Focus the composer and press `key` with `modifiers` in it.
+    fn press_with(ctx: &egui::Context, app: &mut ByobApp, key: egui::Key, modifiers: egui::Modifiers) {
         ctx.memory_mut(|m| m.request_focus(egui::Id::unique("composer")));
         frame(ctx, app, 1000.0);
-        let key = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let key = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
             events: vec![key],

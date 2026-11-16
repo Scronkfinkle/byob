@@ -87,7 +87,7 @@ impl ByobApp {
         if escaped && menu {
             ui.memory_mut(|m| m.request_focus(id));
         }
-        let enter = focused && !menu && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        let enter = focused && !menu && ui.input_mut(consume_plain_enter);
         // Cmd/Ctrl+B and +I wrap the selection in `**` / `*` (or unwrap it).
         let wrap = if focused && !menu {
             ui.input_mut(|i| {
@@ -231,6 +231,8 @@ impl ByobApp {
                             // While the `/` menu is open Tab picks from it (consumed above), and must not
                             // move the focus away from the text.
                             .lock_focus(menu)
+                            // Plain Enter sends (consumed above); Shift+Enter is the newline.
+                            .return_key(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))
                             .desired_width(f32::INFINITY)
                             .hint_text(hint)
                             .layouter(&mut layouter);
@@ -327,6 +329,14 @@ pub fn max_height(line: f32, pad_y: f32, window: f32, d: f32) -> f32 {
     let lines = line * MAX_LINES + pad_y * 2.0;
     let share = if window.is_finite() && window > 0.0 { window * MAX_SHARE } else { lines };
     lines.min(share).max(d)
+}
+
+/// Consume an Enter pressed with no modifiers. (`consume_key` ignores Shift, so it would
+/// take Shift+Enter, the newline, too.)
+fn consume_plain_enter(i: &mut egui::InputState) -> bool {
+    let before = i.events.len();
+    i.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if modifiers.is_none()));
+    i.events.len() != before
 }
 
 /// A round button `d` across: `fill` with `paint` in `icon` on it, a shade lighter or darker
