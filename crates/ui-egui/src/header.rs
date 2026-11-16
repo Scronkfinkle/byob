@@ -66,10 +66,6 @@ impl Layout {
 pub struct Rects {
     pub chats: Rect,
     pub chat_settings: Rect,
-    /// The composer row: Attach, the message field, and the last button (Send, Stop, Cancel).
-    pub attach: Rect,
-    pub field: Rect,
-    pub send: Rect,
     pub more: Rect,
     /// The plugins chip (`Rect::NOTHING` while it isn't shown).
     pub plugins: Rect,
@@ -92,9 +88,6 @@ impl Default for Rects {
         Self {
             chats: Rect::NOTHING,
             chat_settings: Rect::NOTHING,
-            attach: Rect::NOTHING,
-            field: Rect::NOTHING,
-            send: Rect::NOTHING,
             more: Rect::NOTHING,
             plugins: Rect::NOTHING,
             settings_close: Rect::NOTHING,

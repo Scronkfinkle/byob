@@ -27,6 +27,9 @@ pub struct Script {
     /// Take the screenshot as soon as the queued messages show, while the reply runs
     /// (`--shoot-queued`).
     pub shoot_queued: bool,
+    /// With `shoot_queued`: edit the first queued message before the screenshot
+    /// (`--edit-queued`).
+    pub edit_queued: bool,
     pub screenshot: Option<PathBuf>,
     /// Minimum time before the screenshot (lets the window settle); counted from the
     /// commands when there are any.
@@ -179,6 +182,13 @@ impl Runner {
             self.stopped = true;
         }
         if self.script.shoot_queued && self.queued_at.is_some() && app.queued() > 0 {
+            // The composer as it looks mid-reply: a follow-up typed, or a queued one edited.
+            if let Some(text) = self.script.draft.take() {
+                app.set_draft(&text);
+            }
+            if std::mem::take(&mut self.script.edit_queued) {
+                app.edit_first_queued();
+            }
             self.shoot(ctx);
             return;
         }

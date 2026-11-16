@@ -203,6 +203,8 @@ fn parse_args() -> Result<Args, String> {
             }
             // Hidden, for testing: screenshot as soon as the queued messages show.
             "--shoot-queued" => args.script.shoot_queued = true,
+            // Hidden, for testing: with --shoot-queued, edit the first queued message first.
+            "--edit-queued" => args.script.edit_queued = true,
             // Hidden, for testing: fill the connection form with URL and MODEL and test it.
             "--test-connection" => {
                 let url = it.next().ok_or("--test-connection needs a URL and a model")?;
