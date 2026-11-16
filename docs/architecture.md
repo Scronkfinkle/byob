@@ -240,23 +240,58 @@ Funnel (public internet) requests get `Tailscale-Funnel-Request: ?1` and no iden
 
 ## App settings
 
-`ui-egui/src/settings.rs`, one tab per group (`settings::Tab`): **Models** (saved models and
-their roles, `models.rs`; the connection form on engines without profiles), **Chat defaults**
-(the global layer, drawn by `workspace.rs`'s `LayerEditor` like a workspace's and a chat's
-settings), **Plugins** (`plugins.rs`), and, per device, **Appearance** (light/dark, the theme
-gallery, accent, corners, bubbles, chart colours, theme files), **Text & layout** (zoom, text
-and code sizes, fonts, density, widths, accessibility) and **Colours** (every colour role). The
-page takes everything below the header beside the chat list (the whole window on phones); the
-chat, its composer and the side panes aren't drawn while it is open. The tabs are a list on the
-left (a strip that scrolls sideways under the title on phones); the selected one scrolls on its
-own, in a column at most `form::MAX_W` wide. The tab is kept for the session, and every way in
-selects its own: `open_connection()` (⋯ → Models…, the model chip's Manage models…, a failed
-reply's card) → Models; `PluginsUi::open` (⋯ → Plugins…, the header chip, a card's Files) →
-Plugins; `--settings-section NAME` (a tab id: `models`, `defaults`, `plugins`, `appearance`,
-`text`, `colours`; also `knobs`, `advanced`, `model:<id>`); `--open-panel
+`ui-egui/src/settings/`: a destination of its own. While `show_settings` is set, `lib.rs` draws
+only the header and the settings screen: on a desktop the left column (where the chat list
+was, `sidebar_width` wide, at least `form::NAV_W`) becomes the settings' navigation, "← Back to
+chat", a search field and the categories (`settings::Tab`); the selected category's page
+scrolls beside it in a column at most `form::MAX_W` (880) wide, centred. The header keeps the
+wordmark, "Settings", the ⋯ menu and the reply's running/approval state; the chat, its list,
+composer and panes aren't drawn and nothing of them changes, so Back (or Esc with no field
+focused and no menu open, or Ctrl+,) finds the chat as it was, scroll position and panes
+included. Phones (`sidebar::NARROW`) get a list of categories (Back, search, one row per
+category) that opens one page with "← Settings" above it; Esc goes page → list → chat.
+
+**Categories.** **Models** (saved models, `models.rs`, or the connection form on engines without
+profiles; then the roles: vision helper, subagent model, titles & summaries), **Chats** (the
+global layer, drawn field by field by `workspace.rs`'s `LayerEditor::control`: custom
+instructions; permissions and limits: approvals, tool calls per turn, subagents; context and
+requests: compaction, images to the model, tool calling; and the workspace in view's settings),
+**Plugins** (`plugins.rs`), and per device **Appearance** (theme: mode, light/dark themes,
+gallery; accent and shape: accent, corner radius, chart colours; messages: layout, your
+messages, replies; theme files; reset), **Text & layout** (size: zoom, text, code; fonts;
+layout: density, conversation width, chat list width, artifact pane; accessibility: high
+contrast, reduce motion; reset) and **Colours** (every colour role, in two columns).
+
+**Registry.** `settings/registry.rs` declares every setting once: a `Key`, an id, its
+`Section` (tab, title, blurb), name, one-line description, search keywords and `Kind` (`Row`:
+name and description left, control right; `Wide`: control under them; `Block`: a list across
+the section). Pages draw `SETTINGS` in order, section by section; `settings/controls.rs`'s
+`draw_control` matches every `Key`, so nothing is declared without being drawn or drawn without
+being declared (tests check each key is on exactly one page). Rows are `form::setting_row`:
+the name and description wrap at `form::TEXT_MAX` (540), the control is right-aligned on the
+page's right edge (its size is remembered per row and the frame redone when it changes), the
+two stack below `form::STACK_BELOW` (560); hairlines between rows, a rule and heading between
+sections (`form::section`).
+
+**Search.** Words match (all of them, ASCII case ignored) a setting's name, description,
+keywords, section and category, names ranking first; plus the items of lists: saved models
+(name, model, URL), plugins, themes and colour roles. Results replace the page, grouped by
+category (its heading opens it), matches highlighted; settings are drawn with their working
+control, lists as rows that open them. Enter goes to the first result, a result's name to its
+place in its page (scrolled to and lit for a moment, `jump_to`), ↓ to the results, Esc clears;
+the navigation shows how many results each category has. Ctrl/Cmd+F focuses it while the
+settings are open.
+
+**Ways in.** The category is kept for the session. `open_settings()` (the chat list's Settings,
+⋯ → App settings, Ctrl+,) opens where it was (phones: the list); `open_settings_at(tab)` and
+`jump_to(key)` open a page: `open_connection()` (⋯ → Models…, the model chip's Manage models…, a
+failed reply's card) → Models; `PluginsUi::open` (⋯ → Plugins…, the header chip, a card's
+Files) → Plugins; `--settings-section NAME` (a tab id: `models`, `defaults`, `plugins`,
+`appearance`, `text`, `colours`; also `chats`, `knobs`, `advanced`, `model:<id>`; or a setting's
+id such as `accent`, `approvals`, `reduce-motion`); `--settings-search TEXT`; `--open-panel
 models|plugins|plugin:<id>|add-models:<url>|edit-model:<id>`. Spacing comes from `form.rs`
-(page padding, a fixed label column via `form::row` / `form::grid`, one control height, row
-and section gaps, all through `Tokens::pad`), shared with the workspace and chat settings.
+(page padding, rows, one control height, section gaps, all through `Tokens::pad`); the
+workspace and chat settings keep `form::grid` and the same `LayerEditor` fields.
 
 ## Themes
 

@@ -105,7 +105,7 @@ APIs, and a Test connection button. What you connect becomes your default model.
 **Models** keeps every model you use: add several from one server at once (byob lists what
 the server has), give each a description, test, duplicate, pick the default, choose a
 vision helper, and a model for titles and summaries (a small, fast one will do). Subagents run
-on the chat's model unless you pick another: a Subagents model in Settings → Models (or per
+on the chat's model unless you pick another: a Subagent model in Settings → Models (or per
 workspace or chat), an agent file's `model:` (a saved model's name works), or, for models you
 mark **Offered to subagents**, the main model itself, choosing by their descriptions. A model's
 Advanced settings set its context window, temperature, top_p, max tokens, effort (Claude) and
@@ -127,9 +127,12 @@ sliders next to a chat's title show what's inherited and what's set there: model
 saved models), approvals, tool calling, compaction, subagents and their model, extra
 instructions.
 
-**Settings** (Ctrl/Cmd+, or the bottom of the chat list) has a tab per group: Models, Chat
-defaults (what every chat starts with), Plugins and, on this device only, Appearance (light or
-dark, themes, accent, theme files), Text & layout (zoom, sizes, fonts, density) and Colours.
+**Settings** (Ctrl/Cmd+, or the bottom of the chat list) is a screen of its own: the chat list
+gives way to Back, a search field (any setting by name, what it does, or a word you'd use for
+it; Ctrl/Cmd+F) and the categories: Models (saved models and their roles), Chats (what every
+chat starts with: instructions, approvals, limits, context), Plugins and, on this device only,
+Appearance (light or dark, themes, accent, messages, theme files), Text & layout (zoom, sizes,
+fonts, density, accessibility) and Colours. Back or Esc returns to the chat as you left it.
 
 ## Plugins
 

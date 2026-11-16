@@ -30,8 +30,10 @@
 //!     --screenshot-after SECS minimum wait before the screenshot (default 2)
 //!     --open-settings         start with the settings panel open
 //!     --settings-section NAME open the settings on a tab (models, defaults, plugins, appearance,
-//!                             text, colours; knobs and advanced still work) or at model
+//!                             text, colours; chats, knobs and advanced still work), at one
+//!                             setting (its id: accent, approvals, zoom, …) or at model
 //!                             profile ID's form, Advanced expanded (model:ID)
+//!     --settings-search TEXT  open the settings with TEXT typed in their search field
 //!     --window-size WxH       window size in points (default 1100x750)
 //!     --tool-mode MODE        auto | native | prompt: force how tools are passed to the model
 //!     --compact-at TOKENS     compact the context when a request passes TOKENS (default:
@@ -90,6 +92,7 @@ struct Args {
     theme: Option<String>,
     open_settings: bool,
     settings_section: Option<String>,
+    settings_search: Option<String>,
     window_size: Option<[f32; 2]>,
     tool_mode: byob_agent::ToolMode,
     compact_at: Option<usize>,
@@ -136,6 +139,7 @@ fn parse_args() -> Result<Args, String> {
         theme: None,
         open_settings: false,
         settings_section: None,
+        settings_search: None,
         window_size: None,
         tool_mode: byob_agent::ToolMode::Auto,
         compact_at: None,
@@ -178,6 +182,7 @@ fn parse_args() -> Result<Args, String> {
                 args.settings_section =
                     Some(it.next().ok_or("--settings-section needs a tab (models, defaults, plugins, appearance, text, colours) or model:<id>")?)
             }
+            "--settings-search" => args.settings_search = Some(it.next().ok_or("--settings-search needs text")?),
             "--window-size" => {
                 let v = it.next().ok_or("--window-size needs WxH")?;
                 let size = v.split_once('x').and_then(|(w, h)| Some([w.parse::<f32>().ok()?, h.parse::<f32>().ok()?]));
@@ -563,7 +568,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
         }
     }
     let script = testing::Runner::new(args.script);
-    let (theme_arg, open_settings, section) = (args.theme, args.open_settings, args.settings_section);
+    let (theme_arg, open_settings, section, search) = (args.theme, args.open_settings, args.settings_section, args.settings_search);
     let result = eframe::run_native(
         "byob",
         options,
@@ -598,7 +603,10 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
             if let Some(section) = &section
                 && !ui.reveal_settings(section)
             {
-                log::warn!("--settings-section {section}: no such settings tab");
+                log::warn!("--settings-section {section}: no such settings tab or setting");
+            }
+            if let Some(text) = &search {
+                ui.set_settings_search(text);
             }
             Ok(Box::new(App { ui, script }))
         }),

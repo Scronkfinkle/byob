@@ -249,6 +249,24 @@ pub fn chevron_down(painter: &egui::Painter, rect: Rect, color: Color32) {
     painter.line(vec![pos2(c.x - s, c.y - s * 0.5), pos2(c.x, c.y + s * 0.5), pos2(c.x + s, c.y - s * 0.5)], stroke);
 }
 
+/// A small chevron pointing right (a row that opens a page), centred in `rect`.
+pub fn chevron_right(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let c = rect.center();
+    let s = rect.width().min(rect.height()) * 0.22;
+    let stroke = Stroke::new(1.4, color);
+    painter.line(vec![pos2(c.x - s * 0.5, c.y - s), pos2(c.x + s * 0.5, c.y), pos2(c.x - s * 0.5, c.y + s)], stroke);
+}
+
+/// "Back": an arrow pointing left.
+pub fn arrow_left(painter: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    let c = r.center();
+    let stroke = Stroke::new((s * 0.1).max(1.3), color);
+    let (h, head) = (s * 0.32, s * 0.24);
+    painter.line_segment([c + vec2(-h, 0.0), c + vec2(h, 0.0)], stroke);
+    painter.line(vec![c + vec2(-h + head, -head), c + vec2(-h, 0.0), c + vec2(-h + head, head)], stroke);
+}
+
 /// The height of a text button (what egui gives `ui.button`).
 pub fn button_height(ui: &Ui) -> f32 {
     let text = ui.text_style_height(&egui::TextStyle::Button);

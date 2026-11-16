@@ -69,11 +69,11 @@ pub struct Rects {
     pub more: Rect,
     /// The plugins chip (`Rect::NOTHING` while it isn't shown).
     pub plugins: Rect,
-    /// The app settings' Close button (`Rect::NOTHING` while they are shut).
-    pub settings_close: Rect,
-    /// The app settings' "Back to chat" button (`Rect::NOTHING` while they are shut).
+    /// The settings' "Back to chat" (phones, on a page: "Settings") row, and its search field
+    /// (`Rect::NOTHING` before they were drawn).
     pub settings_back: Rect,
-    /// The whole app settings page, its selected tab's content column and its tabs (by
+    pub settings_search: Rect,
+    /// The settings' page area, its content column and its categories (by
     /// [`crate::settings::Tab`] order); last drawn, `Rect::NOTHING` before.
     pub settings_page: Rect,
     pub settings_body: Rect,
@@ -95,8 +95,8 @@ impl Default for Rects {
             chat_settings: Rect::NOTHING,
             more: Rect::NOTHING,
             plugins: Rect::NOTHING,
-            settings_close: Rect::NOTHING,
             settings_back: Rect::NOTHING,
+            settings_search: Rect::NOTHING,
             settings_page: Rect::NOTHING,
             settings_body: Rect::NOTHING,
             settings_tabs: [Rect::NOTHING; 6],
@@ -137,7 +137,7 @@ pub fn settings_shortcut(ctx: &egui::Context) -> String {
 
 /// The app settings button's tooltip.
 pub fn settings_tip(ctx: &egui::Context) -> String {
-    format!("App settings: models, chat defaults, plugins, appearance ({})", settings_shortcut(ctx))
+    format!("Settings: models, chats, plugins, appearance ({})", settings_shortcut(ctx))
 }
 
 impl ByobApp {
@@ -149,7 +149,7 @@ impl ByobApp {
 
     /// Back to the chat: close the app settings and the chat settings popover.
     pub(crate) fn go_home(&mut self) {
-        self.show_settings = false;
+        self.close_settings();
         if self.workspaces.chat.is_some() {
             self.workspaces.toggle_chat();
         }
@@ -158,7 +158,7 @@ impl ByobApp {
     /// Keyboard shortcuts the header offers (before anything else takes the keys).
     pub(crate) fn header_shortcuts(&mut self, ctx: &egui::Context) {
         if ctx.input_mut(|i| i.consume_shortcut(&SETTINGS_SHORTCUT)) {
-            self.show_settings = !self.show_settings;
+            self.toggle_settings();
         }
         // New chat: Ctrl/Cmd+N (desktop), Ctrl/Cmd+Shift+O (also in the browser, which keeps
         // Ctrl+N for itself). Search the chats: Ctrl/Cmd+F (not with Shift: that maximizes
@@ -170,12 +170,16 @@ impl ByobApp {
         });
         if new_chat {
             let msg = self.sidebar.new_chat(narrow);
-            self.show_settings = false;
+            self.close_settings();
             self.conn.send(msg);
         }
         if ctx.input_mut(|i| !i.modifiers.shift && i.consume_shortcut(&crate::sidebar::SEARCH_SHORTCUT)) {
-            self.show_settings = false;
-            self.sidebar.focus_search();
+            if self.show_settings {
+                // In the settings, Find searches them.
+                self.appearance.focus_search = true;
+            } else {
+                self.sidebar.focus_search();
+            }
         }
         // Zoom the whole interface, as in a browser: Ctrl + (or Ctrl =), Ctrl −, Ctrl 0.
         use egui::gui_zoom::kb_shortcuts as zoom;
@@ -219,6 +223,11 @@ impl ByobApp {
             egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&more));
         }
         egui::Popup::menu(&more).show(|ui| self.more_menu(ui));
+        if self.show_settings {
+            // The chat's panes aren't there to toggle.
+            self.header_rects.plugins = Rect::NOTHING;
+            return;
+        }
         self.header_rects.plugins = self.plugins.chip(ui, t, layout.plugin_count, false).map_or(Rect::NOTHING, |r| r.rect);
         self.artifacts.header_toggle(ui);
         self.plugins.sites.pane_toggles(ui, t);
@@ -313,7 +322,7 @@ impl ByobApp {
             }
         });
         if ui.add(egui::Button::new("App settings").shortcut_text(settings_shortcut(ui.ctx()))).clicked() {
-            self.show_settings = true;
+            self.open_settings();
             ui.close();
         }
     }
@@ -321,6 +330,10 @@ impl ByobApp {
     /// Left to right: the chat list toggle, wordmark, activity, the chat's workspace and
     /// title with its settings, then the connection and context meter in what is left.
     fn header_left(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, layout: Layout) {
+        if self.show_settings {
+            self.settings_header_left(ui, t, layout);
+            return;
+        }
         let chats = icons::icon_button(ui, t, icons::sidebar, None, false).on_hover_text("Show or hide the chat list");
         self.header_rects.chats = chats.rect;
         if chats.clicked() {
@@ -383,6 +396,38 @@ impl ByobApp {
         }
     }
 
+    /// Over the settings: where you are, the wordmark that goes back, and whether a reply is
+    /// running or waiting on you (the chat goes on meanwhile).
+    fn settings_header_left(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, layout: Layout) {
+        self.header_rects.chats = Rect::NOTHING;
+        self.header_rects.chat_settings = Rect::NOTHING;
+        self.header_rects.home = Rect::NOTHING;
+        ui.add_space(6.0);
+        if layout.wordmark {
+            let home = ui
+                .add(egui::Label::new(egui::RichText::new("byob").strong().size(t.text_size(18.0)).color(t.accent)).sense(egui::Sense::click()))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Back to the chat");
+            self.header_rects.home = home.rect;
+            if home.clicked() {
+                self.go_home();
+            }
+            ui.add_space(6.0);
+        }
+        let title = ui.label(egui::RichText::new("Settings").strong().color(t.text_strong));
+        self.header_rects.title = title.rect;
+        if steps::awaiting_approval(&self.entries) {
+            ui.add_space(8.0);
+            let badge = ui.add(egui::Button::new(egui::RichText::new("Waiting for your approval").color(t.warning)).frame(false));
+            if badge.on_hover_text("Go back to the chat to answer it").clicked() {
+                self.close_settings();
+            }
+        } else if self.busy() {
+            ui.add_space(8.0);
+            theme::spinner(ui, t, None).on_hover_text("A reply is running in the chat");
+        }
+    }
+
     /// Where the chat runs and what it is: the workspace's environment icon, "workspace /
     /// title" (a click opens the chat's settings) and the chat settings button.
     fn header_context(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, layout: Layout) {
@@ -413,11 +458,7 @@ impl ByobApp {
         let gear = icons::settings_button(ui, t).on_hover_text("Chat settings: this chat's model, approvals, where commands run…");
         self.header_rects.chat_settings = gear.rect;
         self.header_rects.title = title_resp.rect;
-        if title_resp.clicked() && self.show_settings {
-            // Over the app settings, the top left means "back": don't stack the chat's
-            // settings on top.
-            self.go_home();
-        } else if gear.clicked() || title_resp.clicked() {
+        if gear.clicked() || title_resp.clicked() {
             self.workspaces.toggle_chat();
         }
     }
