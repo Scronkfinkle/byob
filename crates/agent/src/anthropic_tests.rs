@@ -120,7 +120,13 @@ fn harness(script: Vec<Reply>) -> H {
     let runs = Arc::new(AtomicUsize::new(0));
     let mut tools = Registry::default();
     tools.register(Arc::new(Fake { name: "echo", access: Access::Read, runs: Arc::clone(&runs), reply: None, change: false }));
-    let inference = InferenceConfig { base_url: url, model: "claude-opus-5-5".into(), api_key: Some("sk-ant-test".into()), api: Some(ApiKind::Anthropic) };
+    let inference = InferenceConfig {
+        base_url: url,
+        model: "claude-opus-5-5".into(),
+        api_key: Some("sk-ant-test".into()),
+        api: Some(ApiKind::Anthropic),
+        ..Default::default()
+    };
     let mut config = EngineConfig::new(inference);
     config.workspace = ws.path().to_path_buf();
     config.tools = tools;

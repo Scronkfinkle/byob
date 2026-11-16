@@ -11,6 +11,7 @@
 //! | approvals | ✓ | ✓ | ✓ |
 //! | compaction (auto, threshold) | ✓ | ✓ | ✓ |
 //! | subagents on/off | ✓ | ✓ | ✓ |
+//! | subagent model (a profile; the global one is the `subagents` role) | ✓ | ✓ | ✓ |
 //! | extra instructions (appended, never replaced) | ✓ | ✓ | ✓ |
 //! | environment (Auto, Host, Nix, Container) | | ✓ | Host / Container only |
 //! | container image | | ✓ | |
@@ -191,6 +192,12 @@ pub struct Layer {
     /// doesn't (deleted), the level inherits the endpoint.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// The saved model this level's subagents run on unless the `delegate` call or the
+    /// agent's `model:` names one (by id). A workspace or chat sets it here; the global one is
+    /// the `subagents` role ([`crate::profile::ROLE_SUBAGENTS`]), which the engine shows in
+    /// the global layer it builds. One that doesn't exist (deleted) is skipped.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub subagent_profile: Option<String>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
@@ -250,6 +257,8 @@ pub enum Field {
     /// `auto_compact` and `compact_percent`.
     Compaction,
     Subagents,
+    /// `subagent_profile`.
+    SubagentModel,
     /// `image_quality`.
     ModelImages,
     /// `max_tool_calls`.
@@ -260,12 +269,13 @@ pub enum Field {
 }
 
 impl Field {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Endpoint,
         Self::ToolMode,
         Self::Approvals,
         Self::Compaction,
         Self::Subagents,
+        Self::SubagentModel,
         Self::ToolCalls,
         Self::ModelImages,
         Self::Instructions,
@@ -282,6 +292,7 @@ impl Field {
             | Self::Approvals
             | Self::Compaction
             | Self::Subagents
+            | Self::SubagentModel
             | Self::ToolCalls
             | Self::ModelImages
             | Self::Instructions => ALL,
@@ -301,6 +312,7 @@ impl Field {
             Self::Approvals => "Approvals",
             Self::Compaction => "Compaction",
             Self::Subagents => "Subagents",
+            Self::SubagentModel => "Subagent model",
             Self::ModelImages => "Images to the model",
             Self::ToolCalls => "Tool calls per turn",
             Self::Instructions => "Instructions",
@@ -319,6 +331,7 @@ impl Layer {
             Field::Approvals => self.approvals.is_some(),
             Field::Compaction => self.auto_compact.is_some() || self.compact_percent.is_some(),
             Field::Subagents => self.subagents.is_some(),
+            Field::SubagentModel => self.subagent_profile.is_some(),
             Field::ModelImages => self.image_quality.is_some(),
             Field::ToolCalls => self.max_tool_calls.is_some(),
             Field::Instructions => self.instructions.is_some(),
@@ -342,6 +355,7 @@ impl Layer {
                 self.compact_percent = None;
             }
             Field::Subagents => self.subagents = None,
+            Field::SubagentModel => self.subagent_profile = None,
             Field::ModelImages => self.image_quality = None,
             Field::ToolCalls => self.max_tool_calls = None,
             Field::Instructions => self.instructions = None,
@@ -363,10 +377,11 @@ impl Layer {
         self.model = clean(self.model);
         self.image = clean(self.image);
         self.profile = clean(self.profile);
-        if let Some(p) = &self.profile
-            && !crate::profile::id_ok(p)
-        {
-            return Err(format!("{:?} isn't a model profile id", p.chars().take(80).collect::<String>()));
+        self.subagent_profile = clean(self.subagent_profile);
+        for p in [&self.profile, &self.subagent_profile].into_iter().flatten() {
+            if !crate::profile::id_ok(p) {
+                return Err(format!("{:?} isn't a model profile id", p.chars().take(80).collect::<String>()));
+            }
         }
         self.instructions = self.instructions.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
         if self.base_url.as_ref().is_some_and(|u| u.chars().count() > MAX_URL_CHARS) {
@@ -439,6 +454,11 @@ pub struct Effective {
     pub auto_compact: Sourced<bool>,
     pub compact_percent: Sourced<u8>,
     pub subagents: Sourced<bool>,
+    /// The saved model (profile id) subagents use by default, and the level that picked it;
+    /// `None`: the chat's own model. [`resolve`] takes the most specific level's;
+    /// [`crate::profile::resolve_with`] skips ones that don't exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_profile: Option<Sourced<String>>,
     /// JPEG quality for images sent to the model; 0: as they are.
     pub image_quality: Sourced<u8>,
     /// Most tool calls in one turn; 0: no limit.
@@ -556,6 +576,7 @@ pub fn resolve(levels: Levels<'_>, keys: Keys, forced: Forced) -> Effective {
         .into_iter()
         .filter_map(|(level, layer)| layer.and_then(|l| l.instructions.clone()).filter(|s| !s.trim().is_empty()).map(|s| (level, s)))
         .collect();
+    let subagent_profile = pick(&levels, None, |l| l.subagent_profile.clone().map(Some));
     let ws_env = levels.workspace.and_then(|l| l.env).unwrap_or_default();
     let chat_env = levels.chat.and_then(|l| l.env).filter(|e| e.per_chat());
     let env = match (chat_env, levels.workspace.and_then(|l| l.env)) {
@@ -572,6 +593,7 @@ pub fn resolve(levels: Levels<'_>, keys: Keys, forced: Forced) -> Effective {
         auto_compact: pick(&levels, true, |l| l.auto_compact),
         compact_percent: pick(&levels, DEFAULT_COMPACT_PERCENT, |l| l.compact_percent.map(|p| p.clamp(10, 95))),
         subagents: pick(&levels, true, |l| l.subagents),
+        subagent_profile: subagent_profile.value.map(|value| Sourced { value, from: subagent_profile.from }),
         image_quality: pick(&levels, DEFAULT_IMAGE_QUALITY, |l| l.image_quality.map(|q| q.min(100))),
         max_tool_calls: pick(&levels, DEFAULT_TOOL_CALLS, |l| l.max_tool_calls.map(|n| n.min(MAX_TOOL_CALLS))),
         instructions,

@@ -6,9 +6,11 @@
 //! `roles.<role>` → profile id) say which profile does what: [`ROLE_MAIN`] is the default
 //! model of every chat, [`ROLE_VISION`] looks at images for a model that can't.
 //!
-//! Some fields are stored and round-tripped but not used yet ([`Profile::subagents`],
-//! [`Profile::max_parallel`], [`Profile::context`], [`Profile::params`]); unknown fields
-//! are kept in [`Profile::extra`] so a newer byob's additions survive.
+//! [`ROLE_UTILITY`] writes chat titles and compaction summaries.
+//!
+//! A profile's [`Profile::params`] go with every chat request made with it, and its
+//! [`Profile::context`] replaces the probed window (both through [`Profile::config`]).
+//! Unknown fields are kept in [`Profile::extra`] so a newer byob's additions survive.
 //!
 //! This module is pure (no I/O): the store, the engine and the UI share it.
 
@@ -23,11 +25,12 @@ use crate::{ApiKind, InferenceConfig};
 
 /// The default model of every chat (the "Connection" of older builds).
 pub const ROLE_MAIN: &str = "main";
-/// The model subagents use unless their agent names another (stored; used from a later build).
+/// The model subagents use unless the `delegate` call, their agent or a workspace or chat
+/// names another (the global level's subagent model).
 pub const ROLE_SUBAGENTS: &str = "subagents";
 /// Looks at images for a chat whose model can't.
 pub const ROLE_VISION: &str = "vision";
-/// Titles and compaction (stored; used from a later build).
+/// Writes chat titles and compaction summaries (unset: the chat's own model).
 pub const ROLE_UTILITY: &str = "utility";
 /// The roles byob knows, in the order the UI lists them. Other role names (from
 /// `settings.json` `models.<name>` of older builds) are kept and work as agents' `model:`.
@@ -62,16 +65,53 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Request parameters for a profile's model (stored; sent with requests from a later build).
+/// Request body fields byob sets itself: [`Params::extra`] can't set them (the engine
+/// refuses a profile that tries, and byob-llm skips them).
+pub const PROTECTED_FIELDS: [&str; 7] = ["model", "messages", "tools", "stream", "stream_options", "id_slot", "system"];
+
+/// How hard a Claude model thinks (Anthropic `output_config.effort`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Effort {
+    pub const ALL: [Effort; 5] = [Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh, Effort::Max];
+
+    /// The API's name for it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+}
+
+/// Request parameters for a profile's model, sent with every chat request made with it
+/// (see `byob_llm::params`). Unset ones are left to the server.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Params {
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
+    /// Most tokens of one reply (Anthropic: replaces byob's 64000, thinking included).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    /// A JSON object merged into the request body (e.g. `{"chat_template_kwargs": {…}}`).
+    /// Anthropic only: `output_config.effort`; unset is the API's default.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
+    /// A JSON object merged into the request body last (e.g. `{"chat_template_kwargs": {…}}`):
+    /// objects merge key by key, anything else replaces. It may override the fields above,
+    /// never the [`PROTECTED_FIELDS`].
     #[serde(default, deserialize_with = "lenient_or_default", skip_serializing_if = "Map::is_empty")]
     pub extra: Map<String, Value>,
     /// Fields this build doesn't know; preserved.
@@ -108,16 +148,17 @@ pub struct Profile {
     /// How tools are passed to this model; when set it beats the levels' tool mode.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub tool_mode: Option<ToolMode>,
-    /// Offered to the model for delegation (a later build).
+    /// Offered to the main model as a `delegate` `model` choice (its description says when).
     #[serde(default, deserialize_with = "lenient_or_default", skip_serializing_if = "is_false")]
     pub subagents: bool,
-    /// Most requests at once on this model (a later build).
+    /// Most subagents running on this model at once (besides the global cap and the
+    /// server's free slots).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub max_parallel: Option<u16>,
-    /// Context window, overriding what the probe found (a later build).
+    /// Context window, overriding what the probe found (budgeting and compaction).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub context: Option<u32>,
-    /// Request parameters (a later build).
+    /// Request parameters, sent with every chat request made with it.
     #[serde(default, deserialize_with = "lenient_or_default", skip_serializing_if = "Params::is_empty")]
     pub params: Params,
     /// Fields this build doesn't know (a newer byob's, or hand edits); preserved.
@@ -176,7 +217,14 @@ impl Profile {
             model: self.model.trim().to_owned(),
             api_key: key.filter(|k| !k.is_empty()),
             api: self.api,
+            params: Params { rest: Map::new(), ..self.params.clone() },
+            context: self.context,
         }
+    }
+
+    /// Does it speak Anthropic's Messages API (set, or decided from the URL)?
+    pub fn anthropic(&self) -> bool {
+        self.config(None).api_kind() == ApiKind::Anthropic
     }
 
     /// Does it point at this endpoint (same URL and model)?
@@ -223,6 +271,12 @@ impl Profile {
         }
         if !finite(self.params.top_p, 1.0) {
             return Err("top_p must be between 0 and 1".into());
+        }
+        if self.params.max_tokens == Some(0) {
+            return Err("max_tokens must be at least 1".into());
+        }
+        if let Some(k) = PROTECTED_FIELDS.iter().find(|k| self.params.extra.contains_key(**k)) {
+            return Err(format!("the extra request JSON can't set {k:?}: byob sets it"));
         }
         let size = serde_json::to_string(&self.params).map_or(usize::MAX, |s| s.len()) + serde_json::to_string(&self.extra).map_or(usize::MAX, |s| s.len());
         if size > MAX_EXTRA_BYTES {
@@ -327,6 +381,16 @@ pub fn resolve_with<'a>(
         chat: own(cp, *c_gone, keys.chat),
     };
     let mut effective = resolve(applied, keys, forced);
+    // The subagent model: the most specific level's that still exists.
+    effective.subagent_profile = None;
+    for (from, layer) in [(Level::Chat, levels.chat), (Level::Workspace, levels.workspace), (Level::Global, levels.global)] {
+        let Some(id) = layer.and_then(|l| l.subagent_profile.as_deref()) else { continue };
+        if find(profiles, Some(id)).is_some() {
+            effective.subagent_profile = Some(Sourced { value: id.to_owned(), from });
+            break;
+        }
+        missing.push(id.to_owned());
+    }
     let from = effective.base_url.from;
     let profile = match from {
         Level::Global => *gp,
@@ -424,7 +488,7 @@ mod tests {
             "subagents": true,
             "max_parallel": 2,
             "context": 32768,
-            "params": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 4096, "extra": {"chat_template_kwargs": {"enable_thinking": false}}, "min_p": 0.05},
+            "params": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 4096, "effort": "xhigh", "extra": {"chat_template_kwargs": {"enable_thinking": false}}, "min_p": 0.05},
             "api": "anthropic",
             "effort_hint": "low",
         });
@@ -436,6 +500,13 @@ mod tests {
         assert_eq!(p.api, Some(ApiKind::Anthropic));
         assert_eq!(p.extra.get("effort_hint"), Some(&serde_json::json!("low")));
         assert_eq!(serde_json::to_value(&p).unwrap(), json);
+        // Its endpoint carries its request options and context, not the fields it doesn't know.
+        let c = p.config(None);
+        assert_eq!((c.params.effort, c.params.max_tokens, c.context), (Some(Effort::Xhigh), Some(4096), Some(32768)));
+        assert!(c.params.rest.is_empty() && c.params.extra.contains_key("chat_template_kwargs"));
+        // An effort this build doesn't know reads as unset.
+        let odd: Params = serde_json::from_value(serde_json::json!({"effort": "ludicrous", "top_p": 0.5})).unwrap();
+        assert_eq!((odd.effort, odd.top_p), (None, Some(0.5)));
         // A minimal profile writes only what it has.
         let small = Profile { id: "a".into(), name: "A".into(), base_url: "http://h/v1".into(), model: "m".into(), ..Profile::default() };
         assert_eq!(serde_json::to_string(&small).unwrap(), r#"{"id":"a","name":"A","base_url":"http://h/v1","model":"m"}"#);
@@ -469,6 +540,18 @@ mod tests {
         let mut big = p;
         big.params.extra.insert("x".into(), Value::String("y".repeat(MAX_EXTRA_BYTES)));
         assert!(big.validated().is_err());
+        // The extra request JSON can't set the fields byob sets; anything else goes.
+        let base = Profile { base_url: "http://h/v1".into(), model: "m".into(), ..Profile::default() };
+        for k in PROTECTED_FIELDS {
+            let mut p = base.clone();
+            p.params.extra.insert(k.into(), Value::Bool(true));
+            let err = p.validated().unwrap_err();
+            assert!(err.contains(k), "{err}");
+        }
+        let mut ok = base.clone();
+        ok.params.extra.insert("chat_template_kwargs".into(), serde_json::json!({"enable_thinking": false}));
+        assert!(ok.validated().is_ok());
+        assert!(Profile { params: Params { max_tokens: Some(0), ..Params::default() }, ..base }.validated().is_err());
     }
 
     #[test]
@@ -479,5 +562,28 @@ mod tests {
         assert_eq!(new_id("x", |id| id == "x" || id == "x-2"), "x-3");
         assert!(id_ok("qwen-3_b.1") && !id_ok("Qwen") && !id_ok("-a") && !id_ok(""));
         assert!(same_url("HTTP://h:1/v1/", "http://h:1/v1"));
+    }
+
+    #[test]
+    fn the_subagent_model_is_the_most_specific_levels_that_exists() {
+        let ps: BTreeMap<String, Profile> =
+            [("role".to_owned(), profile("role", "http://r/v1", "r")), ("ws".to_owned(), profile("ws", "http://w/v1", "w"))].into();
+        let g = Layer { subagent_profile: Some("role".into()), ..Layer::default() };
+        let w = Layer { subagent_profile: Some("ws".into()), ..Layer::default() };
+        let c = Layer { subagent_profile: Some("gone".into()), ..Layer::default() };
+        let at = |levels: Levels<'_>| {
+            let r = resolve_with(levels, Keys::default(), Forced::default(), &ps, |_| false);
+            (r.effective.subagent_profile.map(|s| (s.value, s.from)), r.missing)
+        };
+        let some = |id: &str, l: Level| Some((id.to_owned(), l));
+        assert_eq!(at(Levels { global: Some(&g), workspace: None, chat: None }), (some("role", Level::Global), vec![]));
+        assert_eq!(at(Levels { global: Some(&g), workspace: Some(&w), chat: None }), (some("ws", Level::Workspace), vec![]));
+        // The chat's is deleted: the workspace's applies, and the chat's is reported.
+        assert_eq!(at(Levels { global: Some(&g), workspace: Some(&w), chat: Some(&c) }), (some("ws", Level::Workspace), vec!["gone".to_owned()]));
+        assert_eq!(at(Levels { global: None, workspace: None, chat: Some(&c) }), (None, vec!["gone".to_owned()]));
+        assert_eq!(at(Levels::default()), (None, vec![]));
+        // Checked like a level's own profile.
+        assert!(Layer { subagent_profile: Some("Not An Id".into()), ..Layer::default() }.validated(Level::Chat).is_err());
+        assert_eq!(Layer { subagent_profile: Some(" ".into()), ..Layer::default() }.validated(Level::Chat).unwrap().subagent_profile, None);
     }
 }

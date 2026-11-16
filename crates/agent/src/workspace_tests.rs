@@ -79,7 +79,8 @@ fn create(c: &mut LocalConnection, name: &str, folder: &Path, config: Layer) -> 
 }
 
 fn engine(url: String, paths: Option<Paths>, tools: Registry, workspace: &Path) -> EngineHandle {
-    let mut config = EngineConfig::new(InferenceConfig { base_url: url, model: "global-model".into(), api_key: Some("sk-global".into()), api: None });
+    let mut config =
+        EngineConfig::new(InferenceConfig { base_url: url, model: "global-model".into(), api_key: Some("sk-global".into()), api: None, ..Default::default() });
     config.workspace = workspace.to_path_buf();
     config.paths = paths;
     config.tools = tools;

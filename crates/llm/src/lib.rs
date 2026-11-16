@@ -8,6 +8,7 @@
 
 pub mod anthropic;
 pub mod budget;
+pub mod params;
 mod probe;
 mod sse;
 mod think;
@@ -123,6 +124,14 @@ impl Client {
         &self.config
     }
 
+    /// This client with `config`'s request options (params, context); same endpoint and
+    /// connections.
+    pub fn with_options_of(mut self, config: &InferenceConfig) -> Self {
+        self.config.params.clone_from(&config.params);
+        self.config.context = config.context;
+        self
+    }
+
     /// The API this client speaks ([`InferenceConfig::api_kind`]).
     pub fn api(&self) -> ApiKind {
         self.config.api_kind()
@@ -227,14 +236,18 @@ impl Client {
         let (first, plain) = match api {
             ApiKind::OpenAi => {
                 let request = ChatRequest::new(&self.config.model, messages, tools).in_slot(slot);
-                let body = serde_json::to_vec(&request).map_err(|e| LlmError::Stream(format!("encoding request: {e}")))?;
+                let encoding = |e: serde_json::Error| LlmError::Stream(format!("encoding request: {e}"));
+                let mut body = serde_json::to_value(&request).map_err(encoding)?;
+                params::apply_openai(&mut body, &self.config.params);
+                let body = serde_json::to_vec(&body).map_err(encoding)?;
                 (Attempt { body, headers }, None)
             }
             ApiKind::Anthropic => {
-                let full = anthropic::request(&self.config.model, messages, tools, true)?;
+                let p = &self.config.params;
+                let full = anthropic::request(&self.config.model, messages, tools, true, p)?;
                 let plain = match full.betas.is_empty() {
                     true => None,
-                    false => Some(Attempt { body: anthropic::request(&self.config.model, messages, tools, false)?.body, headers: headers.clone() }),
+                    false => Some(Attempt { body: anthropic::request(&self.config.model, messages, tools, false, p)?.body, headers: headers.clone() }),
                 };
                 let mut headers = headers;
                 if !full.betas.is_empty() {

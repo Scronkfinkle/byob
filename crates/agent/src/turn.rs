@@ -152,11 +152,14 @@ pub struct Compacted {
 }
 
 /// Automatic compaction settings of one turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct AutoCompact {
     /// Compact when a request is estimated above this many tokens.
     pub at: usize,
     pub keep_turns: usize,
+    /// The `utility` model role, if set: it writes the summaries (the turn's own model
+    /// again if it fails).
+    pub utility: Option<crate::compact::Helper>,
 }
 
 /// Everything a turn thread needs.
@@ -517,7 +520,7 @@ impl Turn {
             cancel: &self.s.cancel,
             ids: &self.s.ids,
             prior: self.s.prior,
-            compact: self.s.compact,
+            compact: self.s.compact.as_ref(),
             usage: &mut self.usage,
             model_calls: &mut self.model_calls,
             state: &mut self.hook_state,

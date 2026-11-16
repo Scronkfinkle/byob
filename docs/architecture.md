@@ -563,7 +563,8 @@ dialect, so MCP Apps built with the ext-apps SDK run unchanged. Code: `byob_prot
 
 Before every model request (so also between tool rounds) a turn estimates the request; above
 the threshold (`settings.json` `compaction.threshold_percent`, default 80% of the window, never
-above window − reply reserve; hidden `--compact-at TOKENS` for testing) it first asks the model,
+above window − reply reserve; hidden `--compact-at TOKENS` for testing) it first asks the model (the
+`utility` role's, if set; see [Model profiles](#model-profiles)),
 off-stream, for a dense summary (goals, decisions, facts, files/artifact ids, key tool results,
 open tasks) of the conversation written out as text. Before the first request the newest
 `keep_turns` turns stay verbatim; inside a tool loop everything is summarised and the request is
@@ -612,7 +613,7 @@ there is set aside until Save or Esc).
 ## Subagents
 
 The main model can hand a self-contained task to a subagent with the `delegate` tool
-(`delegate { agent?, task, tools? }`, `crates/agent/src/delegate.rs`). The turn starts a
+(`delegate { agent?, task, tools?, model? }`, `crates/agent/src/delegate.rs`). The turn starts a
 **child turn** on its own thread: a fresh context (the agent's prompt plus rules for subagents,
 and the task; not the chat's history), the same tool loop and registry cut down to the agent
 definition's `tools` and the call's `tools`, at most 25 tool calls and 15 minutes
@@ -630,6 +631,23 @@ list_files · 4.1 s]`), is the tool result, so the parent's context grows only b
   `system_prompt` sections (artifacts, code running) stay in the main prompt. The lines are
   taken when the turn starts, like the main prompt.
 
+- **Its model** (`delegate::Env::pick_model`), first that applies:
+  1. the call's `model`: a profile marked *offered to subagents* (`Profile::subagents`), by
+     id or name. Only when some profile is offered is `model` in the schema (an `enum` of
+     their ids) and the agents section of the system prompt lists them with their
+     descriptions ("Subagent models: - coder (Fast Coder): good at code"), so the main model
+     knows when to pick which; any other value is an error result naming the allowed ones.
+     Without offered profiles a stray `model` is ignored.
+  2. the agent file's `model:`: a model role (`fast`), `inherit`/`main` (the chat's model),
+     a profile id or name (any case), else a model id on the chat's endpoint. Claude Code's
+     other aliases (`sonnet`, `opus`, `haiku`, `default`) mean no preference.
+  3. the level's subagent model: the chat's or workspace's `Layer::subagent_profile`, else
+     the `subagents` role (the global level's); one that is gone is skipped with a warning.
+  4. the chat's own model.
+
+  A profile brings its endpoint, key, API kind and tool mode; a choice whose URL can't be
+  used falls through to the next. The card shows the profile's name (`Delegation::profile`)
+  or the model id.
 - **An ordinary tool.** `delegate` is `delegate::DelegateTool`, made per turn (it holds the
   turn's agents and models) and offered while the bundled `subagents` plugin is on (manifest
   `tools: [{native: "delegate"}]`, a `Natives::turn_tools` name; its `before_prompt` hook adds
@@ -644,7 +662,9 @@ list_files · 4.1 s]`), is the tool result, so the parent's context grows only b
   request's tools. One engine-wide counting semaphore (`Slots`) caps running
   children at the endpoint's slots minus one for the main thread (llama.cpp `/props`
   `total_slots`, 2 assumed when unknown, at least 1; `subagents.max_parallel` overrides).
-  Extra delegations wait in "queued".
+  A profile's `max_parallel` caps the children on that model as well (a `Slots` per
+  profile, in the engine, taken before the global one so a child waiting for its model
+  holds no global slot). Extra delegations wait in "queued".
 - **Server slots.** When an endpoint reported `total_slots`, requests name the llama.cpp
   slot they run in (`"id_slot"`, `slot_leases::SlotTable` in the engine, keyed per endpoint
   URL + model). A turn leases a slot for its whole run, preferring the one its chat had
@@ -652,8 +672,9 @@ list_files · 4.1 s]`), is the tool result, so the parent's context grows only b
   or subagent holds, preferring slots no chat's cache is in, so a parent waiting on
   `delegate` keeps its cache. Leases are dropped when the turn or subagent ends (error,
   stop and panic included). With every slot leased, or for an endpoint the probe didn't
-  report slots for (hosted APIs reject unknown fields; a subagent's role or model id is
-  another endpoint), no `id_slot` is sent and the server picks. Automatic, no setting.
+  report slots for (hosted APIs reject unknown fields; a raw model id on the chat's URL is
+  another endpoint), no `id_slot` is sent and the server picks. A subagent on a profile's
+  endpoint leases from that endpoint's slots. Automatic, no setting.
 - **Shared world.** Children run in the chat's workspace with its permission policy, grants
   and sandbox. Their steps go through the same gate; approval cards sit in the child's
   transcript (labelled "Subagent explorer asks") and are answered with the usual `Approve`
@@ -1138,6 +1159,7 @@ usage meter, the header (`EngineState.chat_endpoint`), the environment of `run_c
 | Approvals (ask / allow edits / allow all / read only) | `approvals` | ✓ | ✓ |
 | Compaction (on/off, threshold %) | `compaction` | ✓ | ✓ |
 | Subagents on/off | `subagents.enabled` | ✓ | ✓ |
+| Subagent model (a profile) | `roles.subagents` | ✓ | ✓ |
 | Extra instructions | `instructions` | ✓ | ✓ |
 | Environment (Auto / this machine / Nix / container) | — | ✓ | this machine or container |
 | Container image | `containers.image` (default) | ✓ (else devcontainer.json) | — |
@@ -1202,11 +1224,24 @@ title, or ⋯ → Chat settings) show each value's source with a Reset per field
 
 ## Inference
 
-`InferenceConfig { base_url, model, api_key, api }`. `byob-llm` posts to
+`InferenceConfig { base_url, model, api_key, api, params, context }`. `byob-llm` posts to
 `{base_url}/chat/completions` with `stream: true`, assembles content, reasoning
 (`reasoning_content`/`reasoning`, or inline `<think>` tags) and streamed `tool_calls`,
 and reports usage. Because there's no grammar-constrained local engine anymore, the agent
 will run the tool-calling rounds itself (cap 30 per turn, as hob did).
+
+`params` and `context` are the request options of the profile the endpoint came from
+(`Profile::config`; empty for an endpoint without one, and never serialized when empty).
+`byob-llm::params` puts `params` on every chat request (`stream_chat*`), for both APIs:
+`temperature`, `top_p` and `max_tokens` when set, Anthropic's `output_config.effort`, then
+`extra` merged in last (objects key by key, anything else replaces, so it may override the
+fields before it). `extra` can never set byob's own fields
+(`byob_types::profile::PROTECTED_FIELDS`: `model`, `messages`, `tools`, `stream`,
+`stream_options`, `id_slot`, `system`): `Profile::validated` refuses a profile that tries
+(the engine runs it on every `CreateProfile`/`UpdateProfile`, whatever the UI did) and the
+merge skips them anyway (hand-edited settings). The probe builds its own requests and
+gets none of it. `context` replaces the probed window in `adapt::Endpoints::plan_with`
+(budgeting, compaction threshold, the header's context figure).
 
 ### Anthropic Messages API
 
@@ -1219,7 +1254,11 @@ become `system`; tools become `input_schema` definitions; assistant tool calls b
 `tool_use` blocks and tool results `tool_result` blocks at the start of the next user
 message (the conversion repairs what the API would reject: orphaned results, unanswered
 calls, a first or last assistant turn, empty text); images become base64 image blocks.
-No `temperature`/`top_p` (current models reject them), no forced `tool_choice`, no prefill.
+No forced `tool_choice`, no prefill, and no `temperature`/`top_p` unless the profile sets
+them (current models reject them with a 400 on API version `2026-10-21`; the profile form
+says so). `max_tokens` is 64000 (thinking counts toward it) unless the profile sets one; a
+profile's **Effort** (`low`…`max`) is sent as `output_config.effort`, unset leaves the
+model's default; `extra` merges into the body (e.g. into `thinking`) as for OpenAI.
 
 - **Caching**: a top-level `cache_control` (the breakpoint moves to the end of each
   request, so the next tool step reads everything before it) plus one after the system
@@ -1274,10 +1313,12 @@ any); the header lays out Settings first so it is never pushed off screen.
 
 A **profile** is a saved model (`byob_types::profile::Profile`): stable `id`, `name`,
 `base_url`, `model`, `description` (what it's good at), optional `tool_mode` (a property of
-the model: when set it beats every level's tool mode, not `--tool-mode`). Also stored, for
-later versions and not used yet: `subagents` (offered for delegation), `max_parallel`,
-`context` (overrides the probe), `params` (`temperature`, `top_p`, `max_tokens`, `extra`
-merged into the request body). Unknown fields are kept (`extra`, flattened).
+the model: when set it beats every level's tool mode, not `--tool-mode`), `subagents`
+(offered to the main model as a `delegate` `model`; the description is what it reads to
+choose), `max_parallel` (subagents on it at once), `context` (replaces the probed window for
+chats on it) and `params` (`temperature`, `top_p`, `max_tokens`, `effort` for Anthropic, and
+`extra`, a JSON object merged into every request body; see [Inference](#inference)). Unknown
+fields are kept (`extra` and `params.rest`, flattened).
 
 ```jsonc
 // settings.json
@@ -1296,13 +1337,23 @@ merged into the request body). Unknown fields are kept (`extra`, flattened).
 
 - **Roles** point at profiles: `main` is the default model of every chat (the global
   endpoint, unless `--inference-url`/`--model` set another), `vision` looks at images for a
-  model that can't; `subagents` and `utility` (titles, compaction) are stored for later
-  versions. Other role names (older `models.<name>`) work as agents' `model:`.
+  model that can't, `subagents` is the model subagents use when nothing more specific picks
+  one (see Subagents), `utility` writes chat titles and compaction summaries (automatic and
+  `/compact`) when set, else the chat's own model does; if the utility model's request
+  fails, the chat's model is asked once (`compact::summarize_via`, `chats::spawn_titler`);
+  a stop isn't a failure. Its summaries are fitted to its own window. Other role names
+  (older `models.<name>`) work as agents' `model:`. A role's model gets its own profile's
+  params, a chat's model the chat's.
 - **Levels** pick one with `Layer::profile`; `byob_types::profile::resolve_with` puts its
   endpoint in place of the level's `base_url`/`model` and uses the profile's key. A profile
   that is gone (deleted, hand-edited) makes the level inherit the endpoint, with a warning in
   the log, never an error. The level keeps `base_url`/`model` (and its `scoped_keys` entry)
-  as a copy of its profile, updated when the profile changes.
+  as a copy of its profile, updated when the profile changes. A workspace or chat may also
+  pick its subagents' model (`Layer::subagent_profile`, 13.10; `Effective::subagent_profile`
+  says which applies and from where); the global one is the `subagents` role, which the
+  engine shows in the global layer it builds, so there is one source of truth and nothing new
+  for 0.3.x to read (it already gets `models.subagents`). Deleting a profile clears the
+  levels' `subagent_profile`s that named it.
 - **Staying compatible** (`byob_store::profiles`): keys only in `secrets.json`. Every save
   also writes the copies builds before profiles read: `inference` + `api_key` from the main
   profile, `models.<role>` + `model_keys.<role>` from the other roles. On every load,
@@ -1321,8 +1372,14 @@ merged into the request body). Unknown fields are kept (`extra`, flattened).
   endpoint and makes it the default.
 - **UI**: Settings → Models lists the profiles (status dot, model and server, what the probe
   found) with Edit, Duplicate, Test, Delete and Make default; Add takes a found server, a
-  preset or a URL, lists the server's models and adds the ticked ones. Advanced (collapsed)
-  holds the stored-only fields. A workspace's or chat's Model is a picker (Inherit, the
+  preset or a URL, lists the server's models and adds the ticked ones. The edit form has
+  "Offered to subagents" and its "at most N at once" beside the description. Its Advanced
+  section (collapsed) holds context window, temperature, top_p, max tokens, Effort
+  (Anthropic profiles only, with a note that Claude rejects temperature/top_p) and "Extra
+  request JSON" (checked as you type; an invalid one shows its error and isn't saved). Below
+  the list, role pickers: "Vision helper", "Subagents" and "Titles & summaries" (the
+  `utility` role); the last two default to "Same as the chat". A workspace's and a chat's
+  settings have a Subagent model picker (Inherit or a profile). A workspace's or chat's Model is a picker (Inherit, the
   profiles, Custom… which saves what's typed as a profile); the header's model chip switches
   the chat's model.
 

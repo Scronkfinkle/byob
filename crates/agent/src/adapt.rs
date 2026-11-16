@@ -198,7 +198,9 @@ impl Endpoints {
         // Until the probe says, Claude gets the smallest window of its models, not a local
         // server's guess.
         let unknown = if anthropic { ANTHROPIC_CONTEXT_TOKENS } else { budget::DEFAULT_CONTEXT_TOKENS };
-        let context = caps.filter(|c| c.context_length.is_some_and(|n| n > 0)).map_or(unknown, Capabilities::effective_context);
+        let probed = caps.filter(|c| c.context_length.is_some_and(|n| n > 0)).map_or(unknown, Capabilities::effective_context);
+        // A profile's own context window beats the probe.
+        let context = config.context.filter(|n| *n > 0).and_then(|n| usize::try_from(n).ok()).unwrap_or(probed);
         let reserve = budget::default_reply_reserve(context);
         let mode = if self.opts.tool_mode == ToolMode::Auto { mode } else { self.opts.tool_mode };
         let (prompt_tools, fallback) = match mode {
@@ -242,7 +244,7 @@ impl Endpoints {
         EndpointInfo {
             probing: self.probing.contains(&plan.key),
             server: caps.map(|c| server_name(c.server)).unwrap_or_default().into(),
-            context_tokens: caps.and_then(|c| c.context_length),
+            context_tokens: config.context.filter(|n| *n > 0).map(u64::from).or_else(|| caps.and_then(|c| c.context_length)),
             tools,
             vision: plan.vision,
             slots: plan.slots,
@@ -273,7 +275,7 @@ mod tests {
     use super::*;
 
     fn config() -> InferenceConfig {
-        InferenceConfig { base_url: "http://h/v1/".into(), model: "m".into(), api_key: None, api: None }
+        InferenceConfig { base_url: "http://h/v1/".into(), model: "m".into(), api_key: None, api: None, ..Default::default() }
     }
 
     fn with(tools: ToolSupport, mode: ToolMode) -> Endpoints {
@@ -300,6 +302,20 @@ mod tests {
         let none = Endpoints::default().plan(&config());
         assert_eq!(none.context, budget::DEFAULT_CONTEXT_TOKENS);
         assert!(none.fallback && !none.prompt_tools);
+    }
+
+    #[test]
+    fn a_profiles_context_beats_the_probe() {
+        let e = with(ToolSupport::Native, ToolMode::Auto);
+        let own = InferenceConfig { context: Some(65_536), ..config() };
+        let p = e.plan(&own);
+        assert_eq!((p.context, p.reserve), (65_536, budget::default_reply_reserve(65_536)));
+        assert_eq!(p.key, e.plan(&config()).key, "same endpoint, same probe");
+        assert_eq!(e.info(&own).context_tokens, Some(65_536));
+        // Unprobed too, and over the Anthropic default.
+        let claude = InferenceConfig { base_url: "https://api.anthropic.com/v1".into(), context: Some(1_000_000), ..config() };
+        assert_eq!(Endpoints::default().plan(&claude).context, 1_000_000);
+        assert_eq!(e.plan(&InferenceConfig { context: Some(0), ..config() }).context, 8192, "zero is unset");
     }
 
     #[test]

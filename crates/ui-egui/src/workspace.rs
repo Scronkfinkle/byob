@@ -22,6 +22,7 @@ pub const CHAT_FIELDS: &[Field] = &[
     Field::ToolMode,
     Field::Compaction,
     Field::Subagents,
+    Field::SubagentModel,
     Field::ToolCalls,
     Field::ModelImages,
     Field::Instructions,
@@ -35,6 +36,7 @@ pub const WORKSPACE_FIELDS: &[Field] = &[
     Field::ToolMode,
     Field::Compaction,
     Field::Subagents,
+    Field::SubagentModel,
     Field::ToolCalls,
     Field::ModelImages,
     Field::Instructions,
@@ -187,6 +189,7 @@ impl LayerEditor {
             Field::Approvals => e.approvals.from,
             Field::Compaction => e.auto_compact.from.max(e.compact_percent.from),
             Field::Subagents => e.subagents.from,
+            Field::SubagentModel => e.subagent_profile.as_ref().map_or(Level::Default, |s| s.from),
             Field::ModelImages => e.image_quality.from,
             Field::ToolCalls => e.max_tool_calls.from,
             Field::Instructions => level,
@@ -217,6 +220,7 @@ impl LayerEditor {
         ui.horizontal_wrapped(|ui| {
             match f {
                 Field::Endpoint => out = self.endpoint(ui, t, view),
+                Field::SubagentModel => out = self.subagent_model(ui, t, view),
                 Field::ToolMode => {
                     let mut v = self.draft.tool_mode;
                     let shown = |m: Option<ToolMode>| m.map_or_else(|| format!("{inh} ({})", e.tool_mode.value.label()), |m| m.label().to_owned());
@@ -429,9 +433,11 @@ impl LayerEditor {
         let own = view.own.profile.clone();
         let named = |p: &Profile| crate::models::menu_label(p);
         // What a level inheriting the endpoint gets, by its profile's name if it is one.
-        let inherited = list
-            .items
-            .iter()
+        // Several profiles may share an endpoint: the default one first.
+        let main = list.roles.get(byob_protocol::profiles::ROLE_MAIN).and_then(|id| list.get(id));
+        let inherited = main
+            .into_iter()
+            .chain(&list.items)
             .find(|v| v.profile.points_at(&e.base_url.value, &e.model.value))
             .map_or_else(|| e.model.value.clone(), |v| v.profile.label().to_owned());
         let typed = own.is_none() && (view.own.base_url.is_some() || view.own.model.is_some());
@@ -503,6 +509,45 @@ impl LayerEditor {
             }
         });
         out
+    }
+
+    /// The saved model this level's subagents run on (unless the call or the agent picks one).
+    fn subagent_model(&mut self, ui: &mut egui::Ui, t: &Tokens, view: &ConfigView) -> Option<ClientMsg> {
+        const SAME: &str = "Same as the chat";
+        let Some(list) = self.profiles.clone().filter(|l| !l.items.is_empty()) else {
+            ui.label(RichText::new(SAME).color(t.text_dim)).on_hover_text("Save models under Settings → Models to run subagents on another one");
+            return None;
+        };
+        let name = |id: &str| list.get(id).map_or_else(|| "A deleted model".to_owned(), |v| v.profile.label().to_owned());
+        let own = self.draft.subagent_profile.clone();
+        let inherited = match (&own, &view.effective.subagent_profile) {
+            (None, Some(s)) => format!("Inherit ({})", name(&s.value)),
+            (None, None) => format!("Inherit ({})", SAME.to_lowercase()),
+            (Some(_), _) => "Inherit".to_owned(),
+        };
+        let mut v = own.clone();
+        egui::ComboBox::from_id_salt(("subagent_model", format!("{:?}", self.scope)))
+            .selected_text(own.as_deref().map_or_else(|| inherited.clone(), name))
+            .width(ui.available_width().min(260.0))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut v, None, inherited.clone());
+                for p in &list.items {
+                    let r = ui.selectable_value(&mut v, Some(p.profile.id.clone()), crate::models::menu_label(&p.profile));
+                    if !p.profile.description.is_empty() {
+                        r.on_hover_text(&p.profile.description);
+                    }
+                }
+            })
+            .response
+            .on_hover_text("The model delegated tasks run on, unless the delegate call or the agent's file names another");
+        if own.as_ref().is_some_and(|id| list.get(id).is_none()) {
+            ui.label(RichText::new("The model picked here was deleted, so it inherits one.").small().color(t.warning));
+        }
+        if v != own {
+            self.draft.subagent_profile = v;
+            return Some(self.send(None));
+        }
+        None
     }
 
     /// An engine without model profiles: type this level's endpoint.

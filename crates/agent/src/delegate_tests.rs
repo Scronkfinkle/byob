@@ -13,7 +13,7 @@ use byob_tools::{Access, Registry};
 use byob_types::InferenceConfig;
 use serde_json::{Value, json};
 
-use crate::loop_tests::{Fake, Reply, call, read_request, recv, sse};
+use crate::loop_tests::{Fake, Reply, call, recv, sse};
 use crate::{EngineConfig, EngineHandle, LocalConnection, SubagentOptions};
 
 /// What the fake server answers: a reply and how long to wait before sending it.
@@ -46,6 +46,33 @@ fn tool_names(req: &Value) -> Vec<String> {
     req["tools"].as_array().into_iter().flatten().filter_map(|t| t["function"]["name"].as_str().map(str::to_owned)).collect()
 }
 
+/// The request body, with its `Authorization` header (if any) as `_auth`.
+fn read_with_auth(s: &mut std::net::TcpStream) -> Value {
+    use std::io::{BufRead, BufReader, Read};
+    let mut r = BufReader::new(s);
+    let (mut len, mut auth) = (0usize, None);
+    loop {
+        let mut line = String::new();
+        if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+            break;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            if k.eq_ignore_ascii_case("content-length") {
+                len = v.trim().parse().unwrap_or(0);
+            } else if k.eq_ignore_ascii_case("authorization") {
+                auth = Some(v.trim().to_owned());
+            }
+        }
+    }
+    let mut body = vec![0; len];
+    let _ = r.read_exact(&mut body);
+    let mut v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    if let (Some(a), Some(o)) = (auth, v.as_object_mut()) {
+        o.insert("_auth".into(), Value::String(a));
+    }
+    v
+}
+
 fn routed(route: Route) -> (String, Shared) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -56,7 +83,7 @@ fn routed(route: Route) -> (String, Shared) {
             let Ok(mut s) = stream else { continue };
             let (route, seen) = (Arc::clone(&route), Arc::clone(&shared));
             std::thread::spawn(move || {
-                let body = read_request(&mut s);
+                let body = read_with_auth(&mut s);
                 let child = is_child(&body);
                 let (reply, delay) = route(&body);
                 {
@@ -481,12 +508,12 @@ fn an_agents_model_role_picks_its_endpoint() {
     let runs = Arc::new(AtomicUsize::new(0));
     let mut tools = Registry::default();
     tools.register(Arc::new(Fake { name: "echo", access: Access::Read, runs, reply: None, change: false }));
-    let mut config = EngineConfig::new(InferenceConfig { base_url: url, model: "main-model".into(), api_key: None, api: None });
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, model: "main-model".into(), api_key: None, api: None, ..Default::default() });
     config.subagents = SubagentOptions { max_parallel: Some(3), ..SubagentOptions::default() };
     config.workspace = ws.path().to_path_buf();
     config.tools = tools;
     config.auto_title = false;
-    config.models.insert("fast".into(), InferenceConfig { base_url: role_url, model: "small".into(), api_key: None, api: None });
+    config.models.insert("fast".into(), InferenceConfig { base_url: role_url, model: "small".into(), api_key: None, api: None, ..Default::default() });
     let engine = EngineHandle::spawn_with(config).unwrap();
     let (mut c, _) = hello(&engine);
     let view = run(&mut c, "go", |_, _| {});
@@ -593,7 +620,7 @@ fn id_slot_goes_only_to_endpoints_that_reported_slots() {
         source: std::path::PathBuf::new(),
         meta: Default::default(),
     };
-    let role = InferenceConfig { base_url: url.clone(), model: "fast-model".into(), api_key: None, api: None };
+    let role = InferenceConfig { base_url: url.clone(), model: "fast-model".into(), api_key: None, api: None, ..Default::default() };
     let engine = slotted(url, ws.path(), 4, Some(2), |c| {
         c.models.insert("fast".into(), role);
         c.agents = vec![agent("roled", "fast"), agent("raw", "some-model-id")];
@@ -804,4 +831,223 @@ fn an_agent_definitions_body_comes_first_then_the_plugin_prompt() {
     let body = child.find("SORTER BODY").expect("the body");
     let guidance = child.find(MAILISH).expect("the plugin prompt");
     assert!(body < guidance && guidance < child.find("running as a subagent").unwrap(), "{child}");
+}
+
+// Subagent models: the call's `model`, agents' `model:` by profile, the level's subagent
+// model, per-profile caps, and endpoints other than the chat's.
+
+/// The request's `Authorization` header, which [`routed`] keeps as `_auth`.
+fn auth_of(req: &Value) -> Option<&str> {
+    req.get("_auth").and_then(Value::as_str)
+}
+
+/// Model requests only (not probes).
+fn chats(seen: &Shared) -> Vec<Value> {
+    requests(seen).into_iter().filter(|r| r.get("messages").is_some()).collect()
+}
+
+/// Parent: each turn delegates `calls` (argument objects) in one round, then answers.
+/// Children answer `child` after `delay`.
+fn parent_route(calls: Vec<Value>, child: &'static str, delay: Duration) -> Route {
+    Arc::new(move |req: &Value| {
+        if is_child(req) {
+            return (Reply::Text(child), delay);
+        }
+        let last_is_tool = req["messages"].as_array().and_then(|m| m.last()).is_some_and(|m| m["role"] == "tool");
+        if last_is_tool {
+            (Reply::Text("All done."), Duration::ZERO)
+        } else {
+            (Reply::Calls(calls.iter().map(|a| ("delegate".to_owned(), a.to_string())).collect()), Duration::ZERO)
+        }
+    })
+}
+
+fn saved(name: &str, url: &str, model: &str, offered: bool, max_parallel: Option<u16>) -> byob_types::profile::Profile {
+    byob_types::profile::Profile {
+        id: byob_types::profile::new_id(name, |_| false),
+        name: name.into(),
+        base_url: url.into(),
+        model: model.into(),
+        description: format!("{name}: good for tests"),
+        subagents: offered,
+        max_parallel,
+        ..Default::default()
+    }
+}
+
+/// An engine on `url` with `profiles` (and their keys); `tweak` may change more.
+fn with_profiles(
+    url: &str,
+    workspace: &Path,
+    profiles: Vec<byob_types::profile::Profile>,
+    keys: &[(&str, &str)],
+    tweak: impl FnOnce(&mut EngineConfig),
+) -> EngineConfig {
+    let mut tools = Registry::default();
+    tools.register(Arc::new(Fake { name: "echo", access: Access::Read, runs: Arc::default(), reply: None, change: false }));
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url.into(), model: "chat-model".into(), api_key: None, api: None, ..Default::default() });
+    config.workspace = workspace.to_path_buf();
+    config.tools = tools;
+    config.auto_title = false;
+    config.detect_local = false;
+    config.subagents = SubagentOptions { max_parallel: Some(4), ..SubagentOptions::default() };
+    config.profiles = profiles.into_iter().map(|p| (p.id.clone(), p)).collect();
+    config.profile_keys = keys.iter().map(|(id, k)| ((*id).to_owned(), (*k).to_owned())).collect();
+    tweak(&mut config);
+    config
+}
+
+fn delegations(view: &View) -> Vec<byob_protocol::Delegation> {
+    view.reply().steps.iter().filter_map(|s| s.delegation.as_deref().cloned()).collect()
+}
+
+#[test]
+fn a_delegate_calls_model_runs_on_that_profiles_server_with_its_key_and_slots() {
+    let ws = temp();
+    let (url, main) = routed(parent_route(vec![json!({"task": "on the coder", "model": "coder"})], "main side", Duration::ZERO));
+    let (coder_url, coder) = routed(Arc::new(|_: &Value| (Reply::Text("coder side"), Duration::ZERO)));
+    let quiet = saved("Quiet", &coder_url, "quiet-model", false, None);
+    let config = with_profiles(&url, ws.path(), vec![saved("Coder", &coder_url, "coder-model", true, None), quiet], &[("coder", "sk-coder")], |_| {});
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    // The coder's server has slots; the chat's doesn't say.
+    let coder_config =
+        InferenceConfig { base_url: coder_url.clone(), model: "coder-model".into(), api_key: Some("sk-coder".into()), api: None, ..Default::default() };
+    engine.probed(&coder_config, byob_llm::Capabilities { slots: Some(3), ..Default::default() });
+    let (mut c, _) = hello(&engine);
+    let view = run(&mut c, "go", |_, _| {});
+    assert_eq!(view.finished, Some(None));
+    let on_coder = chats(&coder);
+    assert_eq!(on_coder.len(), 1, "{on_coder:?}");
+    assert_eq!((on_coder[0]["model"].as_str(), auth_of(&on_coder[0])), (Some("coder-model"), Some("Bearer sk-coder")));
+    assert!(slot_of(&on_coder[0]).is_some(), "a server that reported slots gets one from the subagent: {}", on_coder[0]);
+    let on_main = chats(&main);
+    assert!(on_main.iter().all(|r| !is_child(r) && auth_of(r).is_none() && slot_of(r).is_none()), "{on_main:?}");
+    // Only the offered profile is in the schema and the prompt, with its description.
+    let first = &on_main[0];
+    let delegate = first["tools"].as_array().unwrap().iter().find(|t| t["function"]["name"] == "delegate").unwrap();
+    assert_eq!(delegate["function"]["parameters"]["properties"]["model"]["enum"], json!(["coder"]));
+    let system = first["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("- coder (Coder): Coder: good for tests") && !system.contains("quiet"), "{system}");
+    // The card says which model.
+    let d = &delegations(&view)[0];
+    assert_eq!((d.model.as_str(), d.profile.as_deref(), d.state), ("coder-model", Some("Coder"), DelegationState::Done));
+}
+
+#[test]
+fn without_offered_profiles_delegate_has_no_model_and_a_not_offered_one_is_refused() {
+    let ws = temp();
+    let calls = vec![json!({"task": "stray", "model": "quiet"})];
+    let (url, main) = routed(parent_route(calls, "main side", Duration::ZERO));
+    let (other, seen) = routed(Arc::new(|_: &Value| (Reply::Text("other side"), Duration::ZERO)));
+    // Nothing offered: no `model` in the schema, and a stray one is ignored.
+    let config = with_profiles(&url, ws.path(), vec![saved("Quiet", &other, "quiet-model", false, None)], &[], |_| {});
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let (mut c, _) = hello(&engine);
+    assert_eq!(run(&mut c, "go", |_, _| {}).finished, Some(None));
+    let first = chats(&main).into_iter().next().unwrap();
+    let delegate = first["tools"].as_array().unwrap().iter().find(|t| t["function"]["name"] == "delegate").unwrap().clone();
+    assert!(delegate["function"]["parameters"]["properties"].get("model").is_none(), "{delegate}");
+    assert!(!first["messages"][0]["content"].as_str().unwrap().contains("Subagent models"));
+    assert!(chats(&main).iter().any(is_child) && chats(&seen).is_empty(), "the stray model was ignored");
+
+    // One offered: asking for another is an error naming the allowed values.
+    let ws = temp();
+    let (url, main) = routed(parent_route(vec![json!({"task": "x", "model": "quiet"})], "main side", Duration::ZERO));
+    let profiles = vec![saved("Quiet", &other, "quiet-model", false, None), saved("Coder", &other, "coder-model", true, None)];
+    let engine = EngineHandle::spawn_with(with_profiles(&url, ws.path(), profiles, &[], |_| {})).unwrap();
+    let (mut c, _) = hello(&engine);
+    let view = run(&mut c, "go", |_, _| {});
+    assert_eq!(view.finished, Some(None));
+    let last = chats(&main).into_iter().last().unwrap();
+    let r = &results(&last)[0];
+    assert!(r.contains("Allowed `model` values: coder"), "{r}");
+    assert!(chats(&seen).is_empty() && !chats(&main).iter().any(is_child));
+    assert_eq!(view.reply().steps[0].status, StepStatus::Failed);
+}
+
+#[test]
+fn agents_name_profiles_and_the_subagents_role_is_the_default() {
+    let ws = temp();
+    let dir = ws.path().join(".byob").join("agents");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("named.md"), "---\nname: named\ndescription: On a profile by name\nmodel: big THINKER\n---\nThink.").unwrap();
+    std::fs::write(dir.join("aliased.md"), "---\nname: aliased\ndescription: A Claude alias\nmodel: sonnet\n---\nGo.").unwrap();
+    std::fs::write(dir.join("inherits.md"), "---\nname: inherits\ndescription: The chat's model\nmodel: inherit\n---\nGo.").unwrap();
+    let calls = ["named", "aliased", "inherits", "general"].iter().map(|a| json!({"agent": a, "task": format!("as {a}")})).collect();
+    let (url, main) = routed(parent_route(calls, "main side", Duration::ZERO));
+    let (big_url, big) = routed(Arc::new(|_: &Value| (Reply::Text("big side"), Duration::ZERO)));
+    let (sub_url, sub) = routed(Arc::new(|_: &Value| (Reply::Text("sub side"), Duration::ZERO)));
+    let profiles = vec![saved("Big Thinker", &big_url, "big-model", false, None), saved("Helper", &sub_url, "helper-model", false, None)];
+    let config = with_profiles(&url, ws.path(), profiles, &[("helper", "sk-helper")], |c| {
+        c.roles.insert("subagents".into(), "helper".into());
+    });
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let (mut c, _) = hello(&engine);
+    let view = run(&mut c, "go", |_, _| {});
+    assert_eq!(view.finished, Some(None));
+    let tasks = |seen: &Shared| {
+        let mut t: Vec<String> = chats(seen).iter().filter(|r| is_child(r)).map(task_of).collect();
+        t.sort();
+        t
+    };
+    assert_eq!(tasks(&big), ["as named"]);
+    assert_eq!(tasks(&sub), ["as aliased", "as general"], "no model, or a Claude alias: the subagents role");
+    assert_eq!(tasks(&main), ["as inherits"]);
+    assert!(chats(&sub).iter().all(|r| auth_of(r) == Some("Bearer sk-helper")));
+}
+
+#[test]
+fn a_chats_subagent_model_beats_the_role_and_deleted_ones_fall_back() {
+    let ws = temp();
+    let (url, main) = routed(parent_route(vec![json!({"task": "who runs me"})], "main side", Duration::ZERO));
+    let (chat_url, chat) = routed(Arc::new(|_: &Value| (Reply::Text("chat side"), Duration::ZERO)));
+    // The role points at a profile that no longer exists: the chat's own model.
+    let config = with_profiles(&url, ws.path(), vec![saved("Mine", &chat_url, "mine-model", false, None)], &[], |c| {
+        c.roles.insert("subagents".into(), "gone".into());
+    });
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let (mut c, _) = hello(&engine);
+    assert_eq!(run(&mut c, "first", |_, _| {}).finished, Some(None));
+    assert_eq!(chats(&main).iter().filter(|r| is_child(r)).count(), 1);
+    assert!(chats(&chat).is_empty());
+
+    // This chat's subagents run on "Mine".
+    let layer = byob_protocol::workspace::Layer { subagent_profile: Some("mine".into()), ..Default::default() };
+    c.send(ClientMsg::SetConfig { scope: byob_protocol::ConfigScope::Chat, layer, api_key: None });
+    let view = run(&mut c, "second", |_, _| {});
+    assert_eq!(view.finished, Some(None));
+    assert_eq!(chats(&chat).iter().filter(|r| is_child(r)).count(), 1);
+    assert_eq!(delegations(&view)[0].profile.as_deref(), Some("Mine"));
+
+    // Deleted: back to the chat's model, and the chat forgets it.
+    c.send(ClientMsg::DeleteProfile { id: "mine".into() });
+    let view = run(&mut c, "third", |_, _| {});
+    assert_eq!(view.finished, Some(None));
+    assert_eq!(chats(&chat).iter().filter(|r| is_child(r)).count(), 1, "nothing more on the deleted one");
+    assert_eq!(chats(&main).iter().filter(|r| is_child(r)).count(), 2);
+    // An unknown id is refused.
+    let layer = byob_protocol::workspace::Layer { subagent_profile: Some("nope".into()), ..Default::default() };
+    c.send(ClientMsg::SetConfig { scope: byob_protocol::ConfigScope::Chat, layer, api_key: None });
+    loop {
+        if let ServerMsg::Notice { text, .. } = recv(&mut c) {
+            assert!(text.contains("no longer exists"), "{text}");
+            break;
+        }
+    }
+}
+
+#[test]
+fn a_profiles_max_parallel_caps_its_subagents() {
+    let ws = temp();
+    let calls = ["a", "b", "c"].iter().map(|t| json!({"task": format!("slow {t}"), "model": "slow"})).collect();
+    let (url, _main) = routed(parent_route(calls, "main side", Duration::ZERO));
+    let (slow_url, slow) = routed(Arc::new(|_: &Value| (Reply::Text("slow side"), Duration::from_millis(300))));
+    let config = with_profiles(&url, ws.path(), vec![saved("Slow", &slow_url, "slow-model", true, Some(1))], &[], |_| {});
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let (mut c, _) = hello(&engine);
+    let view = run(&mut c, "go", |_, _| {});
+    assert_eq!(view.finished, Some(None));
+    assert!(delegations(&view).iter().all(|d| d.state == DelegationState::Done));
+    let g = slow.lock().unwrap();
+    assert_eq!((g.requests.iter().filter(|r| is_child(r)).count(), g.max_active), (3, 1), "one at a time on that model");
 }

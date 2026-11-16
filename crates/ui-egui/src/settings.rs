@@ -79,6 +79,10 @@ impl ByobApp {
         if std::mem::take(&mut self.reveal_connection) {
             ui.scroll_to_cursor(Some(egui::Align::Min));
         }
+        if let Some(id) = self.appearance.reveal.as_deref().and_then(|r| r.strip_prefix("model:")) {
+            self.models.reveal = Some(id.to_owned());
+            self.appearance.reveal = None;
+        }
         if self.models.available() {
             let blurb =
                 "The models byob can use, saved for every window and browser tab. Chats use the default one unless their workspace or the chat picks another.";

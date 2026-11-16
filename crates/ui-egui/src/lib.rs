@@ -482,7 +482,8 @@ impl ByobApp {
     /// Scripted runs: open a workspace view: `new-workspace`, `new-workspace-container`,
     /// `workspace-settings` (of the chat in view's workspace), `chat-settings`, `more-menu` (the
     /// header's "⋯" menu), `model-menu` (the header's model switch), `models` (Settings →
-    /// Models), `add-models:<url>` (its Add form, listing that server), `plugins` (Settings → Plugins);
+    /// Models), `add-models:<url>` (its Add form, listing that server), `edit-model:<id>` (a
+    /// profile's edit form there), `plugins` (Settings → Plugins);
     /// the chat list's `new-chat-menu` (New chat's caret menu), `workspace-menu` (the current
     /// workspace's "⋯" menu), `sidebar-hover` (its rows as if hovered), `chat-list` (the list
     /// open, on phones too), `new-chat` (as New chat does), `search:<text>` (typed
@@ -513,6 +514,10 @@ impl ByobApp {
             "more-menu" => self.header_rects.open_menu = true,
             "model-menu" => self.header_rects.open_model_menu = true,
             "models" => self.open_connection(),
+            _ if name.starts_with("edit-model:") => {
+                self.models.start_edit(name.trim_start_matches("edit-model:"));
+                self.open_connection();
+            }
             _ if name.starts_with("add-models:") => {
                 self.models.start_add(name.trim_start_matches("add-models:"));
                 self.open_connection();
