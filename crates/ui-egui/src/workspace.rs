@@ -161,9 +161,12 @@ impl LayerEditor {
         };
         let level = level_of(&self.scope);
         let mut out = None;
-        let narrow = ui.available_width() < 420.0;
+        let avail = ui.available_width();
         let id = egui::Id::unique(("layer", format!("{:?}", self.scope)));
-        egui::Grid::new(id).num_columns(2).spacing([10.0, 8.0]).min_col_width(if narrow { 70.0 } else { 100.0 }).show(ui, |ui| {
+        // The settings' rhythm (crate::form): the same label column and row gaps as the app settings.
+        let grid = crate::form::grid(id, t, avail);
+        let grid = if avail < 420.0 { grid.min_col_width(70.0) } else { grid };
+        grid.show(ui, |ui| {
             for &f in fields {
                 if f == Field::Image && view.effective.env.value != EnvKind::Container {
                     continue;

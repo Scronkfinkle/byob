@@ -1,20 +1,93 @@
-//! The settings panel: models (engine-wide), defaults for every chat, plugins,
-//! and appearance (this device only):
-//! a theme gallery, the knobs, theme files, and every colour role under Advanced.
+//! The app settings: one tab per group, a tab list on the left (a strip on phones) and the
+//! selected group on the right, scrolling on its own. Models (engine-wide), defaults for every
+//! chat, plugins, and on this device only: appearance (themes, the accent, the look, theme
+//! files), text and layout (zoom, sizes, fonts, density, widths, accessibility), and every
+//! colour role.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use egui::{Color32, RichText, Stroke, vec2};
 
 use crate::ByobApp;
+use crate::form;
+use crate::icons;
 use crate::theme::file::{self, Origin, ThemeDef};
 use crate::theme::{self, Accent, Align, BubbleStyle, ChartPalette, Density, Knobs, MonoFont, Prefs, ROLES, ThemeKind, Tokens, UiFont, contrast, hex};
 use crate::upload::Picked;
 
-/// Below this width the appearance settings stack labels above their controls.
-const NARROW: f32 = 560.0;
+/// The app settings' groups, one tab each.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tab {
+    /// Saved models and their roles (the connection form on engines without profiles).
+    #[default]
+    Models,
+    /// Defaults for every chat (the global level of the layered settings).
+    Defaults,
+    Plugins,
+    /// Light/dark, the theme gallery, the accent and look, theme files.
+    Appearance,
+    /// Zoom, text sizes, fonts, density, widths, accessibility.
+    Text,
+    /// Every colour role of the current theme.
+    Colours,
+}
 
-/// State of the appearance settings between frames.
+impl Tab {
+    pub const ALL: [Tab; 6] = [Tab::Models, Tab::Defaults, Tab::Plugins, Tab::Appearance, Tab::Text, Tab::Colours];
+
+    /// The name scripts use (`--settings-section`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Tab::Models => "models",
+            Tab::Defaults => "defaults",
+            Tab::Plugins => "plugins",
+            Tab::Appearance => "appearance",
+            Tab::Text => "text",
+            Tab::Colours => "colours",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tab::Models => "Models",
+            Tab::Defaults => "Chat defaults",
+            Tab::Plugins => "Plugins",
+            Tab::Appearance => "Appearance",
+            Tab::Text => "Text & layout",
+            Tab::Colours => "Colours",
+        }
+    }
+
+    fn icon(self) -> icons::Paint {
+        match self {
+            Tab::Models => icons::chip,
+            Tab::Defaults => icons::sliders,
+            Tab::Plugins => icons::puzzle,
+            Tab::Appearance => icons::contrast,
+            Tab::Text => icons::text_size,
+            Tab::Colours => icons::colours,
+        }
+    }
+
+    /// A tab by its [`Tab::id`], or by the older section names: `knobs` (text & layout),
+    /// `advanced` / `colors` (colours), `connection`, `model:<id>` (models).
+    pub fn find(name: &str) -> Option<Tab> {
+        let name = name.trim();
+        if name.starts_with("model:") {
+            return Some(Tab::Models);
+        }
+        Tab::ALL.into_iter().find(|t| t.id() == name).or(match name {
+            "knobs" | "text-and-layout" | "layout" => Some(Tab::Text),
+            "advanced" | "colors" => Some(Tab::Colours),
+            "connection" => Some(Tab::Models),
+            "chat-defaults" => Some(Tab::Defaults),
+            _ => None,
+        })
+    }
+}
+
+/// The settings page between frames: the tab in view (kept for the session) and the
+/// appearance tabs' import/export state.
 pub struct AppearanceUi {
     import_tx: Sender<Picked>,
     import_rx: Receiver<Picked>,
@@ -23,8 +96,10 @@ pub struct AppearanceUi {
     /// What the last import/export said (ok, text).
     status: Vec<(bool, String)>,
     filter: String,
-    /// Scripted runs: keep this section ("knobs", "advanced") scrolled into view.
-    pub(crate) reveal: Option<String>,
+    /// The tab in view.
+    pub(crate) tab: Tab,
+    /// The tab the phone strip last scrolled to.
+    strip_at: Option<Tab>,
 }
 
 impl Default for AppearanceUi {
@@ -37,21 +112,137 @@ impl Default for AppearanceUi {
             export_name: String::new(),
             status: Vec::new(),
             filter: String::new(),
-            reveal: None,
+            tab: Tab::default(),
+            strip_at: None,
         }
     }
 }
 
 impl ByobApp {
-    /// The title row with the way out, drawn above the scrolling body so Close stays in reach
-    /// however far down the settings are scrolled.
-    pub(crate) fn settings_title(&mut self, ui: &mut egui::Ui) {
+    /// Open the settings on `tab`.
+    pub(crate) fn open_settings_at(&mut self, tab: Tab) {
+        self.show_settings = true;
+        self.appearance.tab = tab;
+    }
+
+    /// The whole settings page, in the area it was given (beside the chat list, or the
+    /// window on phones): the title row, the tabs, and the selected tab.
+    pub(crate) fn settings_page(&mut self, ui: &mut egui::Ui, narrow: bool) {
         let t = self.tokens;
-        ui.add_space(4.0);
-        // Which settings these are (a chat and a workspace have their own), and the way out.
-        // Close on the right, then the title; the subtitle wraps (on a phone it ran off-screen
-        // and widened everything below it).
+        self.header_rects.settings_page = ui.max_rect();
+        if std::mem::take(&mut self.plugins.reveal) {
+            self.appearance.tab = Tab::Plugins;
+        }
+        form::controls(ui, &t);
+        self.settings_title(ui, narrow);
+        if !self.show_settings {
+            return;
+        }
+        let pad = t.pad(if narrow { form::PAGE_PAD_NARROW } else { form::PAGE_PAD });
+        if narrow {
+            self.tab_strip(ui, &t);
+            self.tab_body(ui, &t, pad);
+            return;
+        }
+        let rest = ui.available_rect_before_wrap();
+        let nav_w = (form::NAV_W * t.knobs.font_scale.clamp(0.8, 1.5)).min(rest.width() * 0.4);
+        let nav = egui::Rect::from_min_size(rest.min, vec2(nav_w, rest.height()));
+        let body = egui::Rect::from_min_max(egui::pos2(nav.right() + 1.0, rest.top()), rest.max);
+        ui.painter().vline(nav.right() + 0.5, nav.y_range(), Stroke::new(1.0, t.separator));
+        let inner = nav.shrink2(vec2(t.pad(10.0), 0.0)).with_min_y(nav.top() + t.pad(form::PAGE_TOP - 8.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+            ui.spacing_mut().item_spacing.y = t.pad(2.0);
+            for tab in Tab::ALL {
+                let selected = self.appearance.tab == tab;
+                let r = tab_item(ui, &t, tab, self.tab_label(tab), selected, Some(inner.width()));
+                self.header_rects.settings_tabs[tab as usize] = r.rect;
+                if r.clicked() {
+                    self.appearance.tab = tab;
+                }
+            }
+        });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| self.tab_body(ui, &t, pad));
+        ui.advance_cursor_after_rect(rest);
+    }
+
+    /// Phones: the tabs in a row that scrolls sideways, under the title.
+    fn tab_strip(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let pad = t.pad(form::PAGE_PAD_NARROW);
+        egui::ScrollArea::horizontal().id_salt("settings-tab-strip").scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(
+            ui,
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(pad);
+                    ui.spacing_mut().item_spacing.x = t.pad(4.0);
+                    for tab in Tab::ALL {
+                        let selected = self.appearance.tab == tab;
+                        let r = tab_item(ui, t, tab, self.tab_label(tab), selected, None);
+                        self.header_rects.settings_tabs[tab as usize] = r.rect;
+                        if r.clicked() {
+                            self.appearance.tab = tab;
+                        }
+                        if selected && self.appearance.strip_at != Some(tab) {
+                            // Opened on a tab off to the right (a deep link): bring it into view,
+                            // then leave the strip to the user.
+                            if ui.clip_rect().contains_rect(r.rect) {
+                                self.appearance.strip_at = Some(tab);
+                            } else {
+                                ui.scroll_to_rect_animation(r.rect, None, egui::style::ScrollAnimation::none());
+                            }
+                        }
+                    }
+                    ui.add_space(pad);
+                });
+            },
+        );
+        ui.add_space(t.pad(6.0));
+        let y = ui.cursor().top();
+        ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, t.separator));
+        ui.add_space(1.0);
+    }
+
+    fn tab_label(&self, tab: Tab) -> &'static str {
+        if tab == Tab::Models && !self.models.available() { "Connection" } else { tab.label() }
+    }
+
+    /// The selected tab, scrolling on its own, in a column no wider than [`form::MAX_W`].
+    fn tab_body(&mut self, ui: &mut egui::Ui, t: &Tokens, pad: f32) {
+        let tab = self.appearance.tab;
+        egui::ScrollArea::vertical().id_salt(("settings-tab", tab.id())).auto_shrink([false, false]).show(ui, |ui| {
+            let avail = ui.available_width();
+            let w = (avail - 2.0 * pad).clamp(120.0, form::MAX_W);
+            let left = pad.min((avail - w).max(0.0));
+            ui.add_space(t.pad(form::PAGE_TOP));
+            ui.horizontal_top(|ui| {
+                ui.add_space(left);
+                ui.vertical(|ui| {
+                    ui.set_width(w);
+                    self.header_rects.settings_body = ui.max_rect();
+                    match tab {
+                        Tab::Models => self.models_tab(ui, t),
+                        Tab::Defaults => self.defaults_tab(ui, t),
+                        Tab::Plugins => {
+                            form::heading(ui, t, "Plugins", "What the chat in view can use: plugins of this chat, its workspace and every chat.");
+                            self.plugins.panel(ui, t, &crate::plugins::Filter::All);
+                        }
+                        Tab::Appearance => self.appearance_tab(ui, t),
+                        Tab::Text => self.text_tab(ui, t),
+                        Tab::Colours => self.colours_tab(ui, t),
+                    }
+                });
+            });
+            ui.add_space(pad);
+        });
+    }
+
+    /// The title row with the way out, above the tabs so it stays in reach however far a tab
+    /// is scrolled.
+    pub(crate) fn settings_title(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        let t = self.tokens;
+        let pad = t.pad(if narrow { form::PAGE_PAD_NARROW } else { 16.0 });
+        ui.add_space(t.pad(8.0));
         ui.horizontal(|ui| {
+            ui.add_space(pad);
             // The way back where people look first: top left (testers clicked the header's
             // title there to "go home" and got the chat's settings instead).
             let back = ui.button("← Back to chat").on_hover_text("Close the settings and go back to the chat");
@@ -59,8 +250,10 @@ impl ByobApp {
             if back.clicked() {
                 self.go_home();
             }
+            ui.add_space(t.pad(4.0));
             ui.label(RichText::new("App settings").size(t.text_size(16.0)).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(pad);
                 let shortcut = crate::header::settings_shortcut(ui.ctx());
                 let close = ui.button("Close").on_hover_text(format!("Close the settings ({shortcut})"));
                 self.header_rects.settings_close = close.rect;
@@ -69,59 +262,49 @@ impl ByobApp {
                 }
             });
         });
-        ui.label(RichText::new("Models and defaults for every chat; appearance on this device.").small().color(t.text_dim));
-        ui.add_space(4.0);
+        ui.add_space(t.pad(8.0));
+        let y = ui.cursor().top();
+        ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, t.separator));
+        ui.add_space(1.0);
+        if narrow {
+            ui.add_space(t.pad(6.0));
+        }
     }
 
-    pub(crate) fn settings(&mut self, ui: &mut egui::Ui) {
-        let t = self.tokens;
-        ui.add_space(4.0);
-        if std::mem::take(&mut self.reveal_connection) {
-            ui.scroll_to_cursor(Some(egui::Align::Min));
-        }
-        if let Some(id) = self.appearance.reveal.as_deref().and_then(|r| r.strip_prefix("model:")) {
-            self.models.reveal = Some(id.to_owned());
-            self.appearance.reveal = None;
-        }
+    fn models_tab(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         if self.models.available() {
             let blurb =
                 "The models byob can use, saved for every window and browser tab. Chats use the default one unless their workspace or the chat picks another.";
-            section(ui, &t, "Models", blurb, |ui| self.models.show(ui, &t, self.state.as_ref()));
+            form::heading(ui, t, "Models", blurb);
+            self.models.show(ui, t, self.state.as_ref());
         } else {
-            section(ui, &t, "Connection", "The model server byob talks to; saved for every window and browser tab.", |ui| match &self.state {
-                Some(state) => self.connect.form(ui, &t, state, "settings"),
+            form::heading(ui, t, "Connection", "The model server byob talks to; saved for every window and browser tab.");
+            match &self.state {
+                Some(state) => self.connect.form(ui, t, state, "settings"),
                 None => {
                     ui.label(RichText::new("connecting…").color(t.text_dim));
                 }
-            });
-        }
-        section(ui, &t, "Defaults for every chat", "Saved in settings.json. A workspace or a chat can change each of them for itself.", |ui| {
-            if let Some(msg) = self.workspaces.defaults.show(ui, &t, crate::workspace::GLOBAL_FIELDS) {
-                self.conn.send(msg);
             }
-            ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new("Workspaces override these, and choose where commands run (Docker, Nix, …): the … menu of each workspace in the chat list. A chat: the sliders next to its title in the header.")
-                        .small()
-                        .color(t.text_dim),
-                );
-                if let Some(ws) = self.sidebar.current_workspace().map(|w| w.id.clone())
-                    && ui.small_button("This workspace's settings…").clicked()
-                {
-                    self.workspaces.open_settings(&ws, false);
-                }
-            });
-        });
-        if std::mem::take(&mut self.plugins.reveal) {
-            ui.scroll_to_cursor(Some(egui::Align::Min));
         }
-        section(ui, &t, "Plugins", "What the chat in view can use: plugins of this chat, its workspace and every chat.", |ui| {
-            self.plugins.panel(ui, &t, &crate::plugins::Filter::All);
-        });
-        section(ui, &t, "Appearance", "Saved on this device only.", |ui| self.appearance_settings(ui));
     }
 
+    fn defaults_tab(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        form::heading(ui, t, "Chat defaults", "Saved in settings.json. A workspace or a chat can change each of them for itself.");
+        if let Some(msg) = self.workspaces.defaults.show(ui, t, crate::workspace::GLOBAL_FIELDS) {
+            self.conn.send(msg);
+        }
+        form::section(
+            ui,
+            t,
+            "Workspaces and chats",
+            "Workspaces override these and choose where commands run (Docker, Nix, …): the … menu of each workspace in the chat list. A chat: the sliders next to its title in the header.",
+        );
+        if let Some(ws) = self.sidebar.current_workspace().map(|w| (w.id.clone(), w.name.clone()))
+            && ui.button(format!("{}'s settings…", ws.1)).on_hover_text("The workspace of the chat in view").clicked()
+        {
+            self.workspaces.open_settings(&ws.0, false);
+        }
+    }
     /// Imports that finished picking, and export outcomes (every frame).
     pub(crate) fn poll_appearance(&mut self) {
         let picked: Vec<Picked> = std::iter::from_fn(|| self.appearance.import_rx.try_recv().ok()).collect();
@@ -221,59 +404,56 @@ impl ByobApp {
         self.reload_themes();
     }
 
-    fn appearance_settings(&mut self, ui: &mut egui::Ui) {
-        let t = self.tokens;
-        let narrow = ui.available_width() < NARROW;
+    /// Light or dark, the theme gallery, the accent and the look, theme files.
+    fn appearance_tab(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        form::heading(ui, t, "Appearance", "How byob looks. Saved on this device only.");
         let mut prefs = self.prefs.clone();
         let dark_now = t.dark;
         let themes = file::all(&self.user_themes);
         let current = file::resolve(prefs.theme_id(dark_now), dark_now, &self.user_themes);
 
-        row(ui, narrow, "Mode", |ui| {
+        form::row(ui, t, "Mode", |ui| {
             for kind in ThemeKind::ALL {
                 ui.selectable_value(&mut prefs.theme, kind, kind.label());
             }
         });
         if prefs.theme == ThemeKind::System {
-            row(ui, narrow, "Follows system", |ui| {
+            form::row(ui, t, "Follows system", |ui| {
                 theme_combo(ui, "light-theme", "Light", &mut prefs.light_theme, &themes, false);
                 theme_combo(ui, "dark-theme", "Dark", &mut prefs.dark_theme, &themes, true);
             });
         }
 
-        ui.add_space(4.0);
+        form::section(ui, t, "Theme", "Click one to use it; right-click a theme you added to remove it.");
         let mut remove = None;
-        gallery(ui, &t, &themes, &mut prefs, dark_now, &mut remove);
+        gallery(ui, t, &themes, &mut prefs, dark_now, &mut remove);
         if let Some(def) = remove {
             self.remove_theme(&def);
             return;
         }
-        ui.add_space(4.0);
-        self.theme_files(ui, &t, narrow, &current, &prefs);
 
-        if self.appearance.reveal.as_deref() == Some("knobs") {
-            ui.scroll_to_cursor(Some(egui::Align::Min));
+        form::section(ui, t, "Look", "");
+        look(ui, t, &current, &mut prefs);
+
+        form::section(ui, t, "Theme files", "Keep the current look (colours and knobs) as a .json theme file, or add someone else's.");
+        // Saving a theme file picks it: the rows' changes go in first.
+        if prefs != self.prefs {
+            self.set_prefs(prefs.clone());
         }
-        subsection(ui, &t, "Knobs");
-        knobs(ui, &t, narrow, &current, &mut prefs);
+        self.theme_files(ui, t, &current, &prefs);
+        let mut prefs = self.prefs.clone();
+
+        ui.add_space(t.pad(form::SECTION_GAP));
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Reset knobs").on_hover_text("Sizes, fonts, spacing and layout back to defaults").clicked() {
-                prefs.knobs = Knobs::default();
+            if ui.button("Reset look").on_hover_text("Accent, corners, bubbles and chart colours back to the theme's").clicked() {
+                let d = Knobs::default();
                 prefs.accent = Accent::Theme;
+                (prefs.knobs.radius, prefs.knobs.user_bubble, prefs.knobs.assistant_bubble, prefs.knobs.chart) =
+                    (d.radius, d.user_bubble, d.assistant_bubble, d.chart);
             }
-            if ui.button("Reset all appearance").on_hover_text("Themes, accent, knobs and colour overrides (keeps imported themes)").clicked() {
+            if ui.button("Reset all appearance").on_hover_text("Themes, accent, text, layout and colour overrides (keeps imported themes)").clicked() {
                 prefs = Prefs { imported: std::mem::take(&mut prefs.imported), ..Prefs::default() };
             }
-        });
-
-        subsection_rule(ui, &t);
-        let reveal = self.appearance.reveal.as_deref() == Some("advanced");
-        if reveal {
-            ui.scroll_to_cursor(Some(egui::Align::Min));
-        }
-        let header = egui::CollapsingHeader::new(RichText::new("Advanced: every colour").color(t.text_strong)).id_salt("advanced-colours");
-        header.open(reveal.then_some(true)).show(ui, |ui| {
-            advanced(ui, &t, &current, &mut prefs, &mut self.appearance.filter);
         });
 
         if prefs != self.prefs {
@@ -281,41 +461,77 @@ impl ByobApp {
         }
     }
 
-    fn theme_files(&mut self, ui: &mut egui::Ui, t: &Tokens, narrow: bool, current: &ThemeDef, prefs: &Prefs) {
-        row(ui, narrow, "Theme files", |ui| {
+    /// Zoom, sizes, fonts, density, widths, accessibility.
+    fn text_tab(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        form::heading(ui, t, "Text & layout", "Sizes, fonts and how the window is laid out. Saved on this device only.");
+        let mut prefs = self.prefs.clone();
+        text_and_layout(ui, t, &mut prefs);
+        ui.add_space(t.pad(form::SECTION_GAP));
+        if ui.button("Reset text & layout").on_hover_text("Zoom, sizes, fonts, spacing and layout back to defaults").clicked() {
+            let d = Knobs::default();
+            let k = &mut prefs.knobs;
+            prefs.zoom = 1.0;
+            (k.font_scale, k.code_scale, k.ui_font, k.mono_font, k.density) = (d.font_scale, d.code_scale, d.ui_font, d.mono_font, d.density);
+            (k.align, k.max_width, k.sidebar_width, k.pane_share) = (d.align, d.max_width, d.sidebar_width, d.pane_share);
+            (k.high_contrast, k.reduce_motion) = (d.high_contrast, d.reduce_motion);
+        }
+        if prefs != self.prefs {
+            self.set_prefs(prefs);
+        }
+    }
+
+    /// Every colour role of the current theme, with a picker.
+    fn colours_tab(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let mut prefs = self.prefs.clone();
+        let current = file::resolve(prefs.theme_id(t.dark), t.dark, &self.user_themes);
+        let blurb = format!("Every colour of {}, changed on this device only. Export the theme under Appearance → Theme files to keep them.", current.name);
+        form::heading(ui, t, "Colours", &blurb);
+        advanced(ui, t, &current, &mut prefs, &mut self.appearance.filter);
+        if prefs != self.prefs {
+            self.set_prefs(prefs);
+        }
+    }
+
+    fn theme_files(&mut self, ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, prefs: &Prefs) {
+        form::row(ui, t, "Add", |ui| {
             if ui.button("Import…").on_hover_text("Add a theme from a .json theme file").clicked() {
                 crate::upload::pick_files(ui.ctx(), self.appearance.import_tx.clone());
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(dir) = &self.themes_dir
+                && ui.button("Reload").on_hover_text(format!("Re-read {}", dir.display())).clicked()
+            {
+                self.reload_themes();
+            }
+        });
+        form::row(ui, t, "Keep this look", |ui| {
             if self.appearance.export_name.is_empty() {
                 self.appearance.export_name = if current.is_builtin() { format!("{} (mine)", current.name) } else { current.name.clone() };
             }
-            ui.add(egui::TextEdit::singleline(&mut self.appearance.export_name).desired_width(150.0).hint_text("Theme name"));
+            ui.add(form::field(&mut self.appearance.export_name, t).desired_width(180.0).hint_text("Theme name"));
             let text = file::export(current, prefs, &self.appearance.export_name);
             let filename = format!("{}.json", file::slug(&self.appearance.export_name));
             if ui.button("Export…").on_hover_text("Save the current look (colours and knobs) as a theme file").clicked() {
                 self.appearance.exports.save(ui.ctx(), &filename, "application/json", text.clone().into_bytes());
             }
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(dir) = self.themes_dir.clone() {
-                if ui.button("Save to themes").on_hover_text(format!("Save into {} and list it in the gallery", dir.display())).clicked() {
-                    let mut p = prefs.clone();
-                    let def = file::parse(&text, Origin::Imported(0)).map(|f| f.def);
-                    match def.map_err(|e| e.to_string()).and_then(|d| self.store_theme(&mut p, &d, &text).map(|w| (d, w))) {
-                        Ok((d, w)) => {
-                            self.appearance.status.push((true, format!("Saved \"{}\" {w}", d.name)));
-                            self.reload_themes();
-                            if let Some(saved) = self.user_themes.iter().find(|u| u.id == d.id).cloned() {
-                                // The saved theme already carries the overrides.
-                                p.overrides.remove(&current.id);
-                                pick_theme(&mut p, &saved, t.dark);
-                                self.set_prefs(p);
-                            }
+            if let Some(dir) = self.themes_dir.clone()
+                && ui.button("Save to themes").on_hover_text(format!("Save into {} and list it in the gallery", dir.display())).clicked()
+            {
+                let mut p = prefs.clone();
+                let def = file::parse(&text, Origin::Imported(0)).map(|f| f.def);
+                match def.map_err(|e| e.to_string()).and_then(|d| self.store_theme(&mut p, &d, &text).map(|w| (d, w))) {
+                    Ok((d, w)) => {
+                        self.appearance.status.push((true, format!("Saved \"{}\" {w}", d.name)));
+                        self.reload_themes();
+                        if let Some(saved) = self.user_themes.iter().find(|u| u.id == d.id).cloned() {
+                            // The saved theme already carries the overrides.
+                            p.overrides.remove(&current.id);
+                            pick_theme(&mut p, &saved, t.dark);
+                            self.set_prefs(p);
                         }
-                        Err(e) => self.appearance.status.push((false, e)),
                     }
-                }
-                if ui.button("Reload").on_hover_text(format!("Re-read {}", dir.display())).clicked() {
-                    self.reload_themes();
+                    Err(e) => self.appearance.status.push((false, e)),
                 }
             }
         });
@@ -353,23 +569,6 @@ pub(crate) fn pick_theme(prefs: &mut Prefs, def: &ThemeDef, dark_now: bool) {
     }
 }
 
-/// A label and its controls: side by side, or stacked on narrow screens.
-fn row(ui: &mut egui::Ui, narrow: bool, label: &str, add: impl FnOnce(&mut egui::Ui)) {
-    if narrow {
-        ui.label(label);
-        ui.horizontal_wrapped(add);
-    } else {
-        ui.horizontal_wrapped(|ui| {
-            let h = ui.spacing().interact_size.y;
-            ui.allocate_ui_with_layout(vec2(130.0, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.set_min_size(vec2(130.0, h));
-                ui.label(label);
-            });
-            add(ui);
-        });
-    }
-}
-
 fn theme_combo(ui: &mut egui::Ui, id: &str, label: &str, value: &mut String, themes: &[ThemeDef], dark: bool) {
     let shown = themes.iter().find(|d| d.id == *value).map_or_else(|| value.clone(), |d| d.name.clone());
     ui.label(label);
@@ -386,7 +585,7 @@ fn gallery(ui: &mut egui::Ui, t: &Tokens, themes: &[ThemeDef], prefs: &mut Prefs
     let gap = ui.spacing().item_spacing.x;
     let avail = ui.available_width();
     // Two columns on a phone, else ~150 pt cards.
-    let w = if avail < NARROW { ((avail - gap) / 2.0).floor().max(100.0) } else { 150.0 };
+    let w = if avail < form::NARROW { ((avail - gap) / 2.0).floor().max(100.0) } else { 150.0 };
     let h = (w * 0.62).round();
     // Cards show each theme's own look (its accent) with this device's knobs and overrides.
     let card_prefs = Prefs { accent: Accent::Theme, ..prefs.clone() };
@@ -496,85 +695,6 @@ fn scale_buttons(ui: &mut egui::Ui, value: &mut f32) {
     }
 }
 
-fn knobs(ui: &mut egui::Ui, t: &Tokens, narrow: bool, current: &ThemeDef, prefs: &mut Prefs) {
-    row(ui, narrow, "Accent", |ui| accent_picker(ui, t, current, &mut prefs.accent));
-    ui.add_space(t.pad(10.0)); // groups: colour, text, look, layout, other
-    row(ui, narrow, "Zoom", |ui| {
-        if let Some(z) = crate::header::zoom_controls(ui, prefs.zoom) {
-            prefs.zoom = z;
-        }
-    });
-    let k = &mut prefs.knobs;
-    row(ui, narrow, "Text size", |ui| scale_buttons(ui, &mut k.font_scale));
-    row(ui, narrow, "Code size", |ui| scale_buttons(ui, &mut k.code_scale));
-    row(ui, narrow, "Font", |ui| {
-        for f in UiFont::ALL {
-            ui.selectable_value(&mut k.ui_font, f, f.label());
-        }
-    });
-    row(ui, narrow, "Code font", |ui| {
-        for f in MonoFont::ALL {
-            ui.selectable_value(&mut k.mono_font, f, f.label());
-        }
-    });
-    ui.add_space(t.pad(10.0));
-    row(ui, narrow, "Density", |ui| {
-        for d in Density::ALL {
-            ui.selectable_value(&mut k.density, d, d.label());
-        }
-    });
-    row(ui, narrow, "Corner radius", |ui| {
-        ui.add(egui::Slider::new(&mut k.radius, Knobs::RADIUS_RANGE).step_by(1.0).suffix(" pt"));
-    });
-    row(ui, narrow, "Your messages", |ui| {
-        for s in BubbleStyle::ALL {
-            ui.selectable_value(&mut k.user_bubble, s, s.label());
-        }
-    });
-    row(ui, narrow, "Replies", |ui| {
-        for s in BubbleStyle::ALL {
-            ui.selectable_value(&mut k.assistant_bubble, s, s.label());
-        }
-    });
-    ui.add_space(t.pad(10.0));
-    row(ui, narrow, "Layout", |ui| {
-        for a in Align::ALL {
-            ui.selectable_value(&mut k.align, a, a.label());
-        }
-    });
-    row(ui, narrow, "Column width", |ui| {
-        for (w, name) in Knobs::WIDTHS {
-            if ui
-                .selectable_label((k.max_width - w).abs() < 1.0, name)
-                .on_hover_text(if w > 0.0 { format!("At most {w} pt wide") } else { "The whole window".into() })
-                .clicked()
-            {
-                k.max_width = w;
-            }
-        }
-    });
-    ui.add_space(t.pad(10.0));
-    row(ui, narrow, "Chart colours", |ui| {
-        for c in ChartPalette::ALL {
-            ui.selectable_value(&mut k.chart, c, c.label());
-        }
-    });
-    row(ui, narrow, "Chat list width", |ui| {
-        ui.add(egui::Slider::new(&mut k.sidebar_width, Knobs::SIDEBAR_RANGE).step_by(10.0).suffix(" pt"));
-    });
-    row(ui, narrow, "Artifact pane", |ui| {
-        let mut pct = k.pane_share * 100.0;
-        if ui.add(egui::Slider::new(&mut pct, 30.0..=75.0).step_by(1.0).suffix(" %")).changed() {
-            k.pane_share = pct / 100.0;
-        }
-    });
-    ui.add_space(t.pad(10.0));
-    row(ui, narrow, "Accessibility", |ui| {
-        ui.checkbox(&mut k.high_contrast, "High contrast");
-        ui.checkbox(&mut k.reduce_motion, "Reduce motion");
-    });
-}
-
 /// The theme's own accent, its named accents, and a custom colour.
 fn accent_picker(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, accent: &mut Accent) {
     let p = current.base;
@@ -609,56 +729,6 @@ fn read_on(role: &str) -> Option<&'static str> {
     })
 }
 
-/// Every colour role with a picker; changes are overrides for the current theme only.
-fn advanced(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, prefs: &mut Prefs, filter: &mut String) {
-    ui.label(RichText::new(format!("Changes apply to {} on this device. Export to keep them as a theme file.", current.name)).small().color(t.text_dim));
-    ui.horizontal_wrapped(|ui| {
-        ui.add(egui::TextEdit::singleline(filter).hint_text("Filter roles").desired_width(160.0));
-        let has = prefs.overrides.get(&current.id).is_some_and(|o| !o.is_empty());
-        if ui.add_enabled(has, egui::Button::new("Reset all colours")).clicked() {
-            prefs.overrides.remove(&current.id);
-        }
-    });
-    let needle = filter.trim().to_lowercase();
-    let mut group = "";
-    for role in ROLES {
-        if !needle.is_empty() && !role.label.to_lowercase().contains(&needle) && !role.name.contains(&needle) && !role.group.to_lowercase().contains(&needle) {
-            continue;
-        }
-        if role.group != group {
-            group = role.group;
-            ui.add_space(4.0);
-            ui.label(RichText::new(group).small().color(t.text_faint));
-        }
-        let Some(mut c) = t.get(role.name) else { continue };
-        let overridden = prefs.overrides.get(&current.id).is_some_and(|o| o.contains_key(role.name));
-        ui.horizontal_wrapped(|ui| {
-            let alpha = if c.a() < 255 { egui::color_picker::Alpha::OnlyBlend } else { egui::color_picker::Alpha::Opaque };
-            if egui::color_picker::color_edit_button_srgba(ui, &mut c, alpha).changed() {
-                if role.name == "accent" {
-                    prefs.accent = Accent::Custom(hex(c));
-                } else {
-                    prefs.overrides.entry(current.id.clone()).or_default().insert(role.name.into(), hex(c));
-                }
-            }
-            ui.label(RichText::new(role.label).color(if overridden { t.text_strong } else { t.text }));
-            ui.label(RichText::new(hex(c)).small().monospace().color(t.text_faint));
-            if let Some(bg) = read_on(role.name).and_then(|b| t.get(b)) {
-                let ratio = contrast(c, bg);
-                let color = if ratio >= 4.5 { t.text_dim } else { t.danger };
-                ui.label(RichText::new(format!("{ratio:.1}:1")).small().color(color))
-                    .on_hover_text("Contrast against what it's drawn on (WCAG: 4.5:1 text, 7:1 enhanced)");
-            }
-            if overridden
-                && ui.small_button("Reset").clicked()
-                && let Some(o) = prefs.overrides.get_mut(&current.id)
-            {
-                o.remove(role.name);
-            }
-        });
-    }
-}
-
 /// A round colour button, ringed when selected.
 fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool, t: &Tokens) -> egui::Response {
     let size = ui.spacing().interact_size.y;
@@ -674,37 +744,186 @@ fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool, t: &Tokens) -> egui
     resp
 }
 
-/// One settings section: a card with a heading and a line saying what it's for, set apart
-/// from the next (a single column of labels read as one wall of text).
-fn section(ui: &mut egui::Ui, t: &Tokens, title: &str, blurb: &str, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .fill(t.app_bg)
-        .stroke(egui::Stroke::new(1.0, t.border))
-        .corner_radius(t.round(8.0))
-        .inner_margin(egui::vec2(t.pad(14.0), t.pad(12.0)))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.label(RichText::new(title).size(t.text_size(15.0)).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
-            ui.label(RichText::new(blurb).small().color(t.text_dim));
-            ui.add_space(t.pad(8.0));
+/// The accent, corners, bubbles and chart colours.
+fn look(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, prefs: &mut Prefs) {
+    form::row(ui, t, "Accent", |ui| accent_picker(ui, t, current, &mut prefs.accent));
+    let k = &mut prefs.knobs;
+    form::row(ui, t, "Corner radius", |ui| {
+        ui.add(egui::Slider::new(&mut k.radius, Knobs::RADIUS_RANGE).step_by(1.0).suffix(" pt"));
+    });
+    form::row(ui, t, "Your messages", |ui| {
+        for s in BubbleStyle::ALL {
+            ui.selectable_value(&mut k.user_bubble, s, s.label());
+        }
+    });
+    form::row(ui, t, "Replies", |ui| {
+        for s in BubbleStyle::ALL {
+            ui.selectable_value(&mut k.assistant_bubble, s, s.label());
+        }
+    });
+    form::row(ui, t, "Chart colours", |ui| {
+        for c in ChartPalette::ALL {
+            ui.selectable_value(&mut k.chart, c, c.label());
+        }
+    });
+}
+
+/// Zoom, text, layout and accessibility rows.
+fn text_and_layout(ui: &mut egui::Ui, t: &Tokens, prefs: &mut Prefs) {
+    form::row(ui, t, "Zoom", |ui| {
+        if let Some(z) = crate::header::zoom_controls(ui, prefs.zoom) {
+            prefs.zoom = z;
+        }
+    });
+    let k = &mut prefs.knobs;
+    form::row(ui, t, "Text size", |ui| scale_buttons(ui, &mut k.font_scale));
+    form::row(ui, t, "Code size", |ui| scale_buttons(ui, &mut k.code_scale));
+    form::row(ui, t, "Font", |ui| {
+        for f in UiFont::ALL {
+            ui.selectable_value(&mut k.ui_font, f, f.label());
+        }
+    });
+    form::row(ui, t, "Code font", |ui| {
+        for f in MonoFont::ALL {
+            ui.selectable_value(&mut k.mono_font, f, f.label());
+        }
+    });
+
+    form::section(ui, t, "Layout", "");
+    form::row(ui, t, "Density", |ui| {
+        for d in Density::ALL {
+            ui.selectable_value(&mut k.density, d, d.label());
+        }
+    });
+    form::row(ui, t, "Messages", |ui| {
+        for a in Align::ALL {
+            ui.selectable_value(&mut k.align, a, a.label());
+        }
+    });
+    form::row(ui, t, "Column width", |ui| {
+        for (w, name) in Knobs::WIDTHS {
+            if ui
+                .selectable_label((k.max_width - w).abs() < 1.0, name)
+                .on_hover_text(if w > 0.0 { format!("At most {w} pt wide") } else { "The whole window".into() })
+                .clicked()
+            {
+                k.max_width = w;
+            }
+        }
+    });
+    form::row(ui, t, "Chat list width", |ui| {
+        ui.add(egui::Slider::new(&mut k.sidebar_width, Knobs::SIDEBAR_RANGE).step_by(10.0).suffix(" pt"));
+    });
+    form::row(ui, t, "Artifact pane", |ui| {
+        let mut pct = k.pane_share * 100.0;
+        if ui.add(egui::Slider::new(&mut pct, 30.0..=75.0).step_by(1.0).suffix(" %")).changed() {
+            k.pane_share = pct / 100.0;
+        }
+    });
+
+    form::section(ui, t, "Accessibility", "");
+    form::row(ui, t, "Contrast", |ui| {
+        ui.checkbox(&mut k.high_contrast, "High contrast").on_hover_text("Brighter secondary text and borders");
+    });
+    form::row(ui, t, "Motion", |ui| {
+        ui.checkbox(&mut k.reduce_motion, "Reduce motion").on_hover_text("No spinners, animations or smooth scrolling");
+    });
+}
+
+/// Every colour role with a picker, in columns; changes are overrides for the current theme only.
+fn advanced(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, prefs: &mut Prefs, filter: &mut String) {
+    ui.horizontal_wrapped(|ui| {
+        ui.add(form::field(filter, t).hint_text("Filter colours").desired_width(200.0));
+        let has = prefs.overrides.get(&current.id).is_some_and(|o| !o.is_empty());
+        if ui.add_enabled(has, egui::Button::new("Reset all colours")).clicked() {
+            prefs.overrides.remove(&current.id);
+        }
+    });
+    let needle = filter.trim().to_lowercase();
+    let h = form::control_h(t);
+    let name_w = form::label_w(t, ui.available_width()) + t.pad(16.0);
+    let cell = |ui: &mut egui::Ui, w: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+        ui.allocate_ui_with_layout(vec2(w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_size(vec2(w, h));
             add(ui);
         });
-    ui.add_space(t.pad(12.0));
+    };
+    let mut group = "";
+    for role in ROLES {
+        if !needle.is_empty() && !role.label.to_lowercase().contains(&needle) && !role.name.contains(&needle) && !role.group.to_lowercase().contains(&needle) {
+            continue;
+        }
+        if role.group != group {
+            group = role.group;
+            ui.add_space(t.pad(form::HEAD_GAP));
+            ui.label(RichText::new(group).small().strong().color(t.text_dim));
+            ui.add_space(t.pad(2.0));
+        }
+        let Some(mut c) = t.get(role.name) else { continue };
+        let overridden = prefs.overrides.get(&current.id).is_some_and(|o| o.contains_key(role.name));
+        ui.horizontal(|ui| {
+            let alpha = if c.a() < 255 { egui::color_picker::Alpha::OnlyBlend } else { egui::color_picker::Alpha::Opaque };
+            if egui::color_picker::color_edit_button_srgba(ui, &mut c, alpha).changed() {
+                if role.name == "accent" {
+                    prefs.accent = Accent::Custom(hex(c));
+                } else {
+                    prefs.overrides.entry(current.id.clone()).or_default().insert(role.name.into(), hex(c));
+                }
+            }
+            cell(ui, name_w, &mut |ui| {
+                ui.label(RichText::new(role.label).color(if overridden { t.text_strong } else { t.text }));
+            });
+            cell(ui, t.pad(76.0), &mut |ui| {
+                ui.label(RichText::new(hex(c)).small().monospace().color(t.text_faint));
+            });
+            cell(ui, t.pad(56.0), &mut |ui| {
+                if let Some(bg) = read_on(role.name).and_then(|b| t.get(b)) {
+                    let ratio = contrast(c, bg);
+                    let color = if ratio >= 4.5 { t.text_dim } else { t.danger };
+                    ui.label(RichText::new(format!("{ratio:.1}:1")).small().color(color))
+                        .on_hover_text("Contrast against what it's drawn on (WCAG: 4.5:1 text, 7:1 enhanced)");
+                }
+            });
+            if overridden
+                && ui.small_button("Reset").clicked()
+                && let Some(o) = prefs.overrides.get_mut(&current.id)
+            {
+                o.remove(role.name);
+            }
+        });
+    }
 }
 
-/// A divider and a heading between the parts of one section.
-fn subsection(ui: &mut egui::Ui, t: &Tokens, title: &str) {
-    subsection_rule(ui, t);
-    ui.label(RichText::new(title).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
-    ui.add_space(t.pad(2.0));
-}
-
-fn subsection_rule(ui: &mut egui::Ui, t: &Tokens) {
-    ui.add_space(t.pad(10.0));
-    let y = ui.cursor().top();
-    let x = ui.max_rect().x_range();
-    ui.painter().hline(x, y, egui::Stroke::new(1.0, t.separator));
-    ui.add_space(t.pad(10.0));
+/// One tab in the settings' tab list (`width`) or phone strip (sized to its label): its icon
+/// and name, the selected one filled.
+fn tab_item(ui: &mut egui::Ui, t: &Tokens, tab: Tab, label: &str, selected: bool, width: Option<f32>) -> egui::Response {
+    let h = t.pad(form::NAV_ROW_H).max(form::control_h(t));
+    let icon = t.text_size(16.0).min(h - 8.0).max(10.0);
+    let pad = t.pad(10.0);
+    let color = if selected { t.text_strong } else { t.text };
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, color);
+    let w = width.unwrap_or(pad + icon + pad * 0.8 + galley.size().x + pad);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fill = if selected {
+            Some(t.selection)
+        } else if resp.is_pointer_button_down_on() {
+            Some(t.pressed)
+        } else if resp.hovered() {
+            Some(t.hover)
+        } else {
+            None
+        };
+        if let Some(fill) = fill {
+            ui.painter().rect_filled(rect, t.round(6.0), fill);
+        }
+        let icon_rect = egui::Rect::from_min_size(egui::pos2(rect.left() + pad, rect.center().y - icon / 2.0), vec2(icon, icon));
+        (tab.icon())(ui.painter(), icon_rect, if selected { t.accent } else { t.text_dim });
+        let pos = egui::pos2(icon_rect.right() + pad * 0.8, rect.center().y - galley.size().y / 2.0);
+        ui.painter().galley(pos, galley, color);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 #[cfg(test)]
@@ -741,7 +960,11 @@ mod tests {
                 let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 800.0))), ..Default::default() };
                 let mut out = ctx.run_ui(input, |ui| {
                     app.apply_theme(ui.ctx());
-                    egui::CollapsingHeader::new("x").default_open(true).show(ui, |ui| app.appearance_settings(ui));
+                    let t = app.tokens;
+                    for tab in [Tab::Appearance, Tab::Text, Tab::Colours] {
+                        app.appearance.tab = tab;
+                        app.tab_body(ui, &t, 16.0);
+                    }
                 });
                 out.textures_delta.clear();
             }

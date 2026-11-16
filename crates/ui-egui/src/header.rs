@@ -77,6 +77,11 @@ pub struct Rects {
     pub settings_close: Rect,
     /// The app settings' "Back to chat" button (`Rect::NOTHING` while they are shut).
     pub settings_back: Rect,
+    /// The whole app settings page, its selected tab's content column and its tabs (by
+    /// [`crate::settings::Tab`] order); last drawn, `Rect::NOTHING` before.
+    pub settings_page: Rect,
+    pub settings_body: Rect,
+    pub settings_tabs: [Rect; 6],
     /// The "byob" wordmark, which goes back to the chat (`Rect::NOTHING` when it isn't shown).
     pub home: Rect,
     /// The chat's title in the header.
@@ -99,6 +104,9 @@ impl Default for Rects {
             plugins: Rect::NOTHING,
             settings_close: Rect::NOTHING,
             settings_back: Rect::NOTHING,
+            settings_page: Rect::NOTHING,
+            settings_body: Rect::NOTHING,
+            settings_tabs: [Rect::NOTHING; 6],
             home: Rect::NOTHING,
             title: Rect::NOTHING,
             open_menu: false,
@@ -136,7 +144,7 @@ pub fn settings_shortcut(ctx: &egui::Context) -> String {
 
 /// The app settings button's tooltip.
 pub fn settings_tip(ctx: &egui::Context) -> String {
-    format!("App settings: connection, defaults for every chat, appearance ({})", settings_shortcut(ctx))
+    format!("App settings: models, chat defaults, plugins, appearance ({})", settings_shortcut(ctx))
 }
 
 impl ByobApp {

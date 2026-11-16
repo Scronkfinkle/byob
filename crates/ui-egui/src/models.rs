@@ -175,14 +175,12 @@ fn dot(ui: &mut egui::Ui, color: egui::Color32) -> egui::Response {
 
 fn badge(ui: &mut egui::Ui, t: &Tokens, text: &str, strong: bool) {
     let (fill, color) = if strong { (t.accent, t.on_accent) } else { (t.panel_bg, t.text_dim) };
-    egui::Frame::new()
-        .fill(fill)
-        .stroke(egui::Stroke::new(1.0, if strong { t.accent } else { t.border }))
-        .corner_radius(t.round(4.0))
-        .inner_margin(egui::vec2(5.0, 1.0))
-        .show(ui, |ui| {
-            ui.label(RichText::new(text).small().color(color));
-        });
+    // Painted to its own size (a frame would stretch to the row's height).
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), egui::TextStyle::Small.resolve(ui.style()), color);
+    let (rect, _) = ui.allocate_exact_size(galley.size() + egui::vec2(10.0, 4.0), egui::Sense::hover());
+    let stroke = egui::Stroke::new(1.0, if strong { t.accent } else { t.border });
+    ui.painter().rect(rect, t.round(4.0), fill, stroke, egui::StrokeKind::Inside);
+    ui.painter().galley(rect.min + egui::vec2(5.0, 2.0), galley, color);
 }
 
 /// A model role's dropdown in Settings → Models: the role, its label, what unset means and
@@ -308,7 +306,7 @@ impl ModelsUi {
             if self.editor.as_ref().is_some_and(|e| e.profile.id == v.profile.id) {
                 self.edit_form(ui, t);
             }
-            ui.add_space(t.pad(4.0));
+            ui.add_space(t.pad(crate::form::ROW_GAP - 4.0));
         }
         ui.add_space(t.pad(4.0));
         if self.add.is_some() {
@@ -317,7 +315,7 @@ impl ModelsUi {
             self.add = Some(AddForm::default());
         }
         if !list.items.is_empty() {
-            ui.add_space(t.pad(8.0));
+            crate::form::section(ui, t, "Roles", "Saved models that do jobs for the others.");
             self.roles(ui, t, &list);
         }
     }
@@ -346,12 +344,11 @@ impl ModelsUi {
 
     /// A dropdown for one model role.
     fn role(&mut self, ui: &mut egui::Ui, t: &Tokens, list: &ProfileList, r: &RoleRow) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(r.label).color(t.text));
+        crate::form::row(ui, t, r.label, |ui| {
             let current = list.roles.get(r.role).cloned();
             let name = |id: &Option<String>| id.as_ref().and_then(|i| list.get(i)).map_or_else(|| r.none.to_owned(), |v| v.profile.label().to_owned());
             let mut picked = current.clone();
-            egui::ComboBox::from_id_salt((r.role, "role")).selected_text(name(&current)).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt((r.role, "role")).selected_text(name(&current)).width(180.0).show_ui(ui, |ui| {
                 ui.selectable_value(&mut picked, None, r.none);
                 for v in &list.items {
                     ui.selectable_value(&mut picked, Some(v.profile.id.clone()), v.profile.label());
@@ -360,6 +357,7 @@ impl ModelsUi {
             if picked != current {
                 self.out.push(ClientMsg::SetRole { role: r.role.into(), profile: picked });
             }
+            ui.end_row();
             ui.label(RichText::new(r.what).small().color(t.text_faint));
         });
     }
@@ -449,8 +447,8 @@ impl ModelsUi {
         let mut list_models = None;
         egui::Frame::new().stroke(egui::Stroke::new(1.0, t.border)).corner_radius(t.round(6.0)).inner_margin(t.pad(10.0)).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            let w = (ui.available_width() - 110.0).clamp(160.0, 420.0);
-            egui::Grid::new(("profile-edit", &e.profile.id)).num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+            let w = (ui.available_width() - crate::form::label_w(t, ui.available_width()) - t.pad(crate::form::COL_GAP)).clamp(160.0, 420.0);
+            crate::form::grid(("profile-edit", &e.profile.id), t, ui.available_width()).show(ui, |ui| {
                 ui.label("Name");
                 ui.add(egui::TextEdit::singleline(&mut e.profile.name).desired_width(w));
                 ui.end_row();
@@ -540,7 +538,7 @@ impl ModelsUi {
             egui::CollapsingHeader::new(RichText::new("Advanced").color(t.text)).id_salt(("profile-advanced", &e.profile.id)).open(open).show(ui, |ui| {
                 let anthropic = e.profile.anthropic();
                 ui.label(RichText::new("Sent with every request to this model; leave a field empty for the server's default.").small().color(t.text_faint));
-                egui::Grid::new(("profile-advanced-grid", &e.profile.id)).num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                crate::form::grid(("profile-advanced-grid", &e.profile.id), t, ui.available_width()).show(ui, |ui| {
                     let field = |ui: &mut egui::Ui, label: &str, v: &mut String, hint: &str, tip: &str| {
                         ui.label(label);
                         ui.add(egui::TextEdit::singleline(v).hint_text(hint).desired_width(120.0)).on_hover_text(tip);
@@ -671,8 +669,8 @@ impl ModelsUi {
                 }
             });
             ui.add_space(4.0);
-            let w = (ui.available_width() - 110.0).clamp(160.0, 420.0);
-            egui::Grid::new("add-models").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+            let w = (ui.available_width() - crate::form::label_w(t, ui.available_width()) - t.pad(crate::form::COL_GAP)).clamp(160.0, 420.0);
+            crate::form::grid("add-models", t, ui.available_width()).show(ui, |ui| {
                 ui.label("Server URL");
                 if ui.add(egui::TextEdit::singleline(&mut a.url).hint_text("http://127.0.0.1:8080/v1").desired_width(w)).changed() {
                     a.models.clear();
