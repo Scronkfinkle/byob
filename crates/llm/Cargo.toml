@@ -1,6 +1,6 @@
 [package]
 name = "byob-llm"
-description = "OpenAI-compatible inference client targeting a user-supplied URL (L1)"
+description = "Inference client for a user-supplied URL: OpenAI-compatible or Anthropic Messages (L1)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

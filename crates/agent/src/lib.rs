@@ -18,6 +18,8 @@ mod adapt;
 #[cfg(test)]
 mod adapt_tests;
 #[cfg(test)]
+mod anthropic_tests;
+#[cfg(test)]
 mod artifact_view_tests;
 pub mod attachments;
 mod authoring;
@@ -1315,7 +1317,7 @@ impl Engine {
             return;
         }
         let (base_url, model) = (base_url.trim().to_owned(), model.trim().to_owned());
-        let config = InferenceConfig { api_key: self.key_for(&base_url, api_key), base_url, model };
+        let config = InferenceConfig { api_key: self.key_for(&base_url, api_key), api: self.api_for(&base_url), base_url, model };
         let new_key = config.api_key != self.config.api_key;
         match byob_llm::Client::new(config.clone()) {
             Ok(client) => {
@@ -1339,6 +1341,7 @@ impl Engine {
         Settings::update(&paths.settings(), |s| {
             s.inference.base_url = Some(config.base_url.clone());
             s.inference.model = Some(config.model.clone());
+            s.inference.api = config.api;
         })?;
         if new_key {
             let mut secrets = Secrets::load(&paths.secrets()).value;

@@ -484,7 +484,8 @@ impl Turn {
                 self.messages.push(toolprompt::fallback_assistant_message(&text, &calls));
             } else {
                 let text = Some(text).filter(|c| !c.trim().is_empty());
-                self.messages.push(ChatMessage::assistant_tool_calls(text, &calls));
+                // Anthropic: the reply's own blocks (thinking included) go back with it.
+                self.messages.push(ChatMessage::assistant_tool_calls(text, &calls).with_native(out.native));
             }
             for (call, result) in calls.iter().zip(self.call_all(&calls)) {
                 self.messages.push(if prompt { toolprompt::fallback_tool_result(call, &result) } else { ChatMessage::tool_result(call.id.clone(), result) });
@@ -1092,8 +1093,9 @@ const MODEL_RETRIES: usize = 2;
 /// Pause before trying again after a server error (doubled the second time).
 const RETRY_PAUSE: Duration = Duration::from_secs(2);
 
-/// A failed request worth trying again: the server broke (5xx) or the stream did. Not a
-/// 4xx (the request itself is wrong), a server refusing tools, or an unreachable server.
+/// A failed request worth trying again: the server broke (5xx), is busy, or the stream
+/// broke. Not a 4xx (the request itself is wrong), a server refusing tools, a refusal, or
+/// an unreachable server.
 fn retryable(e: &LlmError) -> bool {
     // Refusing tools (forced native mode) is the setup, not a hiccup.
     if adapt::rejects_tools(e) {
@@ -1102,6 +1104,10 @@ fn retryable(e: &LlmError) -> bool {
     match e {
         LlmError::Http { status, .. } => *status >= 500,
         LlmError::Stream(m) => !m.starts_with("encoding request"),
+        // Rate-limited or overloaded (Anthropic 429/529): after the pause.
+        LlmError::Busy { .. } => true,
+        // The model declined; asking again gets the same answer.
+        LlmError::Refused(_) => false,
         LlmError::BadUrl(_) | LlmError::Transport { .. } => false,
     }
 }

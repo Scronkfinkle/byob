@@ -314,10 +314,15 @@ fn inference_config(args: &Args, settings: &Settings, secrets: &Secrets) -> Infe
     let pick = |flag: &Option<String>, saved: &Option<String>, default: String| {
         flag.clone().or_else(|| saved.clone().filter(|s| !s.trim().is_empty())).unwrap_or(default)
     };
+    let base_url = pick(&args.inference_url, &settings.inference.base_url, defaults.base_url);
+    // The saved API belongs to the saved URL; a URL from the command line decides from its host.
+    let saved_url = settings.inference.base_url.as_deref().map(|u| u.trim().trim_end_matches('/'));
+    let api = settings.inference.api.filter(|_| saved_url == Some(base_url.trim().trim_end_matches('/')));
     InferenceConfig {
-        base_url: pick(&args.inference_url, &settings.inference.base_url, defaults.base_url),
+        base_url,
         model: pick(&args.model, &settings.inference.model, defaults.model),
         api_key: args.api_key.clone().or_else(|| secrets.api_key.clone().filter(|k| !k.is_empty())),
+        api,
     }
 }
 
@@ -333,7 +338,8 @@ fn model_roles(main: &InferenceConfig, settings: &Settings, secrets: &Secrets) -
             let same = base_url.trim_end_matches('/') == main.base_url.trim_end_matches('/');
             let api_key = secrets.model_keys.get(name).filter(|k| !k.is_empty()).cloned().or_else(|| main.api_key.clone().filter(|_| same));
             let model = role.model.clone().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| main.model.clone());
-            (name.clone(), InferenceConfig { base_url, model, api_key })
+            let api = role.api.or_else(|| main.api.filter(|_| same));
+            (name.clone(), InferenceConfig { base_url, model, api_key, api })
         })
         .collect()
 }
@@ -590,7 +596,7 @@ mod tests {
 
     #[test]
     fn model_roles_default_to_the_main_endpoint() {
-        let main = InferenceConfig { base_url: "http://main/v1".into(), model: "big".into(), api_key: Some("sk-main".into()) };
+        let main = InferenceConfig { base_url: "http://main/v1".into(), model: "big".into(), api_key: Some("sk-main".into()), api: None };
         let mut settings = Settings::default();
         settings.models.insert("fast".into(), byob_store::ModelRole { model: Some("small".into()), ..Default::default() });
         settings.models.insert("remote".into(), byob_store::ModelRole { base_url: Some("http://other/v1".into()), ..Default::default() });
@@ -599,7 +605,7 @@ mod tests {
         let roles = model_roles(&main, &settings, &secrets);
         assert_eq!(roles["fast"], InferenceConfig { model: "small".into(), ..main.clone() });
         // Another endpoint never gets the main key; its own comes from secrets.json.
-        assert_eq!(roles["remote"], InferenceConfig { base_url: "http://other/v1".into(), model: "big".into(), api_key: None });
+        assert_eq!(roles["remote"], InferenceConfig { base_url: "http://other/v1".into(), model: "big".into(), api_key: None, api: None });
         assert_eq!(roles["keyed"].api_key.as_deref(), Some("sk-third"));
     }
 
@@ -617,6 +623,26 @@ mod tests {
         let (empty, no_key) = saved(Some("  "), None, Some(""));
         let c = inference_config(&none, &empty, &no_key);
         assert_eq!(c, InferenceConfig::default());
+    }
+
+    #[test]
+    fn the_saved_api_goes_with_its_url_and_to_roles_there() {
+        use byob_types::ApiKind;
+        let (mut settings, secrets) = saved(Some("http://proxy:1/v1"), Some("claude-opus-5-5"), None);
+        settings.inference.api = Some(ApiKind::Anthropic);
+        let c = inference_config(&Args::default(), &settings, &secrets);
+        assert_eq!(c.api, Some(ApiKind::Anthropic));
+        // Another URL on the command line decides from its host.
+        let flags = Args { inference_url: Some("http://flag:2/v1".into()), ..Default::default() };
+        assert_eq!(inference_config(&flags, &settings, &secrets).api, None);
+        settings.models.insert("same".into(), byob_store::ModelRole { model: Some("claude-haiku-5-5".into()), ..Default::default() });
+        settings.models.insert("elsewhere".into(), byob_store::ModelRole { base_url: Some("http://llama/v1".into()), ..Default::default() });
+        let own = byob_store::ModelRole { base_url: Some("http://gw/v1".into()), api: Some(ApiKind::Anthropic), ..Default::default() };
+        settings.models.insert("own".into(), own);
+        let roles = model_roles(&c, &settings, &secrets);
+        assert_eq!(roles["same"].api, Some(ApiKind::Anthropic));
+        assert_eq!(roles["elsewhere"].api, None);
+        assert_eq!(roles["own"].api, Some(ApiKind::Anthropic));
     }
 
     #[test]

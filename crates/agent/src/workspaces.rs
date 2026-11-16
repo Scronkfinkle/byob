@@ -241,7 +241,10 @@ impl Engine {
             Some(Level::Chat) => chat_key.map(str::to_owned),
             _ => None,
         };
-        let inference = InferenceConfig { base_url: effective.base_url.value.clone(), model: effective.model.value.clone(), api_key };
+        // The global endpoint's API goes along to the same URL; another URL decides from its host.
+        let same_url = effective.base_url.value.trim().trim_end_matches('/') == self.config.base_url.trim().trim_end_matches('/');
+        let api = self.config.api.filter(|_| same_url);
+        let inference = InferenceConfig { base_url: effective.base_url.value.clone(), model: effective.model.value.clone(), api_key, api };
         ChatSettings { env: env_plan(&effective), inference, effective }
     }
 

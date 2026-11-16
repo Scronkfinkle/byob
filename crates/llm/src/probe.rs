@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use byob_types::ApiKind;
+
 use crate::{Client, LlmError, ToolSpec, toolprompt, wire};
 
 /// Most bytes read from any metadata response.
@@ -23,6 +25,8 @@ pub enum ServerKind {
     Ollama,
     LmStudio,
     OpenAi,
+    /// Anthropic's Messages API.
+    Anthropic,
     #[default]
     Unknown,
 }
@@ -143,19 +147,19 @@ impl Client {
     /// GET (or POST `body`) returning parsed JSON (`Null` if the body is not JSON).
     fn request(&self, url: &url::Url, body: Option<&Value>, timeout: Duration) -> Result<Reply, LlmError> {
         let transport = |e| LlmError::Transport { url: url.to_string(), source: Box::new(e) };
-        let auth = self.config.api_key.as_ref().map(|k| format!("Bearer {k}"));
+        let auth = self.auth_headers();
         let resp = match body {
             Some(b) => {
                 let mut req = self.agent.post(url.as_str()).header("Content-Type", "application/json");
-                if let Some(a) = &auth {
-                    req = req.header("Authorization", a);
+                for (name, value) in &auth {
+                    req = req.header(*name, value);
                 }
                 req.config().timeout_global(Some(timeout)).build().send(b.to_string().as_bytes()).map_err(transport)?
             }
             None => {
                 let mut req = self.agent.get(url.as_str());
-                if let Some(a) = &auth {
-                    req = req.header("Authorization", a);
+                for (name, value) in &auth {
+                    req = req.header(*name, value);
                 }
                 req.config().timeout_global(Some(timeout)).build().call().map_err(transport)?
             }
@@ -170,6 +174,10 @@ impl Client {
 
 impl Prober<'_> {
     fn run(&mut self) {
+        if self.client.api() == ApiKind::Anthropic {
+            self.anthropic();
+            return;
+        }
         self.models();
         // Only ask the endpoints that make sense for what we know so far.
         let maybe = |p: &Self, k: ServerKind| matches!(p.caps.server, ServerKind::Unknown) || p.caps.server == k;
@@ -285,6 +293,35 @@ impl Prober<'_> {
         if let Some(mods) = entry.pointer("/architecture/input_modalities").and_then(Value::as_array) {
             self.set_vision(Some(mods.iter().any(|m| m.as_str() == Some("image"))));
         }
+    }
+
+    /// Anthropic `GET /v1/models` (with its own headers): ids, and the model's context
+    /// window and image support. Claude calls tools natively, so there is no tool test (its
+    /// OpenAI-style request, with `temperature`, would be rejected anyway), and no slots.
+    fn anthropic(&mut self) {
+        // Nothing is recorded until the endpoint answers, so a probe with a bad key (or while
+        // offline) is tried again later.
+        let Some(reply) = self.fetch_path(false, self.client.models_path(), None) else { return };
+        self.set_kind(ServerKind::Anthropic, "Messages API");
+        self.caps.tools = ToolSupport::Native;
+        self.caps.models = wire::model_ids(&reply.body.to_string());
+        let want = self.client.config.model.trim().to_owned();
+        let listed = reply
+            .body
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|a| a.iter().find(|e| e.get("id").and_then(Value::as_str) == Some(want.as_str())).cloned());
+        // An id the list doesn't show (an alias, say): ask for it by name.
+        let plain_id = !want.is_empty() && want.len() <= 128 && want.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.@".contains(&b));
+        let entry = match listed {
+            Some(e) => Some(e),
+            None if plain_id => self.fetch_path(false, &format!("models/{want}"), None).map(|r| r.body).filter(|b| b.get("id").is_some()),
+            None => None,
+        };
+        let Some(entry) = entry else { return };
+        let (context, vision) = crate::anthropic::model_limits(&entry);
+        self.set_context(context, "/models max_input_tokens");
+        self.set_vision(vision);
     }
 
     /// llama.cpp `GET /props`: runtime `n_ctx`, `modalities.vision` and `total_slots`.

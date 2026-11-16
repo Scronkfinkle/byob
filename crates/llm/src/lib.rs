@@ -1,10 +1,12 @@
 //! Client for any OpenAI-compatible `/chat/completions` endpoint
-//! (llama-server, vLLM, Ollama, LM Studio, hosted APIs, ...).
+//! (llama-server, vLLM, Ollama, LM Studio, hosted APIs, ...), and for Anthropic's Messages
+//! API ([`byob_types::ApiKind::Anthropic`], see [`anthropic`]) behind the same interface.
 //!
 //! Blocking by design: a streaming call runs on the caller's thread and reports deltas
 //! through a callback. Everything the server sends is treated as untrusted input.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod anthropic;
 pub mod budget;
 mod probe;
 mod sse;
@@ -18,7 +20,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 pub use budget::{estimate_history_tokens, estimate_message_tokens, estimate_tokens, fit_history};
-use byob_types::InferenceConfig;
+use byob_types::{ApiKind, InferenceConfig};
 pub use probe::{Capabilities, ProbeOptions, ServerKind, ToolSupport};
 pub use think::ThinkSplitter;
 pub use toolprompt::{ParsedToolCalls, ToolCallFilter, parse_tool_calls, tool_prompt};
@@ -41,6 +43,14 @@ pub enum LlmError {
     Http { status: u16, message: String },
     #[error("stream error: {0}")]
     Stream(String),
+    /// The server is busy or rate-limiting (Anthropic 429, 529): worth trying again after
+    /// a pause. Reads like [`LlmError::Http`].
+    #[error("server returned HTTP {status}: {message}")]
+    Busy { status: u16, message: String },
+    /// The model declined the request (Anthropic `stop_reason: "refusal"`). Trying the same
+    /// request again gets the same answer.
+    #[error("the model declined to answer: {0}")]
+    Refused(String),
 }
 
 /// One incremental piece of a streamed reply.
@@ -62,6 +72,14 @@ pub struct ChatOutcome {
     pub usage: Option<Usage>,
     /// True if the caller cancelled before the server finished.
     pub cancelled: bool,
+    /// Anthropic: the reply's content blocks as sent (thinking with signatures, text,
+    /// `tool_use`). Put them on the assistant message ([`ChatMessage::with_native`]) so
+    /// later requests of the same tool loop send them back unchanged. Empty for OpenAI.
+    pub native: Vec<serde_json::Value>,
+    /// Prompt tokens read from / written to the server's prompt cache (Anthropic; included
+    /// in [`Usage::prompt_tokens`]).
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
 }
 
 /// Handle to a remote inference endpoint. Cheap to clone.
@@ -83,7 +101,10 @@ impl Client {
         if !matches!(base.scheme(), "http" | "https") {
             return Err(LlmError::BadUrl(url::ParseError::RelativeUrlWithoutBase));
         }
-        let endpoint = base.join("chat/completions")?;
+        let endpoint = base.join(match config.api_kind() {
+            ApiKind::OpenAi => "chat/completions",
+            ApiKind::Anthropic => "messages",
+        })?;
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .timeout_connect(Some(Duration::from_secs(10)))
@@ -102,6 +123,32 @@ impl Client {
         &self.config
     }
 
+    /// The API this client speaks ([`InferenceConfig::api_kind`]).
+    pub fn api(&self) -> ApiKind {
+        self.config.api_kind()
+    }
+
+    /// Headers that authenticate (and, for Anthropic, version) every request.
+    pub(crate) fn auth_headers(&self) -> Vec<(&'static str, String)> {
+        let key = self.config.api_key.as_deref();
+        match self.api() {
+            ApiKind::OpenAi => key.map(|k| ("Authorization", format!("Bearer {k}"))).into_iter().collect(),
+            ApiKind::Anthropic => {
+                let mut h = vec![("anthropic-version", anthropic::VERSION.to_owned())];
+                h.extend(key.map(|k| ("x-api-key", k.to_owned())));
+                h
+            }
+        }
+    }
+
+    /// The model list's path under the base URL (Anthropic pages it: ask for all at once).
+    pub(crate) fn models_path(&self) -> &'static str {
+        match self.api() {
+            ApiKind::OpenAi => "models",
+            ApiKind::Anthropic => "models?limit=1000",
+        }
+    }
+
     /// `GET {base}/models`: model ids the server advertises.
     pub fn list_models(&self) -> Result<Vec<String>, LlmError> {
         self.list_models_within(Duration::from_secs(30))
@@ -110,10 +157,10 @@ impl Client {
     /// [`Client::list_models`] that gives up after `timeout` (connecting included): a cheap
     /// "is anything there, and does it take our key" check.
     pub fn list_models_within(&self, timeout: Duration) -> Result<Vec<String>, LlmError> {
-        let url = self.base.join("models")?;
+        let url = self.base.join(self.models_path())?;
         let mut req = self.agent.get(url.as_str());
-        if let Some(key) = &self.config.api_key {
-            req = req.header("Authorization", &format!("Bearer {key}"));
+        for (name, value) in self.auth_headers() {
+            req = req.header(name, &value);
         }
         let resp = req.config().timeout_global(Some(timeout)).build().call().map_err(|e| LlmError::Transport { url: url.to_string(), source: Box::new(e) })?;
         let status = resp.status().as_u16();
@@ -172,8 +219,30 @@ impl Client {
         mut on_event: impl FnMut(StreamEvent),
     ) -> Result<ChatOutcome, LlmError> {
         let cancel = &stop_when;
-        let request = ChatRequest::new(&self.config.model, messages, tools).in_slot(slot);
-        let body = serde_json::to_vec(&request).map_err(|e| LlmError::Stream(format!("encoding request: {e}")))?;
+        let api = self.api();
+        let mut headers = vec![("Accept", "text/event-stream".to_owned()), ("Content-Type", "application/json".to_owned())];
+        headers.extend(self.auth_headers());
+        // Anthropic: the request with its beta extras, and the plain one to fall back to if
+        // the endpoint rejects them.
+        let (first, plain) = match api {
+            ApiKind::OpenAi => {
+                let request = ChatRequest::new(&self.config.model, messages, tools).in_slot(slot);
+                let body = serde_json::to_vec(&request).map_err(|e| LlmError::Stream(format!("encoding request: {e}")))?;
+                (Attempt { body, headers }, None)
+            }
+            ApiKind::Anthropic => {
+                let full = anthropic::request(&self.config.model, messages, tools, true)?;
+                let plain = match full.betas.is_empty() {
+                    true => None,
+                    false => Some(Attempt { body: anthropic::request(&self.config.model, messages, tools, false)?.body, headers: headers.clone() }),
+                };
+                let mut headers = headers;
+                if !full.betas.is_empty() {
+                    headers.push(("anthropic-beta", full.betas.join(",")));
+                }
+                (Attempt { body: full.body, headers }, plain)
+            }
+        };
         if cancel.now() {
             return Ok(ChatOutcome { cancelled: true, ..ChatOutcome::default() });
         }
@@ -182,13 +251,22 @@ impl Client {
         // check `cancel` every POLL instead of only when a chunk arrives.
         let (tx, rx) = mpsc::channel::<Progress>();
         let stop = Arc::new(AtomicBool::new(false));
-        let (agent, endpoint, key, worker_stop) = (self.agent.clone(), self.endpoint.clone(), self.config.api_key.clone(), Arc::clone(&stop));
+        let (agent, endpoint, worker_stop) = (self.agent.clone(), self.endpoint.clone(), Arc::clone(&stop));
         let spawned = std::thread::Builder::new().name("byob-llm".into()).spawn(move || {
             let events = tx.clone();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                exchange(&agent, &endpoint, key.as_deref(), &body, &worker_stop, &mut |ev| {
+                let mut send = |ev| {
                     let _ = events.send(Progress::Event(ev));
-                })
+                };
+                let result = exchange(&agent, &endpoint, api, &first, &worker_stop, &mut send);
+                match (result, plain) {
+                    // Nothing was streamed yet: the plain request is safe to send.
+                    (Err(e), Some(plain)) if anthropic::rejects_extras(&e) => {
+                        log::warn!("the endpoint rejected a beta feature ({e}); sending the request without them");
+                        exchange(&agent, &endpoint, api, &plain, &worker_stop, &mut send)
+                    }
+                    (result, _) => result,
+                }
             }))
             .unwrap_or_else(|_| Err(LlmError::Stream("internal error while reading the reply".into())));
             let _ = tx.send(Progress::Done(result));
@@ -244,28 +322,42 @@ enum Progress {
     Done(Result<ChatOutcome, LlmError>),
 }
 
-/// One chat-completions request and its streamed reply (on the request thread).
+/// One request body and its headers.
+struct Attempt {
+    body: Vec<u8>,
+    headers: Vec<(&'static str, String)>,
+}
+
+/// One streaming request and its reply (on the request thread).
 fn exchange(
     agent: &ureq::Agent,
     endpoint: &url::Url,
-    api_key: Option<&str>,
-    body: &[u8],
+    api: ApiKind,
+    attempt: &Attempt,
     stop: &AtomicBool,
     on_event: &mut impl FnMut(StreamEvent),
 ) -> Result<ChatOutcome, LlmError> {
-    let mut req = agent.post(endpoint.as_str()).header("Accept", "text/event-stream").header("Content-Type", "application/json");
-    if let Some(key) = api_key {
-        req = req.header("Authorization", &format!("Bearer {key}"));
+    let mut req = agent.post(endpoint.as_str());
+    for (name, value) in &attempt.headers {
+        req = req.header(*name, value);
     }
-    let resp = req.send(body).map_err(|e| LlmError::Transport { url: endpoint.to_string(), source: Box::new(e) })?;
+    let resp = req.send(&attempt.body[..]).map_err(|e| LlmError::Transport { url: endpoint.to_string(), source: Box::new(e) })?;
     let status = resp.status().as_u16();
     if status >= 400 {
         let mut text = String::new();
         let _ = resp.into_body().into_reader().take(MAX_ERROR_BODY).read_to_string(&mut text);
-        return Err(LlmError::Http { status, message: wire::error_message(&text) });
+        let message = wire::error_message(&text);
+        // Anthropic: rate-limited (429) or overloaded (529) is worth another try.
+        return Err(match (api, status) {
+            (ApiKind::Anthropic, 429 | 529) => LlmError::Busy { status, message },
+            _ => LlmError::Http { status, message },
+        });
     }
     let reader = BufReader::new(resp.into_body().into_reader());
-    read_stream(reader, stop, on_event)
+    match api {
+        ApiKind::OpenAi => read_stream(reader, stop, on_event),
+        ApiKind::Anthropic => anthropic::read_stream(reader, stop, on_event),
+    }
 }
 
 fn read_stream(mut reader: impl BufRead, cancel: &AtomicBool, on_event: &mut impl FnMut(StreamEvent)) -> Result<ChatOutcome, LlmError> {
@@ -335,5 +427,7 @@ fn read_stream(mut reader: impl BufRead, cancel: &AtomicBool, on_event: &mut imp
     Ok(out)
 }
 
+#[cfg(test)]
+mod anthropic_tests;
 #[cfg(test)]
 mod tests;
