@@ -64,7 +64,14 @@ fn events(list: &[Value]) -> String {
 }
 
 fn claude(url: String, model: &str) -> Client {
-    Client::new(InferenceConfig { base_url: url, model: model.into(), api_key: Some("sk-ant-test".into()), api: Some(ApiKind::Anthropic) }).unwrap()
+    Client::new(InferenceConfig {
+        base_url: url,
+        model: model.into(),
+        api_key: Some("sk-ant-test".into()),
+        api: Some(ApiKind::Anthropic),
+        ..Default::default()
+    })
+    .unwrap()
 }
 
 fn start(input: u64, read: u64, write: u64) -> Value {
@@ -252,6 +259,47 @@ fn an_endpoint_without_the_betas_gets_the_plain_request() {
     assert_eq!(second.header("anthropic-beta"), None);
     assert!(second.body.get("fallbacks").is_none() && second.body["thinking"].get("block_binding").is_none());
     assert_eq!(second.body["thinking"]["type"], "adaptive");
+}
+
+#[test]
+fn a_profiles_params_reach_the_request_and_temperature_only_when_set() {
+    use byob_types::profile::{Effort, Params};
+    let ok = || events(&[start(1, 0, 0), end("end_turn", 1)[0].clone(), end("end_turn", 1)[1].clone()]);
+    // Nothing set: byob's own max_tokens, no sampling fields, no effort.
+    let (url, seen) = server(vec![(200, ok())]);
+    claude(url, "claude-opus-5-5").stream_chat(&[ChatMessage::user("x")], &[], &AtomicBool::new(false), |_| {}).unwrap();
+    let body = seen.recv().unwrap().body;
+    assert_eq!(body["max_tokens"], json!(crate::anthropic::MAX_TOKENS));
+    assert!(body.get("temperature").is_none() && body.get("top_p").is_none() && body.get("output_config").is_none(), "{body}");
+    // max_tokens, effort and extra; extra merges into what byob sends and can't replace its fields.
+    let extra = json!({"metadata": {"user_id": "u1"}, "thinking": {"display": "omitted"}, "model": "claude-other", "stream": false, "system": "x"});
+    let params = Params { max_tokens: Some(8000), effort: Some(Effort::Xhigh), extra: extra.as_object().cloned().unwrap(), ..Params::default() };
+    let (url, seen) = server(vec![(200, ok())]);
+    let c = Client::new(InferenceConfig {
+        base_url: url,
+        model: "claude-opus-5-5".into(),
+        api: Some(ApiKind::Anthropic),
+        params: params.clone(),
+        ..Default::default()
+    })
+    .unwrap();
+    c.stream_chat(&[ChatMessage::system("be kind"), ChatMessage::user("x")], &[], &AtomicBool::new(false), |_| {}).unwrap();
+    let body = seen.recv().unwrap().body;
+    assert_eq!(body["max_tokens"], json!(8000));
+    assert_eq!(body["output_config"], json!({"effort": "xhigh"}));
+    assert_eq!(body["metadata"], json!({"user_id": "u1"}));
+    assert_eq!(body["thinking"]["type"], "adaptive", "merged, not replaced: {body}");
+    assert_eq!(body["thinking"]["display"], "omitted");
+    assert_eq!((body["model"].as_str(), body["stream"].as_bool()), (Some("claude-opus-5-5"), Some(true)));
+    assert_eq!(body["system"][0]["text"], "be kind");
+    assert!(body.get("temperature").is_none());
+    // Temperature goes only when the user set it (current models reject it: their choice).
+    let (url, seen) = server(vec![(200, ok())]);
+    let hot = Params { temperature: Some(0.3), ..Params::default() };
+    let c = Client::new(InferenceConfig { base_url: url, model: "claude-opus-5-5".into(), api: Some(ApiKind::Anthropic), params: hot, ..Default::default() })
+        .unwrap();
+    c.stream_chat(&[ChatMessage::user("x")], &[], &AtomicBool::new(false), |_| {}).unwrap();
+    assert_eq!(seen.recv().unwrap().body["temperature"], json!(0.3));
 }
 
 #[test]

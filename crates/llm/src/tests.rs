@@ -42,7 +42,7 @@ fn sse(chunks: &[&str]) -> String {
 }
 
 fn client(url: String) -> Client {
-    Client::new(InferenceConfig { base_url: url, model: "m".into(), api_key: Some("sk-test".into()), api: None }).unwrap()
+    Client::new(InferenceConfig { base_url: url, model: "m".into(), api_key: Some("sk-test".into()), api: None, ..Default::default() }).unwrap()
 }
 
 #[test]
@@ -111,6 +111,68 @@ fn sends_the_slot_only_when_given() {
     let (url, req) = fake_server(200, "text/event-stream", ok());
     client(url).stream_chat_in_slot(&[ChatMessage::user("hi")], &[], None, &AtomicBool::new(false), |_| {}).unwrap();
     assert!(!req.recv().unwrap().contains("id_slot"));
+}
+
+fn body_of(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw.split_once("\r\n\r\n").map_or("", |(_, b)| b)).unwrap()
+}
+
+fn with_params(url: String) -> Client {
+    let extra = serde_json::json!({
+        "chat_template_kwargs": {"enable_thinking": false}, "top_p": 0.5,
+        "model": "evil", "messages": [], "tools": [{"x": 1}], "stream": false, "stream_options": {}, "id_slot": 7,
+    });
+    let params = byob_types::profile::Params {
+        temperature: Some(0.6),
+        top_p: Some(0.9),
+        max_tokens: Some(999),
+        extra: extra.as_object().cloned().unwrap(),
+        ..Default::default()
+    };
+    Client::new(InferenceConfig { base_url: url, model: "m".into(), params, ..Default::default() }).unwrap()
+}
+
+#[test]
+fn a_profiles_params_reach_the_body_and_extra_cant_override_byobs_fields() {
+    let ok = || sse(&[r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#]);
+    let (url, req) = fake_server(200, "text/event-stream", ok());
+    let tools = [ToolSpec { name: "f".into(), description: "d".into(), parameters: serde_json::json!({"type": "object"}) }];
+    with_params(url).stream_chat_in_slot(&[ChatMessage::user("hi")], &tools, Some(2), &AtomicBool::new(false), |_| {}).unwrap();
+    let body = body_of(&req.recv().unwrap());
+    assert_eq!(body["temperature"], serde_json::json!(0.6));
+    assert_eq!(body["max_tokens"], serde_json::json!(999));
+    assert_eq!(body["top_p"], serde_json::json!(0.5), "extra comes last and may override the params");
+    assert_eq!(body["chat_template_kwargs"], serde_json::json!({"enable_thinking": false}));
+    assert_eq!((body["model"].as_str(), body["stream"].as_bool(), body["id_slot"].as_u64()), (Some("m"), Some(true), Some(2)));
+    assert_eq!(body["messages"][0]["content"], "hi");
+    assert_eq!(body["tools"][0]["function"]["name"], "f");
+    assert_eq!(body["stream_options"], serde_json::json!({"include_usage": true}));
+    // No params: none of it.
+    let (url, req) = fake_server(200, "text/event-stream", ok());
+    client(url).stream_chat(&[ChatMessage::user("hi")], &[], &AtomicBool::new(false), |_| {}).unwrap();
+    let body = body_of(&req.recv().unwrap());
+    assert!(body.get("temperature").is_none() && body.get("max_tokens").is_none() && body.get("chat_template_kwargs").is_none(), "{body}");
+}
+
+#[test]
+fn the_probe_sends_none_of_the_profiles_params() {
+    let (url, reqs) = routed_server(
+        "llama.cpp",
+        &[
+            ("GET /v1/models", 200, r#"{"object":"list","data":[{"id":"m"}]}"#),
+            ("GET /props", 200, r#"{"default_generation_settings":{"n_ctx":4096}}"#),
+            ("POST /tokenize", 200, r#"{"tokens":[1]}"#),
+            ("POST /v1/chat/completions", 200, NATIVE_TOOL_REPLY),
+        ],
+    );
+    let caps = with_params(url).probe_with(quick());
+    assert_eq!(caps.tools, ToolSupport::Native, "{caps:?}");
+    let seen: Vec<String> = reqs.try_iter().collect();
+    let test = seen.iter().find(|r| r.starts_with("POST /v1/chat/completions")).expect("the tool test ran");
+    let body = body_of(test);
+    // Its own settings, not the profile's.
+    assert_eq!((body["temperature"].as_f64(), body["max_tokens"].as_u64()), (Some(0.0), Some(512)), "{body}");
+    assert!(body.get("top_p").is_none() && body.get("chat_template_kwargs").is_none(), "{body}");
 }
 
 #[test]
@@ -511,7 +573,7 @@ fn root_strips_v1() {
 #[ignore = "needs a live inference server (BYOB_LIVE_URL)"]
 fn live_probe() {
     let url = std::env::var("BYOB_LIVE_URL").expect("set BYOB_LIVE_URL");
-    let c = Client::new(InferenceConfig { base_url: url, model: "local".into(), api_key: None, api: None }).unwrap();
+    let c = Client::new(InferenceConfig { base_url: url, model: "local".into(), api_key: None, api: None, ..Default::default() }).unwrap();
     let start = std::time::Instant::now();
     let caps = c.probe();
     eprintln!("probe took {:?}\n{caps:#?}", start.elapsed());
@@ -527,7 +589,7 @@ fn live_probe() {
 #[ignore = "needs a live inference server (BYOB_LIVE_URL)"]
 fn live_server_streams() {
     let url = std::env::var("BYOB_LIVE_URL").expect("set BYOB_LIVE_URL");
-    let c = Client::new(InferenceConfig { base_url: url, model: "local".into(), api_key: None, api: None }).unwrap();
+    let c = Client::new(InferenceConfig { base_url: url, model: "local".into(), api_key: None, api: None, ..Default::default() }).unwrap();
     let mut n = 0;
     let out = c.stream_chat(&[ChatMessage::user("Reply with exactly: pong")], &[], &AtomicBool::new(false), |_| n += 1).unwrap();
     eprintln!("content={:?} reasoning_len={} usage={:?} events={n}", out.content, out.reasoning.len(), out.usage);

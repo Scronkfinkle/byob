@@ -267,7 +267,16 @@ impl Engine {
                 self.config.api.filter(|_| same_url)
             }
         };
-        let inference = InferenceConfig { base_url: effective.base_url.value.clone(), model: effective.model.value.clone(), api_key, api };
+        // The profile's request options and context window go along with its endpoint.
+        let options = r.profile.map(|(_, p)| p.config(None)).unwrap_or_default();
+        let inference = InferenceConfig {
+            base_url: effective.base_url.value.clone(),
+            model: effective.model.value.clone(),
+            api_key,
+            api,
+            params: options.params,
+            context: options.context,
+        };
         ChatSettings { env: env_plan(&effective), inference, effective, profile: profile.map(|(_, id)| id) }
     }
 
@@ -307,10 +316,10 @@ impl Engine {
     }
 
     /// A client for `config`: the engine's own for the global endpoint, else a new one
-    /// (probed once, in the background).
+    /// (probed once, in the background). Either way with `config`'s request options.
     pub(crate) fn llm_for(&mut self, config: &InferenceConfig) -> Result<byob_llm::Client, String> {
-        if *config == self.config {
-            return self.llm.clone();
+        if config.same_endpoint(&self.config) {
+            return self.llm.clone().map(|c| c.with_options_of(config));
         }
         let client = byob_llm::Client::new(config.clone()).map_err(|e| e.to_string())?;
         self.endpoints.probe(&client, &self.inbox);
@@ -322,6 +331,19 @@ impl Engine {
     pub(crate) fn vision_role(&self) -> Option<byob_llm::Client> {
         let config = self.models.get(crate::turn::VISION_ROLE)?;
         byob_llm::Client::new(config.clone()).map_err(|e| log::warn!("model role {}: {e}", crate::turn::VISION_ROLE)).ok()
+    }
+
+    /// The `utility` model role (titles and compaction summaries) for a chat on `chat`'s
+    /// endpoint, if one is set and it is another model (or the same with other options).
+    pub(crate) fn utility_role(&self, chat: &InferenceConfig) -> Option<crate::compact::Helper> {
+        let config = self.models.get(byob_types::profile::ROLE_UTILITY).filter(|c| *c != chat)?;
+        match byob_llm::Client::new(config.clone()) {
+            Ok(llm) => Some(crate::compact::Helper { plan: self.endpoints.plan(config), llm }),
+            Err(e) => {
+                log::warn!("model role {}: {e}", byob_types::profile::ROLE_UTILITY);
+                None
+            }
+        }
     }
 
     /// The prompt parts of `chat`'s last turn (byob's defaults before its first).

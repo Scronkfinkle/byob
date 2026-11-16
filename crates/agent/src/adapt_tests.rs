@@ -173,7 +173,7 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
     let mut tools = Registry::default();
     tools.register(Arc::new(Echo { big, runs: Arc::clone(&runs) }));
     let config = EngineConfig {
-        inference: InferenceConfig { base_url: url, model: "m".into(), api_key: None, api: None },
+        inference: InferenceConfig { base_url: url, model: "m".into(), api_key: None, api: None, ..Default::default() },
         workspace: PathBuf::from("/ws"),
         tools,
         policy: None,

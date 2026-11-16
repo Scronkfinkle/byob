@@ -563,7 +563,8 @@ dialect, so MCP Apps built with the ext-apps SDK run unchanged. Code: `byob_prot
 
 Before every model request (so also between tool rounds) a turn estimates the request; above
 the threshold (`settings.json` `compaction.threshold_percent`, default 80% of the window, never
-above window − reply reserve; hidden `--compact-at TOKENS` for testing) it first asks the model,
+above window − reply reserve; hidden `--compact-at TOKENS` for testing) it first asks the model (the
+`utility` role's, if set; see [Model profiles](#model-profiles)),
 off-stream, for a dense summary (goals, decisions, facts, files/artifact ids, key tool results,
 open tasks) of the conversation written out as text. Before the first request the newest
 `keep_turns` turns stay verbatim; inside a tool loop everything is summarised and the request is
@@ -1188,11 +1189,24 @@ defaults. Moving a chat to another workspace isn't offered: its transcript, arti
 
 ## Inference
 
-`InferenceConfig { base_url, model, api_key, api }`. `byob-llm` posts to
+`InferenceConfig { base_url, model, api_key, api, params, context }`. `byob-llm` posts to
 `{base_url}/chat/completions` with `stream: true`, assembles content, reasoning
 (`reasoning_content`/`reasoning`, or inline `<think>` tags) and streamed `tool_calls`,
 and reports usage. Because there's no grammar-constrained local engine anymore, the agent
 will run the tool-calling rounds itself (cap 30 per turn, as hob did).
+
+`params` and `context` are the request options of the profile the endpoint came from
+(`Profile::config`; empty for an endpoint without one, and never serialized when empty).
+`byob-llm::params` puts `params` on every chat request (`stream_chat*`), for both APIs:
+`temperature`, `top_p` and `max_tokens` when set, Anthropic's `output_config.effort`, then
+`extra` merged in last (objects key by key, anything else replaces, so it may override the
+fields before it). `extra` can never set byob's own fields
+(`byob_types::profile::PROTECTED_FIELDS`: `model`, `messages`, `tools`, `stream`,
+`stream_options`, `id_slot`, `system`): `Profile::validated` refuses a profile that tries
+(the engine runs it on every `CreateProfile`/`UpdateProfile`, whatever the UI did) and the
+merge skips them anyway (hand-edited settings). The probe builds its own requests and
+gets none of it. `context` replaces the probed window in `adapt::Endpoints::plan_with`
+(budgeting, compaction threshold, the header's context figure).
 
 ### Anthropic Messages API
 
@@ -1205,7 +1219,11 @@ become `system`; tools become `input_schema` definitions; assistant tool calls b
 `tool_use` blocks and tool results `tool_result` blocks at the start of the next user
 message (the conversion repairs what the API would reject: orphaned results, unanswered
 calls, a first or last assistant turn, empty text); images become base64 image blocks.
-No `temperature`/`top_p` (current models reject them), no forced `tool_choice`, no prefill.
+No forced `tool_choice`, no prefill, and no `temperature`/`top_p` unless the profile sets
+them (current models reject them with a 400 on API version `2026-10-21`; the profile form
+says so). `max_tokens` is 64000 (thinking counts toward it) unless the profile sets one; a
+profile's **Effort** (`low`…`max`) is sent as `output_config.effort`, unset leaves the
+model's default; `extra` merges into the body (e.g. into `thinking`) as for OpenAI.
 
 - **Caching**: a top-level `cache_control` (the breakpoint moves to the end of each
   request, so the next tool step reads everything before it) plus one after the system
@@ -1260,10 +1278,12 @@ any); the header lays out Settings first so it is never pushed off screen.
 
 A **profile** is a saved model (`byob_types::profile::Profile`): stable `id`, `name`,
 `base_url`, `model`, `description` (what it's good at), optional `tool_mode` (a property of
-the model: when set it beats every level's tool mode, not `--tool-mode`). Also stored, for
-later versions and not used yet: `subagents` (offered for delegation), `max_parallel`,
-`context` (overrides the probe), `params` (`temperature`, `top_p`, `max_tokens`, `extra`
-merged into the request body). Unknown fields are kept (`extra`, flattened).
+the model: when set it beats every level's tool mode, not `--tool-mode`), `context`
+(replaces the probed window for chats on it) and `params` (`temperature`, `top_p`,
+`max_tokens`, `effort` for Anthropic, and `extra`, a JSON object merged into every request
+body; see [Inference](#inference)). Also stored, for later versions and not used yet:
+`subagents` (offered for delegation), `max_parallel`. Unknown fields are kept (`extra` and
+`params.rest`, flattened).
 
 ```jsonc
 // settings.json
@@ -1282,8 +1302,12 @@ merged into the request body). Unknown fields are kept (`extra`, flattened).
 
 - **Roles** point at profiles: `main` is the default model of every chat (the global
   endpoint, unless `--inference-url`/`--model` set another), `vision` looks at images for a
-  model that can't; `subagents` and `utility` (titles, compaction) are stored for later
-  versions. Other role names (older `models.<name>`) work as agents' `model:`.
+  model that can't, `utility` writes chat titles and compaction summaries (automatic and
+  `/compact`) when set, else the chat's own model does; if the utility model's request
+  fails, the chat's model is asked once (`compact::summarize_via`, `chats::spawn_titler`);
+  a stop isn't a failure. Its summaries are fitted to its own window. `subagents` is stored
+  for later versions. Other role names (older `models.<name>`) work as agents' `model:`.
+  A role's model gets its own profile's params, a chat's model the chat's.
 - **Levels** pick one with `Layer::profile`; `byob_types::profile::resolve_with` puts its
   endpoint in place of the level's `base_url`/`model` and uses the profile's key. A profile
   that is gone (deleted, hand-edited) makes the level inherit the endpoint, with a warning in
@@ -1307,8 +1331,12 @@ merged into the request body). Unknown fields are kept (`extra`, flattened).
   endpoint and makes it the default.
 - **UI**: Settings → Models lists the profiles (status dot, model and server, what the probe
   found) with Edit, Duplicate, Test, Delete and Make default; Add takes a found server, a
-  preset or a URL, lists the server's models and adds the ticked ones. Advanced (collapsed)
-  holds the stored-only fields. A workspace's or chat's Model is a picker (Inherit, the
+  preset or a URL, lists the server's models and adds the ticked ones. The edit form's
+  Advanced section (collapsed) holds context window, temperature, top_p, max tokens, Effort
+  (Anthropic profiles only, with a note that Claude rejects temperature/top_p) and "Extra
+  request JSON" (checked as you type; an invalid one shows its error and isn't saved), plus
+  the stored-only fields. Below the list: "Vision helper" and "Titles & summaries" (the
+  `utility` role, default "Same as the chat"). A workspace's or chat's Model is a picker (Inherit, the
   profiles, Custom… which saves what's typed as a profile); the header's model chip switches
   the chat's model.
 

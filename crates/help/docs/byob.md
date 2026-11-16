@@ -75,8 +75,11 @@ On first run byob shows **Connect a model**: servers it found on this computer's
 (llama-server 8080, Ollama 11434, LM Studio 1234, vLLM 8000), presets for those and for hosted
 APIs, and a Test connection button. What you connect becomes your default model. Settings →
 **Models** keeps every model you use: add several from one server at once (byob lists what
-the server has), give each a description, test, duplicate, pick the default, and choose a
-vision helper. The model chip in the header switches the chat in view to another model.
+the server has), give each a description, test, duplicate, pick the default, choose a
+vision helper, and a model for titles and summaries (a small, fast one will do). A model's
+Advanced settings set its context window, temperature, top_p, max tokens, effort (Claude) and
+extra JSON for every request, e.g. `{"chat_template_kwargs": {"enable_thinking": false}}`. The
+model chip in the header switches the chat in view to another model.
 
 Claude is spoken to over Anthropic's own Messages API, not its OpenAI compatibility layer: pick
 the Anthropic preset (or any URL on `api.anthropic.com`), and byob uses prompt caching, shows

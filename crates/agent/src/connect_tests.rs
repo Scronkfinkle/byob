@@ -83,7 +83,7 @@ fn ok_server(ids: &'static [&'static str]) -> String {
 }
 
 fn engine(url: &str, checks: bool, paths: Option<Paths>) -> EngineHandle {
-    let mut c = EngineConfig::new(InferenceConfig { base_url: url.into(), model: "m".into(), api_key: Some("sk-old".into()), api: None });
+    let mut c = EngineConfig::new(InferenceConfig { base_url: url.into(), model: "m".into(), api_key: Some("sk-old".into()), api: None, ..Default::default() });
     c.paths = paths;
     c.auto_title = false;
     c.adapt = AdaptOptions { probe: checks, ..Default::default() };

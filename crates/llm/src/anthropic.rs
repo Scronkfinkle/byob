@@ -14,8 +14,10 @@
 //!   API requires. `prefix_mismatch_behavior: "drop_block"` makes the API drop, rather than
 //!   reject, thinking blocks whose earlier conversation byob changed (compaction, budget
 //!   fitting, old images left out).
-//! - No `temperature`/`top_p` (current models reject them), no forced `tool_choice`, no
-//!   assistant prefill. A `refusal` stop is an error, [`LlmError::Refused`].
+//! - No `temperature`/`top_p` unless the profile sets them (current models reject them);
+//!   `max_tokens`, `output_config.effort` and extra fields from the profile
+//!   ([`crate::params`]). No forced `tool_choice`, no assistant prefill. A `refusal` stop
+//!   is an error, [`LlmError::Refused`].
 //!
 //! Everything the server sends is untrusted: sizes are capped and unknown events and block
 //! types are ignored.
@@ -24,13 +26,14 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use byob_types::profile::Params;
 use serde_json::{Map, Value, json};
 
 use crate::{ChatMessage, ChatOutcome, LlmError, MAX_LINE, MAX_TOOL_CALLS, StreamEvent, ToolCall, ToolSpec, Usage, sse};
 
 /// The `anthropic-version` header.
 pub const VERSION: &str = "2026-10-21";
-/// `max_tokens` of every request: room for thinking as well as the reply (thinking counts
+/// `max_tokens` of every request whose profile sets none: room for thinking as well as the reply (thinking counts
 /// toward it). Every current model allows at least this much output.
 pub const MAX_TOKENS: u64 = 64_000;
 /// Beta for `thinking.block_binding`.
@@ -86,8 +89,10 @@ pub struct Request {
 
 /// The request for `messages` and `tools`. `extras` adds the beta features (thinking-block
 /// binding, server-side fallbacks); without them it is the plainest request the model takes.
-pub fn request(model: &str, messages: &[ChatMessage], tools: &[ToolSpec], extras: bool) -> Result<Request, LlmError> {
-    let (body, betas) = request_body(model, messages, tools, extras);
+/// The profile's `params` go on either ([`crate::params`]).
+pub fn request(model: &str, messages: &[ChatMessage], tools: &[ToolSpec], extras: bool, params: &Params) -> Result<Request, LlmError> {
+    let (mut body, betas) = request_body(model, messages, tools, extras);
+    crate::params::apply_anthropic(&mut body, params);
     let body = serde_json::to_vec(&body).map_err(|e| LlmError::Stream(format!("encoding request: {e}")))?;
     Ok(Request { body, betas })
 }

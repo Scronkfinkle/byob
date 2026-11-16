@@ -334,6 +334,7 @@ fn inference_config(args: &Args, settings: &Settings, secrets: &Secrets) -> Infe
         model: pick(&args.model, &settings.inference.model, defaults.model),
         api_key: args.api_key.clone().or_else(|| secrets.api_key.clone().filter(|k| !k.is_empty())),
         api,
+        ..Default::default()
     }
 }
 
@@ -350,7 +351,7 @@ fn model_roles(main: &InferenceConfig, settings: &Settings, secrets: &Secrets) -
             let api_key = secrets.model_keys.get(name).filter(|k| !k.is_empty()).cloned().or_else(|| main.api_key.clone().filter(|_| same));
             let model = role.model.clone().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| main.model.clone());
             let api = role.api.or_else(|| main.api.filter(|_| same));
-            (name.clone(), InferenceConfig { base_url, model, api_key, api })
+            (name.clone(), InferenceConfig { base_url, model, api_key, api, ..Default::default() })
         })
         .collect()
 }
@@ -610,7 +611,7 @@ mod tests {
 
     #[test]
     fn model_roles_default_to_the_main_endpoint() {
-        let main = InferenceConfig { base_url: "http://main/v1".into(), model: "big".into(), api_key: Some("sk-main".into()), api: None };
+        let main = InferenceConfig { base_url: "http://main/v1".into(), model: "big".into(), api_key: Some("sk-main".into()), api: None, ..Default::default() };
         let mut settings = Settings::default();
         settings.models.insert("fast".into(), byob_store::ModelRole { model: Some("small".into()), ..Default::default() });
         settings.models.insert("remote".into(), byob_store::ModelRole { base_url: Some("http://other/v1".into()), ..Default::default() });
@@ -619,7 +620,10 @@ mod tests {
         let roles = model_roles(&main, &settings, &secrets);
         assert_eq!(roles["fast"], InferenceConfig { model: "small".into(), ..main.clone() });
         // Another endpoint never gets the main key; its own comes from secrets.json.
-        assert_eq!(roles["remote"], InferenceConfig { base_url: "http://other/v1".into(), model: "big".into(), api_key: None, api: None });
+        assert_eq!(
+            roles["remote"],
+            InferenceConfig { base_url: "http://other/v1".into(), model: "big".into(), api_key: None, api: None, ..Default::default() }
+        );
         assert_eq!(roles["keyed"].api_key.as_deref(), Some("sk-third"));
     }
 

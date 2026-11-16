@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use byob_protocol::profiles::{Params, Profile, ProfileList, ProfileView, ROLE_MAIN, ROLE_VISION};
+use byob_protocol::profiles::{Effort, Params, Profile, ProfileList, ProfileView, ROLE_MAIN, ROLE_UTILITY, ROLE_VISION};
 use byob_protocol::workspace::ToolMode;
 use byob_protocol::{ClientMsg, EngineState, InferenceTest, Link, PRESETS, Preset, ServerMsg};
 use egui::RichText;
@@ -107,21 +107,26 @@ impl Editor {
         p.params = Params {
             temperature: parse(&self.temperature, "temperature")?,
             top_p: parse(&self.top_p, "top_p")?,
-            max_tokens: parse(&self.max_tokens, "max_tokens")?,
-            extra: if self.extra.trim().is_empty() {
-                serde_json::Map::new()
-            } else {
-                match serde_json::from_str::<serde_json::Value>(&self.extra) {
-                    Ok(serde_json::Value::Object(m)) => m,
-                    Ok(_) => return Err("extra request fields must be a JSON object, like {\"top_k\": 20}".into()),
-                    Err(e) => return Err(format!("extra request fields: {e}")),
-                }
-            },
+            max_tokens: parse(&self.max_tokens, "max tokens")?,
+            effort: p.params.effort,
+            extra: extra_json(&self.extra)?,
             rest: p.params.rest.clone(),
         };
         p.max_parallel = parse(&self.max_parallel, "parallel requests")?;
         p.context = parse(&self.context, "context window")?;
         p.validated()
+    }
+}
+
+/// The "Extra request JSON" field as an object (empty: none), or what's wrong with it.
+fn extra_json(text: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    if text.trim().is_empty() {
+        return Ok(serde_json::Map::new());
+    }
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(serde_json::Value::Object(m)) => Ok(m),
+        Ok(_) => Err("the extra request JSON must be an object, like {\"top_k\": 20}".into()),
+        Err(e) => Err(format!("extra request JSON: {e}")),
     }
 }
 
@@ -169,11 +174,21 @@ fn badge(ui: &mut egui::Ui, t: &Tokens, text: &str, strong: bool) {
         });
 }
 
+/// A model role's dropdown in Settings → Models: the role, its label, what unset means and
+/// what the role does.
+struct RoleRow {
+    role: &'static str,
+    label: &'static str,
+    none: &'static str,
+    what: &'static str,
+}
+
 /// "Default", "Vision", … for the roles byob shows.
 fn role_label(role: &str) -> String {
     match role {
         ROLE_MAIN => "Default".into(),
         ROLE_VISION => "Vision".into(),
+        ROLE_UTILITY => "Titles".into(),
         other => other.to_owned(),
     }
 }
@@ -279,23 +294,37 @@ impl ModelsUi {
         }
     }
 
-    /// Which model looks at images for the others.
+    /// Which model looks at images for the others, and which writes titles and summaries.
     fn roles(&mut self, ui: &mut egui::Ui, t: &Tokens, list: &ProfileList) {
+        let vision =
+            RoleRow { role: ROLE_VISION, label: "Vision helper", none: "None", what: "Answers questions about images for a model that can't see them." };
+        self.role(ui, t, list, &vision);
+        let utility = RoleRow {
+            role: ROLE_UTILITY,
+            label: "Titles & summaries",
+            none: "Same as the chat",
+            what: "Names chats and writes the summaries that compact them; a small, fast model will do. If it fails, the chat's model does it.",
+        };
+        self.role(ui, t, list, &utility);
+    }
+
+    /// A dropdown for one model role.
+    fn role(&mut self, ui: &mut egui::Ui, t: &Tokens, list: &ProfileList, r: &RoleRow) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Vision helper").color(t.text));
-            let current = list.roles.get(ROLE_VISION).cloned();
-            let name = |id: &Option<String>| id.as_ref().and_then(|i| list.get(i)).map_or_else(|| "None".to_owned(), |v| v.profile.label().to_owned());
+            ui.label(RichText::new(r.label).color(t.text));
+            let current = list.roles.get(r.role).cloned();
+            let name = |id: &Option<String>| id.as_ref().and_then(|i| list.get(i)).map_or_else(|| r.none.to_owned(), |v| v.profile.label().to_owned());
             let mut picked = current.clone();
-            egui::ComboBox::from_id_salt("vision-role").selected_text(name(&current)).show_ui(ui, |ui| {
-                ui.selectable_value(&mut picked, None, "None");
+            egui::ComboBox::from_id_salt((r.role, "role")).selected_text(name(&current)).show_ui(ui, |ui| {
+                ui.selectable_value(&mut picked, None, r.none);
                 for v in &list.items {
                     ui.selectable_value(&mut picked, Some(v.profile.id.clone()), v.profile.label());
                 }
             });
             if picked != current {
-                self.out.push(ClientMsg::SetRole { role: ROLE_VISION.into(), profile: picked });
+                self.out.push(ClientMsg::SetRole { role: r.role.into(), profile: picked });
             }
-            ui.label(RichText::new("Answers questions about images for a model that can't see them.").small().color(t.text_faint));
+            ui.label(RichText::new(r.what).small().color(t.text_faint));
         });
     }
 
@@ -459,31 +488,65 @@ impl ModelsUi {
                 ui.end_row();
             });
             egui::CollapsingHeader::new(RichText::new("Advanced").color(t.text)).id_salt(("profile-advanced", &e.profile.id)).show(ui, |ui| {
-                ui.label(RichText::new("Saved with the model for later versions; this version of byob doesn't use them yet.").small().color(t.warning));
+                let anthropic = e.profile.anthropic();
+                ui.label(RichText::new("Sent with every request to this model; leave a field empty for the server's default.").small().color(t.text_faint));
                 egui::Grid::new(("profile-advanced-grid", &e.profile.id)).num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                     ui.label("Offer to subagents");
-                    ui.checkbox(&mut e.profile.subagents, "the model may delegate to it");
+                    ui.checkbox(&mut e.profile.subagents, "the model may delegate to it (a later version)");
                     ui.end_row();
-                    let field = |ui: &mut egui::Ui, label: &str, v: &mut String, hint: &str| {
+                    let field = |ui: &mut egui::Ui, label: &str, v: &mut String, hint: &str, tip: &str| {
                         ui.label(label);
-                        ui.add(egui::TextEdit::singleline(v).hint_text(hint).desired_width(120.0));
+                        ui.add(egui::TextEdit::singleline(v).hint_text(hint).desired_width(120.0)).on_hover_text(tip);
                         ui.end_row();
                     };
-                    field(ui, "Parallel requests", &mut e.max_parallel, "server's slots");
-                    field(ui, "Context window", &mut e.context, "as probed");
-                    field(ui, "Temperature", &mut e.temperature, "server default");
-                    field(ui, "top_p", &mut e.top_p, "server default");
-                    field(ui, "max_tokens", &mut e.max_tokens, "server default");
-                    ui.label("Extra request fields");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut e.extra)
-                            .code_editor()
-                            .hint_text("{\"chat_template_kwargs\": {\"enable_thinking\": false}}")
-                            .desired_rows(2)
-                            .desired_width(w),
+                    field(ui, "Parallel requests", &mut e.max_parallel, "server's slots", "Saved for a later version; this one doesn't use it yet");
+                    field(
+                        ui,
+                        "Context window",
+                        &mut e.context,
+                        "as probed",
+                        "Tokens to budget chats against (and compact before), instead of what the server reported",
                     );
+                    let sampling = if anthropic { "Current Claude models reject it: leave it empty" } else { "Sampling temperature" };
+                    field(ui, "Temperature", &mut e.temperature, "server default", sampling);
+                    field(ui, "top_p", &mut e.top_p, "server default", if anthropic { sampling } else { "Nucleus sampling" });
+                    let (hint, tip) =
+                        if anthropic { ("64000", "Most tokens of one reply, thinking included") } else { ("server default", "Most tokens of one reply") };
+                    field(ui, "Max tokens", &mut e.max_tokens, hint, tip);
+                    if anthropic {
+                        ui.label("Effort");
+                        let shown = |v: Option<Effort>| v.map_or("API default", Effort::as_str);
+                        egui::ComboBox::from_id_salt(("profile-effort", &e.profile.id))
+                            .selected_text(shown(e.profile.params.effort))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut e.profile.params.effort, None, shown(None));
+                                for v in Effort::ALL {
+                                    ui.selectable_value(&mut e.profile.params.effort, Some(v), v.as_str());
+                                }
+                            })
+                            .response
+                            .on_hover_text("How hard Claude thinks (output_config.effort): lower is faster and cheaper");
+                        ui.end_row();
+                    }
+                    ui.label("Extra request JSON");
+                    ui.vertical(|ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut e.extra)
+                                .code_editor()
+                                .hint_text("{\"chat_template_kwargs\": {\"enable_thinking\": false}}")
+                                .desired_rows(2)
+                                .desired_width(w),
+                        )
+                        .on_hover_text("A JSON object merged into every request body, last. It can't set model, messages, tools, stream or system.");
+                        if let Err(err) = extra_json(&e.extra) {
+                            ui.label(RichText::new(err).small().color(t.danger));
+                        }
+                    });
                     ui.end_row();
                 });
+                if anthropic && (!e.temperature.trim().is_empty() || !e.top_p.trim().is_empty()) {
+                    ui.label(RichText::new("Current Claude models reject temperature and top_p: requests with them fail.").small().color(t.warning));
+                }
             });
             if let Some(err) = &e.error {
                 ui.label(RichText::new(err).color(t.danger));
@@ -700,6 +763,20 @@ mod tests {
         e.extra.clear();
         e.max_tokens = "lots".into();
         assert!(e.built().is_err());
+        // Extra JSON can't set byob's own fields; effort is kept.
+        e.max_tokens.clear();
+        e.extra = r#"{"stream": false}"#.into();
+        assert!(e.built().unwrap_err().contains("stream"));
+        e.extra.clear();
+        e.profile.params.effort = Some(Effort::Low);
+        assert_eq!(e.built().unwrap().params.effort, Some(Effort::Low));
+        assert!(extra_json("{oops").unwrap_err().starts_with("extra request JSON"));
+        // An Anthropic profile's form (with Effort) renders too.
+        let mut claude = view("c", "claude-opus-5-5");
+        claude.profile.base_url = "https://api.anthropic.com/v1".into();
+        assert!(claude.profile.anthropic());
+        m.editor = Some(Editor::new(&claude));
+        render(&mut m);
         // A listing answer fills the add form; a test answer the row.
         m.add = Some(AddForm { url: "http://s/v1".into(), listing: Some("http://s/v1".into()), ..AddForm::default() });
         m.tested(&InferenceTest { base_url: "http://s/v1".into(), models: vec!["one".into()], ok: true, ..InferenceTest::default() });

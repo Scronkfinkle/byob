@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub use byob_types::profile::{
-    MAX_DESCRIPTION_CHARS, MAX_ID_CHARS, MAX_NAME_CHARS, Params, Profile, ROLE_MAIN, ROLE_SUBAGENTS, ROLE_UTILITY, ROLE_VISION, ROLES, id_ok, role_ok,
+    Effort, MAX_DESCRIPTION_CHARS, MAX_ID_CHARS, MAX_NAME_CHARS, PROTECTED_FIELDS, Params, Profile, ROLE_MAIN, ROLE_SUBAGENTS, ROLE_UTILITY, ROLE_VISION,
+    ROLES, id_ok, role_ok,
 };
 
 use crate::{ClientMsg, EndpointInfo, InferenceTest, Link};
