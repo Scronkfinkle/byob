@@ -257,3 +257,55 @@ fn scoped_keys_are_secrets() {
     assert_eq!(Secrets::load(&p).value.scoped_keys.get("workspace:w1").map(String::as_str), Some("sk-ws"));
     assert!(!format!("{s:?}").contains("sk-ws"));
 }
+
+/// What 0.3.5 reads: settings.json `inference`, `models`; secrets.json `api_key`,
+/// `model_keys`. A file written by this build after migrating must give it the same answers,
+/// carry profiles and roles along, and keep every key out of settings.json.
+#[test]
+fn profiles_migrate_on_disk_and_older_builds_still_read_the_files() {
+    let dir = TempDir::new();
+    let paths = Paths::at(dir.path());
+    let old_settings = r#"{"inference":{"base_url":"http://main:8080/v1","model":"big","last_good":"http://main:8080/v1"},"models":{"vision":{"base_url":"http://vl/v1","model":"qwen-vl"}},"theme":"dark"}"#;
+    let old_secrets = r#"{"api_key":"sk-main","model_keys":{"vision":"sk-vl"}}"#;
+    std::fs::write(paths.settings(), old_settings).unwrap();
+    std::fs::write(paths.secrets(), old_secrets).unwrap();
+    let mut s = Settings::load(&paths.settings()).value;
+    let mut k = Secrets::load(&paths.secrets()).value;
+    assert!(profiles::migrate(&mut s, &mut k));
+    profiles::mirror(&mut s, &mut k);
+    s.save(&paths.settings()).unwrap();
+    k.save(&paths.secrets()).unwrap();
+    let text = std::fs::read_to_string(paths.settings()).unwrap();
+    assert!(!text.contains("sk-"), "{text}");
+    let v = read_json(&paths.settings());
+    let o: Value = serde_json::from_str(old_settings).unwrap();
+    // Everything 0.3.5 read is still there, unchanged.
+    assert_eq!(v["inference"], o["inference"]);
+    assert_eq!(v["models"], o["models"]);
+    assert_eq!(v["theme"], o["theme"]);
+    assert_eq!(v["roles"]["main"], json!("big"));
+    assert_eq!(v["profiles"]["big"]["base_url"], json!("http://main:8080/v1"));
+    let sv = read_json(&paths.secrets());
+    assert_eq!((&sv["api_key"], &sv["model_keys"]["vision"]), (&json!("sk-main"), &json!("sk-vl")));
+    assert_eq!(sv["profile_keys"]["big"], json!("sk-main"));
+    // Loading what this build wrote changes nothing more.
+    let (mut s2, mut k2) = (Settings::load(&paths.settings()).value, Secrets::load(&paths.secrets()).value);
+    assert!(!profiles::migrate(&mut s2, &mut k2));
+    assert_eq!((s2, k2), (s, k));
+}
+
+#[test]
+fn keys_in_a_profile_are_dropped_from_settings() {
+    let dir = TempDir::new();
+    let p = dir.path().join("settings.json");
+    std::fs::write(&p, r#"{"profiles":{"a":{"base_url":"http://h/v1","model":"m","api_key":"sk-x","params":{"apiKey":"sk-y"}}}}"#).unwrap();
+    let l = Settings::load(&p);
+    assert_eq!(l.warnings.len(), 2, "{:?}", l.warnings);
+    let mut s = l.value;
+    assert_eq!(s.profiles["a"].id, "a");
+    if let Some(prof) = s.profiles.get_mut("a") {
+        prof.extra.insert("api_key".into(), json!("sk-z"));
+    }
+    s.save(&p).unwrap();
+    assert!(!std::fs::read_to_string(&p).unwrap().contains("sk-"));
+}
