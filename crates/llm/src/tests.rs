@@ -42,7 +42,7 @@ fn sse(chunks: &[&str]) -> String {
 }
 
 fn client(url: String) -> Client {
-    Client::new(InferenceConfig { base_url: url, model: "m".into(), api_key: Some("sk-test".into()) }).unwrap()
+    Client::new(InferenceConfig { base_url: url, model: "m".into(), api_key: Some("sk-test".into()), api: None }).unwrap()
 }
 
 #[test]
@@ -511,7 +511,7 @@ fn root_strips_v1() {
 #[ignore = "needs a live inference server (BYOB_LIVE_URL)"]
 fn live_probe() {
     let url = std::env::var("BYOB_LIVE_URL").expect("set BYOB_LIVE_URL");
-    let c = Client::new(InferenceConfig { base_url: url, model: "local".into(), api_key: None }).unwrap();
+    let c = Client::new(InferenceConfig { base_url: url, model: "local".into(), api_key: None, api: None }).unwrap();
     let start = std::time::Instant::now();
     let caps = c.probe();
     eprintln!("probe took {:?}\n{caps:#?}", start.elapsed());
@@ -527,7 +527,7 @@ fn live_probe() {
 #[ignore = "needs a live inference server (BYOB_LIVE_URL)"]
 fn live_server_streams() {
     let url = std::env::var("BYOB_LIVE_URL").expect("set BYOB_LIVE_URL");
-    let c = Client::new(InferenceConfig { base_url: url, model: "local".into(), api_key: None }).unwrap();
+    let c = Client::new(InferenceConfig { base_url: url, model: "local".into(), api_key: None, api: None }).unwrap();
     let mut n = 0;
     let out = c.stream_chat(&[ChatMessage::user("Reply with exactly: pong")], &[], &AtomicBool::new(false), |_| n += 1).unwrap();
     eprintln!("content={:?} reasoning_len={} usage={:?} events={n}", out.content, out.reasoning.len(), out.usage);

@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+pub use byob_types::ApiKind;
 pub use byob_types::config::{Approvals, Layer, ToolMode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -47,6 +48,9 @@ pub struct InferenceSettings {
     /// byob has been connected to something, so returning users skip the welcome screen.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub last_good: Option<String>,
+    /// The API the endpoint speaks (`"openai"` or `"anthropic"`); unset decides from the URL.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub api: Option<ApiKind>,
     /// Fields this build doesn't know (written by a newer byob, or by hand); preserved.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -54,7 +58,7 @@ pub struct InferenceSettings {
 
 impl InferenceSettings {
     fn is_empty(&self) -> bool {
-        self.base_url.is_none() && self.model.is_none() && self.last_good.is_none() && self.extra.is_empty()
+        self.base_url.is_none() && self.model.is_none() && self.last_good.is_none() && self.api.is_none() && self.extra.is_empty()
     }
 
     /// An endpoint has worked before.
@@ -115,6 +119,10 @@ pub struct ModelRole {
     pub base_url: Option<String>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The API of the role's endpoint; unset means the main one's on the main URL, else
+    /// decided from the URL.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub api: Option<ApiKind>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

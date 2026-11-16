@@ -20,6 +20,10 @@ use crate::Input;
 /// Replaces image parts for endpoints that say they cannot see.
 const NO_VISION_NOTE: &str = "[an image was attached here, but this model cannot see images]";
 
+/// Context assumed for an Anthropic endpoint the probe hasn't measured: the smallest window
+/// of the current Claude models.
+const ANTHROPIC_CONTEXT_TOKENS: usize = 200_000;
+
 /// How turns call tools: follow the probe (`Auto`), or force one way. Set per level (see
 /// `byob_types::config`); `--tool-mode` forces it for a run.
 pub use byob_types::config::ToolMode;
@@ -190,12 +194,19 @@ impl Endpoints {
     pub fn plan_with(&self, config: &InferenceConfig, mode: ToolMode) -> Plan {
         let key = key(config);
         let caps = self.cache.get(&key);
-        let context = caps.map_or(budget::DEFAULT_CONTEXT_TOKENS, Capabilities::effective_context);
+        let anthropic = config.api_kind() == byob_types::ApiKind::Anthropic;
+        // Until the probe says, Claude gets the smallest window of its models, not a local
+        // server's guess.
+        let unknown = if anthropic { ANTHROPIC_CONTEXT_TOKENS } else { budget::DEFAULT_CONTEXT_TOKENS };
+        let context = caps.filter(|c| c.context_length.is_some_and(|n| n > 0)).map_or(unknown, Capabilities::effective_context);
         let reserve = budget::default_reply_reserve(context);
         let mode = if self.opts.tool_mode == ToolMode::Auto { mode } else { self.opts.tool_mode };
         let (prompt_tools, fallback) = match mode {
             ToolMode::Native => (false, false),
             ToolMode::Prompt => (true, false),
+            // Claude calls tools natively; a 400 that mentions tools is about the request,
+            // not a server without tool support.
+            ToolMode::Auto if anthropic => (false, false),
             ToolMode::Auto if self.rejected.contains(&key) => (true, false),
             ToolMode::Auto => match caps.map(|c| c.tools) {
                 Some(ToolSupport::InContent | ToolSupport::Unsupported) => (true, false),
@@ -251,6 +262,7 @@ pub(crate) fn server_name(k: ServerKind) -> &'static str {
         ServerKind::Ollama => "Ollama",
         ServerKind::LmStudio => "LM Studio",
         ServerKind::OpenAi => "OpenAI",
+        ServerKind::Anthropic => "Anthropic",
         ServerKind::Unknown => "",
     }
 }
@@ -260,7 +272,7 @@ mod tests {
     use super::*;
 
     fn config() -> InferenceConfig {
-        InferenceConfig { base_url: "http://h/v1/".into(), model: "m".into(), api_key: None }
+        InferenceConfig { base_url: "http://h/v1/".into(), model: "m".into(), api_key: None, api: None }
     }
 
     fn with(tools: ToolSupport, mode: ToolMode) -> Endpoints {
@@ -297,6 +309,17 @@ mod tests {
         assert_eq!(e.info(&config()).tools, ToolsMode::Prompt);
         let other = InferenceConfig { model: "other".into(), ..config() };
         assert!(!e.plan(&other).prompt_tools);
+    }
+
+    #[test]
+    fn anthropic_is_native_without_a_prompt_fallback() {
+        let claude = InferenceConfig { base_url: "https://api.anthropic.com/v1".into(), model: "claude-opus-5-5".into(), ..config() };
+        let p = Endpoints::default().plan(&claude);
+        assert!(!p.prompt_tools && !p.fallback);
+        assert_eq!(p.context, ANTHROPIC_CONTEXT_TOKENS);
+        assert_eq!(Endpoints::default().info(&claude).tools, ToolsMode::Native);
+        // A forced prompt mode still wins.
+        assert!(Endpoints::new(AdaptOptions { tool_mode: ToolMode::Prompt, probe: false }).plan(&claude).prompt_tools);
     }
 
     #[test]

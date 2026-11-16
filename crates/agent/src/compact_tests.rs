@@ -123,7 +123,7 @@ fn engine(url: String, compaction: CompactOptions, tools: bool, paths: Option<Pa
         registry.register(Arc::new(Big));
     }
     let config = EngineConfig {
-        inference: InferenceConfig { base_url: url, model: "m".into(), api_key: None },
+        inference: InferenceConfig { base_url: url, model: "m".into(), api_key: None, api: None },
         workspace: PathBuf::from("/ws"),
         tools: registry,
         policy: None,
@@ -535,7 +535,7 @@ fn switching_the_compaction_plugin_off_turns_compaction_off() {
     for on in [true, false] {
         let (url, seen) = server(vec![Reply::Text("answer".into())], Summaries::Answer);
         let home = tempfile::tempdir().unwrap();
-        let mut config = EngineConfig::new(InferenceConfig { base_url: url, model: "m".into(), api_key: None });
+        let mut config = EngineConfig::new(InferenceConfig { base_url: url, model: "m".into(), api_key: None, api: None });
         config.workspace = PathBuf::from("/ws");
         config.system_prompt = "You are a test.".into();
         config.adapt = crate::AdaptOptions { probe: false, ..Default::default() };

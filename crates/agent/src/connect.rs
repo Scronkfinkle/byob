@@ -131,7 +131,7 @@ pub fn detect() -> Vec<Detected> {
             .filter(|p| p.local)
             .map(|p| {
                 s.spawn(move || {
-                    let client = Client::new(InferenceConfig { base_url: p.base_url.into(), model: String::new(), api_key: None }).ok()?;
+                    let client = Client::new(InferenceConfig { base_url: p.base_url.into(), model: String::new(), api_key: None, api: None }).ok()?;
                     let models = client.list_models_within(DETECT_TIMEOUT).ok().filter(|m| !m.is_empty())?;
                     Some(Detected { preset: p.id.into(), base_url: p.base_url.into(), models })
                 })
@@ -159,6 +159,13 @@ impl Engine {
             Some(k) => Some(k.trim().to_owned()).filter(|k| !k.is_empty()),
             None => self.config.api_key.clone().filter(|_| origin(base_url) == origin(&self.config.base_url)),
         }
+    }
+
+    /// The API set for `base_url`: the current endpoint's, if it is the same URL; else none
+    /// (decided from the URL, see [`InferenceConfig::api_kind`]).
+    pub(crate) fn api_for(&self, base_url: &str) -> Option<byob_types::ApiKind> {
+        let norm = |u: &str| u.trim().trim_end_matches('/').to_owned();
+        self.config.api.filter(|_| norm(base_url) == norm(&self.config.base_url))
     }
 
     /// Check the current endpoint in the background (if checks are on).
@@ -260,7 +267,8 @@ impl Engine {
             self.send_to(id, ServerMsg::InferenceTested(answer(None, "a test is already running".into())));
             return;
         }
-        let config = InferenceConfig { api_key: self.key_for(&base_url, api_key), base_url: base_url.clone(), model: model.clone() };
+        let config =
+            InferenceConfig { api_key: self.key_for(&base_url, api_key), api: self.api_for(&base_url), base_url: base_url.clone(), model: model.clone() };
         let client = match Client::new(config) {
             Ok(c) => c,
             Err(e) => {

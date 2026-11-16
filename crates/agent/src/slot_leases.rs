@@ -130,7 +130,7 @@ mod tests {
     use super::*;
 
     fn config() -> InferenceConfig {
-        InferenceConfig { base_url: "http://h/v1".into(), model: "m".into(), api_key: None }
+        InferenceConfig { base_url: "http://h/v1".into(), model: "m".into(), api_key: None, api: None }
     }
 
     fn plan(slots: Option<u64>) -> adapt::Plan {

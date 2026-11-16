@@ -91,6 +91,19 @@ fn wrong_typed_fields_fall_back_individually() {
 }
 
 #[test]
+fn the_api_kind_is_optional_and_lenient() {
+    let dir = TempDir::new();
+    let p = dir.path().join("settings.json");
+    std::fs::write(&p, r#"{"inference":{"base_url":"http://gw/v1","api":"anthropic"},"models":{"a":{"api":"openai"},"b":{"api":"gemini"}}}"#).unwrap();
+    let s = Settings::load(&p).value;
+    assert_eq!(s.inference.api, Some(ApiKind::Anthropic));
+    assert_eq!(s.models["a"].api, Some(ApiKind::OpenAi));
+    assert_eq!(s.models["b"].api, None, "an unknown API is ignored, not an error");
+    Settings::default().save(&p).unwrap();
+    assert!(read_json(&p).get("inference").is_none(), "unset, nothing is written");
+}
+
+#[test]
 fn corrupt_settings_give_defaults_warning_and_a_backup() {
     let dir = TempDir::new();
     let p = dir.path().join("settings.json");

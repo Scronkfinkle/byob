@@ -21,6 +21,12 @@ pub struct ChatMessage {
     /// Image inputs, sent as `image_url` parts after the text. Not deserialized.
     #[serde(skip)]
     pub images: Vec<String>,
+    /// An assistant reply's content blocks exactly as the Anthropic Messages API sent them
+    /// (thinking with its signature, text, `tool_use`; see [`crate::ChatOutcome::native`]),
+    /// sent back as they are so the model keeps its reasoning within a tool loop. Ignored
+    /// by the OpenAI wire format; never serialized or stored.
+    #[serde(skip)]
+    pub native: Vec<Value>,
 }
 
 impl Serialize for ChatMessage {
@@ -68,7 +74,7 @@ impl ChatMessage {
         Self::text("assistant", text)
     }
     fn text(role: &str, text: impl Into<String>) -> Self {
-        Self { role: role.into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: None, images: Vec::new() }
+        Self { role: role.into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: None, images: Vec::new(), native: Vec::new() }
     }
     /// A user message with images (URLs or `data:image/...;base64,` URLs) after the text.
     pub fn user_with_images(text: impl Into<String>, images: Vec<String>) -> Self {
@@ -99,11 +105,23 @@ impl ChatMessage {
                 function: WireFunction { name: c.name.clone(), arguments: c.arguments.clone() },
             })
             .collect();
-        Self { role: "assistant".into(), content: text, tool_calls, tool_call_id: None, images: Vec::new() }
+        Self { role: "assistant".into(), content: text, tool_calls, tool_call_id: None, images: Vec::new(), native: Vec::new() }
     }
     /// The result of a tool call.
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self { role: "tool".into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: Some(call_id.into()), images: Vec::new() }
+        Self {
+            role: "tool".into(),
+            content: Some(text.into()),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(call_id.into()),
+            images: Vec::new(),
+            native: Vec::new(),
+        }
+    }
+    /// This message with the provider-native blocks of the reply it came from (see
+    /// [`ChatMessage::native`]).
+    pub fn with_native(self, native: Vec<Value>) -> Self {
+        Self { native, ..self }
     }
 }
 
