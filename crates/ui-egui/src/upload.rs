@@ -167,7 +167,7 @@ impl Uploads {
     }
 
     /// The Attach button.
-    pub fn button(&mut self, ui: &mut egui::Ui) {
+    pub fn button(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let b = ui.add_enabled(!self.picking, egui::Button::new("Attach")).on_hover_text("Attach files (or drop them onto the window)");
         if b.clicked() {
             // A browser doesn't tell us reliably when its dialog is cancelled, so the button
@@ -175,6 +175,7 @@ impl Uploads {
             self.picking = cfg!(not(target_arch = "wasm32"));
             pick_files(ui.ctx(), self.tx.clone());
         }
+        b
     }
 
     /// Chips for attached and uploading files; × removes one.

@@ -782,27 +782,43 @@ impl ByobApp {
             (false, true) => "Queue a follow-up…  (Enter to queue, Shift+Enter for newline)",
             (false, false) => "Message byob…  (Enter to send, Shift+Enter for newline)",
         };
-        ui.horizontal(|ui| {
-            self.uploads.button(ui);
+        // One row, buttons level with the field's bottom edge. egui lays out in one pass, so
+        // the row takes the field's height from the last frame (Attach comes before it).
+        let height_id = id.with("height");
+        let row_height = ui.data(|d| d.get_temp::<f32>(height_id)).unwrap_or(ui.spacing().interact_size.y);
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_height), egui::Layout::left_to_right(egui::Align::Max), |ui| {
+            self.header_rects.attach = self.uploads.button(ui).rect;
             let buttons = if editing.is_some() || busy { 132.0 } else { 72.0 };
             let width = (ui.available_width() - buttons).max(100.0);
             let field = ui.add(egui::TextEdit::multiline(&mut self.input).id(id).desired_rows(2).desired_width(width).hint_text(hint));
+            self.header_rects.field = field.rect;
+            if (field.rect.height() - row_height).abs() > 0.5 {
+                ui.data_mut(|d| d.insert_temp(height_id, field.rect.height()));
+                ui.ctx().request_repaint();
+            }
             // Still open after this frame's typing (and not just picked): draw it.
             if menu && picked.is_none() && slash::query(&self.input).is_some() {
                 let shown: Vec<&byob_protocol::SlashItem> = commands.iter().collect();
                 picked = self.slash.show(ui, &t, field.rect, &shown);
             }
-            if editing.is_some() {
+            let last = if editing.is_some() {
                 send |= ui.button("Save").on_hover_text("Save the queued message").clicked();
-                cancel_edit |= ui.button("Cancel").clicked();
+                let cancel = ui.button("Cancel");
+                cancel_edit |= cancel.clicked();
+                cancel
             } else if busy {
                 send |= ui.button("Queue").on_hover_text("Send this when the reply is done").clicked();
-                if ui.button("Stop").clicked() {
+                let stop = ui.button("Stop");
+                if stop.clicked() {
                     self.conn.send(ClientMsg::Cancel);
                 }
+                stop
             } else {
-                send |= ui.button("Send").clicked();
-            }
+                let b = ui.button("Send");
+                send |= b.clicked();
+                b
+            };
+            self.header_rects.send = last.rect;
         });
         if let Some(item) = picked.and_then(|k| commands.get(k)) {
             self.slash.reset();
@@ -1168,17 +1184,33 @@ mod app_tests {
                 frame(&ctx, &mut app, width);
             }
             let r = app.header_rects;
-            for (name, rect) in [("chat list", r.chats), ("chat settings", r.chat_settings), ("Settings", r.settings), ("more", r.more)] {
+            for (name, rect) in [("chat list", r.chats), ("chat settings", r.chat_settings), ("more", r.more)] {
                 assert!(rect.is_positive() && rect.min.x >= 0.0 && rect.max.x <= width + 0.5, "width {width}: {name} at {rect:?}");
             }
             assert!(r.chats.max.x <= r.chat_settings.min.x, "width {width}: {r:?}");
-            assert!(r.chat_settings.max.x <= r.settings.min.x, "width {width}: {r:?}");
-            assert!(r.settings.max.x <= r.more.min.x, "width {width}: {r:?}");
-            // The plugins chip, between the chat's settings and the app's.
-            assert!(r.plugins.is_positive() && r.chat_settings.max.x <= r.plugins.min.x && r.plugins.max.x <= r.settings.min.x, "width {width}: {r:?}");
-            // "Settings" is spelled out wherever it is not a phone.
-            let labelled = r.settings.width() > 40.0;
-            assert_eq!(labelled, header::Layout::for_width(width).settings_label, "width {width}: {r:?}");
+            // The plugins chip, between the chat's settings and the "⋯" menu.
+            assert!(r.plugins.is_positive() && r.chat_settings.max.x <= r.plugins.min.x && r.plugins.max.x <= r.more.min.x, "width {width}: {r:?}");
+        }
+    }
+
+    #[test]
+    fn the_composer_buttons_line_up_with_the_message_field() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        for (busy, input) in [(false, ""), (false, "one\ntwo\nthree\nfour\nfive"), (true, "")] {
+            if let Some(s) = app.state.as_mut() {
+                s.busy = busy;
+            }
+            app.input = input.into();
+            for _ in 0..3 {
+                frame(&ctx, &mut app, 1000.0);
+            }
+            let r = app.header_rects;
+            assert!(r.attach.is_positive() && r.field.is_positive() && r.send.is_positive(), "{r:?}");
+            for (name, b) in [("Attach", r.attach), ("Send/Stop", r.send)] {
+                assert!((b.max.y - r.field.max.y).abs() < 1.0, "busy {busy}, {} lines: {name} {b:?} vs field {:?}", input.lines().count(), r.field);
+            }
+            assert!(r.attach.max.x <= r.field.min.x && r.field.max.x <= r.send.min.x, "{r:?}");
         }
     }
 

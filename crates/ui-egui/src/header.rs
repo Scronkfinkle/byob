@@ -37,8 +37,6 @@ pub struct Layout {
     pub chip: ChipDetail,
     /// "~3.4k / 262k" next to the context bar.
     pub usage_label: bool,
-    /// "Settings" next to the gear.
-    pub settings_label: bool,
     /// How many plugins are on, next to the puzzle chip.
     pub plugin_count: bool,
 }
@@ -57,7 +55,6 @@ impl Layout {
                 ChipDetail::Model
             },
             usage_label: width >= SHOW_USAGE_LABEL,
-            settings_label: !phone,
             plugin_count: !phone,
         }
     }
@@ -69,7 +66,10 @@ impl Layout {
 pub struct Rects {
     pub chats: Rect,
     pub chat_settings: Rect,
-    pub settings: Rect,
+    /// The composer row: Attach, the message field, and the last button (Send, Stop, Cancel).
+    pub attach: Rect,
+    pub field: Rect,
+    pub send: Rect,
     pub more: Rect,
     /// The plugins chip (`Rect::NOTHING` while it isn't shown).
     pub plugins: Rect,
@@ -92,7 +92,9 @@ impl Default for Rects {
         Self {
             chats: Rect::NOTHING,
             chat_settings: Rect::NOTHING,
-            settings: Rect::NOTHING,
+            attach: Rect::NOTHING,
+            field: Rect::NOTHING,
+            send: Rect::NOTHING,
             more: Rect::NOTHING,
             plugins: Rect::NOTHING,
             settings_close: Rect::NOTHING,
@@ -190,7 +192,8 @@ impl ByobApp {
         });
     }
 
-    /// Right to left: the "⋯" menu, the app settings, the plugins chip, the artifact pane toggle.
+    /// Right to left: the "⋯" menu (App settings is in it and in the sidebar), the plugins
+    /// chip, the artifact pane toggle.
     fn header_actions(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, layout: Layout) {
         let more = icons::icon_button(ui, t, icons::more, None, false).on_hover_text("More: chat, workspace and connection settings, artifacts");
         self.header_rects.more = more.rect;
@@ -198,12 +201,6 @@ impl ByobApp {
             egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&more));
         }
         egui::Popup::menu(&more).show(|ui| self.more_menu(ui));
-        let settings =
-            icons::icon_button(ui, t, icons::gear, layout.settings_label.then_some("Settings"), self.show_settings).on_hover_text(settings_tip(ui.ctx()));
-        self.header_rects.settings = settings.rect;
-        if settings.clicked() {
-            self.show_settings = !self.show_settings;
-        }
         self.header_rects.plugins = self.plugins.chip(ui, t, layout.plugin_count, false).map_or(Rect::NOTHING, |r| r.rect);
         self.artifacts.header_toggle(ui);
         self.plugins.sites.pane_toggles(ui, t);
@@ -415,28 +412,19 @@ mod tests {
     #[test]
     fn details_drop_as_the_window_narrows() {
         let full = Layout::for_width(1600.0);
-        assert_eq!(full, Layout { wordmark: true, workspace_name: true, chip: ChipDetail::Full, usage_label: true, settings_label: true, plugin_count: true });
+        assert_eq!(full, Layout { wordmark: true, workspace_name: true, chip: ChipDetail::Full, usage_label: true, plugin_count: true });
         let laptop = Layout::for_width(1100.0);
-        assert_eq!(
-            laptop,
-            Layout { wordmark: false, workspace_name: true, chip: ChipDetail::Model, usage_label: true, settings_label: true, plugin_count: true }
-        );
+        assert_eq!(laptop, Layout { wordmark: false, workspace_name: true, chip: ChipDetail::Model, usage_label: true, plugin_count: true });
         let small = Layout::for_width(800.0);
-        assert_eq!(
-            small,
-            Layout { wordmark: false, workspace_name: true, chip: ChipDetail::Model, usage_label: false, settings_label: true, plugin_count: true }
-        );
+        assert_eq!(small, Layout { wordmark: false, workspace_name: true, chip: ChipDetail::Model, usage_label: false, plugin_count: true });
         let phone = Layout::for_width(390.0);
-        assert_eq!(
-            phone,
-            Layout { wordmark: false, workspace_name: false, chip: ChipDetail::Dot, usage_label: false, settings_label: false, plugin_count: false }
-        );
+        assert_eq!(phone, Layout { wordmark: false, workspace_name: false, chip: ChipDetail::Dot, usage_label: false, plugin_count: false });
         // Narrowing never brings something back.
         let mut last = full;
         for w in (320..=1600).rev().step_by(10) {
             #[allow(clippy::cast_precision_loss)] // small
             let l = Layout::for_width(w as f32);
-            assert!(l.wordmark <= last.wordmark && l.usage_label <= last.usage_label && l.settings_label <= last.settings_label, "{w}");
+            assert!(l.wordmark <= last.wordmark && l.usage_label <= last.usage_label, "{w}");
             assert!(l.plugin_count <= last.plugin_count, "{w}");
             assert!(l.workspace_name <= last.workspace_name && (l.chip as u8) <= (last.chip as u8), "{w}");
             last = l;
