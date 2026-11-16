@@ -1,6 +1,6 @@
 //! The composer: one rounded field holding the attachment chips, the message text (growing
-//! with what is typed, then scrolling) and, along its bottom edge, the paperclip on the left
-//! and the send control on the right. Send is a round arrow, muted until there is something
+//! with what is typed, then scrolling) with the paperclip on its left and the send control on
+//! its right, on one line until the text grows (then they keep to its bottom edge). Send is a round arrow, muted until there is something
 //! to send and filled with the accent once there is; while a reply runs the same spot is
 //! Stop (with Queue beside it once something is typed), and while a queued message is being
 //! edited it is Save (with Cancel beside it). The queue list sits above the field and the `/`
@@ -88,7 +88,7 @@ impl ByobApp {
             .fill(t.field_bg)
             .stroke(Stroke::new(1.0, t.field_border))
             .corner_radius(t.round(14.0).min(d / 2.0 + 6.0))
-            .inner_margin(Margin { left: 6, right: 6, top: 8, bottom: 6 });
+            .inner_margin(Margin::same(6));
         let mut prepared = frame.begin(ui);
         let mut rects = Rects::default();
         {
@@ -97,39 +97,25 @@ impl ByobApp {
             if self.uploads.chips(ui, t) {
                 ui.add_space(t.pad(4.0));
             }
-            // Keyboard help only where it fits on one line (phones have no Shift anyway).
-            let (long, short) = match (editing.is_some(), busy) {
-                (true, _) => ("Edit the queued message…  (Enter to save, Esc to cancel)", "Edit the queued message…"),
-                (false, true) => ("Queue a follow-up…  (Enter to queue, Shift+Enter for newline)", "Queue a follow-up…"),
-                (false, false) => ("Message byob…  (Enter to send, Shift+Enter for newline)", "Message byob…"),
-            };
-            let text_left = 4.0;
-            let fits = ui.painter().layout_no_wrap(long.to_owned(), egui::TextStyle::Body.resolve(ui.style()), t.text).size().x
-                <= ui.available_width() - 2.0 * text_left;
-            let hint = if fits { long } else { short };
-            let max_height = ui.text_style_height(&egui::TextStyle::Body) * MAX_LINES;
-            let input = &mut self.input;
-            let field = egui::ScrollArea::vertical()
-                .id_salt("composer-scroll")
-                .max_height(max_height)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    let edit = egui::TextEdit::multiline(input)
-                        .id(id)
-                        .frame(egui::Frame::NONE.inner_margin(Margin::symmetric(4, 0)))
-                        .desired_rows(1)
-                        .desired_width(f32::INFINITY)
-                        .hint_text(hint);
-                    ui.add(edit)
-                })
-                .inner;
-            rects.field = field.rect;
-            ui.add_space(t.pad(6.0));
-            // The bottom edge: paperclip, room to click into the text, the send control.
-            ui.allocate_ui_with_layout(vec2(ui.available_width(), d), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                rects.attach = self.uploads.button(ui, t, d).rect;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // One row: paperclip, the text, the send control. One line of text is as tall as
+            // the controls; longer text grows the row and the controls stay on its bottom edge.
+            // egui lays out in one pass, so the row takes the text's height from the last frame.
+            let height_id = id.with("row-height");
+            let row_height = ui.data(|data| data.get_temp::<f32>(height_id)).unwrap_or(d).max(d);
+            let line = ui.text_style_height(&egui::TextStyle::Body);
+            #[allow(clippy::cast_possible_truncation)] // a few points
+            let pad_y = ((d - line) / 2.0).clamp(0.0, 40.0).floor() as i8;
+            let max_height = line * MAX_LINES + f32::from(pad_y) * 2.0;
+            // Placed by hand inside the row: nested egui layouts would put the scroll area
+            // below a fixed-height row.
+            let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
+            let gap = 6.0;
+            let attach_rect = Rect::from_min_size(egui::pos2(row.left(), row.bottom() - d), vec2(d, d));
+            rects.attach = ui.scope_builder(egui::UiBuilder::new().max_rect(attach_rect), |ui| self.uploads.button(ui, t, d)).inner.rect;
+            let controls_rect = Rect::from_min_max(egui::pos2(attach_rect.right() + gap, row.bottom() - d), row.max);
+            let controls_left = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(controls_rect).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
                     if editing.is_some() {
                         let save = pill(ui, t, "Save", d, true).on_hover_text("Save the queued message (Enter)");
                         send |= save.clicked();
@@ -167,12 +153,49 @@ impl ByobApp {
                         rects.send = b.rect;
                         rects.send_fill = fill;
                     }
-                    // The gap between the controls also puts the cursor in the text.
-                    let gap = ui.available_rect_before_wrap();
-                    if gap.width() > 0.0 && ui.allocate_rect(gap, Sense::click()).on_hover_cursor(egui::CursorIcon::Text).clicked() {
-                        ui.memory_mut(|m| m.request_focus(id));
-                    }
-                });
+                    ui.min_rect().left()
+                })
+                .inner;
+            // The text takes what's left between the paperclip and the controls.
+            let text_rect = Rect::from_min_max(
+                egui::pos2(attach_rect.right() + gap, row.top()),
+                egui::pos2((controls_left - gap).max(attach_rect.right() + gap + 40.0), row.bottom()),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                // Keyboard help only where it fits on one line (phones have no Shift anyway),
+                // and a shorter hint still where even the plain one would wrap.
+                let (long, short, tiny) = match (editing.is_some(), busy) {
+                    (true, _) => ("Edit the queued message…  (Enter to save, Esc to cancel)", "Edit the queued message…", "Edit…"),
+                    (false, true) => ("Queue a follow-up…  (Enter to queue, Shift+Enter for newline)", "Queue a follow-up…", "Queue…"),
+                    (false, false) => ("Message byob…  (Enter to send, Shift+Enter for newline)", "Message byob…", "Message…"),
+                };
+                let room = ui.available_width() - 8.0;
+                let fits = |hint: &str| ui.painter().layout_no_wrap(hint.to_owned(), egui::TextStyle::Body.resolve(ui.style()), t.text).size().x <= room;
+                let hint = [long, short].into_iter().find(|h| fits(h)).unwrap_or(tiny);
+                let input = &mut self.input;
+                let field = egui::ScrollArea::vertical()
+                    .id_salt("composer-scroll")
+                    .max_height(max_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        let edit = egui::TextEdit::multiline(input)
+                            .id(id)
+                            .frame(egui::Frame::NONE.inner_margin(Margin::symmetric(4, pad_y)))
+                            .desired_rows(1)
+                            // While the `/` menu is open Tab picks from it (consumed above), and must not
+                            // move the focus away from the text.
+                            .lock_focus(menu)
+                            .desired_width(f32::INFINITY)
+                            .hint_text(hint);
+                        ui.add(edit)
+                    })
+                    .inner;
+                rects.field = field.rect;
+                let shown = field.rect.height().min(max_height).max(d);
+                if (shown - row_height).abs() > 0.5 {
+                    ui.data_mut(|data| data.insert_temp(height_id, shown));
+                    ui.ctx().request_repaint();
+                }
             });
         }
         let focused = ui.memory(|m| m.has_focus(id));

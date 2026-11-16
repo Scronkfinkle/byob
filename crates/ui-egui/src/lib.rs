@@ -1226,7 +1226,7 @@ mod app_tests {
     }
 
     #[test]
-    fn the_composer_controls_sit_inside_its_field_along_the_bottom() {
+    fn the_composer_is_one_row_that_grows_with_the_text() {
         let ctx = egui::Context::default();
         let mut app = crowded_app();
         let five = "one\ntwo\nthree\nfour\nfive";
@@ -1242,15 +1242,19 @@ mod app_tests {
                 for c in [r.field, r.attach, r.send] {
                     assert!(r.frame.contains_rect(c), "{at}");
                 }
-                // Paperclip at the left, send at the right, both on the bottom edge below the text.
+                // One row: paperclip at the left, the text, send at the right, all on one
+                // bottom edge (one line of text is as tall as the controls).
                 assert!(r.attach.left() - r.frame.left() < 12.0 && r.frame.right() - r.send.right() < 12.0, "{at}");
                 assert!((r.attach.center().y - r.send.center().y).abs() < 0.5 && r.frame.bottom() - r.send.bottom() < 12.0, "{at}");
-                assert!(r.attach.top() >= r.field.bottom() && r.send.top() >= r.field.bottom(), "{at}");
+                assert!((r.field.bottom() - r.send.bottom()).abs() < 1.5, "{at}");
+                let right_of_text = if r.second.is_positive() { r.second.left() } else { r.send.left() };
+                assert!(r.attach.right() <= r.field.left() && r.field.right() <= right_of_text, "{at}");
                 if r.second.is_positive() {
-                    assert!(r.frame.contains_rect(r.second) && r.attach.right() <= r.second.left() && r.second.right() <= r.send.left(), "{at}");
+                    assert!(r.frame.contains_rect(r.second) && r.second.right() <= r.send.left(), "{at}");
                     assert!((r.second.center().y - r.send.center().y).abs() < 0.5, "{at}");
                 }
                 if input.is_empty() {
+                    assert!((r.field.height() - r.send.height()).abs() < 1.5, "one line, as tall as the controls: {at}");
                     empty_heights.push(r.frame.height());
                 } else if input == five {
                     assert!(r.field.height() > 4.0 * 14.0, "the field grows with the text: {at}");

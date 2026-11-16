@@ -626,10 +626,10 @@ keeps going when the window that filled it closes.
 - In memory only: an engine restart drops every queue. Deleting the chat (or removing its
   workspace) drops its queue.
 
-The composer (`crates/ui-egui/src/composer.rs`) is one rounded field: attachment chips, the
-text (growing to ten lines, then scrolling), and along its bottom edge a paperclip (attach)
-on the left and the send control on the right, a round arrow that fills with the accent once
-there is something to send. It shows the queue as compact rows above it: while a reply runs
+The composer (`crates/ui-egui/src/composer.rs`) is one rounded field: attachment chips, then
+one row of a paperclip (attach), the text and the send control, a round arrow that fills with
+the accent once there is something to send. It starts one line tall; the text grows to ten
+lines, then scrolls, and the controls keep to its bottom edge. It shows the queue as compact rows above it: while a reply runs
 the send control is **Stop**, and once something is typed Enter (or **Queue** beside it) adds
 to the queue; clicking a row edits it in the composer (the draft there is set aside until
 **Save** or Esc/**Cancel**).
