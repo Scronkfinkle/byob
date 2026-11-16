@@ -2,8 +2,6 @@
 > Heads up: this project, README included, is influenced heavily by AI agents. If LLM-flavoured
 > prose isn't your thing, fair warning. Human-written docs will come once things settle.
 
-# bring your own brain
-
 <p align="center"><img src="assets/poster.png" width="360" alt="A wartime-poster worker in a red polka-dot bandana flexes a robotic arm under the words Bring your own brain!"></p>
 
 **A native desktop AI coworker for the model you already run.** Point byob at any

@@ -41,7 +41,11 @@ pub fn render(source: &str, text: &str, pick: &Pick) -> String {
     // a Keep source's preamble (before its title) goes too
     let mut keep = matches!(pick, Pick::Drop(_));
     let mut fence = false;
-    let mut first = true;
+    // a README's title is replaced by a plain one, written whether or not it has a title
+    let mut first = !matches!(pick, Pick::Keep(_));
+    if !first {
+        out.push_str("# byob\n\n");
+    }
     for line in text.lines() {
         let t = line.trim_start();
         if t.starts_with("```") {
@@ -55,12 +59,11 @@ pub fn render(source: &str, text: &str, pick: &Pick) -> String {
                     Pick::Drop(names) => !names.contains(&h),
                 };
             } else if first && line.starts_with("# ") {
-                // the title, always (a README's title is replaced by a plain one)
+                // the title, always
                 first = false;
-                let title = if matches!(pick, Pick::Keep(_)) { "# byob\n" } else { line };
-                out.push_str(title);
+                out.push_str(line);
                 out.push('\n');
-                keep = !matches!(pick, Pick::Keep(_));
+                keep = true;
                 continue;
             }
             if html_line(t) || t.starts_with("![") || t.starts_with("> [!") {
@@ -141,6 +144,9 @@ mod tests {
             out,
             "<!-- Generated from README.md by `cargo xtask help-docs`. Edit README.md, not this copy. -->\n# byob\n\n## What it does\n\n- a\n\n## Install\n\n```sh\n# a comment, not a title\n## nor a section\ncargo install byob\n```\n\n"
         );
+        // a README whose title is in its picture still gets one
+        let untitled = README.replace("# bring your own brain\n\n", "<p align=\"center\"><img src=\"p.png\"></p>\n\n");
+        assert_eq!(render("README.md", &untitled, &Pick::Keep(&["What it does", "Install"])), out);
         let doc = "# Mail\n\nIntro.\n\n## Settings\n\nset\n\n## Tests\n\ncargo test\n\n### Live\n\nlive\n\n## Gmail\n\napp password\n";
         let out = render("docs/mail.md", doc, &Pick::Drop(&["Tests"]));
         assert!(out.contains("# Mail\n\nIntro.\n\n## Settings\n\nset\n\n## Gmail\n\napp password\n"), "{out}");
