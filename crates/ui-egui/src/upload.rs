@@ -1,4 +1,4 @@
-//! Attaching files in the composer: an Attach button (a file picker), drag and drop onto
+//! Attaching files in the composer: its paperclip (a file picker), drag and drop onto
 //! the window, upload in chunks over the protocol, and chips for what is attached.
 //!
 //! Picking and reading files can't block a frame (and can't block at all in the browser),
@@ -166,9 +166,9 @@ impl Uploads {
         errors
     }
 
-    /// The Attach button.
-    pub fn button(&mut self, ui: &mut egui::Ui) -> egui::Response {
-        let b = ui.add_enabled(!self.picking, egui::Button::new("Attach")).on_hover_text("Attach files (or drop them onto the window)");
+    /// The composer's paperclip, `d` across.
+    pub fn button(&mut self, ui: &mut egui::Ui, t: &Tokens, d: f32) -> egui::Response {
+        let b = crate::composer::ghost_icon(ui, t, d, crate::icons::paperclip, !self.picking).on_hover_text("Attach files (or drop them onto the window)");
         if b.clicked() {
             // A browser doesn't tell us reliably when its dialog is cancelled, so the button
             // only waits for the desktop dialog.
@@ -178,10 +178,10 @@ impl Uploads {
         b
     }
 
-    /// Chips for attached and uploading files; × removes one.
-    pub fn chips(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+    /// Chips for attached and uploading files; × removes one. Returns whether there were any.
+    pub fn chips(&mut self, ui: &mut egui::Ui, t: &Tokens) -> bool {
         if self.pending.is_empty() && self.ready.is_empty() {
-            return;
+            return false;
         }
         let mut remove = None;
         let ctx = ui.ctx().clone();
@@ -223,6 +223,7 @@ impl Uploads {
         if let Some(i) = remove.filter(|i| *i < self.ready.len()) {
             self.ready.remove(i);
         }
+        true
     }
 }
 
@@ -470,7 +471,9 @@ mod tests {
         assert!(u.pending[1].thumb.is_none() && u.pending[2].thumb.is_none(), "no preview for a CSV or a broken image");
         let ctx = egui::Context::default();
         let draw = |u: &mut Uploads| {
-            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| u.chips(ui, &Tokens::light()));
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                u.chips(ui, &Tokens::light());
+            });
             out.textures_delta.clear();
         };
         draw(&mut u);
@@ -490,7 +493,9 @@ mod tests {
         u.add(&mut conn, "b.csv", b"x").unwrap();
         u.uploaded(1, Some(MediaRef::new("uploads/a.csv", 1)), None);
         let ctx = egui::Context::default();
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| u.chips(ui, &Tokens::light()));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            u.chips(ui, &Tokens::light());
+        });
         out.textures_delta.clear();
         assert!(u.has_ready() && u.busy());
     }

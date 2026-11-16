@@ -5,6 +5,7 @@
 pub mod appview;
 pub mod artifact;
 pub mod chart;
+pub mod composer;
 pub mod connect;
 mod envpanel;
 pub mod export;
@@ -84,6 +85,8 @@ pub struct ByobApp {
     models: models::ModelsUi,
     /// Where the header's buttons were last drawn.
     header_rects: header::Rects,
+    /// Where the composer's parts were last drawn.
+    composer_rects: composer::Rects,
     /// Charts and images shown in the transcript.
     media: media::Cache,
     /// Files attached in the composer.
@@ -154,6 +157,7 @@ impl ByobApp {
             connect: connect::ConnectForm::default(),
             models: models::ModelsUi::default(),
             header_rects: header::Rects::default(),
+            composer_rects: composer::Rects::default(),
             media: media::Cache::default(),
             uploads: upload::Uploads::default(),
             artifacts: artifact::Artifacts::default(),
@@ -633,6 +637,13 @@ impl ByobApp {
         self.conn.send(ClientMsg::Cancel);
     }
 
+    /// Edit the first queued message in the composer, as a click on its row does (scripted runs).
+    pub fn edit_first_queued(&mut self) {
+        if let Some(id) = self.queue.queue.items.first().map(|i| i.id) {
+            self.begin_edit(id);
+        }
+    }
+
     /// Edit queued message `id` in the composer: the draft there is set aside until done.
     fn begin_edit(&mut self, id: u64) {
         let Some(item) = self.queue.item(id).cloned() else { return };
@@ -785,7 +796,7 @@ impl ByobApp {
             self.artifacts.side_panel(ui, &t);
             self.plugins.sites.side_panel(ui, &t, self.artifacts.web_mut());
         }
-        egui::Panel::bottom("composer").show(ui, |ui| self.composer(ui));
+        egui::Panel::bottom("composer").show_separator_line(false).show(ui, |ui| self.composer(ui));
         egui::CentralPanel::default().show(ui, |ui| {
             self.plugins.trust_card(ui, &t, &self.entries);
             self.transcript(ui);
@@ -849,115 +860,6 @@ impl ByobApp {
         for m in msgs {
             self.conn.send(m);
         }
-    }
-
-    fn composer(&mut self, ui: &mut egui::Ui) {
-        let t = self.tokens;
-        ui.add_space(6.0);
-        for (level, text) in &self.notices {
-            let color = if *level == NoticeLevel::Error { t.danger } else { t.text_dim };
-            ui.label(egui::RichText::new(text).color(color));
-        }
-        let id = egui::Id::unique("composer");
-        if std::mem::take(&mut self.focus_composer) {
-            ui.memory_mut(|m| m.request_focus(id));
-        }
-        // Enter sends (queues while a reply runs); Shift+Enter inserts a newline (consume
-        // Enter before the editor sees it). Escape stops editing a queued message. While the
-        // `/` menu is open it takes ↑/↓/Enter/Tab/Esc instead.
-        let focused = ui.memory(|m| m.has_focus(id));
-        let commands: Vec<byob_protocol::SlashItem> = slash::matches(self.plugins.slash(), &self.input).into_iter().cloned().collect();
-        // egui drops the focus on Esc before we see the key: the menu still takes that Esc.
-        let escaped = !focused && self.slash.had_focus && ui.input(|i| i.key_pressed(egui::Key::Escape));
-        let menu = self.slash.open(&self.input, commands.len()) && (focused || escaped);
-        self.slash.had_focus = focused;
-        let mut picked = if menu { self.slash.keys(ui, &self.input, commands.len()) } else { None };
-        if escaped && menu {
-            ui.memory_mut(|m| m.request_focus(id));
-        }
-        let enter = focused && !menu && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-        let busy = self.busy();
-        let editing = self.queue.editing;
-        let mut send = enter;
-        let mut cancel_edit = editing.is_some() && focused && !menu && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        let actions = self.queue.show(ui, &t);
-        self.queue_actions(actions);
-        self.uploads.chips(ui, &t);
-        let hint = match (editing.is_some(), busy) {
-            (true, _) => "Edit the queued message…  (Enter to save, Esc to cancel)",
-            (false, true) => "Queue a follow-up…  (Enter to queue, Shift+Enter for newline)",
-            (false, false) => "Message byob…  (Enter to send, Shift+Enter for newline)",
-        };
-        // One row, buttons level with the field's bottom edge. egui lays out in one pass, so
-        // the row takes the field's height from the last frame (Attach comes before it).
-        let height_id = id.with("height");
-        let row_height = ui.data(|d| d.get_temp::<f32>(height_id)).unwrap_or(ui.spacing().interact_size.y);
-        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_height), egui::Layout::left_to_right(egui::Align::Max), |ui| {
-            self.header_rects.attach = self.uploads.button(ui).rect;
-            let buttons = if editing.is_some() || busy { 132.0 } else { 72.0 };
-            let width = (ui.available_width() - buttons).max(100.0);
-            let field = ui.add(egui::TextEdit::multiline(&mut self.input).id(id).desired_rows(2).desired_width(width).hint_text(hint));
-            self.header_rects.field = field.rect;
-            if (field.rect.height() - row_height).abs() > 0.5 {
-                ui.data_mut(|d| d.insert_temp(height_id, field.rect.height()));
-                ui.ctx().request_repaint();
-            }
-            // Still open after this frame's typing (and not just picked): draw it.
-            if menu && picked.is_none() && slash::query(&self.input).is_some() {
-                let shown: Vec<&byob_protocol::SlashItem> = commands.iter().collect();
-                picked = self.slash.show(ui, &t, field.rect, &shown);
-            }
-            let last = if editing.is_some() {
-                send |= ui.button("Save").on_hover_text("Save the queued message").clicked();
-                let cancel = ui.button("Cancel");
-                cancel_edit |= cancel.clicked();
-                cancel
-            } else if busy {
-                send |= ui.button("Queue").on_hover_text("Send this when the reply is done").clicked();
-                let stop = ui.button("Stop");
-                if stop.clicked() {
-                    self.conn.send(ClientMsg::Cancel);
-                }
-                stop
-            } else {
-                let b = ui.button("Send");
-                send |= b.clicked();
-                b
-            };
-            self.header_rects.send = last.rect;
-        });
-        if let Some(item) = picked.and_then(|k| commands.get(k)) {
-            self.slash.reset();
-            self.input = slash::insert(item);
-            let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
-            let end = egui::text::CCursor::new(self.input.chars().count());
-            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
-            egui::TextEdit::store_state(ui.ctx(), id, state);
-            ui.memory_mut(|m| m.request_focus(id));
-        }
-        if cancel_edit {
-            self.end_edit();
-        }
-        // Wait for attachments to finish uploading before sending.
-        let ready = (!self.input.trim().is_empty() || self.uploads.has_ready()) && !self.uploads.busy();
-        match self.queue.editing {
-            Some(item) if send && !self.uploads.busy() => {
-                let msg = ClientMsg::EditQueued { id: item, text: std::mem::take(&mut self.input), attachments: self.uploads.take() };
-                self.conn.send(msg);
-                self.queue.editing = None;
-                let (text, files) = self.queue.stash.take().unwrap_or_default();
-                self.input = text;
-                self.uploads.restore(files);
-                ui.memory_mut(|m| m.request_focus(id));
-            }
-            None if send && ready => {
-                let text = std::mem::take(&mut self.input);
-                self.submit(text);
-                ui.memory_mut(|m| m.request_focus(id));
-            }
-            _ => {}
-        }
-        ui.add_space(6.0);
     }
 
     fn transcript(&mut self, ui: &mut egui::Ui) {
@@ -1228,7 +1130,11 @@ mod app_tests {
     /// A chat as crowded as the header gets: long workspace name and title, its own endpoint
     /// with long names, a context meter, an artifact.
     fn crowded_app() -> ByobApp {
-        let fake = Fake::default();
+        crowded_with(Fake::default())
+    }
+
+    /// [`crowded_app`] on `fake`.
+    fn crowded_with(fake: Fake) -> ByobApp {
         let title = "A chat with a remarkably long title that would never fit in any header at all, really".to_owned();
         let ws = byob_protocol::WorkspaceSummary {
             id: "w".into(),
@@ -1299,25 +1205,105 @@ mod app_tests {
         }
     }
 
+    /// The composer in a state: a reply running or not, a queued message being edited or
+    /// not, and what is typed; drawn until it settles in a window `width` wide.
+    fn composer_in(ctx: &egui::Context, app: &mut ByobApp, width: f32, busy: bool, editing: bool, input: &str) -> composer::Rects {
+        if let Some(s) = app.state.as_mut() {
+            s.busy = busy;
+        }
+        app.queue.editing = editing.then_some(7);
+        app.input = input.into();
+        for _ in 0..3 {
+            frame(ctx, app, width);
+        }
+        app.composer_rects
+    }
+
     #[test]
-    fn the_composer_buttons_line_up_with_the_message_field() {
+    fn the_composer_controls_sit_inside_its_field_along_the_bottom() {
         let ctx = egui::Context::default();
         let mut app = crowded_app();
-        for (busy, input) in [(false, ""), (false, "one\ntwo\nthree\nfour\nfive"), (true, "")] {
-            if let Some(s) = app.state.as_mut() {
-                s.busy = busy;
+        let five = "one\ntwo\nthree\nfour\nfive";
+        for width in [400.0, 1000.0] {
+            let mut empty_heights = Vec::new();
+            for (busy, editing, input) in
+                [(false, false, ""), (false, false, five), (true, false, ""), (true, false, "more"), (false, true, ""), (false, true, five)]
+            {
+                let r = composer_in(&ctx, &mut app, width, busy, editing, input);
+                let at = format!("width {width}, busy {busy}, editing {editing}, {:?}: {r:?}", input.lines().count());
+                assert!(r.frame.is_positive() && r.field.is_positive() && r.attach.is_positive() && r.send.is_positive(), "{at}");
+                assert!(r.frame.max.x <= width + 0.5, "{at}");
+                for c in [r.field, r.attach, r.send] {
+                    assert!(r.frame.contains_rect(c), "{at}");
+                }
+                // Paperclip at the left, send at the right, both on the bottom edge below the text.
+                assert!(r.attach.left() - r.frame.left() < 12.0 && r.frame.right() - r.send.right() < 12.0, "{at}");
+                assert!((r.attach.center().y - r.send.center().y).abs() < 0.5 && r.frame.bottom() - r.send.bottom() < 12.0, "{at}");
+                assert!(r.attach.top() >= r.field.bottom() && r.send.top() >= r.field.bottom(), "{at}");
+                if r.second.is_positive() {
+                    assert!(r.frame.contains_rect(r.second) && r.attach.right() <= r.second.left() && r.second.right() <= r.send.left(), "{at}");
+                    assert!((r.second.center().y - r.send.center().y).abs() < 0.5, "{at}");
+                }
+                if input.is_empty() {
+                    empty_heights.push(r.frame.height());
+                } else if input == five {
+                    assert!(r.field.height() > 4.0 * 14.0, "the field grows with the text: {at}");
+                }
             }
-            app.input = input.into();
-            for _ in 0..3 {
-                frame(&ctx, &mut app, 1000.0);
-            }
-            let r = app.header_rects;
-            assert!(r.attach.is_positive() && r.field.is_positive() && r.send.is_positive(), "{r:?}");
-            for (name, b) in [("Attach", r.attach), ("Send/Stop", r.send)] {
-                assert!((b.max.y - r.field.max.y).abs() < 1.0, "busy {busy}, {} lines: {name} {b:?} vs field {:?}", input.lines().count(), r.field);
-            }
-            assert!(r.attach.max.x <= r.field.min.x && r.field.max.x <= r.send.min.x, "{r:?}");
+            // No jumps: idle, busy and editing are all the same height when empty.
+            assert!(empty_heights.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5), "width {width}: {empty_heights:?}");
+            // A long message grows the field only so far, then scrolls.
+            let long = "line\n".repeat(80);
+            let r = composer_in(&ctx, &mut app, width, false, false, &long);
+            assert!(r.frame.height() < 320.0, "width {width}: {r:?}");
         }
+    }
+
+    #[test]
+    fn send_turns_the_accent_colour_once_something_is_typed() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        let accent = app.tokens.accent;
+        for (input, lit) in [("", false), ("   \n", false), ("hello", true), ("", false)] {
+            let r = composer_in(&ctx, &mut app, 1000.0, false, false, input);
+            assert_eq!(r.send_fill == accent, lit, "{input:?}: {r:?}");
+            assert_eq!(r.second, egui::Rect::NOTHING);
+        }
+    }
+
+    #[test]
+    fn a_running_reply_shows_stop_and_queue_once_something_is_typed() {
+        let ctx = egui::Context::default();
+        let fake = Fake::default();
+        let mut app = crowded_with(fake.clone());
+        let t = app.tokens;
+        let idle = composer_in(&ctx, &mut app, 1000.0, false, false, "");
+        let r = composer_in(&ctx, &mut app, 1000.0, true, false, "");
+        assert_eq!(r.send, idle.send, "Stop takes Send's place");
+        assert_eq!(r.send_fill, t.text_strong, "an empty field: Stop is the strong one");
+        assert_eq!(r.second, egui::Rect::NOTHING, "nothing typed, nothing to queue");
+        let r = composer_in(&ctx, &mut app, 1000.0, true, false, "and then?");
+        assert_eq!(r.send, idle.send);
+        assert!(r.second.is_positive() && r.second.right() <= r.send.left(), "Queue beside Stop: {r:?}");
+        assert_ne!(r.send_fill, t.text_strong, "Queue is the strong one now");
+        // Stop cancels the reply.
+        fake.sent.lock().unwrap().clear();
+        click(&ctx, &mut app, 1000.0, r.send.center());
+        let sent = fake.sent.lock().unwrap().clone();
+        assert!(sent.contains(&ClientMsg::Cancel), "{sent:?}");
+    }
+
+    #[test]
+    fn editing_a_queued_message_shows_save_and_cancel_in_the_field() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        let idle = composer_in(&ctx, &mut app, 1000.0, false, false, "");
+        let r = composer_in(&ctx, &mut app, 1000.0, true, true, "edited");
+        assert_eq!(r.send.right(), idle.send.right(), "Save on the right edge: {r:?}");
+        assert_eq!(r.send_fill, app.tokens.accent);
+        assert!(r.second.is_positive() && r.second.right() <= r.send.left(), "Cancel beside Save: {r:?}");
+        click(&ctx, &mut app, 1000.0, r.second.center());
+        assert_eq!(app.queue.editing, None, "Cancel stops editing");
     }
 
     #[test]

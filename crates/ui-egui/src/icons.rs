@@ -1,7 +1,7 @@
 //! Small icons drawn with shapes, for glyphs the UI fonts don't have (the app settings
 //! gear, chat settings sliders, the chat list and overflow buttons, a disclosure triangle,
 //! where a workspace runs its commands, the plugins puzzle piece, the chat list's plus,
-//! search, clear and folders).
+//! search, clear and folders, and the composer's paperclip, send arrow and stop square).
 
 use byob_protocol::workspace::EnvKind;
 use egui::{Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
@@ -134,6 +134,52 @@ pub fn folder_plus(painter: &egui::Painter, r: Rect, color: Color32) {
     let (h, stroke) = (s * 0.13, Stroke::new((s * 0.08).max(1.3), color));
     painter.line_segment([c - vec2(h, 0.0), c + vec2(h, 0.0)], stroke);
     painter.line_segment([c - vec2(0.0, h), c + vec2(0.0, h)], stroke);
+}
+
+/// "Attach": a paperclip, leaning right.
+pub fn paperclip(painter: &egui::Painter, r: Rect, color: Color32) {
+    use std::f32::consts::PI;
+    let s = r.width().min(r.height());
+    let stroke = Stroke::new((s * 0.085).max(1.3), color);
+    // An upright clip in a unit square (three straight runs joined by U-turns), turned 40°.
+    let mut points: Vec<Pos2> = vec![pos2(0.44, 0.34)];
+    let mut arc = |c: Pos2, radius: f32, from: f32, to: f32| {
+        for k in 0..=10 {
+            #[allow(clippy::cast_precision_loss)] // 0..=10
+            let a = from + (to - from) * k as f32 / 10.0;
+            points.push(c + vec2(a.cos(), a.sin()) * radius);
+        }
+    };
+    arc(pos2(0.52, 0.66), 0.08, PI, 0.0);
+    arc(pos2(0.47, 0.24), 0.13, 0.0, -PI);
+    arc(pos2(0.5, 0.74), 0.16, PI, 0.0);
+    points.push(pos2(0.66, 0.4));
+    let (sin, cos) = 0.7_f32.sin_cos();
+    let c = r.center();
+    let points = points
+        .into_iter()
+        .map(|p| {
+            let d = (p - pos2(0.5, 0.5)) * s * 1.08;
+            c + vec2(d.x * cos - d.y * sin, d.x * sin + d.y * cos)
+        })
+        .collect();
+    painter.add(Shape::line(points, stroke));
+}
+
+/// "Send": an arrow pointing up.
+pub fn arrow_up(painter: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    let c = r.center();
+    let stroke = Stroke::new((s * 0.12).max(1.5), color);
+    let (top, bottom, wing) = (c.y - s * 0.32, c.y + s * 0.32, s * 0.28);
+    painter.line_segment([pos2(c.x, bottom), pos2(c.x, top + stroke.width * 0.3)], stroke);
+    painter.line(vec![pos2(c.x - wing, top + wing), pos2(c.x, top), pos2(c.x + wing, top + wing)], stroke);
+}
+
+/// "Stop": a filled square with softened corners.
+pub fn stop(painter: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    painter.rect_filled(Rect::from_center_size(r.center(), vec2(s * 0.56, s * 0.56)), s * 0.1, color);
 }
 
 /// A small chevron pointing down (menus, split buttons), centred in `rect`.
