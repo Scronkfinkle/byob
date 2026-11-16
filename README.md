@@ -4,7 +4,7 @@
 
 # bring your own brain
 
-<img src="assets/poster.png" align="right" width="300" alt="A wartime-poster worker in a red polka-dot bandana flexes a robotic arm under the words Bring your own brain!">
+<p align="center"><img src="assets/poster.png" width="360" alt="A wartime-poster worker in a red polka-dot bandana flexes a robotic arm under the words Bring your own brain!"></p>
 
 **A native desktop AI coworker for the model you already run.** Point byob at any
 OpenAI-compatible endpoint (llama-server, Ollama, LM Studio, vLLM or a hosted API) and it works
