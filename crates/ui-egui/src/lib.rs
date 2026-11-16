@@ -463,9 +463,13 @@ impl ByobApp {
         }
     }
 
-    /// Open or close the settings panel (used by scripted screenshot runs).
+    /// Open or close the settings (used by scripted screenshot runs).
     pub fn set_settings_open(&mut self, open: bool) {
-        self.show_settings = open;
+        if open {
+            self.open_settings();
+        } else {
+            self.close_settings();
+        }
     }
 
     /// Open the settings at Models (the connection form on engines without saved models).
@@ -571,9 +575,14 @@ impl ByobApp {
     pub const PLUGIN_PANELS: &'static str = "plugin-pane, plugin-pane:<plugin>[/<view>], plugin:<id>, artifact:<prefix>";
 
     /// Scripted runs: open the settings on a tab ([`settings::Tab::id`]: `models`, `defaults`,
-    /// `plugins`, `appearance`, `text`, `colours`; also `knobs`, `advanced`), or at a saved
-    /// model's form, Advanced expanded (`model:<id>`). False for a name it doesn't know.
+    /// `plugins`, `appearance`, `text`, `colours`; also `chats`, `knobs`, `advanced`), at one
+    /// setting (its registry id, e.g. `accent`, `approvals`: scrolled to and lit), or at a
+    /// saved model's form, Advanced expanded (`model:<id>`). False for a name it doesn't know.
     pub fn reveal_settings(&mut self, section: &str) -> bool {
+        if let Some(s) = settings::registry::by_id(section.trim()) {
+            self.jump_to(s.key);
+            return true;
+        }
         let Some(tab) = settings::Tab::find(section) else { return false };
         if let Some(id) = section.strip_prefix("model:") {
             self.models.reveal = Some(id.to_owned());
@@ -734,13 +743,13 @@ impl ByobApp {
         upload::drop_overlay(ui.ctx(), &self.tokens);
         let t = self.tokens;
         if self.show_settings {
-            // The settings own everything below the header beside the chat list (the whole
-            // screen on phones); the chat, its composer and the panes aren't drawn under them.
-            if list_open && !narrow {
-                self.chat_list_panel(ui, &t);
-            }
-            let frame = egui::Frame::central_panel(ui.style()).inner_margin(0.0).fill(t.app_bg);
-            egui::CentralPanel::default().frame(frame).show(ui, |ui| self.settings_page(ui, narrow));
+            self.settings_keys(ui.ctx(), narrow);
+        }
+        if self.show_settings {
+            // A destination of its own: everything below the header, the settings' navigation
+            // where the chat list was. The chat, its list, composer and panes aren't drawn
+            // (nor changed), so Back finds them as they were.
+            self.settings_screen(ui, narrow);
             self.end_frame(ui.ctx());
             return;
         }
@@ -832,7 +841,7 @@ impl ByobApp {
             match r {
                 sidebar::Request::NewWorkspace => self.workspaces.open_new(byob_protocol::workspace::EnvKind::Auto),
                 sidebar::Request::WorkspaceSettings { id, remove } => self.workspaces.open_settings(&id, remove),
-                sidebar::Request::AppSettings => self.show_settings = true,
+                sidebar::Request::AppSettings => self.open_settings(),
             }
         }
         let t = self.tokens;
@@ -1341,17 +1350,18 @@ mod app_tests {
     }
 
     #[test]
-    fn the_settings_close_button_stays_put_when_the_settings_scroll() {
+    fn the_settings_navigation_stays_put_when_a_page_scrolls() {
         let ctx = egui::Context::default();
         let mut app = crowded_app();
-        app.show_settings = true;
+        app.open_settings_at(settings::Tab::Text);
         frame(&ctx, &mut app, 1000.0);
         frame(&ctx, &mut app, 1000.0);
-        let before = app.header_rects.settings_close;
-        assert!(before.is_positive(), "{before:?}");
-        // Wheel well down inside the settings body.
+        let before = (app.header_rects.settings_back, app.header_rects.settings_search);
+        assert!(before.0.is_positive() && before.1.is_positive(), "{before:?}");
+        let body = app.header_rects.settings_body;
+        // Wheel well down inside the page.
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
-        let over = egui::pos2(500.0, before.max.y + 150.0);
+        let over = egui::pos2(body.center().x, 400.0);
         for _ in 0..10 {
             let input = egui::RawInput {
                 screen_rect: Some(screen),
@@ -1371,7 +1381,8 @@ mod app_tests {
             out.textures_delta.clear();
         }
         frame(&ctx, &mut app, 1000.0);
-        assert_eq!(app.header_rects.settings_close, before, "Close moved when the settings scrolled");
+        assert!(app.header_rects.settings_body.top() < body.top() - 100.0, "the page scrolled: {body:?} → {:?}", app.header_rects.settings_body);
+        assert_eq!((app.header_rects.settings_back, app.header_rects.settings_search), before, "Back and search moved when the page scrolled");
     }
 
     /// A click at `pos` (press and release over two frames) in a window `width` wide.
@@ -1417,15 +1428,18 @@ mod app_tests {
     fn the_top_left_goes_back_to_the_chat_from_the_settings() {
         let ctx = egui::Context::default();
         let mut app = crowded_app();
-        // Over the settings, the chat's title (top left) goes back instead of opening the
-        // chat's settings on top (a tester expected "home" there).
+        // Over the settings the header says where you are; the chat's title isn't there to
+        // open the chat's settings on top (a tester expected "home" at the top left).
         app.show_settings = true;
         frame(&ctx, &mut app, 1600.0);
         frame(&ctx, &mut app, 1600.0);
+        assert_eq!((app.header_rects.chats, app.header_rects.chat_settings), (egui::Rect::NOTHING, egui::Rect::NOTHING));
         let at = app.header_rects.title.center();
         click(&ctx, &mut app, 1600.0, at);
-        assert!(!app.show_settings && app.workspaces.chat.is_none(), "settings {} chat settings {}", app.show_settings, app.workspaces.chat.is_some());
-        // Without the settings, the title still opens the chat's settings.
+        assert!(app.show_settings && app.workspaces.chat.is_none());
+        app.close_settings();
+        frame(&ctx, &mut app, 1600.0);
+        // Without the settings, the title opens the chat's settings.
         let at = app.header_rects.title.center();
         click(&ctx, &mut app, 1600.0, at);
         assert!(app.workspaces.chat.is_some());
@@ -1436,13 +1450,13 @@ mod app_tests {
         let at = app.header_rects.home.center();
         click(&ctx, &mut app, 1600.0, at);
         assert!(!app.show_settings && app.workspaces.chat.is_none());
-        // So does "Back to chat", at the left of the settings' title row.
+        // So does "Back to chat", at the top of the settings' navigation.
         app.show_settings = true;
         frame(&ctx, &mut app, 1600.0);
         frame(&ctx, &mut app, 1600.0);
         let back = app.header_rects.settings_back;
         let page = app.header_rects.settings_page;
-        assert!(back.is_positive() && back.left() - page.left() < 24.0, "{back:?} in {page:?}");
+        assert!(back.is_positive() && back.left() < 24.0 && back.right() <= page.left(), "{back:?} left of {page:?}");
         click(&ctx, &mut app, 1600.0, back.center());
         assert!(!app.show_settings);
     }

@@ -183,15 +183,6 @@ fn badge(ui: &mut egui::Ui, t: &Tokens, text: &str, strong: bool) {
     ui.painter().galley(rect.min + egui::vec2(5.0, 2.0), galley, color);
 }
 
-/// A model role's dropdown in Settings → Models: the role, its label, what unset means and
-/// what the role does.
-struct RoleRow {
-    role: &'static str,
-    label: &'static str,
-    none: &'static str,
-    what: &'static str,
-}
-
 /// "Default", "Vision", … for the roles byob shows.
 fn role_label(role: &str) -> String {
     match role {
@@ -301,12 +292,12 @@ impl ModelsUi {
             ui.label(RichText::new("No models saved yet. Add the ones your servers run; the first becomes the default.").color(t.text_dim));
         }
         let main = list.roles.get(ROLE_MAIN).cloned();
-        for v in &list.items {
-            self.row(ui, t, &list, v, main.as_deref() == Some(v.profile.id.as_str()));
+        for (i, v) in list.items.iter().enumerate() {
+            self.row(ui, t, &list, v, main.as_deref() == Some(v.profile.id.as_str()), i == 0);
             if self.editor.as_ref().is_some_and(|e| e.profile.id == v.profile.id) {
                 self.edit_form(ui, t);
+                ui.add_space(t.pad(crate::form::ROW_GAP));
             }
-            ui.add_space(t.pad(crate::form::ROW_GAP - 4.0));
         }
         ui.add_space(t.pad(4.0));
         if self.add.is_some() {
@@ -314,130 +305,97 @@ impl ModelsUi {
         } else if ui.button("+ Add models…").on_hover_text("From a server on this computer, a provider, or any URL").clicked() {
             self.add = Some(AddForm::default());
         }
-        if !list.items.is_empty() {
-            crate::form::section(ui, t, "Roles", "Saved models that do jobs for the others.");
-            self.roles(ui, t, &list);
+    }
+
+    /// The dropdown for one model `role` (Settings → Models → Roles); `none` names no model.
+    pub fn role_control(&mut self, ui: &mut egui::Ui, role: &str, none: &str) {
+        let Some(list) = self.list.as_ref() else { return };
+        let current = list.roles.get(role).cloned();
+        let name = |id: &Option<String>| id.as_ref().and_then(|i| list.get(i)).map_or_else(|| none.to_owned(), |v| v.profile.label().to_owned());
+        let mut picked = current.clone();
+        egui::ComboBox::from_id_salt((role, "role")).selected_text(name(&current)).width(200.0).show_ui(ui, |ui| {
+            ui.selectable_value(&mut picked, None, none);
+            for v in &list.items {
+                ui.selectable_value(&mut picked, Some(v.profile.id.clone()), v.profile.label());
+            }
+        });
+        if picked != current {
+            self.out.push(ClientMsg::SetRole { role: role.into(), profile: picked });
         }
     }
 
-    /// Which model looks at images for the others, which one subagents use, and which writes
-    /// titles and summaries.
-    fn roles(&mut self, ui: &mut egui::Ui, t: &Tokens, list: &ProfileList) {
-        let vision =
-            RoleRow { role: ROLE_VISION, label: "Vision helper", none: "None", what: "Answers questions about images for a model that can't see them." };
-        self.role(ui, t, list, &vision);
-        let subagents = RoleRow {
-            role: ROLE_SUBAGENTS,
-            label: "Subagents",
-            none: "Same as the chat",
-            what: "The model delegated tasks run on, unless the call, the agent, a workspace or a chat picks another.",
-        };
-        self.role(ui, t, list, &subagents);
-        let utility = RoleRow {
-            role: ROLE_UTILITY,
-            label: "Titles & summaries",
-            none: "Same as the chat",
-            what: "Names chats and writes the summaries that compact them; a small, fast model will do. If it fails, the chat's model does it.",
-        };
-        self.role(ui, t, list, &utility);
-    }
-
-    /// A dropdown for one model role.
-    fn role(&mut self, ui: &mut egui::Ui, t: &Tokens, list: &ProfileList, r: &RoleRow) {
-        crate::form::row(ui, t, r.label, |ui| {
-            let current = list.roles.get(r.role).cloned();
-            let name = |id: &Option<String>| id.as_ref().and_then(|i| list.get(i)).map_or_else(|| r.none.to_owned(), |v| v.profile.label().to_owned());
-            let mut picked = current.clone();
-            egui::ComboBox::from_id_salt((r.role, "role")).selected_text(name(&current)).width(180.0).show_ui(ui, |ui| {
-                ui.selectable_value(&mut picked, None, r.none);
-                for v in &list.items {
-                    ui.selectable_value(&mut picked, Some(v.profile.id.clone()), v.profile.label());
-                }
-            });
-            if picked != current {
-                self.out.push(ClientMsg::SetRole { role: r.role.into(), profile: picked });
-            }
-            ui.end_row();
-            ui.label(RichText::new(r.what).small().color(t.text_faint));
-        });
-    }
-
-    fn row(&mut self, ui: &mut egui::Ui, t: &Tokens, list: &ProfileList, v: &ProfileView, is_main: bool) {
+    fn row(&mut self, ui: &mut egui::Ui, t: &Tokens, list: &ProfileList, v: &ProfileView, is_main: bool, first: bool) {
         let p = &v.profile;
         let test = self.tests.get(&p.id).cloned();
         let test = test.as_ref();
         let (color, what) = status(t, v, test);
-        egui::Frame::new()
-            .fill(t.panel_bg)
-            .stroke(egui::Stroke::new(1.0, if is_main { t.accent } else { t.border }))
-            .corner_radius(t.round(6.0))
-            .inner_margin(egui::vec2(t.pad(10.0), t.pad(8.0)))
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.horizontal_wrapped(|ui| {
-                    dot(ui, color).on_hover_text(&what);
-                    ui.label(RichText::new(p.label()).strong().color(t.text_strong));
-                    for role in list.roles_of(&p.id) {
-                        badge(ui, t, &role_label(role), role == ROLE_MAIN);
-                    }
-                    if v.has_key {
-                        ui.label(RichText::new("key").small().color(t.text_faint)).on_hover_text("An API key is saved for it (on the machine byob runs on)");
-                    }
-                });
-                ui.label(RichText::new(format!("{} · {}", p.model, short_url(&p.base_url))).color(t.text_dim));
-                if !p.description.is_empty() {
-                    ui.label(RichText::new(&p.description).small().color(t.text));
+        // A plain list, rows split by hairlines like the settings around it (no boxes).
+        if !first {
+            let y = ui.cursor().top();
+            ui.painter().hline(ui.max_rect().x_range(), y, egui::Stroke::new(1.0, t.separator.gamma_multiply(0.7)));
+        }
+        egui::Frame::new().inner_margin(egui::vec2(0.0, t.pad(crate::form::ROW_PAD))).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                dot(ui, color).on_hover_text(&what);
+                ui.label(RichText::new(p.label()).strong().color(t.text_strong));
+                for role in list.roles_of(&p.id) {
+                    badge(ui, t, &role_label(role), role == ROLE_MAIN);
                 }
-                let found = match &v.info {
-                    Some(i) if i.probing => "checking what it can do…".to_owned(),
-                    Some(i) if known(v) => i.summary(),
-                    _ => "not checked yet".to_owned(),
-                };
-                let mut line = found;
-                if let Some(m) = p.tool_mode {
-                    line.push_str(&format!(" · tool calling: {}", m.label().to_lowercase()));
+                if v.has_key {
+                    ui.label(RichText::new("key").small().color(t.text_faint)).on_hover_text("An API key is saved for it (on the machine byob runs on)");
                 }
-                ui.label(RichText::new(line).small().color(t.text_faint)).on_hover_text(&what);
-                if let Some(Tested::Done(r)) = test
-                    && !r.ok
-                {
-                    ui.label(RichText::new(&what).small().color(t.danger));
-                }
-                ui.horizontal_wrapped(|ui| {
-                    if ui.small_button("Edit").clicked() {
-                        self.editor = if self.editor.as_ref().is_some_and(|e| e.profile.id == p.id) { None } else { Some(Editor::new(v)) };
-                    }
-                    if ui.small_button("Duplicate").on_hover_text("A copy (key included) to change, e.g. with other settings").clicked() {
-                        self.out.push(ClientMsg::DuplicateProfile { id: p.id.clone() });
-                    }
-                    let running = matches!(test, Some(Tested::Running));
-                    if ui
-                        .add_enabled(!running, egui::Button::new("Test").small())
-                        .on_hover_text("Ask the server whether it answers, and what it can do")
-                        .clicked()
-                    {
-                        self.tests.insert(p.id.clone(), Tested::Running);
-                        self.out.push(ClientMsg::TestProfile { id: p.id.clone() });
-                    }
-                    if !is_main
-                        && ui.small_button("Make default").on_hover_text("The model every chat uses unless its workspace or itself picks another").clicked()
-                    {
-                        self.out.push(ClientMsg::SetRole { role: ROLE_MAIN.into(), profile: Some(p.id.clone()) });
-                    }
-                    if self.deleting.as_deref() == Some(p.id.as_str()) {
-                        ui.label(RichText::new("Delete it? Chats and workspaces that use it go back to the default.").small().color(t.danger));
-                        if ui.small_button(RichText::new("Delete").color(t.danger)).clicked() {
-                            self.out.push(ClientMsg::DeleteProfile { id: p.id.clone() });
-                            self.deleting = None;
-                        }
-                        if ui.small_button("Cancel").clicked() {
-                            self.deleting = None;
-                        }
-                    } else if !is_main && ui.small_button("Delete…").clicked() {
-                        self.deleting = Some(p.id.clone());
-                    }
-                });
             });
+            ui.label(RichText::new(format!("{} · {}", p.model, short_url(&p.base_url))).color(t.text_dim));
+            if !p.description.is_empty() {
+                ui.label(RichText::new(&p.description).small().color(t.text));
+            }
+            let found = match &v.info {
+                Some(i) if i.probing => "checking what it can do…".to_owned(),
+                Some(i) if known(v) => i.summary(),
+                _ => "not checked yet".to_owned(),
+            };
+            let mut line = found;
+            if let Some(m) = p.tool_mode {
+                line.push_str(&format!(" · tool calling: {}", m.label().to_lowercase()));
+            }
+            ui.label(RichText::new(line).small().color(t.text_faint)).on_hover_text(&what);
+            if let Some(Tested::Done(r)) = test
+                && !r.ok
+            {
+                ui.label(RichText::new(&what).small().color(t.danger));
+            }
+            ui.horizontal_wrapped(|ui| {
+                if ui.small_button("Edit").clicked() {
+                    self.editor = if self.editor.as_ref().is_some_and(|e| e.profile.id == p.id) { None } else { Some(Editor::new(v)) };
+                }
+                if ui.small_button("Duplicate").on_hover_text("A copy (key included) to change, e.g. with other settings").clicked() {
+                    self.out.push(ClientMsg::DuplicateProfile { id: p.id.clone() });
+                }
+                let running = matches!(test, Some(Tested::Running));
+                if ui.add_enabled(!running, egui::Button::new("Test").small()).on_hover_text("Ask the server whether it answers, and what it can do").clicked()
+                {
+                    self.tests.insert(p.id.clone(), Tested::Running);
+                    self.out.push(ClientMsg::TestProfile { id: p.id.clone() });
+                }
+                if !is_main && ui.small_button("Make default").on_hover_text("The model every chat uses unless its workspace or itself picks another").clicked()
+                {
+                    self.out.push(ClientMsg::SetRole { role: ROLE_MAIN.into(), profile: Some(p.id.clone()) });
+                }
+                if self.deleting.as_deref() == Some(p.id.as_str()) {
+                    ui.label(RichText::new("Delete it? Chats and workspaces that use it go back to the default.").small().color(t.danger));
+                    if ui.small_button(RichText::new("Delete").color(t.danger)).clicked() {
+                        self.out.push(ClientMsg::DeleteProfile { id: p.id.clone() });
+                        self.deleting = None;
+                    }
+                    if ui.small_button("Cancel").clicked() {
+                        self.deleting = None;
+                    }
+                } else if !is_main && ui.small_button("Delete…").clicked() {
+                    self.deleting = Some(p.id.clone());
+                }
+            });
+        });
     }
 
     fn edit_form(&mut self, ui: &mut egui::Ui, t: &Tokens) {

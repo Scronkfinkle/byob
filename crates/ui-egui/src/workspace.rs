@@ -41,10 +41,6 @@ pub const WORKSPACE_FIELDS: &[Field] = &[
     Field::ModelImages,
     Field::Instructions,
 ];
-/// Defaults in Settings (the endpoint has its own form there).
-pub const GLOBAL_FIELDS: &[Field] =
-    &[Field::Approvals, Field::ToolMode, Field::Compaction, Field::Subagents, Field::ToolCalls, Field::ModelImages, Field::Instructions];
-
 /// The choices for tool calls per turn; 0 is no limit.
 const TOOL_CALL_LIMITS: [u32; 5] = [10, 30, 100, 300, 0];
 
@@ -181,6 +177,21 @@ impl LayerEditor {
             }
         });
         out
+    }
+
+    /// Draw one field's control (and where its value comes from), for pages that lay out
+    /// their own rows (the settings screen); returns a message for the engine.
+    pub fn control(&mut self, ui: &mut egui::Ui, t: &Tokens, f: Field) -> Option<ClientMsg> {
+        if !self.asked {
+            self.asked = true;
+            return Some(ClientMsg::GetConfig { scope: self.scope.clone() });
+        }
+        let Some(view) = self.view.clone() else {
+            theme::spinner(ui, t, None);
+            return None;
+        };
+        let level = level_of(&self.scope);
+        self.field(ui, t, &view, level, f)
     }
 
     /// Where `f`'s value comes from, and a Reset when this level sets it.
@@ -352,13 +363,15 @@ impl LayerEditor {
                             let more = if text.chars().count() > 120 { "…" } else { "" };
                             ui.label(RichText::new(format!("{} adds: {first}{more}", from.label())).small().color(t.text_faint)).on_hover_text(text);
                         }
+                        // The settings screen gives the global level a wide field of its own.
+                        let (rows, max_w) = if level == Level::Global { (3, 720.0) } else { (2, 420.0) };
                         let hint = match level {
                             Level::Global => "Added to the system prompt of every chat",
                             Level::Workspace => "Added to the system prompt of this workspace's chats",
                             _ => "Added to the system prompt of this chat",
                         };
                         let r = ui.add(
-                            egui::TextEdit::multiline(&mut self.instructions).desired_rows(2).desired_width(ui.available_width().min(420.0)).hint_text(hint),
+                            egui::TextEdit::multiline(&mut self.instructions).desired_rows(rows).desired_width(ui.available_width().min(max_w)).hint_text(hint),
                         );
                         let text = Some(self.instructions.trim().to_owned()).filter(|s| !s.is_empty());
                         if r.lost_focus() && text != self.draft.instructions {
@@ -1470,12 +1483,12 @@ impl WorkspaceUi {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use byob_types::config::{Forced, Keys, Levels, resolve};
 
     use super::*;
 
-    fn view(scope: ConfigScope, own: Layer, ws: Option<&Layer>) -> ConfigView {
+    pub(crate) fn view(scope: ConfigScope, own: Layer, ws: Option<&Layer>) -> ConfigView {
         let global = Layer { base_url: Some("http://g/v1".into()), model: Some("gm".into()), ..Layer::default() };
         let chat = (scope == ConfigScope::Chat).then_some(&own);
         let workspace = if matches!(scope, ConfigScope::Workspace { .. }) { Some(&own) } else { ws };
