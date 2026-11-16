@@ -33,6 +33,9 @@ pub struct ModelsUi {
     /// Asking before deleting this one.
     deleting: Option<String>,
     out: Vec<ClientMsg>,
+    /// Scripted runs (`--settings-section model:<id>`): open this profile's form, Advanced
+    /// expanded, once the list has it.
+    pub reveal: Option<String>,
 }
 
 /// Adding models: a server (found, preset, or typed), its model list, the ones to add.
@@ -66,6 +69,10 @@ struct Editor {
     context: String,
     extra: String,
     error: Option<String>,
+    /// Expand Advanced on the next frame.
+    open_advanced: bool,
+    /// Frames left to keep the form's end in view (scripted runs).
+    scroll_frames: u8,
 }
 
 fn opt_text<T: ToString>(v: Option<T>) -> String {
@@ -98,6 +105,8 @@ impl Editor {
             context: opt_text(p.context),
             extra: if p.params.extra.is_empty() { String::new() } else { serde_json::to_string_pretty(&p.params.extra).unwrap_or_default() },
             error: None,
+            open_advanced: false,
+            scroll_frames: 0,
         }
     }
 
@@ -271,6 +280,10 @@ impl ModelsUi {
             theme::spinner(ui, t, None);
             return;
         };
+        if let Some(v) = self.reveal.as_deref().and_then(|id| list.get(id)) {
+            self.editor = Some(Editor { open_advanced: true, scroll_frames: 30, ..Editor::new(v) });
+            self.reveal = None;
+        }
         if list.items.is_empty() {
             ui.label(RichText::new("No models saved yet. Add the ones your servers run; the first becomes the default.").color(t.text_dim));
         }
@@ -487,7 +500,8 @@ impl ModelsUi {
                     .on_hover_text("A property of the model: when set, it beats the chat's and workspace's tool calling setting");
                 ui.end_row();
             });
-            egui::CollapsingHeader::new(RichText::new("Advanced").color(t.text)).id_salt(("profile-advanced", &e.profile.id)).show(ui, |ui| {
+            let open = std::mem::take(&mut e.open_advanced).then_some(true);
+            egui::CollapsingHeader::new(RichText::new("Advanced").color(t.text)).id_salt(("profile-advanced", &e.profile.id)).open(open).show(ui, |ui| {
                 let anthropic = e.profile.anthropic();
                 ui.label(RichText::new("Sent with every request to this model; leave a field empty for the server's default.").small().color(t.text_faint));
                 egui::Grid::new(("profile-advanced-grid", &e.profile.id)).num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
@@ -548,6 +562,10 @@ impl ModelsUi {
                     ui.label(RichText::new("Current Claude models reject temperature and top_p: requests with them fail.").small().color(t.warning));
                 }
             });
+            if e.scroll_frames > 0 {
+                e.scroll_frames -= 1;
+                ui.scroll_to_cursor(Some(egui::Align::Max));
+            }
             if let Some(err) = &e.error {
                 ui.label(RichText::new(err).color(t.danger));
             }

@@ -29,7 +29,8 @@
 //!     --screenshot FILE       PNG of the window once the conversation settles, then exit
 //!     --screenshot-after SECS minimum wait before the screenshot (default 2)
 //!     --open-settings         start with the settings panel open
-//!     --settings-section NAME open the settings at an appearance section (knobs, advanced)
+//!     --settings-section NAME open the settings at an appearance section (knobs, advanced) or at
+//!                             model profile ID's form, Advanced expanded (model:ID)
 //!     --window-size WxH       window size in points (default 1100x750)
 //!     --tool-mode MODE        auto | native | prompt: force how tools are passed to the model
 //!     --compact-at TOKENS     compact the context when a request passes TOKENS (default:
@@ -168,7 +169,7 @@ fn parse_args() -> Result<Args, String> {
                 args.theme = Some(it.next().ok_or("--theme needs a name")?);
             }
             "--open-settings" => args.open_settings = true,
-            "--settings-section" => args.settings_section = Some(it.next().ok_or("--settings-section needs knobs or advanced")?),
+            "--settings-section" => args.settings_section = Some(it.next().ok_or("--settings-section needs knobs, advanced or model:<id>")?),
             "--window-size" => {
                 let v = it.next().ok_or("--window-size needs WxH")?;
                 let size = v.split_once('x').and_then(|(w, h)| Some([w.parse::<f32>().ok()?, h.parse::<f32>().ok()?]));
