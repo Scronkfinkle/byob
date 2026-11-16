@@ -22,7 +22,7 @@ use serde_json::Value;
 /// Bumped on a change an older peer can't survive (see the module docs).
 pub const PROTOCOL_MAJOR: u32 = 13;
 /// Bumped on additive changes; peers with the same major but another minor still talk.
-pub const PROTOCOL_MINOR: u32 = 8;
+pub const PROTOCOL_MINOR: u32 = 9;
 // Minors: 1 — `Artifact::content_type` (open artifact types; `kind` stays for 13.0 clients);
 // 2 — `PluginInfo::backend` (plugin backend processes); 3 — render sites: `PluginInfo::views`,
 // `View::owner`, `OpenView`/`CloseView`/`ViewEvent`, `LiveView` (cap `view_sites`); 4 — bundled
@@ -34,6 +34,10 @@ pub const PROTOCOL_MINOR: u32 = 8;
 // 7 — `PluginInfo::superseded_by` (manifest `provides`: one of two plugins offering the same
 // thing is used) and native plugin backends (no wire change).
 // 8 — question cards: `Ask::choice` and `ClientMsg::AnswerQuestion` (the `ask_user` tool).
+// 9 — model profiles: `GetProfiles`, `CreateProfile`, `UpdateProfile`, `DeleteProfile`,
+// `DuplicateProfile`, `SetRole`, `TestProfile`, `SetLevelProfile`, `ServerMsg::Profiles`/
+// `ProfileTested` (cap `profiles`), `Layer::profile`, `ChatEndpoint::profile`,
+// `EndpointInfo::slots`.
 
 /// Cap: the peer handles [`crate::ClientMsg::Plugin`] / [`crate::ServerMsg::Plugin`].
 pub const CAP_PLUGIN_CHANNEL: &str = "plugin_channel";
@@ -59,6 +63,7 @@ pub fn client_caps() -> Vec<String> {
         crate::sites::CAP_VIEW_SITES.to_owned(),
         CAP_BUNDLED_SCOPE.to_owned(),
         crate::web::CAP_WEB_BRIDGE.to_owned(),
+        crate::profiles::CAP_PROFILES.to_owned(),
     ]
 }
 
@@ -70,6 +75,7 @@ pub fn engine_caps() -> Vec<String> {
         crate::sites::CAP_VIEW_SITES.to_owned(),
         CAP_BUNDLED_SCOPE.to_owned(),
         crate::web::CAP_WEB_BRIDGE.to_owned(),
+        crate::profiles::CAP_PROFILES.to_owned(),
     ]
 }
 

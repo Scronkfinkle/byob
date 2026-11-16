@@ -107,6 +107,9 @@ pub struct ChatEndpoint {
     /// Which level chose it.
     pub from: Level,
     pub has_api_key: bool,
+    /// The model profile it is (13.9+), if it is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     #[serde(default)]
     pub link: Link,
     #[serde(default)]
@@ -148,6 +151,13 @@ impl ClientMsg {
             Self::Plugin { plugin, msg } => crate::version::check_plugin_msg(plugin, msg),
             Self::OpenView { .. } | Self::CloseView { .. } | Self::ViewEvent { .. } => crate::sites::check_sizes(self),
             Self::WebCall { owner, method, params, .. } => crate::web::check_call(owner, method, params),
+            Self::CreateProfile { .. }
+            | Self::UpdateProfile { .. }
+            | Self::DeleteProfile { .. }
+            | Self::DuplicateProfile { .. }
+            | Self::TestProfile { .. }
+            | Self::SetRole { .. }
+            | Self::SetLevelProfile { .. } => crate::profiles::check_sizes(self),
             Self::AnswerQuestion { text, .. } => {
                 if long(text, crate::MAX_ANSWER_CHARS) {
                     Err("the answer is too long".to_owned())

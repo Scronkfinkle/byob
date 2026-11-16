@@ -186,6 +186,11 @@ fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned>(d: D) -> Result<Optio
 /// One level's own settings; `None` means "inherit".
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layer {
+    /// A saved model ([`crate::profile::Profile`], by id). When it exists it beats this
+    /// level's `base_url`/`model`, which are kept as a copy of it for older builds; when it
+    /// doesn't (deleted), the level inherits the endpoint.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
@@ -238,7 +243,7 @@ pub fn plugin_id_ok(id: &str) -> bool {
 /// The groups of settings, for [`Field::levels`] and the UI's reset buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Field {
-    /// `base_url` and `model` together.
+    /// `profile`, `base_url` and `model` together.
     Endpoint,
     ToolMode,
     Approvals,
@@ -309,7 +314,7 @@ impl Layer {
     /// Is `field` set at this level?
     pub fn has(&self, field: Field) -> bool {
         match field {
-            Field::Endpoint => self.base_url.is_some() || self.model.is_some(),
+            Field::Endpoint => self.base_url.is_some() || self.model.is_some() || self.profile.is_some(),
             Field::ToolMode => self.tool_mode.is_some(),
             Field::Approvals => self.approvals.is_some(),
             Field::Compaction => self.auto_compact.is_some() || self.compact_percent.is_some(),
@@ -326,6 +331,7 @@ impl Layer {
     pub fn reset(&mut self, field: Field) {
         match field {
             Field::Endpoint => {
+                self.profile = None;
                 self.base_url = None;
                 self.model = None;
             }
@@ -356,6 +362,12 @@ impl Layer {
         self.base_url = clean(self.base_url);
         self.model = clean(self.model);
         self.image = clean(self.image);
+        self.profile = clean(self.profile);
+        if let Some(p) = &self.profile
+            && !crate::profile::id_ok(p)
+        {
+            return Err(format!("{:?} isn't a model profile id", p.chars().take(80).collect::<String>()));
+        }
         self.instructions = self.instructions.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
         if self.base_url.as_ref().is_some_and(|u| u.chars().count() > MAX_URL_CHARS) {
             return Err("the URL is too long".into());

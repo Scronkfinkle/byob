@@ -278,6 +278,11 @@ impl Workspaces {
         Ok(row)
     }
 
+    /// Every chat that has settings of its own, by chat id.
+    pub fn chat_configs(&self) -> &BTreeMap<String, Layer> {
+        &self.chats.chats
+    }
+
     /// A chat's own settings, if it has any.
     pub fn chat_config(&self, chat: &str) -> Option<&Layer> {
         self.chats.chats.get(chat)

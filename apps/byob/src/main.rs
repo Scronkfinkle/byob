@@ -219,7 +219,11 @@ fn parse_args() -> Result<Args, String> {
             // Hidden, for testing: open a workspace view (new-workspace, workspace-settings, …).
             "--open-panel" => {
                 let v = it.next().ok_or("--open-panel needs a name")?;
-                let plugin_panel = v == "plugin-pane" || v.starts_with("plugin-pane:") || v.starts_with("plugin:") || v.starts_with("artifact:");
+                let plugin_panel = v == "plugin-pane"
+                    || v.starts_with("plugin-pane:")
+                    || v.starts_with("plugin:")
+                    || v.starts_with("artifact:")
+                    || v.starts_with("add-models:");
                 if !plugin_panel && !byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == v) {
                     return Err(format!("unknown panel {v:?} ({}, {})", byob_ui_egui::ByobApp::PANELS, byob_ui_egui::ByobApp::PLUGIN_PANELS));
                 }
@@ -296,6 +300,13 @@ struct Saved {
 fn load_saved() -> Saved {
     match Paths::resolve() {
         Ok(paths) => {
+            // The main connection and model roles of older builds become model profiles
+            // (their copies stay, so older builds still read them).
+            match byob_store::profiles::migrate_files(&paths) {
+                Ok(true) => log::info!("saved the connection and model roles as model profiles"),
+                Ok(false) => {}
+                Err(e) => log::warn!("couldn't save model profiles: {e}"),
+            }
             // Warnings (corrupt file kept aside, loose permissions fixed) are logged by the store.
             let settings = Settings::load(&paths.settings()).value;
             let secrets = Secrets::load(&paths.secrets()).value;
@@ -452,6 +463,9 @@ fn run() -> Result<(), String> {
     config.envs = extra.envs;
     config.plugins = Some(extra.plugins);
     config.models = model_roles(&config.inference, &saved.settings, &saved.secrets);
+    config.profiles = saved.settings.profiles.clone();
+    config.roles = saved.settings.roles.clone();
+    config.profile_keys = saved.secrets.profile_keys.clone();
     let sub = saved.settings.subagents;
     config.subagents = byob_agent::SubagentOptions {
         // Whether a chat may delegate is a layered setting (global `subagents.enabled`).

@@ -58,6 +58,9 @@ pub mod natives;
 pub mod permissions;
 mod plan_hook;
 mod plugins;
+#[cfg(test)]
+mod profile_tests;
+mod profiles;
 mod queue;
 #[cfg(test)]
 mod queue_tests;
@@ -91,7 +94,7 @@ use byob_protocol::{
     ApprovalAnswer, Artifact, ArtifactRef, ChatCursor, ChatSummary, ClientMsg, Connection, DelegationState, EngineState, Entry, EntryRole, Link, MediaRef,
     NoticeLevel, PROTOCOL_MAJOR, PROTOCOL_MINOR, ServerMsg, Step, StepStatus, Welcome,
 };
-use byob_store::{ChatStore, GrantScope, NewMessage, Paths, Role, Secrets, Settings, StorageKind, Store, StoreError};
+use byob_store::{ChatStore, GrantScope, NewMessage, Paths, Role, Settings, StorageKind, Store, StoreError};
 use byob_tools::Registry;
 pub use byob_tools::artifact;
 use byob_types::InferenceConfig;
@@ -150,8 +153,16 @@ pub struct EngineConfig {
     /// Subagent definitions from the user's config folder and plugins (a chat's workspace
     /// `.byob/agents` and `.claude/agents` are read per turn and come first).
     pub agents: Vec<AgentDef>,
-    /// Model roles (`settings.json` `models`): name → endpoint, for agents' `model:`.
+    /// Model roles (`settings.json` `models`): name → endpoint, for agents' `model:`. Roles
+    /// assigned to profiles (`roles`) override these.
     pub models: BTreeMap<String, InferenceConfig>,
+    /// Saved models by id (`settings.json` `profiles`), see [`byob_types::profile`].
+    pub profiles: BTreeMap<String, byob_types::profile::Profile>,
+    /// Their keys (`secrets.json` `profile_keys`).
+    pub profile_keys: BTreeMap<String, String>,
+    /// Role → profile id (`settings.json` `roles`); `main` is the global endpoint
+    /// (`inference`), when no flag chose another.
+    pub roles: BTreeMap<String, String>,
     pub subagents: SubagentOptions,
     /// An endpoint has worked before, or the user named one (settings.json
     /// `inference.last_good`, `--inference-url`): no welcome screen.
@@ -192,6 +203,9 @@ impl EngineConfig {
             compaction: CompactOptions::default(),
             agents: Vec::new(),
             models: BTreeMap::new(),
+            profiles: BTreeMap::new(),
+            profile_keys: BTreeMap::new(),
+            roles: BTreeMap::new(),
             subagents: SubagentOptions::default(),
             onboarded: false,
             detect_local: !cfg!(test),
@@ -540,8 +554,18 @@ struct Engine {
     compacting: BTreeMap<String, Arc<AtomicBool>>,
     /// Configured subagents (user folder, plugins).
     agents: Vec<AgentDef>,
-    /// Model roles by name.
+    /// Model roles by name: `base_models`, then the roles' profiles.
     models: BTreeMap<String, InferenceConfig>,
+    /// Model roles from the configuration (`models` of settings.json).
+    base_models: BTreeMap<String, InferenceConfig>,
+    /// Saved models, their keys, and which role uses which (see [`profiles`]).
+    profiles: BTreeMap<String, byob_types::profile::Profile>,
+    profile_keys: BTreeMap<String, String>,
+    roles: BTreeMap<String, String>,
+    /// Profiles levels point at that don't exist, warned about once.
+    missing_warned: std::sync::Mutex<BTreeSet<String>>,
+    /// Profiles with a test running.
+    profile_tests: BTreeSet<String>,
     subagents: SubagentOptions,
     /// Inference slots subagents may use, shared by every chat.
     slots: Arc<delegate::Slots>,
@@ -688,13 +712,22 @@ impl Engine {
             compaction: config.compaction,
             compacting: BTreeMap::new(),
             agents: config.agents,
-            models: config.models,
+            models: config.models.clone(),
+            base_models: config.models,
+            profiles: config.profiles,
+            profile_keys: config.profile_keys,
+            roles: config.roles,
+            missing_warned: std::sync::Mutex::default(),
+            profile_tests: BTreeSet::new(),
             subagents: config.subagents,
             slots,
             leases: Arc::default(),
             envs: config.envs,
         };
+        engine.rebuild_models();
         engine.check_link();
+        engine.migrate_levels();
+        engine.probe_profiles();
         if detect {
             engine.detect_endpoints();
         }
@@ -990,6 +1023,7 @@ impl Engine {
                 has_api_key: e.inference.api_key.is_some(),
                 link: if key == adapt::key(&self.config) { self.link.clone() } else { self.links.get(&key).cloned().unwrap_or_default() },
                 info: Some(self.endpoints.info_with(&e.inference, e.effective.tool_mode.value)),
+                profile: e.profile.clone(),
             }
         });
         EngineState {
@@ -1037,6 +1071,7 @@ impl Engine {
                 self.endpoints.handle(event);
                 self.slots.set_capacity(self.subagents.parallel(self.endpoints.slots(&self.config)));
                 self.broadcast_state();
+                self.broadcast_profiles();
                 // The window (and so the threshold) may have changed.
                 let viewed: BTreeSet<String> = self.clients.values().filter_map(|c| c.chat.clone()).collect();
                 for chat in viewed {
@@ -1089,6 +1124,7 @@ impl Engine {
                 // State next: it is the documented answer to Hello (after the Welcome).
                 self.send_to(id, ServerMsg::State(self.client_state(id)));
                 self.send_to(id, self.workspaces_msg());
+                self.send_profiles(id);
                 self.send_chats(id, None, FIRST_PAGE);
                 self.show_chat_with(id, chat, false);
             }
@@ -1131,6 +1167,17 @@ impl Engine {
             ClientMsg::RenameWorkspace { id: ws, name } => self.rename_workspace(id, &ws, &name),
             ClientMsg::RemoveWorkspace { id: ws, clean } => self.remove_workspace(id, &ws, clean),
             ClientMsg::GetConfig { scope } => self.send_config(id, scope),
+            ClientMsg::GetProfiles => {
+                let msg = self.profiles_msg();
+                self.send_to(id, msg);
+            }
+            ClientMsg::CreateProfile { profile, api_key, assign, make_main } => self.create_profile(id, profile, api_key, assign, make_main),
+            ClientMsg::UpdateProfile { profile, api_key } => self.update_profile(id, profile, api_key),
+            ClientMsg::DeleteProfile { id: p } => self.delete_profile(id, &p),
+            ClientMsg::DuplicateProfile { id: p } => self.duplicate_profile(id, &p),
+            ClientMsg::SetRole { role, profile } => self.set_role(id, &role, profile),
+            ClientMsg::TestProfile { id: p } => self.test_profile(id, p),
+            ClientMsg::SetLevelProfile { scope, profile } => self.set_level_profile(id, scope, profile),
             ClientMsg::SetConfig { scope, layer, api_key } => self.set_config(id, scope, layer, api_key),
             ClientMsg::ListFolders { path } => self.list_folders(id, path),
             ClientMsg::CheckContainers => self.check_containers(id),
@@ -1318,12 +1365,18 @@ impl Engine {
         }
         let (base_url, model) = (base_url.trim().to_owned(), model.trim().to_owned());
         let config = InferenceConfig { api_key: self.key_for(&base_url, api_key), api: self.api_for(&base_url), base_url, model };
-        let new_key = config.api_key != self.config.api_key;
+        if let Err(e) = byob_llm::Client::new(config.clone()) {
+            self.notice(id, e.to_string());
+            return;
+        }
+        // Saved as the main profile (and its copies in `inference` / `api_key`).
+        self.set_inference_profile(id, config);
+    }
+
+    /// Point the global endpoint at `config` now (probe it, check it, tell every client).
+    pub(crate) fn switch_global(&mut self, config: InferenceConfig) {
         match byob_llm::Client::new(config.clone()) {
             Ok(client) => {
-                if let Err(e) = self.save_inference(&config, new_key) {
-                    self.notice(id, format!("inference settings apply now but couldn't be saved: {e}"));
-                }
                 self.config = config;
                 self.endpoints.probe(&client, &self.inbox);
                 self.llm = Ok(client);
@@ -1331,24 +1384,8 @@ impl Engine {
                 self.check_link();
                 self.broadcast_state();
             }
-            Err(e) => self.notice(id, e.to_string()),
+            Err(e) => log::warn!("the default model {}: {e}", config.base_url),
         }
-    }
-
-    /// Remember the endpoint in settings.json and a changed API key in secrets.json (only there).
-    fn save_inference(&self, config: &InferenceConfig, new_key: bool) -> Result<(), StoreError> {
-        let Some(paths) = &self.paths else { return Ok(()) };
-        Settings::update(&paths.settings(), |s| {
-            s.inference.base_url = Some(config.base_url.clone());
-            s.inference.model = Some(config.model.clone());
-            s.inference.api = config.api;
-        })?;
-        if new_key {
-            let mut secrets = Secrets::load(&paths.secrets()).value;
-            secrets.api_key.clone_from(&config.api_key);
-            secrets.save(&paths.secrets())?;
-        }
-        Ok(())
     }
 
     // ---- approvals --------------------------------------------------------------------

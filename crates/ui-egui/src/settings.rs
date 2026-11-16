@@ -1,4 +1,4 @@
-//! The settings panel: inference endpoint (engine-wide), defaults for every chat, plugins,
+//! The settings panel: models (engine-wide), defaults for every chat, plugins,
 //! and appearance (this device only):
 //! a theme gallery, the knobs, theme files, and every colour role under Advanced.
 
@@ -69,7 +69,7 @@ impl ByobApp {
                 }
             });
         });
-        ui.label(RichText::new("Connection and defaults for every chat; appearance on this device.").small().color(t.text_dim));
+        ui.label(RichText::new("Models and defaults for every chat; appearance on this device.").small().color(t.text_dim));
         ui.add_space(4.0);
     }
 
@@ -79,12 +79,18 @@ impl ByobApp {
         if std::mem::take(&mut self.reveal_connection) {
             ui.scroll_to_cursor(Some(egui::Align::Min));
         }
-        section(ui, &t, "Connection", "The model server byob talks to; saved for every window and browser tab.", |ui| match &self.state {
-            Some(state) => self.connect.form(ui, &t, state, "settings"),
-            None => {
-                ui.label(RichText::new("connecting…").color(t.text_dim));
-            }
-        });
+        if self.models.available() {
+            let blurb =
+                "The models byob can use, saved for every window and browser tab. Chats use the default one unless their workspace or the chat picks another.";
+            section(ui, &t, "Models", blurb, |ui| self.models.show(ui, &t, self.state.as_ref()));
+        } else {
+            section(ui, &t, "Connection", "The model server byob talks to; saved for every window and browser tab.", |ui| match &self.state {
+                Some(state) => self.connect.form(ui, &t, state, "settings"),
+                None => {
+                    ui.label(RichText::new("connecting…").color(t.text_dim));
+                }
+            });
+        }
         section(ui, &t, "Defaults for every chat", "Saved in settings.json. A workspace or a chat can change each of them for itself.", |ui| {
             if let Some(msg) = self.workspaces.defaults.show(ui, &t, crate::workspace::GLOBAL_FIELDS) {
                 self.conn.send(msg);

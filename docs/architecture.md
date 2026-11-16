@@ -679,10 +679,11 @@ list_files · 4.1 s]`), is the tool result, so the parent's context grows only b
   `<workspace>/.byob/agents`, `<workspace>/.claude/agents`, `<config>/agents` and plugins'
   `agents/`, first name wins; descriptions are listed in the main system prompt. Without
   `agent`, a general-purpose worker runs.
-- **Model roles.** `settings.json` `models: { fast: { base_url?, model? } }` (keys in
-  `secrets.json` `model_keys`), each defaulting to the main endpoint; an agent's `model:`
-  names a role, else Claude Code's `inherit`/`sonnet`/`opus`/`haiku` mean the main model, else
-  it is a model id on the main endpoint.
+- **Model roles.** `settings.json` `roles: { vision: "<profile id>", … }` (see Model
+  profiles below; older `models: { fast: { base_url?, model? } }` entries, keys in
+  `secrets.json` `model_keys`, become profiles and roles on load). An agent's `model:` names a
+  role, else Claude Code's `inherit`/`sonnet`/`opus`/`haiku` mean the main model, else it is a
+  model id on the main endpoint.
 
 ## Plugins
 
@@ -1152,6 +1153,8 @@ usage meter, the header (`EngineState.chat_endpoint`), the environment of `run_c
   limits and slots (one engine-wide semaphore, so not per chat).
 - **Testing flags beat every level** for the run: `--auto-approve`, `--tool-mode`; and
   `--inference-url` / `--model` stand in for the global endpoint.
+- **Model profiles.** A level may pick a saved model (`Layer::profile`, below); its
+  endpoint, key and (when set) tool mode stand in for the level's own.
 - **Environment.** Auto is today's behaviour (asked once per folder). Host never uses a
   container; Nix loads the folder's dev shell without asking; Container runs every command
   in the workspace's container, no question (the choice is also recorded as the folder's
@@ -1241,7 +1244,7 @@ or `--inference-url`) decides whether an empty chat shows the welcome screen. Un
 the engine also looks for llama-server, Ollama, LM Studio and vLLM on their usual loopback
 ports (800 ms each, in parallel; `ClientMsg::DetectEndpoints` repeats it).
 
-The welcome screen and Settings share one form (`byob-ui-egui::connect`): presets, URL,
+The welcome screen (and Settings, with an engine without profiles) use one form (`byob-ui-egui::connect`): presets, URL,
 model (a picker once the server lists models), key, **Test connection**
 (`ClientMsg::TestInference` → `ServerMsg::InferenceTested`: models, problem, a short summary
 from a brief probe without generation) and **Connect** (`SetInference`). The engine does
@@ -1250,8 +1253,64 @@ stored key follows a URL change only to the same scheme/host/port (`api_key: ""`
 it); lengths are capped. A reply that failed with a connection problem shows a card with
 Connection settings and, if it produced nothing, Retry (`ClientMsg::Retry` deletes the
 failed pair and sends the message again). The header's status chip (dot + model + server)
-opens the connection settings; the header lays out Settings first so it is never pushed
-off screen.
+switches the chat's model among the profiles (or opens the connection settings without
+any); the header lays out Settings first so it is never pushed off screen.
+
+### Model profiles
+
+A **profile** is a saved model (`byob_types::profile::Profile`): stable `id`, `name`,
+`base_url`, `model`, `description` (what it's good at), optional `tool_mode` (a property of
+the model: when set it beats every level's tool mode, not `--tool-mode`). Also stored, for
+later versions and not used yet: `subagents` (offered for delegation), `max_parallel`,
+`context` (overrides the probe), `params` (`temperature`, `top_p`, `max_tokens`, `extra`
+merged into the request body). Unknown fields are kept (`extra`, flattened).
+
+```jsonc
+// settings.json
+"profiles": {
+  "qwen3": { "id": "qwen3", "name": "Qwen 3", "base_url": "http://127.0.0.1:8080/v1", "model": "qwen3",
+             "description": "fast, good at code", "tool_mode": "native" },
+  "gpt": { "id": "gpt", "name": "gpt-4.1", "base_url": "https://api.openai.com/v1", "model": "gpt-4.1" }
+},
+"roles": { "main": "qwen3", "vision": "gpt" },
+// copies for builds without profiles (written by byob, read by 0.3.x):
+"inference": { "base_url": "http://127.0.0.1:8080/v1", "model": "qwen3" },
+"models": { "vision": { "base_url": "https://api.openai.com/v1", "model": "gpt-4.1" } }
+// secrets.json
+"profile_keys": { "gpt": "sk-…" }, "api_key": null, "model_keys": { "vision": "sk-…" }
+```
+
+- **Roles** point at profiles: `main` is the default model of every chat (the global
+  endpoint, unless `--inference-url`/`--model` set another), `vision` looks at images for a
+  model that can't; `subagents` and `utility` (titles, compaction) are stored for later
+  versions. Other role names (older `models.<name>`) work as agents' `model:`.
+- **Levels** pick one with `Layer::profile`; `byob_types::profile::resolve_with` puts its
+  endpoint in place of the level's `base_url`/`model` and uses the profile's key. A profile
+  that is gone (deleted, hand-edited) makes the level inherit the endpoint, with a warning in
+  the log, never an error. The level keeps `base_url`/`model` (and its `scoped_keys` entry)
+  as a copy of its profile, updated when the profile changes.
+- **Staying compatible** (`byob_store::profiles`): keys only in `secrets.json`. Every save
+  also writes the copies builds before profiles read: `inference` + `api_key` from the main
+  profile, `models.<role>` + `model_keys.<role>` from the other roles. On every load,
+  `migrate` turns the main connection and each `models.<role>` into a profile and role
+  (deduplicated by URL + model + key); if an older build changed a copy, a profile matching
+  it is found or made and the role follows it (nothing is deleted). At startup the engine does
+  the same for workspaces and chats with an endpoint of their own (URL and model). Running
+  either again changes nothing.
+- **Clients** get `ServerMsg::Profiles` (each with `has_key`, its link and probe summary:
+  context, tools, vision, slots) after the Welcome and on every change, if they list cap
+  `profiles` (13.9). They change them with `CreateProfile` (optionally assigning it to a level
+  or making it the default), `UpdateProfile` (a key follows only to the same server),
+  `DeleteProfile` (not the default; levels using it inherit again), `DuplicateProfile`,
+  `SetRole`, `TestProfile` (→ `ProfileTested`) and `SetLevelProfile`. `SetInference` (the
+  welcome screen) edits the default profile's key, or finds or makes a profile for the new
+  endpoint and makes it the default.
+- **UI**: Settings → Models lists the profiles (status dot, model and server, what the probe
+  found) with Edit, Duplicate, Test, Delete and Make default; Add takes a found server, a
+  preset or a URL, lists the server's models and adds the ticked ones. Advanced (collapsed)
+  holds the stored-only fields. A workspace's or chat's Model is a picker (Inherit, the
+  profiles, Custom… which saves what's typed as a profile); the header's model chip switches
+  the chat's model.
 
 ## Storage
 

@@ -245,6 +245,7 @@ impl Endpoints {
             context_tokens: caps.and_then(|c| c.context_length),
             tools,
             vision: plan.vision,
+            slots: plan.slots,
         }
     }
 }

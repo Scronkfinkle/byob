@@ -37,10 +37,17 @@ pub enum Event {
         test: Box<InferenceTest>,
     },
     Detected(Vec<Detected>),
+    /// The test of profile `id` (endpoint `key`) finished.
+    ProfileTested {
+        client: ClientId,
+        id: String,
+        key: String,
+        test: Box<InferenceTest>,
+    },
 }
 
 /// Run `work` on a named thread; its event (if the thread didn't crash) goes to the engine.
-fn spawn(name: &str, inbox: &Sender<Input>, work: impl FnOnce() -> Event + Send + 'static) -> bool {
+pub(crate) fn spawn(name: &str, inbox: &Sender<Input>, work: impl FnOnce() -> Event + Send + 'static) -> bool {
     let inbox = inbox.clone();
     let spawned = thread::Builder::new().name(name.into()).spawn(move || match catch_unwind(AssertUnwindSafe(work)) {
         Ok(event) => {
@@ -199,6 +206,7 @@ impl Engine {
                 self.testing.remove(&client);
                 self.send_to(client, ServerMsg::InferenceTested(*test));
             }
+            Event::ProfileTested { client, id, key, test } => self.profile_tested(client, id, key, *test),
             Event::Detected(found) => {
                 log::info!("local inference servers: {:?}", found.iter().map(|d| d.base_url.as_str()).collect::<Vec<_>>());
                 self.detected = found;

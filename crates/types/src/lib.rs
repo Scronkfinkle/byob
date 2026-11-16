@@ -3,6 +3,7 @@
 
 pub mod chart;
 pub mod config;
+pub mod profile;
 
 use serde::{Deserialize, Serialize};
 

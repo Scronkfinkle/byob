@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 pub use byob_types::ApiKind;
 pub use byob_types::config::{Approvals, Layer, ToolMode};
+pub use byob_types::profile::{Params, Profile};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -25,6 +26,16 @@ fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(d: D) -> Re
         log::warn!("byob-store: ignoring settings value {v}: {e}");
         T::default()
     }))
+}
+
+/// `profiles`: one bad entry is dropped alone (logged), not the whole map.
+fn lenient_profiles<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, Profile>, D::Error> {
+    let mut warnings = Vec::new();
+    let out = byob_types::profile::profiles_from(Value::deserialize(d)?, &mut warnings);
+    for w in warnings {
+        log::warn!("byob-store: {w}");
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,9 +204,16 @@ pub struct Settings {
     /// Automatic context compaction.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "CompactionSettings::is_default")]
     pub compaction: CompactionSettings,
-    /// Model roles by name (`fast`, …) for subagents.
+    /// Model roles by name (`fast`, …) for subagents. Since profiles, a copy of `roles`
+    /// (other than `main`) that byob keeps for older builds; see [`crate::profiles`].
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
     pub models: BTreeMap<String, ModelRole>,
+    /// Saved models, by id ([`Profile`]); their keys are in secrets.json `profile_keys`.
+    #[serde(default, deserialize_with = "lenient_profiles", skip_serializing_if = "BTreeMap::is_empty")]
+    pub profiles: BTreeMap<String, Profile>,
+    /// Which profile does what: role (`main`, `vision`, …) → profile id.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
+    pub roles: BTreeMap<String, String>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "SubagentSettings::is_default")]
     pub subagents: SubagentSettings,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "ContainerSettings::is_default")]
@@ -253,6 +271,10 @@ impl Settings {
         for (name, role) in &mut loaded.value.models {
             strip_secrets(&mut role.extra, &format!("models.{name}."), &mut loaded.warnings);
         }
+        for (id, p) in &mut loaded.value.profiles {
+            strip_secrets(&mut p.extra, &format!("profiles.{id}."), &mut loaded.warnings);
+            strip_secrets(&mut p.params.rest, &format!("profiles.{id}.params."), &mut loaded.warnings);
+        }
         for w in &loaded.warnings {
             log::warn!("byob-store: {w}");
         }
@@ -267,6 +289,11 @@ impl Settings {
         strip_secrets(&mut clean.inference.extra, "inference.", &mut ignored);
         for role in clean.models.values_mut() {
             strip_secrets(&mut role.extra, "", &mut ignored);
+        }
+        for (id, p) in &mut clean.profiles {
+            strip_secrets(&mut p.extra, "", &mut ignored);
+            strip_secrets(&mut p.params.rest, "", &mut ignored);
+            p.id.clone_from(id);
         }
         save_json(path, &clean, None)
     }
@@ -285,6 +312,7 @@ impl Settings {
         let text = |v: &Option<String>| v.clone().filter(|s| !s.trim().is_empty());
         let (compaction, subagents) = (CompactionSettings::default(), SubagentSettings::default());
         Layer {
+            profile: None,
             base_url: text(&self.inference.base_url),
             model: text(&self.inference.model),
             tool_mode: self.tool_mode,
@@ -335,9 +363,13 @@ pub struct Secrets {
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
     pub model_keys: BTreeMap<String, String>,
     /// API keys of workspaces and chats that use their own endpoint, by scope
-    /// (`workspace:<id>`, `chat:<id>`).
+    /// (`workspace:<id>`, `chat:<id>`). Since profiles, a copy of the key of the profile
+    /// the level picked, kept for older builds.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
     pub scoped_keys: BTreeMap<String, String>,
+    /// API keys of model profiles, by profile id.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
+    pub profile_keys: BTreeMap<String, String>,
     /// Secret plugin settings (API keys, tokens), by `plugin:<id>`, then setting key. They
     /// reach only the plugin's own processes, as environment variables.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
@@ -352,6 +384,7 @@ impl std::fmt::Debug for Secrets {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("model_keys", &self.model_keys.keys().collect::<Vec<_>>())
             .field("scoped_keys", &self.scoped_keys.keys().collect::<Vec<_>>())
+            .field("profile_keys", &self.profile_keys.keys().collect::<Vec<_>>())
             .field("plugin_settings", &self.plugin_settings.keys().collect::<Vec<_>>())
             .field("extra", &self.extra.keys().collect::<Vec<_>>())
             .finish()

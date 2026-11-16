@@ -11,6 +11,7 @@ pub mod delegation;
 pub mod env;
 pub mod media;
 pub mod plugins;
+pub mod profiles;
 pub mod queue;
 pub mod sites;
 pub mod tree;
@@ -31,6 +32,7 @@ pub use plugins::{
     BackendInfo, Extensions, PluginAction, PluginCard, PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, PluginTest, RendererDecl,
     ServerInfo, ServerState, SlashItem, SlashKind, StarterDecl,
 };
+pub use profiles::{CAP_PROFILES, Profile, ProfileList, ProfileTest, ProfileView};
 pub use queue::{ChatQueue, QueuePause, QueuedMessage};
 pub use sites::{LiveView, Site, ViewDecl, ViewRef};
 pub use usage::{ChatUsage, Compaction};
@@ -314,6 +316,52 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         approved: bool,
     },
+    /// Ask for the model profiles; answered with [`ServerMsg::Profiles`] (13.9+, see
+    /// [`profiles`]).
+    GetProfiles,
+    /// Save a new profile (its `id` is made by the engine) with its key, if any. `assign`
+    /// also makes it that level's model; `make_main` the default model of every chat.
+    CreateProfile {
+        profile: Profile,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assign: Option<ConfigScope>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        make_main: bool,
+    },
+    /// Replace profile `profile.id`. `api_key`: `None` keeps the stored key while the
+    /// server (scheme, host, port) stays the same, `Some("")` removes it.
+    UpdateProfile {
+        profile: Profile,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
+    },
+    /// Delete a profile (not the main one). Levels that picked it inherit their model again;
+    /// roles that used it are unassigned.
+    DeleteProfile {
+        id: String,
+    },
+    /// Save a copy of a profile, key included, as "<name> (copy)".
+    DuplicateProfile {
+        id: String,
+    },
+    /// Give role `role` (see [`profiles::ROLES`]) profile `profile`; `None` unassigns it
+    /// (not `main`).
+    SetRole {
+        role: String,
+        profile: Option<String>,
+    },
+    /// Check a profile's endpoint now; answered with [`ServerMsg::ProfileTested`].
+    TestProfile {
+        id: String,
+    },
+    /// Make `profile` the model of one level (`None`: inherit it again). Answered with
+    /// [`ServerMsg::Config`] for that scope.
+    SetLevelProfile {
+        scope: ConfigScope,
+        profile: Option<String>,
+    },
     /// A message from a newer client this engine doesn't know (answered with a notice).
     #[serde(other)]
     Unknown,
@@ -417,6 +465,11 @@ pub enum ServerMsg {
     /// A JSON-RPC message (a notification) for the web surfaces `owner` answers, from the
     /// owner (a plugin's backend; only to clients that listed [`web::CAP_WEB_BRIDGE`]).
     WebPush { owner: web::WebOwner, msg: serde_json::Value },
+    /// Every model profile and the roles (13.9+, only to clients that list
+    /// [`profiles::CAP_PROFILES`]); after the Welcome and whenever they change.
+    Profiles(Box<ProfileList>),
+    /// Answer to [`ClientMsg::TestProfile`].
+    ProfileTested(ProfileTest),
     /// A message from a newer engine this client doesn't know: skip it.
     #[serde(other)]
     Unknown,
@@ -819,6 +872,9 @@ pub struct EndpointInfo {
     /// Takes image input: `Some(true)` yes, `Some(false)` no, `None` unknown.
     #[serde(default)]
     pub vision: Option<bool>,
+    /// Requests the server runs at once (llama.cpp slots), if it says (13.9+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slots: Option<u64>,
 }
 
 impl EndpointInfo {
@@ -844,6 +900,9 @@ impl EndpointInfo {
         );
         if self.vision == Some(true) {
             parts.push("vision".into());
+        }
+        if let Some(n) = self.slots.filter(|n| *n > 1) {
+            parts.push(format!("{n} slots"));
         }
         parts.join(" · ")
     }
@@ -1126,8 +1185,16 @@ mod tests {
     fn endpoint_info_is_optional_and_summarised() {
         let old = r#"{"version":"0","inference_base_url":"u","inference_model":"m","has_api_key":false,"endpoint":null,"busy":false}"#;
         assert_eq!(serde_json::from_str::<EngineState>(old).unwrap().endpoint_info, None);
-        let info = EndpointInfo { probing: false, server: "llama.cpp".into(), context_tokens: Some(262_144), tools: ToolsMode::Native, vision: Some(true) };
+        let info = EndpointInfo {
+            probing: false,
+            server: "llama.cpp".into(),
+            context_tokens: Some(262_144),
+            tools: ToolsMode::Native,
+            vision: Some(true),
+            slots: None,
+        };
         assert_eq!(info.summary(), "llama.cpp · 262k ctx · native tools · vision");
+        assert_eq!(EndpointInfo { slots: Some(4), ..info.clone() }.summary(), "llama.cpp · 262k ctx · native tools · vision · 4 slots");
         assert_eq!(EndpointInfo { probing: true, ..info }.summary(), "checking endpoint…");
         assert_eq!(EndpointInfo::default().summary(), "tools untested");
     }

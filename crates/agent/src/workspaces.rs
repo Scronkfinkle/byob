@@ -14,7 +14,8 @@ use byob_protocol::{ConfigScope, ConfigView, FolderList, NoticeLevel, ServerMsg,
 use byob_store::{Chat, Settings, WorkspaceRow};
 use byob_tools::EnvPlan;
 use byob_types::InferenceConfig;
-use byob_types::config::{Effective, EnvKind, Keys, Layer, Level, Levels, origin, resolve};
+use byob_types::config::{Effective, EnvKind, Keys, Layer, Level, Levels, origin};
+use byob_types::profile::resolve_with;
 
 use crate::{ClientId, CompactOptions, Engine, Input, Policy, chats, spawn_worker};
 
@@ -26,6 +27,8 @@ pub(crate) struct ChatSettings {
     pub inference: InferenceConfig,
     /// Where its commands run.
     pub env: EnvPlan,
+    /// The model profile whose endpoint it is, if it is one.
+    pub profile: Option<String>,
 }
 
 /// Longest API key a client may send.
@@ -223,29 +226,49 @@ impl Engine {
         self.store.chat(chat).ok().flatten().map(|c| c.workspace)
     }
 
-    /// The global level: settings.json, with the endpoint the engine uses now.
+    /// The global level: settings.json, with the endpoint the engine uses now (the main
+    /// profile, unless a command-line flag chose another).
     pub(crate) fn global_layer(&self) -> Layer {
-        Layer { base_url: Some(self.config.base_url.clone()), model: Some(self.config.model.clone()), ..self.defaults.clone() }
+        Layer {
+            profile: self.main_profile().map(|p| p.id.clone()),
+            base_url: Some(self.config.base_url.clone()),
+            model: Some(self.config.model.clone()),
+            ..self.defaults.clone()
+        }
     }
 
     fn scoped_key(&self, scope: &str) -> Option<&String> {
         self.scoped_keys.get(scope).filter(|k| !k.is_empty())
     }
 
-    /// Resolve `levels` and pick the endpoint's key from the level the resolver names.
+    /// Resolve `levels` (each level's profile standing in for its endpoint) and pick the
+    /// endpoint's key from the level the resolver names: its profile's, else its own.
     fn settle(&self, levels: Levels<'_>, ws: Option<&str>, chat_key: Option<&str>, keys: Keys) -> ChatSettings {
-        let effective = resolve(levels, keys, self.forced);
-        let api_key = match effective.key_from {
-            Some(Level::Global) => self.config.api_key.clone(),
-            Some(Level::Workspace) => ws.and_then(|w| self.scoped_key(&format!("workspace:{w}"))).cloned(),
-            Some(Level::Chat) => chat_key.map(str::to_owned),
+        let r = resolve_with(levels, keys, self.forced, &self.profiles, |id| self.profile_key(id).is_some());
+        self.warn_missing(&r.missing);
+        let effective = r.effective;
+        // `Some(api)`: a profile decided the endpoint (its API, possibly unset).
+        let profile_api = r.profile.map(|(_, p)| p.api);
+        let profile = r.profile.map(|(level, p)| (level, p.id.clone()));
+        let api_key = match (effective.key_from, &profile) {
+            // The global key is the engine's (a flag or `BYOB_API_KEY` may have set it).
+            (Some(Level::Global), _) => self.config.api_key.clone(),
+            (Some(level), Some((from, id))) if level == *from => self.profile_key(id),
+            (Some(Level::Workspace), _) => ws.and_then(|w| self.scoped_key(&format!("workspace:{w}"))).cloned(),
+            (Some(Level::Chat), _) => chat_key.map(str::to_owned),
             _ => None,
         };
-        // The global endpoint's API goes along to the same URL; another URL decides from its host.
-        let same_url = effective.base_url.value.trim().trim_end_matches('/') == self.config.base_url.trim().trim_end_matches('/');
-        let api = self.config.api.filter(|_| same_url);
+        // A profile says which API it speaks; otherwise the global endpoint's API goes along
+        // to the same URL, and another URL decides from its host.
+        let api = match profile_api {
+            Some(api) => api,
+            None => {
+                let same_url = effective.base_url.value.trim().trim_end_matches('/') == self.config.base_url.trim().trim_end_matches('/');
+                self.config.api.filter(|_| same_url)
+            }
+        };
         let inference = InferenceConfig { base_url: effective.base_url.value.clone(), model: effective.model.value.clone(), api_key, api };
-        ChatSettings { env: env_plan(&effective), inference, effective }
+        ChatSettings { env: env_plan(&effective), inference, effective, profile: profile.map(|(_, id)| id) }
     }
 
     /// The settings of `chat`, or (no chat) of the new chat client `client` is about to start.
@@ -272,7 +295,7 @@ impl Engine {
     }
 
     /// The settings a workspace gives its new chats.
-    fn workspace_settings(&self, ws: &WorkspaceRow) -> ChatSettings {
+    pub(crate) fn workspace_settings(&self, ws: &WorkspaceRow) -> ChatSettings {
         let global = self.global_layer();
         let keys = Keys { global: self.config.api_key.is_some(), workspace: self.scoped_key(&format!("workspace:{}", ws.id)).is_some(), chat: false };
         self.settle(Levels { global: Some(&global), workspace: Some(&ws.config), chat: None }, Some(&ws.id), None, keys)
@@ -568,7 +591,9 @@ impl Engine {
         match scope {
             ConfigScope::Global => {
                 let mut layer = layer.validated(Level::Global)?;
-                // The global endpoint changes through the connection form (SetInference).
+                // The global endpoint changes through the connection form (SetInference)
+                // or the main role (SetRole).
+                layer.profile = None;
                 layer.base_url = None;
                 layer.model = None;
                 // Plugin switches change through SetPluginEnabled only.
@@ -583,8 +608,12 @@ impl Engine {
                 let old = self.workspaces.get(id).ok_or("that workspace no longer exists")?.clone();
                 layer.plugins.clone_from(&old.config.plugins);
                 let scope_key = format!("workspace:{id}");
-                let key =
-                    next_key(old.config.base_url.as_deref(), layer.base_url.as_deref(), api_key.as_deref(), self.scoped_key(&scope_key).map(String::as_str));
+                let key = match self.pick_profile(&mut layer)? {
+                    Some(key) => key,
+                    None => {
+                        next_key(old.config.base_url.as_deref(), layer.base_url.as_deref(), api_key.as_deref(), self.scoped_key(&scope_key).map(String::as_str))
+                    }
+                };
                 let env_changed = old.config.env != layer.env;
                 self.workspaces.set_config(id, layer.clone()).map_err(|e| format!("couldn't save the workspace: {e}"))?;
                 self.set_scoped_key(&scope_key, key);
@@ -600,21 +629,42 @@ impl Engine {
                         let scope_key = format!("chat:{chat}");
                         let old = self.workspaces.chat_config(&chat).cloned().unwrap_or_default();
                         layer.plugins.clone_from(&old.plugins);
-                        let key =
-                            next_key(old.base_url.as_deref(), layer.base_url.as_deref(), api_key.as_deref(), self.scoped_key(&scope_key).map(String::as_str));
+                        let key = match self.pick_profile(&mut layer)? {
+                            Some(key) => key,
+                            None => next_key(
+                                old.base_url.as_deref(),
+                                layer.base_url.as_deref(),
+                                api_key.as_deref(),
+                                self.scoped_key(&scope_key).map(String::as_str),
+                            ),
+                        };
                         self.workspaces.set_chat_config(&chat, layer).map_err(|e| format!("couldn't save the chat's settings: {e}"))?;
                         self.set_scoped_key(&scope_key, key);
                     }
                     None => {
+                        let picked = self.pick_profile(&mut layer)?;
                         let Some(c) = self.clients.get_mut(&client) else { return Ok(()) };
                         layer.plugins.clone_from(&c.new_layer.plugins);
-                        c.new_key = next_key(c.new_layer.base_url.as_deref(), layer.base_url.as_deref(), api_key.as_deref(), c.new_key.as_deref());
+                        c.new_key = match picked {
+                            Some(key) => key,
+                            None => next_key(c.new_layer.base_url.as_deref(), layer.base_url.as_deref(), api_key.as_deref(), c.new_key.as_deref()),
+                        };
                         c.new_layer = layer;
                     }
                 }
             }
         }
         Ok(())
+    }
+
+    /// A level that picks a profile keeps a copy of its URL and model (for older builds);
+    /// `Some(key)`: the key to store with the level, the profile's. `None`: no profile.
+    fn pick_profile(&self, layer: &mut Layer) -> Result<Option<Option<String>>, String> {
+        let Some(id) = layer.profile.clone() else { return Ok(None) };
+        let p = byob_types::profile::find(&self.profiles, Some(&id)).ok_or("that model no longer exists; pick another")?;
+        layer.base_url = Some(p.base_url.trim().to_owned());
+        layer.model = Some(p.model.trim().to_owned());
+        Ok(Some(self.profile_key(&id)))
     }
 
     /// `ClientMsg::ListFolders`, off the engine thread (a slow disk shouldn't stall it).
