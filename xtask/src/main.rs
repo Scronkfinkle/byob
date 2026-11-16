@@ -3,11 +3,12 @@
 //!   web     — build the browser UI into apps/byob-web/dist (wasm-bindgen + wasm-opt)
 //!   wasm    — check that the browser-side crates build for wasm32
 //!   help-docs — copy byob's user docs into crates/help/docs (`--check`: fail if that copy is stale)
-//!   ci      — help-docs --check, fmt, clippy, tests, doc tests, layers, wasm (the full local gate)
+//!   ci      — help-docs --check, the site's version, fmt, clippy, tests, doc tests, layers, wasm (the full local gate)
 
 use std::process::{Command, ExitCode};
 
 mod help_docs;
+mod site;
 
 /// Every workspace crate and its layer. Dependencies may only point downward.
 const LAYERS: &[(&str, u8)] = &[
@@ -242,6 +243,7 @@ fn run(args: &[&str]) -> Result<(), String> {
 
 fn ci() -> Result<(), String> {
     help_docs(true)?;
+    site_version()?;
     run(&["fmt", "--all", "--check"])?;
     run(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"])?;
     let has_nextest = Command::new(env!("CARGO")).args(["nextest", "--version"]).output().is_ok_and(|o| o.status.success());
@@ -269,6 +271,17 @@ fn help_docs(check: bool) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{}\nrun `cargo xtask help-docs` to copy the docs again", problems.join("\n")))
+    }
+}
+
+/// byob.chat's download links name the workspace version.
+fn site_version() -> Result<(), String> {
+    let problems = site::stale(std::path::Path::new("."))?;
+    if problems.is_empty() {
+        println!("site: ok");
+        Ok(())
+    } else {
+        Err(format!("{}\nbump the version in {} with the release", problems.join("\n"), site::PAGE))
     }
 }
 

@@ -10,7 +10,7 @@ Checklist:
 1. Bump `version` in `Cargo.toml` (the workspace and its `byob-*` dependencies),
    `crates/artifact-wire/Cargo.toml`, `host/artifact-host/Cargo.toml` and `flake.nix`; update
    both lockfiles; bump `v=` in the README's macOS `curl` line and every version number
-   in `site/index.html` (the byob.chat download links).
+   in `site/index.html` (the byob.chat download links; `cargo xtask ci` fails until it matches).
 2. `cargo xtask ci`, commit, push, and wait for CI.
 3. Tag and push the tag; when the release is up, set its notes (`gh release edit vX.Y.Z
    --notes-file …`; say the macOS builds are unsigned while they are).

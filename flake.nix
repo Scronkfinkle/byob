@@ -54,11 +54,24 @@
 
         cargoToml = lib.importTOML ./Cargo.toml;
 
+        # byob's source, without the website and pictures no build reads (editing the site
+        # shouldn't rebuild byob).
+        src = lib.cleanSourceWith {
+          src = lib.cleanSource ./.;
+          filter =
+            path: _:
+            !(builtins.elem path [
+              (toString ./site)
+              (toString ./docs/media)
+              (toString ./assets/poster.png)
+            ]);
+        };
+
         # The browser UI: byob-web compiled to wasm + wasm-bindgen glue + index.html.
         byob-web = rustPlatform.buildRustPackage {
           pname = "byob-web";
           version = cargoToml.workspace.package.version;
-          src = lib.cleanSource ./.;
+          inherit src;
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [
             pkgs.wasm-bindgen-cli
@@ -181,7 +194,7 @@
           rustPlatform.buildRustPackage {
             pname = if slim then "byob-slim" else "byob";
             version = cargoToml.workspace.package.version;
-            src = lib.cleanSource ./.;
+            inherit src;
             cargoLock.lockFile = ./Cargo.lock;
             cargoBuildFlags = [
               "-p"
