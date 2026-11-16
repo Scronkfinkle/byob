@@ -6,7 +6,7 @@ default-members = ["crates/*", "apps/*", "xtask"]
 exclude = ["host/artifact-host"]
 
 [workspace.package]
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -17,28 +17,28 @@ categories = ["gui", "development-tools"]
 
 [workspace.dependencies]
 # Internal crates (see docs/architecture.md for layering).
-byob-types = { path = "crates/types", version = "0.3.5" }
-byob-web-assets = { path = "crates/web-assets", version = "0.3.5" }
-byob-bundled = { path = "crates/bundled", version = "0.3.5" }
-byob-protocol = { path = "crates/protocol", version = "0.3.5" }
-byob-server = { path = "crates/server", version = "0.3.5" }
-byob-llm = { path = "crates/llm", version = "0.3.5" }
-byob-store = { path = "crates/store", version = "0.3.5" }
-byob-tools = { path = "crates/tools", version = "0.3.5" }
-byob-mcp = { path = "crates/mcp", version = "0.3.5" }
-byob-plugins = { path = "crates/plugins", version = "0.3.5" }
-byob-sandbox = { path = "crates/sandbox", version = "0.3.5" }
-byob-exec = { path = "crates/exec", version = "0.3.5" }
-byob-agent = { path = "crates/agent", version = "0.3.5" }
-byob-ui-egui = { path = "crates/ui-egui", version = "0.3.5" }
-byob-artifact-wire = { path = "crates/artifact-wire", version = "0.3.5" }
-byob-sheets = { path = "crates/sheets", version = "0.3.5" }
-byob-web-tools = { path = "crates/web-tools", version = "0.3.5" }
-byob-docs = { path = "crates/docs", version = "0.3.5" }
-byob-memory = { path = "crates/memory", version = "0.3.5" }
-byob-calendar = { path = "crates/calendar", version = "0.3.5" }
-byob-mail = { path = "crates/mail", version = "0.3.5" }
-byob-help = { path = "crates/help", version = "0.3.5" }
+byob-types = { path = "crates/types", version = "0.3.6" }
+byob-web-assets = { path = "crates/web-assets", version = "0.3.6" }
+byob-bundled = { path = "crates/bundled", version = "0.3.6" }
+byob-protocol = { path = "crates/protocol", version = "0.3.6" }
+byob-server = { path = "crates/server", version = "0.3.6" }
+byob-llm = { path = "crates/llm", version = "0.3.6" }
+byob-store = { path = "crates/store", version = "0.3.6" }
+byob-tools = { path = "crates/tools", version = "0.3.6" }
+byob-mcp = { path = "crates/mcp", version = "0.3.6" }
+byob-plugins = { path = "crates/plugins", version = "0.3.6" }
+byob-sandbox = { path = "crates/sandbox", version = "0.3.6" }
+byob-exec = { path = "crates/exec", version = "0.3.6" }
+byob-agent = { path = "crates/agent", version = "0.3.6" }
+byob-ui-egui = { path = "crates/ui-egui", version = "0.3.6" }
+byob-artifact-wire = { path = "crates/artifact-wire", version = "0.3.6" }
+byob-sheets = { path = "crates/sheets", version = "0.3.6" }
+byob-web-tools = { path = "crates/web-tools", version = "0.3.6" }
+byob-docs = { path = "crates/docs", version = "0.3.6" }
+byob-memory = { path = "crates/memory", version = "0.3.6" }
+byob-calendar = { path = "crates/calendar", version = "0.3.6" }
+byob-mail = { path = "crates/mail", version = "0.3.6" }
+byob-help = { path = "crates/help", version = "0.3.6" }
 
 # Spreadsheets (byob-sheets): pinned so a bump (and its formula results) is deliberate.
 # MIT OR Apache-2.0.
