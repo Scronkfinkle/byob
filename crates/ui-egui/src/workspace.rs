@@ -433,9 +433,11 @@ impl LayerEditor {
         let own = view.own.profile.clone();
         let named = |p: &Profile| crate::models::menu_label(p);
         // What a level inheriting the endpoint gets, by its profile's name if it is one.
-        let inherited = list
-            .items
-            .iter()
+        // Several profiles may share an endpoint: the default one first.
+        let main = list.roles.get(byob_protocol::profiles::ROLE_MAIN).and_then(|id| list.get(id));
+        let inherited = main
+            .into_iter()
+            .chain(&list.items)
             .find(|v| v.profile.points_at(&e.base_url.value, &e.model.value))
             .map_or_else(|| e.model.value.clone(), |v| v.profile.label().to_owned());
         let typed = own.is_none() && (view.own.base_url.is_some() || view.own.model.is_some());

@@ -32,6 +32,8 @@ pub struct ModelsUi {
     add: Option<AddForm>,
     /// Asking before deleting this one.
     deleting: Option<String>,
+    /// Scripted runs: open this profile's edit form once the list has it.
+    edit_when_listed: Option<String>,
     out: Vec<ClientMsg>,
 }
 
@@ -185,6 +187,10 @@ impl ModelsUi {
         match msg {
             ServerMsg::Profiles(l) => {
                 self.list = Some((**l).clone());
+                if let Some(v) = self.edit_when_listed.as_ref().and_then(|id| l.get(id)) {
+                    self.editor = Some(Editor::new(v));
+                    self.edit_when_listed = None;
+                }
                 // A profile that went away can't be edited any more.
                 if let Some(e) = &self.editor
                     && !e.profile.id.is_empty()
@@ -241,6 +247,14 @@ impl ModelsUi {
     /// The engine has profiles (else Settings shows the older connection form).
     pub fn available(&self) -> bool {
         self.list.is_some()
+    }
+
+    /// Scripted runs: open the edit form of profile `id` (now, or when the list arrives).
+    pub fn start_edit(&mut self, id: &str) {
+        match self.list.as_ref().and_then(|l| l.get(id)) {
+            Some(v) => self.editor = Some(Editor::new(v)),
+            None => self.edit_when_listed = Some(id.to_owned()),
+        }
     }
 
     /// Scripted runs: open the Add form on `url`, listing its models.
