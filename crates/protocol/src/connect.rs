@@ -163,7 +163,8 @@ pub struct Preset {
     pub hint: &'static str,
 }
 
-/// Common OpenAI-compatible servers, local ones first.
+/// Common servers, local ones first. All speak OpenAI chat completions except Anthropic,
+/// which byob talks to over its Messages API (chosen from the URL).
 pub const PRESETS: &[Preset] = &[
     Preset {
         id: "llama-server",
@@ -209,6 +210,15 @@ pub const PRESETS: &[Preset] = &[
         local: false,
         needs_key: true,
         hint: "Hosted: needs an API key",
+    },
+    Preset {
+        id: "anthropic",
+        name: "Anthropic",
+        base_url: "https://api.anthropic.com/v1",
+        model: "claude-opus-5-5",
+        local: false,
+        needs_key: true,
+        hint: "Claude, over Anthropic's Messages API: needs an API key",
     },
     Preset {
         id: "openrouter",
@@ -290,5 +300,7 @@ mod tests {
         assert_eq!(Preset::matching("http://silicon:9931/v1"), None);
         assert!(PRESETS.iter().all(|p| p.base_url.ends_with("/v1") && (p.local != p.needs_key)));
         assert_eq!(Preset::by_id("openai").map(|p| p.needs_key), Some(true));
+        let claude = Preset::by_id("anthropic").map(|p| (p.base_url, p.model, p.needs_key));
+        assert_eq!(claude, Some(("https://api.anthropic.com/v1", "claude-opus-5-5", true)));
     }
 }

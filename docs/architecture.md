@@ -178,7 +178,7 @@ L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
 L4  agent: engine, turns, tool loop, permissions, approvals · sheets (native spreadsheets backend) · web-tools (web_search/web_fetch backend) · mail (IMAP/SMTP backend) · help (byob_help over the user docs)
 L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python, install_packages, workspace environments)
 L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
-L1  protocol (wasm-safe) · llm (OpenAI-compatible client) · store (SQLite or folder) · artifact-wire (helper protocol)
+L1  protocol (wasm-safe) · llm (OpenAI-compatible and Anthropic Messages client) · store (SQLite or folder) · artifact-wire (helper protocol)
 L0  types · bundled (the bundled plugins' files, embedded)
 ```
 
@@ -1185,11 +1185,49 @@ defaults. Moving a chat to another workspace isn't offered: its transcript, arti
 
 ## Inference
 
-`InferenceConfig { base_url, model, api_key }`. `byob-llm` posts to
+`InferenceConfig { base_url, model, api_key, api }`. `byob-llm` posts to
 `{base_url}/chat/completions` with `stream: true`, assembles content, reasoning
 (`reasoning_content`/`reasoning`, or inline `<think>` tags) and streamed `tool_calls`,
 and reports usage. Because there's no grammar-constrained local engine anymore, the agent
 will run the tool-calling rounds itself (cap 30 per turn, as hob did).
+
+### Anthropic Messages API
+
+`api` (`ApiKind`: `openai`, the default, or `anthropic`; `settings.json` `inference.api`
+and `models.<role>.api`, both optional) picks the wire protocol; unset, a base URL on
+`api.anthropic.com` means Anthropic. Then `byob-llm::anthropic` speaks Claude's own
+Messages API behind the same `Client` calls, so the engine doesn't care which it is:
+`POST {base}/messages` with `x-api-key` and `anthropic-version`. Leading system messages
+become `system`; tools become `input_schema` definitions; assistant tool calls become
+`tool_use` blocks and tool results `tool_result` blocks at the start of the next user
+message (the conversion repairs what the API would reject: orphaned results, unanswered
+calls, a first or last assistant turn, empty text); images become base64 image blocks.
+No `temperature`/`top_p` (current models reject them), no forced `tool_choice`, no prefill.
+
+- **Caching**: a top-level `cache_control` (the breakpoint moves to the end of each
+  request, so the next tool step reads everything before it) plus one after the system
+  prompt (tools + system, stable across a chat). `usage.prompt_tokens` counts cached
+  tokens too; `ChatOutcome::cache_read_tokens` / `cache_write_tokens` split them out.
+- **Thinking**: Claude 4.6 and later get `thinking: {type: "adaptive", display:
+  "summarized"}`; the summaries stream as reasoning. The reply's blocks, signatures and
+  all, come back in `ChatOutcome::native`; the turn keeps them on the assistant message
+  (`ChatMessage::native`, never stored) and they go back unchanged in the next requests
+  of the tool loop, as the API requires. Older turns are rebuilt without thinking, which
+  the API allows (a leading run of blocks dropped). Where byob edits earlier messages
+  (compaction, history fitting, old images left out), `prefix_mismatch_behavior:
+  "drop_block"` (beta `thinking-binding-controls-2026-08-01`) makes the API drop the
+  affected blocks instead of failing the request.
+- **Refusals and fallbacks**: Claude Opus 5.x, Sonnet 5.5 and Fable 5.1 requests carry
+  `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`), so a request a model's
+  safeguards decline is re-run on another model server-side; what the declining model did
+  before the switch is dropped. A `refusal` stop that remains is
+  `LlmError::Refused`, which ends the turn with a message and isn't retried. An endpoint
+  that rejects a beta (400 naming it) gets the plain request once.
+- **Errors**: 429 and 529 are `LlmError::Busy`, retried by the turn like a 5xx; other 4xx
+  are not. Claude calls tools natively, so the plan never falls back to prompt tools.
+- **Probe**: `GET /v1/models?limit=1000` (Anthropic headers) for ids, the model's
+  `max_input_tokens` and `capabilities.image_input`; no tool test and no llama.cpp
+  endpoints. Unprobed, an Anthropic endpoint is budgeted at 200k tokens.
 
 ### Connecting (first run)
 

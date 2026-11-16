@@ -21,7 +21,8 @@ that draws its own interface on the GPU, with no Electron.
 - **A real desktop app.** One folder, about a 60 MB download with everything in it (13 MB for
   the slim build), and native file dialogs, drag and drop and keyboard shortcuts. The browser UI is the reverse of the usual arrangement: the same native interface
   compiled to WebAssembly, so a tab or your phone gets the identical app, live on the same session.
-- **Your model, your machine.** No bundled inference and no account: any OpenAI-compatible URL.
+- **Your model, your machine.** No bundled inference and no account: any OpenAI-compatible URL,
+  or Claude over Anthropic's Messages API.
   First run finds local servers on their usual ports; tool calling falls back to prompt-based
   calls when the server has none.
 - **Artifacts beside the chat.** Spreadsheets (xlsx/csv), charts, Markdown documents,
@@ -91,6 +92,7 @@ byob --serve                                # + browser UI on http://127.0.0.1:7
 byob --headless                             # browser UI only, no window
 byob --inference-url http://host:8080/v1 --model local
 BYOB_API_KEY=sk-... byob                    # for hosted endpoints
+BYOB_API_KEY=sk-ant-... byob --inference-url https://api.anthropic.com/v1 --model claude-opus-5-5
 byob --workspace ~/projects/taxes           # start in the workspace for that folder
 
 tailscale serve 7470                        # reach it from any device on your tailnet
@@ -101,6 +103,11 @@ On first run byob shows **Connect a model**: servers it found on this computer's
 (llama-server 8080, Ollama 11434, LM Studio 1234, vLLM 8000), presets for those and for hosted
 APIs, and a Test connection button. Later, the connection lives at the top of Settings (or click
 the status dot in the header).
+
+Claude is spoken to over Anthropic's own Messages API, not its OpenAI compatibility layer: pick
+the Anthropic preset (or any URL on `api.anthropic.com`), and byob uses prompt caching, shows
+Claude's thinking, and keeps it across a tool loop. For an Anthropic-style endpoint elsewhere (a
+gateway), set `"api": "anthropic"` under `inference` in `settings.json`.
 
 Chats are grouped by **workspace**. **+ Workspace** makes one (a fresh folder or an existing
 one) and picks where commands run. A workspace's `…` menu and the sliders next to a chat's title

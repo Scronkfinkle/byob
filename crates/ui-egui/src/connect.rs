@@ -352,7 +352,8 @@ impl ConnectForm {
                     ui.label(
                         RichText::new(
                             "byob brings no model of its own. Point it at any OpenAI-compatible server: \
-                             one running on this computer (llama-server, Ollama, LM Studio, vLLM), or a hosted API with a key.",
+                             one running on this computer (llama-server, Ollama, LM Studio, vLLM), or a hosted API with a key. \
+                             Claude works too, over Anthropic's own API.",
                         )
                         .color(t.text),
                     );
