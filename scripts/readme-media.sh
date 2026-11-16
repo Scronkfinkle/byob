@@ -58,12 +58,14 @@ clip() {
     if [[ "$start" == 0 ]]; then from="$end"
     elif awk -v e="$end" -v d="$dur" 'BEGIN { exit !(e >= d - 0.3) }'; then to="$start"; fi
   done < <(sed -E 's/black_start:([0-9.]*) black_end:([0-9.]*)/\1 \2/' <<<"$black")
-  # Crop to the window; drop frames that barely changed (the model thinking) and play the rest a
-  # little faster; then end on the app's own final screenshot for 3 s (the recording's last
-  # frames can be mid-close). A GIF that only stores what changed between frames is smaller
+  # Crop to the window; keep the frames where something happened (a scene change above 0.0005:
+  # a tool step, the sheet filling in, the reply) and one frame in 30 (2 s) of the rest, so the
+  # model thinking (only its counter and spinner moving, ~0.0003) passes in a moment; play them
+  # at 7 fps, then end on the app's own final screenshot for 3 s (the recording's last frames
+  # can be mid-close). A GIF that only stores what changed between frames is smaller
   # than an animated WebP of the same thing here.
-  ff -ss "$from" -to "$to" -i "$mp4" -loop 1 -framerate 8 -t 3 -i "$out/$name.png" -filter_complex \
-    "[0:v]crop=$W:$H:0:0,mpdecimate=hi=64*12:lo=64*5:frac=0.33,setpts=N/18/TB,fps=8,scale=1100:-2:flags=lanczos,setsar=1,format=rgb24[v];[1:v]scale=1100:-2:flags=lanczos,setsar=1,format=rgb24[s];[v][s]concat=n=2:v=1:a=0,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" \
+  ff -ss "$from" -to "$to" -i "$mp4" -loop 1 -framerate 7 -t 3 -i "$out/$name.png" -filter_complex \
+    "[0:v]crop=$W:$H:0:0,select='gt(scene,0.0005)+not(mod(n,30))',setpts=N/7/TB,fps=7,scale=1100:-2:flags=lanczos,setsar=1,format=rgb24[v];[1:v]scale=1100:-2:flags=lanczos,setsar=1,format=rgb24[s];[v][s]concat=n=2:v=1:a=0,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" \
     -loop 0 "$out/$name.gif"
   rm -f "$out/$name.png"
 }
