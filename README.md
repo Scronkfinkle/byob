@@ -99,13 +99,15 @@ byob --headless --allow-user you@example.com # only admit that Tailscale login
 
 On first run byob shows **Connect a model**: servers it found on this computer's usual ports
 (llama-server 8080, Ollama 11434, LM Studio 1234, vLLM 8000), presets for those and for hosted
-APIs, and a Test connection button. Later, the connection lives at the top of Settings (or click
-the status dot in the header).
+APIs, and a Test connection button. What you connect becomes your default model. Settings →
+**Models** keeps every model you use: add several from one server at once (byob lists what
+the server has), give each a description, test, duplicate, pick the default, and choose a
+vision helper. The model chip in the header switches the chat in view to another model.
 
 Chats are grouped by **workspace**. **+ Workspace** makes one (a fresh folder or an existing
 one) and picks where commands run. A workspace's `…` menu and the sliders next to a chat's title
-show what's inherited and what's set there: model, approvals, tool calling, compaction,
-subagents, extra instructions.
+show what's inherited and what's set there: model (one of your saved models), approvals, tool
+calling, compaction, subagents, extra instructions.
 
 ## Plugins
 
