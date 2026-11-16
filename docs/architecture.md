@@ -629,7 +629,25 @@ keeps going when the window that filled it closes.
 The composer (`crates/ui-egui/src/composer.rs`) is one rounded field: attachment chips, then
 one row of a paperclip (attach), the text and the send control, a round arrow that fills with
 the accent once there is something to send. It starts one line tall; the text grows to ten
-lines, then scrolls, and the controls keep to its bottom edge. It shows the queue as compact rows above it: while a reply runs
+lines (but no more than 38% of the window, so short windows and phones keep their transcript),
+then scrolls, and the controls keep to its bottom edge. A draft put in (a chat's, a starter's)
+puts the cursor at its end and scrolls there.
+
+The text is Markdown, styled as it is typed (`crates/ui-egui/src/compose_md.rs`): it stays a
+plain `TextEdit` over the raw text, which is what is sent, with a `layouter` that styles it.
+`pulldown-cmark` with source offsets (the transcript's CommonMark, so `snake_case` isn't
+italic; `2*3*4` is kept out of emphasis too) flags every byte: bold, italic, strikethrough,
+headings (a little larger), list and task markers (accent), inline code (monospace on the
+inline-code background), fenced code (monospace, the transcript's syntax colours, a
+background painted behind its whole lines), links and bare URLs (link colour), quotes
+(dimmed). Bytes no text event covers are the syntax (`**`, `#`, backticks, `>`, link
+targets): they stay visible, faint. The job's sections cover the text exactly, so the cursor,
+selection, copy/paste and IME are those of a plain field. The job is cached per field by the
+text's hash, the fonts and the theme (egui lays out every frame), and text past 100 KB is
+plain. Cmd/Ctrl+B and Cmd/Ctrl+I wrap the selection in `**`/`*` (or unwrap it) while the
+composer is focused (on macOS Ctrl+B stays egui's cursor-left).
+
+It shows the queue as compact rows above it: while a reply runs
 the send control is **Stop**, and once something is typed Enter (or **Queue** beside it) adds
 to the queue; clicking a row edits it in the composer (the draft there is set aside until
 **Save** or Esc/**Cancel**).

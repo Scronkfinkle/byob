@@ -1,6 +1,7 @@
 //! The composer: one rounded field holding the attachment chips, the message text (growing
 //! with what is typed, then scrolling) with the paperclip on its left and the send control on
-//! its right, on one line until the text grows (then they keep to its bottom edge). Send is a round arrow, muted until there is something
+//! its right, on one line until the text grows (then they keep to its bottom edge). The text is
+//! Markdown, styled as it is typed ([`crate::compose_md`]). Send is a round arrow, muted until there is something
 //! to send and filled with the accent once there is; while a reply runs the same spot is
 //! Stop (with Queue beside it once something is typed), and while a queued message is being
 //! edited it is Save (with Cancel beside it). The queue list sits above the field and the `/`
@@ -14,6 +15,9 @@ use crate::{ByobApp, icons, readable_column, slash};
 
 /// Lines of text the field grows to before it scrolls.
 const MAX_LINES: f32 = 10.0;
+
+/// The share of the window height the text may take before it scrolls.
+const MAX_SHARE: f32 = 0.38;
 
 /// Where the composer was last drawn, and how its send control looked (tests).
 #[derive(Debug, Clone, Copy)]
@@ -56,8 +60,19 @@ impl ByobApp {
             ui.label(egui::RichText::new(text).color(color));
         }
         let id = egui::Id::unique("composer");
+        // Frames left in which the field scrolls to show the cursor (egui does it after typing,
+        // not when a long draft is put in): a few, while the field grows to its height.
+        let reveal_id = id.with("reveal-cursor");
+        let mut reveal = ui.data(|d| d.get_temp::<u8>(reveal_id)).unwrap_or(0);
         if std::mem::take(&mut self.focus_composer) {
+            // The text was just put in (a chat's draft, a starter, a scripted draft): the cursor
+            // goes to its end.
+            let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            let end = egui::text::CCursor::new(self.input.chars().count());
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+            egui::TextEdit::store_state(ui.ctx(), id, state);
             ui.memory_mut(|m| m.request_focus(id));
+            reveal = 2;
         }
         // Enter sends (queues while a reply runs); Shift+Enter inserts a newline (consume
         // Enter before the editor sees it). Escape stops editing a queued message. While the
@@ -73,6 +88,30 @@ impl ByobApp {
             ui.memory_mut(|m| m.request_focus(id));
         }
         let enter = focused && !menu && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        // Cmd/Ctrl+B and +I wrap the selection in `**` / `*` (or unwrap it).
+        let wrap = if focused && !menu {
+            ui.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::COMMAND, egui::Key::B) {
+                    Some("**")
+                } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::I) {
+                    Some("*")
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+        if let Some(marker) = wrap {
+            let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            let end = egui::text::CCursor::new(self.input.chars().count());
+            let [a, b] = state.cursor.char_range().unwrap_or(egui::text::CCursorRange::one(end)).sorted_cursors();
+            let (text, sel) = crate::compose_md::toggle(&self.input, a.index.0..b.index.0, marker);
+            self.input = text;
+            let range = egui::text::CCursorRange::two(egui::text::CCursor::new(sel.start), egui::text::CCursor::new(sel.end));
+            state.cursor.set_char_range(Some(range));
+            egui::TextEdit::store_state(ui.ctx(), id, state);
+        }
         let busy = self.busy();
         let editing = self.queue.editing;
         let mut send = enter;
@@ -105,7 +144,7 @@ impl ByobApp {
             let line = ui.text_style_height(&egui::TextStyle::Body);
             #[allow(clippy::cast_possible_truncation)] // a few points
             let pad_y = ((d - line) / 2.0).clamp(0.0, 40.0).floor() as i8;
-            let max_height = line * MAX_LINES + f32::from(pad_y) * 2.0;
+            let max_height = max_height(line, f32::from(pad_y), ui.ctx().content_rect().height(), d);
             // Placed by hand inside the row: nested egui layouts would put the scroll area
             // below a fixed-height row.
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
@@ -173,6 +212,13 @@ impl ByobApp {
                 let fits = |hint: &str| ui.painter().layout_no_wrap(hint.to_owned(), egui::TextStyle::Body.resolve(ui.style()), t.text).size().x <= room;
                 let hint = [long, short].into_iter().find(|h| fits(h)).unwrap_or(tiny);
                 let input = &mut self.input;
+                let tk = *t;
+                // Live Markdown: the text stays as typed, styled as it is laid out.
+                let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                    let mut job = (*crate::compose_md::cached(ui, &tk, id, buf.as_str()).job).clone();
+                    job.wrap.max_width = wrap;
+                    ui.fonts_mut(|f| f.layout_job(job))
+                };
                 let field = egui::ScrollArea::vertical()
                     .id_salt("composer-scroll")
                     .max_height(max_height)
@@ -186,13 +232,39 @@ impl ByobApp {
                             // move the focus away from the text.
                             .lock_focus(menu)
                             .desired_width(f32::INFINITY)
-                            .hint_text(hint);
-                        ui.add(edit)
+                            .hint_text(hint)
+                            .layouter(&mut layouter);
+                        // Code blocks get a background behind their whole lines, under the text.
+                        let behind = ui.painter().add(egui::Shape::Noop);
+                        let out = edit.show(ui);
+                        let styled = crate::compose_md::cached(ui, &tk, id, input.as_str());
+                        if !styled.code_blocks.is_empty() {
+                            let origin = out.galley_pos - vec2(out.galley.rect.left(), 0.0);
+                            let r = out.response.response.rect;
+                            let total = input.chars().count();
+                            let shapes =
+                                crate::compose_md::code_backgrounds(&tk, &out.galley, origin, r.left() + 1.0, r.right() - 1.0, &styled.code_blocks, total);
+                            ui.painter().set(behind, egui::Shape::Vec(shapes));
+                        }
+                        if reveal > 0
+                            && let Some(c) = out.cursor_range
+                        {
+                            let origin = out.galley_pos - vec2(out.galley.rect.left(), 0.0);
+                            let at = out.galley.pos_from_cursor(c.primary).translate(origin.to_vec2()).expand(2.0);
+                            ui.scroll_to_rect_animation(at, None, egui::style::ScrollAnimation::none());
+                        }
+                        out.response.response
                     })
                     .inner;
                 rects.field = field.rect;
                 let shown = field.rect.height().min(max_height).max(d);
-                if (shown - row_height).abs() > 0.5 {
+                let growing = (shown - row_height).abs() > 0.5;
+                if reveal > 0 {
+                    // Count down once the field has stopped growing.
+                    ui.data_mut(|d| d.insert_temp(reveal_id, if growing { reveal } else { reveal - 1 }));
+                    ui.ctx().request_repaint();
+                }
+                if growing {
                     ui.data_mut(|data| data.insert_temp(height_id, shown));
                     ui.ctx().request_repaint();
                 }
@@ -246,6 +318,15 @@ impl ByobApp {
             _ => {}
         }
     }
+}
+
+/// How tall the text may grow before it scrolls: [`MAX_LINES`] lines, but no more than
+/// [`MAX_SHARE`] of the window (small windows and phones keep their transcript), and never
+/// less than the controls.
+pub fn max_height(line: f32, pad_y: f32, window: f32, d: f32) -> f32 {
+    let lines = line * MAX_LINES + pad_y * 2.0;
+    let share = if window.is_finite() && window > 0.0 { window * MAX_SHARE } else { lines };
+    lines.min(share).max(d)
 }
 
 /// A round button `d` across: `fill` with `paint` in `icon` on it, a shade lighter or darker
