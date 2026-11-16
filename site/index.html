@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>byob: bring your own brain</title>
+<meta name="description" content="A desktop AI coworker for the model you already run. Point byob at llama.cpp, Ollama, LM Studio, vLLM or a hosted API and it works in a folder with you.">
+<meta property="og:title" content="byob: bring your own brain">
+<meta property="og:description" content="A desktop AI coworker for the model you already run.">
+<meta property="og:image" content="https://byob.chat/og.png">
+<meta property="og:url" content="https://byob.chat/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#EECE4E">
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preload" href="fonts/big-shoulders.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <a class="mark" href="/"><img src="icon-96.png" alt="" width="36" height="36">byob</a>
+  <nav>
+    <a href="#what">What it does</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/Scronkfinkle/byob">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="hero-text">
+    <h1>A desktop AI coworker for the model you already run.</h1>
+    <p class="lede">Point byob at llama.cpp, Ollama, LM Studio, vLLM or a hosted API. It works in a
+      folder with you: reads and writes files, runs code, and builds spreadsheets, charts,
+      documents and small apps beside the chat.</p>
+    <p class="lede">No bundled model, no account, no Electron. One native program for Linux,
+      macOS and Windows.</p>
+    <div class="get">
+      <a class="button" href="#install">Download byob 0.3.5</a>
+      <a class="quiet" href="https://github.com/Scronkfinkle/byob">Source on GitHub</a>
+    </div>
+  </div>
+  <figure class="poster">
+    <img src="poster.jpg" width="722" height="812"
+      alt="A wartime-poster worker in a red polka-dot bandana flexes a robotic arm under the words Bring your own brain!">
+  </figure>
+</section>
+
+<section class="demo">
+  <figure>
+    <img src="media/hero.gif" width="1100" height="618" loading="lazy"
+      alt="byob building a two-sheet budget workbook: the spreadsheet fills in beside the chat as the model writes it">
+    <figcaption>Building a budget workbook against a local model on llama.cpp. The waits for the
+      model are cut.</figcaption>
+  </figure>
+</section>
+
+<section class="what" id="what">
+  <h2>What it does</h2>
+  <div class="points">
+    <div>
+      <h3>Your model, your machine</h3>
+      <p>Any OpenAI-compatible URL. On first run byob finds the servers already running on this
+        computer and offers presets for hosted APIs. Models without native tool calling get
+        prompt-based tools instead.</p>
+    </div>
+    <div>
+      <h3>Work beside the chat</h3>
+      <p>Spreadsheets (xlsx and csv), charts, Markdown documents, images and HTML apps open next
+        to the conversation, each with its own version history.</p>
+    </div>
+    <div>
+      <h3>Hands, on a leash</h3>
+      <p>File tools, shell commands and Python, sandboxed on Linux. Approval cards show the diff
+        before anything changes, and every turn can be undone.</p>
+    </div>
+    <div>
+      <h3>Reads your stuff</h3>
+      <p>PDF, Word and PowerPoint files, images for models that can see, the web, your mail over
+        IMAP and your calendar over CalDAV. Notes it keeps across chats are plain Markdown.</p>
+    </div>
+    <div>
+      <h3>On your phone too</h3>
+      <p>The browser UI is the same app compiled to WebAssembly, live on the same session.
+        Put it behind <code>tailscale serve</code> and it follows you around.</p>
+    </div>
+    <div>
+      <h3>Everything is a plugin</h3>
+      <p>The prompt, the core tools, artifacts and subagents are plugins on the same API anyone
+        gets. Ask byob for a new one and it writes it, reads its own errors and fixes them.</p>
+    </div>
+  </div>
+
+  <div class="shots">
+    <figure>
+      <a href="media/self-plugin.gif"><img src="media/self-plugin.gif" width="1100" height="618" loading="lazy" alt="Asking byob for a counter plugin: it writes the plugin and the pane appears beside the chat"></a>
+      <figcaption><h3>It writes its own plugins</h3>
+        <p>“Make me a plugin with a counter pane.” byob writes it, reads its own load errors,
+          fixes them, and the pane appears.</p></figcaption>
+    </figure>
+    <figure>
+      <a href="media/sheets.png"><img src="media/sheets.png" width="1440" height="810" loading="lazy" alt="sales.csv open as a spreadsheet with a new growth column"></a>
+      <figcaption><h3>Spreadsheets that check themselves</h3>
+        <p>A CSV opened as a spreadsheet. Every write recalculates and reports errors back to
+          the model.</p></figcaption>
+    </figure>
+    <figure>
+      <a href="media/html-app.png"><img src="media/html-app.png" width="1440" height="810" loading="lazy" alt="A tip calculator HTML app rendered inline in the chat"></a>
+      <figcaption><h3>Small apps, inline</h3>
+        <p>HTML apps run right in the chat, on the desktop and in the browser.</p></figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="servers">
+  <h2>Works with the server you already have</h2>
+  <ul>
+    <li>llama.cpp</li><li>Ollama</li><li>LM Studio</li><li>vLLM</li><li>OpenAI-compatible APIs</li>
+  </ul>
+</section>
+
+<section class="install" id="install">
+  <h2>Install</h2>
+  <p class="version">Version 0.3.5. Each download has everything in it, about 60 MB. Slim builds
+    without the browser UI and the HTML renderer are on the
+    <a href="https://github.com/Scronkfinkle/byob/releases/latest">releases page</a>.</p>
+
+  <div class="platforms">
+    <div class="platform">
+      <h3>macOS</h3>
+      <ul class="files">
+        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.5/byob-0.3.5-aarch64-apple-darwin.dmg">Apple silicon (.dmg)</a></li>
+        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.5/byob-0.3.5-x86_64-apple-darwin.dmg">Intel (.dmg)</a></li>
+      </ul>
+      <p>byob isn't signed by an Apple developer yet, so macOS refuses it the first time. Try to
+        open it once, then choose <b>Open Anyway</b> in System Settings → Privacy &amp; Security.
+        Or skip that by fetching it from a terminal:</p>
+      <pre><code>v=0.3.5 t=aarch64-apple-darwin   # x86_64-apple-darwin on Intel
+curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.tar.gz | tar xz
+./byob-$v-$t/byob</code></pre>
+    </div>
+
+    <div class="platform">
+      <h3>Linux</h3>
+      <ul class="files">
+        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.5/byob-0.3.5-x86_64-unknown-linux-gnu.tar.gz">x86_64 (.tar.gz)</a></li>
+        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.5/byob-0.3.5-aarch64-unknown-linux-gnu.tar.gz">ARM64 (.tar.gz)</a></li>
+      </ul>
+      <p>Unpack it and run <code>byob</code>. No GUI toolkit needed. With Nix:</p>
+      <pre><code>nix run github:Scronkfinkle/byob</code></pre>
+    </div>
+
+    <div class="platform">
+      <h3>Windows</h3>
+      <ul class="files">
+        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.5/byob-0.3.5-x86_64-pc-windows-msvc.zip">x86_64 (.zip)</a></li>
+      </ul>
+      <p>Unzip it and run <code>byob.exe</code>. Keep the other files in the folder next to it.</p>
+    </div>
+
+    <div class="platform">
+      <h3>From source</h3>
+      <pre><code>cargo install byob</code></pre>
+      <p>This builds everything except the HTML renderer; without it, HTML apps open in your
+        browser with one click.</p>
+    </div>
+  </div>
+
+  <div class="run">
+    <h3>Then point it at a model</h3>
+    <p>On first run byob looks for servers on their usual ports (llama-server 8080, Ollama 11434,
+      LM Studio 1234, vLLM 8000). Or say where yours is:</p>
+    <pre><code>byob --inference-url http://localhost:8080/v1
+BYOB_API_KEY=sk-... byob     # for a hosted API
+byob --serve                 # also open it to browsers on http://127.0.0.1:7470</code></pre>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <p>byob is free software under MIT or Apache-2.0.
+    <a href="https://github.com/Scronkfinkle/byob">Code, issues and docs on GitHub</a>.</p>
+</footer>
+
+</body>
+</html>

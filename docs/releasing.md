@@ -9,7 +9,8 @@ same files as run artifacts and publishes nothing.
 Checklist:
 1. Bump `version` in `Cargo.toml` (the workspace and its `byob-*` dependencies),
    `crates/artifact-wire/Cargo.toml`, `host/artifact-host/Cargo.toml` and `flake.nix`; update
-   both lockfiles; bump `v=` in the README's macOS `curl` line.
+   both lockfiles; bump `v=` in the README's macOS `curl` line and every version number
+   in `site/index.html` (the byob.chat download links).
 2. `cargo xtask ci`, commit, push, and wait for CI.
 3. Tag and push the tag; when the release is up, set its notes (`gh release edit vX.Y.Z
    --notes-file …`; say the macOS builds are unsigned while they are).
@@ -56,3 +57,15 @@ signs (hardened runtime, secure timestamp) the helper with
 `scripts/macos-artifact-host.entitlements` (`com.apple.security.cs.allow-jit`, for
 SpiderMonkey's JIT), then byob, then the app, then the dmg; `xcrun notarytool submit --wait`
 notarizes the dmg and `xcrun stapler staple` attaches the ticket.
+
+## byob.chat
+
+`site/` is the website; the README's pictures (`docs/media`) are served from it as `media/`.
+The fonts are self-hosted (OFL, licences in `site/fonts/`), so the page loads nothing from
+other sites. Publish it with:
+
+```sh
+rsync -avz --delete --chmod=D755,F644 site/ docs/media HOST:/var/www/byob/
+```
+
+Preview: `cp -r site /tmp/s && cp -r docs/media /tmp/s/media`, then open `/tmp/s/index.html`.
