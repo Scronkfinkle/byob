@@ -186,6 +186,8 @@ fn delegation(run: AgentRun, step_ids: &AtomicU64) -> Delegation {
         agent: run.agent,
         task: run.task,
         model: run.model,
+        // Not stored: a reloaded card names the model id.
+        profile: None,
         state,
         content: run.content,
         reasoning: run.reasoning,

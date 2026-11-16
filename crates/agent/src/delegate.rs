@@ -1,6 +1,6 @@
 //! Subagents: the `delegate` tool.
 //!
-//! The main model calls `delegate { agent?, task, tools? }` ([`DelegateTool`], an ordinary
+//! The main model calls `delegate { agent?, task, tools?, model? }` ([`DelegateTool`], an ordinary
 //! concurrent tool the engine adds to a turn's tools while the bundled `subagents` plugin is
 //! on); through the turn's [`crate::turn::TurnHost`] it starts a **child turn**
 //! with a fresh context (the agent's system prompt and the task, not the chat's history)
@@ -8,7 +8,14 @@
 //! final reply as the tool result. Children share the chat's workspace, artifacts,
 //! permission policy, grants and sandbox; their approval cards appear in the chat. Several
 //! delegations in one round run side by side, as many at once as the endpoint has free
-//! slots ([`Slots`]); the rest queue. Children can't delegate (depth 1).
+//! slots ([`Slots`]) and, per saved model, as many as its `max_parallel`; the rest queue.
+//! Children can't delegate (depth 1).
+//!
+//! The model a subagent runs on, first that applies ([`Env::pick_model`]): the call's `model`
+//! (only profiles marked "offered to subagents", listed in the schema and the system prompt
+//! with their descriptions), the agent file's `model:` (a role, a profile id or name, or a
+//! model id on the chat's endpoint), the level's subagent model (chat, workspace, or the
+//! `subagents` role), the chat's own model.
 //!
 //! Agent definitions are Claude Code compatible Markdown files (see [`byob_plugins::agents`]).
 
@@ -109,7 +116,6 @@ impl Slots {
         self.freed.notify_all();
     }
 
-    #[cfg(test)]
     pub fn capacity(&self) -> usize {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).0
     }
@@ -147,15 +153,62 @@ pub struct Model {
     pub config: InferenceConfig,
     pub llm: byob_llm::Client,
     pub plan: adapt::Plan,
+    /// The saved model it is, by name (shown on the delegation card).
+    pub profile: Option<String>,
+    /// Subagents on its profile at once (`max_parallel`); `None`: no cap of its own.
+    pub limit: Option<Arc<Slots>>,
+}
+
+impl Model {
+    pub fn new(config: InferenceConfig, llm: byob_llm::Client, plan: adapt::Plan) -> Self {
+        Self { config, llm, plan, profile: None, limit: None }
+    }
+}
+
+/// A saved model (profile) subagents can run on; its client is made when one does.
+#[derive(Clone)]
+pub struct Choice {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// Offered to the main model as a `delegate` `model`.
+    pub offered: bool,
+    /// Its endpoint, with its key.
+    pub config: InferenceConfig,
+    pub plan: adapt::Plan,
+    pub limit: Option<Arc<Slots>>,
+}
+
+impl Choice {
+    /// The model, or `None` (logged) if its URL can't be used.
+    pub fn model(&self) -> Option<Model> {
+        match byob_llm::Client::new(self.config.clone()) {
+            Ok(llm) => Some(Model { config: self.config.clone(), llm, plan: self.plan.clone(), profile: Some(self.name.clone()), limit: self.limit.clone() }),
+            Err(e) => {
+                log::warn!("subagent model {:?}: {e}; trying the next choice", self.name);
+                None
+            }
+        }
+    }
+
+    fn is(&self, wanted: &str) -> bool {
+        self.id == wanted || self.name.trim().eq_ignore_ascii_case(wanted)
+    }
 }
 
 /// What a top-level turn needs to delegate.
 pub struct Env {
     /// Agents this chat can use (workspace, user, plugins), by precedence.
     pub agents: Vec<AgentDef>,
+    /// The chat's own model.
     pub main: Model,
     /// Model roles from settings (`fast`, …).
     pub roles: BTreeMap<String, Model>,
+    /// The usable saved models, for the call's `model` (the offered ones) and agents'
+    /// `model:` (any, by id or name).
+    pub profiles: Vec<Choice>,
+    /// The level's subagent model (chat, workspace, or the `subagents` role), if any.
+    pub default: Option<Choice>,
     pub slots: Arc<Slots>,
     /// Server slots: each subagent runs in one no running turn holds.
     pub leases: Arc<SlotTable>,
@@ -273,9 +326,24 @@ impl byob_tools::Tool for DelegateTool {
 }
 
 impl Env {
-    /// The `delegate` tool definition.
+    /// The `delegate` tool definition. `model` is there only when some profile is offered.
     pub fn spec(&self) -> ToolSpec {
         let names: Vec<&str> = std::iter::once(DEFAULT_AGENT).chain(self.agents.iter().map(|a| a.name.as_str()).filter(|n| *n != DEFAULT_AGENT)).collect();
+        let mut properties = json!({
+            "agent": {"type": "string", "enum": names, "description": format!("Which subagent (default {DEFAULT_AGENT}).")},
+            "task": {"type": "string", "description": "The complete task, self-contained, and what to put in the report."},
+            "tools": {"type": "array", "items": {"type": "string"}, "description": "Optional: only these tools (names), e.g. to keep a subagent read-only."}
+        });
+        let offered = self.offered();
+        if !offered.is_empty()
+            && let Some(map) = properties.as_object_mut()
+        {
+            let ids: Vec<&str> = offered.iter().map(|c| c.id.as_str()).collect();
+            map.insert(
+                "model".into(),
+                json!({"type": "string", "enum": ids, "description": "Optional: which model the subagent runs on (see Subagent models in the system prompt). Leave it out for the usual one."}),
+            );
+        }
         ToolSpec {
             name: TOOL.into(),
             description: "Hand a self-contained task to a subagent that works with its own fresh context and the same tools, and get back \
@@ -285,36 +353,74 @@ conversation, so say everything it needs (paths, names, what to report back)."
                 .into(),
             parameters: json!({
                 "type": "object",
-                "properties": {
-                    "agent": {"type": "string", "enum": names, "description": format!("Which subagent (default {DEFAULT_AGENT}).")},
-                    "task": {"type": "string", "description": "The complete task, self-contained, and what to put in the report."},
-                    "tools": {"type": "array", "items": {"type": "string"}, "description": "Optional: only these tools (names), e.g. to keep a subagent read-only."}
-                },
+                "properties": properties,
                 "required": ["task"]
             }),
         }
+    }
+
+    /// The profiles the main model may pick with `model`, at most [`MAX_LISTED`].
+    pub fn offered(&self) -> Vec<&Choice> {
+        self.profiles.iter().filter(|c| c.offered).take(MAX_LISTED).collect()
     }
 
     fn agent(&self, name: &str) -> Option<&AgentDef> {
         self.agents.iter().find(|a| a.name == name)
     }
 
-    /// The model an agent's `model:` names: a role, else Claude Code's aliases (`inherit`,
-    /// `sonnet`, …) mean the main model, else a model id on the main endpoint.
-    pub fn model_for(&self, wanted: Option<&str>) -> Model {
-        let Some(w) = wanted.map(str::trim).filter(|w| !w.is_empty()) else { return self.main.clone() };
-        if let Some(m) = self.roles.get(w) {
-            return m.clone();
+    /// The model a subagent runs on, first that applies: the call's `model` (an offered
+    /// profile, by id or name; anything else is an error naming the allowed ones), the
+    /// agent's `model:` ([`Self::model_for`]), the level's subagent model, the chat's model.
+    /// A choice whose URL can't be used falls through to the next one (logged).
+    pub fn pick_model(&self, asked: Option<&Value>, agent: Option<&str>) -> Result<Model, String> {
+        let asked = match asked {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if s.trim().is_empty() => None,
+            Some(Value::String(s)) => Some(s.trim()),
+            Some(_) => return Err("`model` must be a string".into()),
+        };
+        let offered = self.offered();
+        // Not in the schema when nothing is offered: a stray value is ignored.
+        if let Some(w) = asked.filter(|_| !offered.is_empty()) {
+            let Some(c) = offered.iter().find(|c| c.is(w)) else {
+                let allowed: Vec<&str> = offered.iter().map(|c| c.id.as_str()).collect();
+                return Err(format!("there is no model {w:?} to delegate to. Allowed `model` values: {} (or leave it out).", allowed.join(", ")));
+            };
+            if let Some(m) = c.model() {
+                return Ok(m);
+            }
+        } else if let Some(w) = asked {
+            log::info!("delegate: ignored model {w:?} (no models are offered to subagents)");
         }
-        if matches!(w, "inherit" | "main" | "default" | "sonnet" | "opus" | "haiku") {
-            return self.main.clone();
+        if let Some(m) = self.model_for(agent) {
+            return Ok(m);
+        }
+        Ok(self.default.as_ref().and_then(Choice::model).unwrap_or_else(|| self.main.clone()))
+    }
+
+    /// The model an agent's `model:` names: a role; `inherit`/`main`: the chat's model; a
+    /// profile id or name (any case); Claude Code's other aliases (`sonnet`, `default`, …):
+    /// no preference (`None`); else a model id on the chat's endpoint.
+    pub fn model_for(&self, wanted: Option<&str>) -> Option<Model> {
+        let w = wanted.map(str::trim).filter(|w| !w.is_empty())?;
+        if let Some(m) = self.roles.get(w) {
+            return Some(m.clone());
+        }
+        if matches!(w, "inherit" | "main") {
+            return Some(self.main.clone());
+        }
+        if let Some(c) = self.profiles.iter().find(|c| c.id == w).or_else(|| self.profiles.iter().find(|c| c.is(w))) {
+            return c.model();
+        }
+        if matches!(w, "default" | "sonnet" | "opus" | "haiku") {
+            return None;
         }
         let config = InferenceConfig { model: w.to_owned(), ..self.main.config.clone() };
         match byob_llm::Client::new(config.clone()) {
-            Ok(llm) => Model { config, llm, plan: self.main.plan.clone() },
+            Ok(llm) => Some(Model::new(config, llm, self.main.plan.clone())),
             Err(e) => {
-                log::warn!("subagent model {w:?}: {e}; using the main model");
-                self.main.clone()
+                log::warn!("subagent model {w:?}: {e}; using the next choice");
+                None
             }
         }
     }
@@ -352,7 +458,7 @@ conversation, so say everything it needs (paths, names, what to report back)."
         // The guidance of the plugins whose tools it has (the main prompt has all of them).
         let guidance = guidance_for(&self.guidance, &tools, &name);
         let system = if guidance.is_empty() { format!("{body}\n\n{SUBAGENT_RULES}") } else { format!("{body}\n\n{guidance}\n\n{SUBAGENT_RULES}") };
-        let model = self.model_for(def.and_then(|d| d.model.as_deref()));
+        let model = self.pick_model(args.get("model"), def.and_then(|d| d.model.as_deref()))?;
         Ok(Job { agent: name, task: task.to_owned(), model, tools, system })
     }
 }
@@ -428,8 +534,9 @@ pub fn agents_for(workspace: &Path, configured: &[AgentDef]) -> Vec<AgentDef> {
     merge_agents(lists).into_iter().filter(|a| a.name != TOOL).collect()
 }
 
-/// The main system prompt's note on subagents.
-pub fn prompt_section(agents: &[AgentDef]) -> String {
+/// The main system prompt's note on subagents: the agents, and the models offered for the
+/// call's `model` with what each is good at.
+pub fn prompt_section(agents: &[AgentDef], models: &[&Choice]) -> String {
     let mut out = String::from(
         "## Subagents\nWith the `delegate` tool you can hand a self-contained task to a subagent with its own fresh context; you get \
 back only its report. Delegate research and busywork that would fill your context, and independent pieces of work (several \
@@ -439,6 +546,14 @@ delegate calls in one reply run in parallel). Give each subagent everything it n
     for a in agents.iter().filter(|a| a.name != DEFAULT_AGENT).take(MAX_LISTED) {
         let d: String = a.description.chars().take(300).collect();
         out.push_str(&format!("- {}: {d}\n", a.name));
+    }
+    if !models.is_empty() {
+        out.push_str("Subagent models (`model`; leave it out for the usual one, pick one when the task suits it):\n");
+        for c in models {
+            let d = one_line(&c.description, 300);
+            let d = if d.is_empty() { String::new() } else { format!(": {d}") };
+            out.push_str(&format!("- {} ({}){d}\n", c.id, one_line(&c.name, 80)));
+        }
     }
     out.trim_end().to_owned()
 }
@@ -465,6 +580,7 @@ pub fn launch_job(env: &Env, job: Job, l: Launch) -> std::io::Result<Receiver<St
             agent: job.agent.clone(),
             task: job.task.clone(),
             model: job.model.config.model.clone(),
+            profile: job.model.profile.clone(),
             state: DelegationState::Queued,
             ..Default::default()
         })),
@@ -509,7 +625,12 @@ fn set_state(step: &mut Step, state: DelegationState, error: Option<String>) {
 /// The subagent thread: wait for a slot, run the child turn, report.
 fn run(job: Job, l: &Launch, step: &mut Step, (slots, leases): (&Arc<Slots>, &Arc<SlotTable>), opts: SubagentOptions) -> String {
     let started = Instant::now();
-    let Some(slot) = slots.acquire(&l.cancel) else {
+    // Its model's own cap first, so a subagent waiting for its model holds no global slot.
+    let mine = match &job.model.limit {
+        Some(limit) => limit.acquire(&l.cancel).map(Some),
+        None => Some(None),
+    };
+    let Some((slot, mine)) = mine.and_then(|mine| slots.acquire(&l.cancel).map(|s| (s, mine))) else {
         set_state(step, DelegationState::Stopped, Some("stopped before it started".into()));
         step.status = StepStatus::Failed;
         "stopped before it started".clone_into(&mut step.detail);
@@ -541,7 +662,7 @@ fn run(job: Job, l: &Launch, step: &mut Step, (slots, leases): (&Arc<Slots>, &Ar
     };
     if let Err(e) = watchdog {
         // Without the watchdog a stop would not reach the child; don't run unsupervised.
-        drop(slot);
+        drop((slot, mine));
         set_state(step, DelegationState::Failed, Some(e.to_string()));
         step.status = StepStatus::Failed;
         emit_step(l, step);
@@ -575,7 +696,7 @@ fn run(job: Job, l: &Launch, step: &mut Step, (slots, leases): (&Arc<Slots>, &Ar
     };
     let out = turn::run_child(setup);
     done.store(true, Ordering::Relaxed);
-    drop(slot);
+    drop((slot, mine));
 
     let secs = started.elapsed().as_secs_f64();
     let tools = ran_summary(&out.ran, out.calls);
@@ -737,7 +858,111 @@ mod tests {
         ran.insert("read_file".to_owned(), 2);
         ran.insert("list_files".to_owned(), 1);
         assert_eq!(ran_summary(&ran, 3), "3 tool calls: list_files, read_file ×2");
-        let section = prompt_section(&[def(None)]);
+        let section = prompt_section(&[def(None)], &[]);
         assert!(section.contains("- general:") && section.contains("- explorer: d"), "{section}");
+    }
+
+    fn plan(url: &str) -> adapt::Plan {
+        adapt::Plan {
+            key: adapt::key(&InferenceConfig { base_url: url.into(), ..InferenceConfig::default() }),
+            prompt_tools: false,
+            fallback: true,
+            context: 8192,
+            reserve: 1024,
+            vision: None,
+            image_quality: 85,
+            slots: None,
+        }
+    }
+
+    fn model(url: &str, id: &str) -> Model {
+        let config = InferenceConfig { base_url: url.into(), model: id.into(), ..InferenceConfig::default() };
+        Model::new(config.clone(), byob_llm::Client::new(config).unwrap(), plan(url))
+    }
+
+    fn choice(id: &str, name: &str, offered: bool, url: &str) -> Choice {
+        Choice {
+            id: id.into(),
+            name: name.into(),
+            description: format!("{name} is good at things"),
+            offered,
+            config: InferenceConfig { base_url: url.into(), model: format!("{id}-model"), api_key: Some(format!("key-{id}")), api: None },
+            plan: plan(url),
+            limit: None,
+        }
+    }
+
+    fn env(profiles: Vec<Choice>, default: Option<Choice>) -> Env {
+        Env {
+            agents: vec![],
+            main: model("http://main/v1", "chat-model"),
+            roles: [("fast".to_owned(), model("http://role/v1", "role-model"))].into(),
+            profiles,
+            default,
+            slots: Arc::new(Slots::new(2)),
+            leases: Arc::default(),
+            opts: SubagentOptions::default(),
+            guidance: vec![],
+        }
+    }
+
+    fn picked(e: &Env, asked: Option<Value>, agent: Option<&str>) -> Result<String, String> {
+        e.pick_model(asked.as_ref(), agent).map(|m| format!("{} {}", m.config.base_url, m.config.model))
+    }
+
+    #[test]
+    fn the_model_argument_exists_only_when_a_profile_is_offered() {
+        let none = env(vec![choice("quiet", "Quiet", false, "http://q/v1")], None);
+        let spec = none.spec();
+        assert!(spec.parameters["properties"].get("model").is_none(), "{}", spec.parameters);
+        assert!(!prompt_section(&none.agents, &none.offered()).contains("Subagent models"));
+        let some = env(vec![choice("quiet", "Quiet", false, "http://q/v1"), choice("coder", "Fast Coder", true, "http://c/v1")], None);
+        let spec = some.spec();
+        assert_eq!(spec.parameters["properties"]["model"]["enum"], json!(["coder"]));
+        let section = prompt_section(&some.agents, &some.offered());
+        assert!(section.contains("- coder (Fast Coder): Fast Coder is good at things"), "{section}");
+        assert!(!section.contains("quiet"), "{section}");
+    }
+
+    #[test]
+    fn a_subagents_model_comes_from_the_call_then_the_agent_then_the_level_then_the_chat() {
+        let profiles = vec![choice("coder", "Fast Coder", true, "http://c/v1"), choice("quiet", "Quiet One", false, "http://q/v1")];
+        let level = choice("level", "Level", false, "http://l/v1");
+        let e = env(profiles.clone(), Some(level));
+        // a. The call's model, by id or name, beats the agent's.
+        assert_eq!(picked(&e, Some(json!("coder")), Some("fast")), Ok("http://c/v1 coder-model".into()));
+        assert_eq!(picked(&e, Some(json!("fast coder")), None), Ok("http://c/v1 coder-model".into()));
+        // Not offered, unknown or not a string: an error that names the allowed values.
+        let err = picked(&e, Some(json!("quiet")), None).unwrap_err();
+        assert!(err.contains("Allowed `model` values: coder"), "{err}");
+        assert!(picked(&e, Some(json!("gpt-9")), None).unwrap_err().contains("coder"));
+        assert!(picked(&e, Some(json!(3)), None).is_err());
+        // b. The agent's model: a role, a profile (any, by id or by name in any case), an
+        // explicit inherit, a raw model id on the chat's endpoint.
+        assert_eq!(picked(&e, None, Some("fast")), Ok("http://role/v1 role-model".into()));
+        assert_eq!(picked(&e, None, Some("quiet")), Ok("http://q/v1 quiet-model".into()));
+        assert_eq!(picked(&e, Some(json!("")), Some("QUIET one")), Ok("http://q/v1 quiet-model".into()));
+        assert_eq!(picked(&e, None, Some("inherit")), Ok("http://main/v1 chat-model".into()));
+        assert_eq!(picked(&e, None, Some("tiny")), Ok("http://main/v1 tiny".into()));
+        // c. Claude Code aliases and no `model:` leave it to the level's subagent model.
+        assert_eq!(picked(&e, None, Some("sonnet")), Ok("http://l/v1 level-model".into()));
+        assert_eq!(picked(&e, None, None), Ok("http://l/v1 level-model".into()));
+        // d. Without one, the chat's model.
+        let e = env(profiles, None);
+        assert_eq!(picked(&e, None, Some("haiku")), Ok("http://main/v1 chat-model".into()));
+        assert_eq!(picked(&e, None, None), Ok("http://main/v1 chat-model".into()));
+        // The profile's key and name go with it.
+        let m = e.pick_model(Some(&json!("coder")), None).unwrap();
+        assert_eq!((m.config.api_key.as_deref(), m.profile.as_deref()), (Some("key-coder"), Some("Fast Coder")));
+        // A stray `model` when nothing is offered (it isn't in the schema) is ignored.
+        let e = env(vec![choice("quiet", "Quiet", false, "http://q/v1")], None);
+        assert_eq!(picked(&e, Some(json!("quiet")), None), Ok("http://main/v1 chat-model".into()));
+    }
+
+    #[test]
+    fn an_unusable_choice_falls_through_to_the_next() {
+        let broken = choice("broken", "Broken", true, "notaurl");
+        let e = env(vec![broken.clone()], Some(broken));
+        assert_eq!(picked(&e, Some(json!("broken")), Some("broken")), Ok("http://main/v1 chat-model".into()));
     }
 }

@@ -571,6 +571,8 @@ struct Engine {
     slots: Arc<delegate::Slots>,
     /// Which server slot each running turn and subagent holds (see [`slot_leases`]).
     leases: Arc<slot_leases::SlotTable>,
+    /// Per profile with a `max_parallel`: the subagents running on it.
+    profile_slots: std::sync::Mutex<BTreeMap<String, Arc<delegate::Slots>>>,
     envs: Option<Arc<dyn byob_tools::EnvControl>>,
     /// Whether the current endpoint answers (see [`connect`]).
     link: Link,
@@ -722,6 +724,7 @@ impl Engine {
             subagents: config.subagents,
             slots,
             leases: Arc::default(),
+            profile_slots: std::sync::Mutex::default(),
             envs: config.envs,
         };
         engine.rebuild_models();
@@ -1647,12 +1650,12 @@ impl Engine {
         let delegation = workspace_dir
             .as_deref()
             .filter(|_| eff.subagents.value && delegate_on)
-            .and_then(|ws| self.delegation_env(&settings.inference, &llm, &plan, ws, &plugin_agents, plugin_guidance))
+            .and_then(|ws| self.delegation_env(&settings, &llm, &plan, ws, &plugin_agents, plugin_guidance))
             .map(Arc::new);
         let chat_prompt = ChatPrompt {
             plugin_sections: composed.as_ref().map(|c| c.sections.clone()).unwrap_or_default(),
             plugin_lines: composed.as_ref().map(|c| c.prompt.clone()).unwrap_or_default(),
-            delegation: delegation.as_ref().map(|env| delegate::prompt_section(&env.agents)),
+            delegation: delegation.as_ref().map(|env| delegate::prompt_section(&env.agents, &env.offered())),
             hooks: composed.as_ref().map_or_else(|| self.default_hooks.clone(), |c| hooks::Hooks::new(c.hooks.clone())),
             compaction: composed.as_ref().is_none_or(|c| c.hooks.iter().any(|b| b.id == compact::HOOK)),
         };

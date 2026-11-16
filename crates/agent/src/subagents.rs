@@ -4,13 +4,16 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
 use byob_protocol::{DelegationState, DelegationUpdate, NoticeLevel, ServerMsg, Step};
 use byob_store::{MessageStats, NewAgentRun};
+use byob_types::config::ToolMode;
+use byob_types::profile::{self, Profile};
 
+use crate::workspaces::ChatSettings;
 use crate::{ChildRun, Engine, adapt, chats, delegate, turn};
 
 /// A fresh, store-wide unique run id.
@@ -22,11 +25,12 @@ fn new_run_id() -> String {
 
 impl Engine {
     /// What a turn in `workspace` needs to delegate, if subagents are on and there are tools.
-    /// `main` is the chat's own endpoint (subagents without a model role use it); `guidance`
-    /// is the plugins' prompt lines with their tools (`Composed::tool_prompts`).
+    /// `settings` are the chat's (its endpoint is the model of subagents nothing else picks a
+    /// model for, its effective subagent model the level's); `llm` and `plan` are the chat's;
+    /// `guidance` is the plugins' prompt lines with their tools (`Composed::tool_prompts`).
     pub(crate) fn delegation_env(
         &self,
-        main: &byob_types::InferenceConfig,
+        settings: &ChatSettings,
         llm: &byob_llm::Client,
         plan: &adapt::Plan,
         workspace: &Path,
@@ -36,26 +40,70 @@ impl Engine {
         if !self.subagents.enabled || self.tools.is_empty() {
             return None;
         }
-        let main = delegate::Model { config: main.clone(), llm: llm.clone(), plan: plan.clone() };
+        let eff = &settings.effective;
+        let chat_profile = settings.profile.as_deref().and_then(|id| profile::find(&self.profiles, Some(id)));
+        let mut main = delegate::Model::new(settings.inference.clone(), llm.clone(), plan.clone());
+        main.profile = chat_profile.map(|p| p.label().to_owned());
+        main.limit = chat_profile.and_then(|p| self.profile_limit(p));
+        // The levels' tool mode, unless the chat's profile chose it (then it is that model's).
+        let level_mode = if chat_profile.is_some_and(|p| p.tool_mode.is_some()) { ToolMode::Auto } else { eff.tool_mode.value };
+        let profiles: Vec<delegate::Choice> = self.profiles.values().filter(|p| p.usable()).map(|p| self.choice(p, level_mode, plan.image_quality)).collect();
         let mut roles = BTreeMap::new();
         for (name, config) in &self.models {
+            // A role that points at a profile is that profile (its name, its cap).
+            let of_profile = self.roles.get(name).and_then(|id| profiles.iter().find(|c| c.id == *id)).and_then(delegate::Choice::model);
+            if let Some(m) = of_profile {
+                roles.insert(name.clone(), m);
+                continue;
+            }
             match byob_llm::Client::new(config.clone()) {
                 Ok(llm) => {
-                    roles.insert(name.clone(), delegate::Model { config: config.clone(), llm, plan: self.endpoints.plan(config) });
+                    roles.insert(name.clone(), delegate::Model::new(config.clone(), llm, self.endpoints.plan(config)));
                 }
                 Err(e) => log::warn!("model role {name}: {e}"),
             }
         }
+        let default = eff.subagent_profile.as_ref().and_then(|s| profiles.iter().find(|c| c.id == s.value)).cloned();
         let configured = byob_plugins::merge_agents([self.agents.clone(), plugin_agents.to_vec()]);
         Some(delegate::Env {
             agents: delegate::agents_for(workspace, &configured),
             main,
             roles,
+            profiles,
+            default,
             slots: Arc::clone(&self.slots),
             leases: Arc::clone(&self.leases),
             opts: self.subagents,
             guidance,
         })
+    }
+
+    /// Profile `p` as a subagent model: its endpoint and key, a plan for it (its own tool
+    /// mode, else `mode`), and its cap.
+    fn choice(&self, p: &Profile, mode: ToolMode, image_quality: u8) -> delegate::Choice {
+        let config = p.config(self.profile_key(&p.id));
+        let mut plan = self.endpoints.plan_with(&config, p.tool_mode.unwrap_or(mode));
+        plan.image_quality = image_quality;
+        delegate::Choice {
+            id: p.id.clone(),
+            name: p.label().to_owned(),
+            description: p.description.clone(),
+            offered: p.subagents,
+            config,
+            plan,
+            limit: self.profile_limit(p),
+        }
+    }
+
+    /// The shared counter of subagents running on `p`, if it caps them (`max_parallel`).
+    fn profile_limit(&self, p: &Profile) -> Option<Arc<delegate::Slots>> {
+        let n = usize::from(p.max_parallel.filter(|n| *n > 0)?);
+        let mut all = self.profile_slots.lock().unwrap_or_else(PoisonError::into_inner);
+        let slots = all.entry(p.id.clone()).or_insert_with(|| Arc::new(delegate::Slots::new(n)));
+        if slots.capacity() != n {
+            slots.set_capacity(n);
+        }
+        Some(Arc::clone(slots))
     }
 
     /// A `delegate` step was added or changed: record its run when it first appears, and

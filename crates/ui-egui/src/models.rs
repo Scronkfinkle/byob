@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use byob_protocol::profiles::{Params, Profile, ProfileList, ProfileView, ROLE_MAIN, ROLE_VISION};
+use byob_protocol::profiles::{Params, Profile, ProfileList, ProfileView, ROLE_MAIN, ROLE_SUBAGENTS, ROLE_VISION};
 use byob_protocol::workspace::ToolMode;
 use byob_protocol::{ClientMsg, EngineState, InferenceTest, Link, PRESETS, Preset, ServerMsg};
 use egui::RichText;
@@ -119,7 +119,7 @@ impl Editor {
             },
             rest: p.params.rest.clone(),
         };
-        p.max_parallel = parse(&self.max_parallel, "parallel requests")?;
+        p.max_parallel = parse(&self.max_parallel, "subagents at once")?;
         p.context = parse(&self.context, "context window")?;
         p.validated()
     }
@@ -174,6 +174,7 @@ fn role_label(role: &str) -> String {
     match role {
         ROLE_MAIN => "Default".into(),
         ROLE_VISION => "Vision".into(),
+        ROLE_SUBAGENTS => "Subagents".into(),
         other => other.to_owned(),
     }
 }
@@ -279,23 +280,37 @@ impl ModelsUi {
         }
     }
 
-    /// Which model looks at images for the others.
+    /// Which model looks at images for the others, and which one subagents use.
     fn roles(&mut self, ui: &mut egui::Ui, t: &Tokens, list: &ProfileList) {
+        self.role_picker(ui, t, list, ROLE_VISION, "Vision helper", "None", "Answers questions about images for a model that can't see them.");
+        self.role_picker(
+            ui,
+            t,
+            list,
+            ROLE_SUBAGENTS,
+            "Subagents",
+            "Same as the chat",
+            "The model delegated tasks run on, unless the call, the agent, a workspace or a chat picks another.",
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn role_picker(&mut self, ui: &mut egui::Ui, t: &Tokens, list: &ProfileList, role: &str, label: &str, unset: &str, help: &str) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Vision helper").color(t.text));
-            let current = list.roles.get(ROLE_VISION).cloned();
-            let name = |id: &Option<String>| id.as_ref().and_then(|i| list.get(i)).map_or_else(|| "None".to_owned(), |v| v.profile.label().to_owned());
+            ui.label(RichText::new(label).color(t.text));
+            let current = list.roles.get(role).cloned();
+            let name = |id: &Option<String>| id.as_ref().and_then(|i| list.get(i)).map_or_else(|| unset.to_owned(), |v| v.profile.label().to_owned());
             let mut picked = current.clone();
-            egui::ComboBox::from_id_salt("vision-role").selected_text(name(&current)).show_ui(ui, |ui| {
-                ui.selectable_value(&mut picked, None, "None");
+            egui::ComboBox::from_id_salt(("role", role)).selected_text(name(&current)).show_ui(ui, |ui| {
+                ui.selectable_value(&mut picked, None, unset);
                 for v in &list.items {
                     ui.selectable_value(&mut picked, Some(v.profile.id.clone()), v.profile.label());
                 }
             });
             if picked != current {
-                self.out.push(ClientMsg::SetRole { role: ROLE_VISION.into(), profile: picked });
+                self.out.push(ClientMsg::SetRole { role: role.into(), profile: picked });
             }
-            ui.label(RichText::new("Answers questions about images for a model that can't see them.").small().color(t.text_faint));
+            ui.label(RichText::new(help).small().color(t.text_faint));
         });
     }
 
@@ -437,12 +452,25 @@ impl ModelsUi {
                 });
                 ui.end_row();
                 ui.label("Description");
-                ui.add(
-                    egui::TextEdit::multiline(&mut e.profile.description)
-                        .hint_text("What it's good at, e.g. fast, good at code")
-                        .desired_rows(2)
-                        .desired_width(w),
-                );
+                ui.vertical(|ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut e.profile.description)
+                            .hint_text("What it's good at, e.g. fast, good at code")
+                            .desired_rows(2)
+                            .desired_width(w),
+                    );
+                    ui.label(RichText::new("The main model reads this when it picks a model for a subagent.").small().color(t.text_faint));
+                });
+                ui.end_row();
+                ui.label("Subagents");
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut e.profile.subagents, "Offered to subagents")
+                        .on_hover_text("The main model may run a delegated task on this model (it chooses by the description)");
+                    ui.label(RichText::new("at most").color(t.text_dim));
+                    ui.add(egui::TextEdit::singleline(&mut e.max_parallel).hint_text("any").desired_width(40.0))
+                        .on_hover_text("Subagents running on this model at once (besides the overall limit and the server's free slots)");
+                    ui.label(RichText::new("at once").color(t.text_dim));
+                });
                 ui.end_row();
                 ui.label("Tool calling");
                 let shown = |m: Option<ToolMode>| m.map_or_else(|| "As each chat says".to_owned(), |m| m.label().to_owned());
@@ -461,15 +489,11 @@ impl ModelsUi {
             egui::CollapsingHeader::new(RichText::new("Advanced").color(t.text)).id_salt(("profile-advanced", &e.profile.id)).show(ui, |ui| {
                 ui.label(RichText::new("Saved with the model for later versions; this version of byob doesn't use them yet.").small().color(t.warning));
                 egui::Grid::new(("profile-advanced-grid", &e.profile.id)).num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                    ui.label("Offer to subagents");
-                    ui.checkbox(&mut e.profile.subagents, "the model may delegate to it");
-                    ui.end_row();
                     let field = |ui: &mut egui::Ui, label: &str, v: &mut String, hint: &str| {
                         ui.label(label);
                         ui.add(egui::TextEdit::singleline(v).hint_text(hint).desired_width(120.0));
                         ui.end_row();
                     };
-                    field(ui, "Parallel requests", &mut e.max_parallel, "server's slots");
                     field(ui, "Context window", &mut e.context, "as probed");
                     field(ui, "Temperature", &mut e.temperature, "server default");
                     field(ui, "top_p", &mut e.top_p, "server default");

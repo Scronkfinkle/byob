@@ -178,6 +178,33 @@ impl Engine {
             fix(&mut c.new_layer);
             c.new_key.clone_from(&key);
         }
+        if p.is_none() {
+            self.forget_subagent_profile(id);
+        }
+    }
+
+    /// Profile `id` is gone: levels that ran their subagents on it use what they inherit.
+    fn forget_subagent_profile(&mut self, id: &str) {
+        let uses = |l: &byob_protocol::workspace::Layer| l.subagent_profile.as_deref() == Some(id);
+        let workspaces: Vec<(String, byob_protocol::workspace::Layer)> =
+            self.workspaces.list().iter().filter(|w| uses(&w.config)).map(|w| (w.id.clone(), w.config.clone())).collect();
+        for (ws, mut layer) in workspaces {
+            layer.subagent_profile = None;
+            if let Err(e) = self.workspaces.set_config(&ws, layer) {
+                log::warn!("updating the subagent model of workspace {ws}: {e}");
+            }
+        }
+        let chats: Vec<(String, byob_protocol::workspace::Layer)> =
+            self.workspaces.chat_configs().iter().filter(|(_, l)| uses(l)).map(|(c, l)| (c.clone(), l.clone())).collect();
+        for (chat, mut layer) in chats {
+            layer.subagent_profile = None;
+            if let Err(e) = self.workspaces.set_chat_config(&chat, layer) {
+                log::warn!("updating the subagent model of chat {chat}: {e}");
+            }
+        }
+        for c in self.clients.values_mut().filter(|c| uses(&c.new_layer)) {
+            c.new_layer.subagent_profile = None;
+        }
     }
 
     /// Workspaces and chats with an endpoint of their own (set before profiles) become

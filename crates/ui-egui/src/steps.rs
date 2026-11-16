@@ -188,6 +188,10 @@ fn delegation(
                     }
                 }
                 ui.label(RichText::new(d.status_line()).color(if waiting { t.warning } else { t.text }));
+                // Which model it ran on: the saved model's name, else the model id.
+                if let Some(m) = d.profile.as_deref().or(Some(d.model.as_str())).map(str::trim).filter(|m| !m.is_empty()) {
+                    ui.label(RichText::new(m).small().color(t.text_faint)).on_hover_text(format!("Model: {}", d.model));
+                }
                 let tokens = d.prompt_tokens.saturating_add(d.completion_tokens);
                 if tokens > 0 {
                     ui.label(RichText::new(format!("{} tokens", byob_protocol::usage::short_tokens(tokens))).small().color(t.text_faint));

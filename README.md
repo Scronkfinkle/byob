@@ -104,7 +104,10 @@ On first run byob shows **Connect a model**: servers it found on this computer's
 APIs, and a Test connection button. What you connect becomes your default model. Settings →
 **Models** keeps every model you use: add several from one server at once (byob lists what
 the server has), give each a description, test, duplicate, pick the default, and choose a
-vision helper. The model chip in the header switches the chat in view to another model.
+vision helper. Subagents run on the chat's model unless you pick another: a Subagents model in
+Settings → Models (or per workspace or chat), an agent file's `model:` (a saved model's name
+works), or, for models you mark **Offered to subagents**, the main model itself, choosing by
+their descriptions. The model chip in the header switches the chat in view to another model.
 
 Claude is spoken to over Anthropic's own Messages API, not its OpenAI compatibility layer: pick
 the Anthropic preset (or any URL on `api.anthropic.com`), and byob uses prompt caching, shows
@@ -114,7 +117,7 @@ gateway), set `"api": "anthropic"` under `inference` in `settings.json`.
 Chats are grouped by **workspace**. **+ Workspace** makes one (a fresh folder or an existing
 one) and picks where commands run. A workspace's `…` menu and the sliders next to a chat's title
 show what's inherited and what's set there: model (one of your saved models), approvals, tool
-calling, compaction, subagents, extra instructions.
+calling, compaction, subagents and their model, extra instructions.
 
 ## Plugins
 
