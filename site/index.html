@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>byob: bring your own brain</title>
-<meta name="description" content="A desktop AI coworker for the model you already run. Point byob at llama.cpp, Ollama, LM Studio, vLLM or a hosted API and it works in a folder with you.">
+<meta name="description" content="A desktop AI coworker for the model you already run. Point byob at llama.cpp, Ollama, LM Studio, vLLM, Claude or another hosted API and it works in a folder with you.">
 <meta property="og:title" content="byob: bring your own brain">
 <meta property="og:description" content="A desktop AI coworker for the model you already run.">
 <meta property="og:image" content="https://byob.chat/og.png">
@@ -32,7 +32,7 @@
 <section class="hero">
   <div class="hero-text">
     <h1>A desktop AI coworker for the model you already run.</h1>
-    <p class="lede">Point byob at llama.cpp, Ollama, LM Studio, vLLM or a hosted API. It works in a
+    <p class="lede">Point byob at llama.cpp, Ollama, LM Studio, vLLM, Claude or another hosted API. It works in a
       folder with you: reads and writes files, runs code, and builds spreadsheets, charts,
       documents and small apps beside the chat.</p>
     <p class="lede">No bundled model, no account, no Electron. One native program for Linux,
@@ -62,9 +62,10 @@
   <div class="points">
     <div>
       <h3>Your model, your machine</h3>
-      <p>Any OpenAI-compatible URL. On first run byob finds the servers already running on this
-        computer and offers presets for hosted APIs. Models without native tool calling get
-        prompt-based tools instead.</p>
+      <p>Any OpenAI-compatible URL, or Claude over Anthropic's own API. On first run byob finds
+        the servers already running on this computer and offers presets for hosted APIs. Save
+        several models and give each a job: subagents, image descriptions, chat titles. Models
+        without native tool calling get prompt-based tools instead.</p>
     </div>
     <div>
       <h3>Work beside the chat</h3>
@@ -117,7 +118,7 @@
 <section class="servers">
   <h2>Works with the server you already have</h2>
   <ul>
-    <li>llama.cpp</li><li>Ollama</li><li>LM Studio</li><li>vLLM</li><li>OpenAI-compatible APIs</li>
+    <li>llama.cpp</li><li>Ollama</li><li>LM Studio</li><li>vLLM</li><li>Anthropic (Claude)</li><li>OpenAI-compatible APIs</li>
   </ul>
 </section>
 
@@ -174,6 +175,7 @@ curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.ta
       LM Studio 1234, vLLM 8000). Or say where yours is:</p>
     <pre><code>byob --inference-url http://localhost:8080/v1
 BYOB_API_KEY=sk-... byob     # for a hosted API
+BYOB_API_KEY=sk-ant-... byob --inference-url https://api.anthropic.com/v1 --model claude-opus-5-5
 byob --serve                 # also open it to browsers on http://127.0.0.1:7470</code></pre>
   </div>
 </section>
