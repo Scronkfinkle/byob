@@ -54,7 +54,7 @@ pub struct PluginsUi {
     focus: Option<String>,
     /// Open the first plugin with trouble once the list is known.
     focus_trouble: bool,
-    /// Scroll the settings to the Plugins section on the next frame.
+    /// Show the settings' Plugins tab on the next frame.
     pub(crate) reveal: bool,
     /// Open the settings at the Plugins section.
     open_requested: bool,

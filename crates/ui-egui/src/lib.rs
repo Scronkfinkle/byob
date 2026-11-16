@@ -9,6 +9,7 @@ pub mod composer;
 pub mod connect;
 mod envpanel;
 pub mod export;
+mod form;
 pub mod header;
 mod highlight;
 mod icons;
@@ -77,8 +78,6 @@ pub struct ByobApp {
     notices: Vec<(NoticeLevel, String)>,
     input: String,
     show_settings: bool,
-    /// Scroll the settings to the connection form on the next frame.
-    reveal_connection: bool,
     /// The connection form (welcome screen and settings).
     connect: connect::ConnectForm,
     /// Settings → Models (profiles), and the header's model switch.
@@ -153,7 +152,6 @@ impl ByobApp {
             notices: Vec::new(),
             input: String::new(),
             show_settings: false,
-            reveal_connection: false,
             connect: connect::ConnectForm::default(),
             models: models::ModelsUi::default(),
             header_rects: header::Rects::default(),
@@ -470,10 +468,9 @@ impl ByobApp {
         self.show_settings = open;
     }
 
-    /// Open the settings at the connection form.
+    /// Open the settings at Models (the connection form on engines without saved models).
     pub fn open_connection(&mut self) {
-        self.show_settings = true;
-        self.reveal_connection = true;
+        self.open_settings_at(settings::Tab::Models);
     }
 
     /// Scripted runs: put an endpoint in the connection form and test it, as if typed and
@@ -528,14 +525,14 @@ impl ByobApp {
             }
             "plugins" => {
                 self.plugins.open_on_trouble();
-                self.show_settings = true;
+                self.open_settings_at(settings::Tab::Plugins);
             }
             "plugin-pane" => return self.plugins.sites.open_pane(""),
             _ if name.starts_with("plugin-pane:") => return self.plugins.sites.open_pane(name.trim_start_matches("plugin-pane:")),
             _ if name.starts_with("artifact:") => return self.artifacts.show_matching(name.trim_start_matches("artifact:")),
             _ if name.starts_with("plugin:") => {
                 self.plugins.open(Some(name.trim_start_matches("plugin:")));
-                self.show_settings = true;
+                self.open_settings_at(settings::Tab::Plugins);
             }
             "chat-settings" => {
                 if self.workspaces.chat.is_none() {
@@ -573,10 +570,16 @@ impl ByobApp {
     /// on that plugin).
     pub const PLUGIN_PANELS: &'static str = "plugin-pane, plugin-pane:<plugin>[/<view>], plugin:<id>, artifact:<prefix>";
 
-    /// Scripted runs: open the settings at an appearance section (`knobs`, `advanced`).
-    pub fn reveal_settings(&mut self, section: &str) {
-        self.show_settings = true;
-        self.appearance.reveal = Some(section.to_owned());
+    /// Scripted runs: open the settings on a tab ([`settings::Tab::id`]: `models`, `defaults`,
+    /// `plugins`, `appearance`, `text`, `colours`; also `knobs`, `advanced`), or at a saved
+    /// model's form, Advanced expanded (`model:<id>`). False for a name it doesn't know.
+    pub fn reveal_settings(&mut self, section: &str) -> bool {
+        let Some(tab) = settings::Tab::find(section) else { return false };
+        if let Some(id) = section.strip_prefix("model:") {
+            self.models.reveal = Some(id.to_owned());
+        }
+        self.open_settings_at(tab);
+        true
     }
 
     /// Type `text` into the composer without sending it, as a person would (scripted runs:
@@ -729,23 +732,18 @@ impl ByobApp {
         self.header_shortcuts(ui.ctx());
         self.header(ui);
         upload::drop_overlay(ui.ctx(), &self.tokens);
-        if self.show_settings {
-            // Tall on purpose (gallery, knobs, every colour role): scrolls within most of the window.
-            let max = (ui.available_height() * 0.72).max(200.0);
-            egui::Panel::top("settings").show(ui, |ui| {
-                self.settings_title(ui);
-                if !self.show_settings {
-                    return;
-                }
-                egui::ScrollArea::vertical()
-                    .id_salt("settings-scroll")
-                    .max_height(max)
-                    .min_scrolled_height(max)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| self.settings(ui));
-            });
-        }
         let t = self.tokens;
+        if self.show_settings {
+            // The settings own everything below the header beside the chat list (the whole
+            // screen on phones); the chat, its composer and the panes aren't drawn under them.
+            if list_open && !narrow {
+                self.chat_list_panel(ui, &t);
+            }
+            let frame = egui::Frame::central_panel(ui.style()).inner_margin(0.0).fill(t.app_bg);
+            egui::CentralPanel::default().frame(frame).show(ui, |ui| self.settings_page(ui, narrow));
+            self.end_frame(ui.ctx());
+            return;
+        }
         if narrow && list_open {
             // Phones: the chat list takes the whole screen until a chat is picked.
             let sent = egui::CentralPanel::default().show(ui, |ui| self.sidebar.show(ui, &t, true)).inner;
@@ -779,17 +777,7 @@ impl ByobApp {
             return;
         }
         if list_open {
-            // The id carries the width knob so changing it resizes the panel (egui remembers dragged sizes per id).
-            let w = t.knobs.sidebar_width;
-            #[allow(clippy::cast_possible_truncation)] // a few hundred points
-            let sent = egui::Panel::left(("sidebar", w as i32))
-                .resizable(true)
-                .default_size(w)
-                .size_range(180.0..=420.0)
-                .frame(egui::Frame::side_top_panel(ui.style()).fill(t.sidebar_bg))
-                .show(ui, |ui| self.sidebar.show(ui, &t, false))
-                .inner;
-            self.send_all(sent);
+            self.chat_list_panel(ui, &t);
         }
         if !narrow {
             // The pane, or its rail when collapsed; then the plugins' pane beside it.
@@ -805,6 +793,21 @@ impl ByobApp {
             self.artifacts.floating_button(ui.ctx(), &t);
         }
         self.end_frame(ui.ctx());
+    }
+
+    /// The chat list at the left (desktop).
+    fn chat_list_panel(&mut self, ui: &mut egui::Ui, t: &theme::Tokens) {
+        // The id carries the width knob so changing it resizes the panel (egui remembers dragged sizes per id).
+        let w = t.knobs.sidebar_width;
+        #[allow(clippy::cast_possible_truncation)] // a few hundred points
+        let sent = egui::Panel::left(("sidebar", w as i32))
+            .resizable(true)
+            .default_size(w)
+            .size_range(180.0..=420.0)
+            .frame(egui::Frame::side_top_panel(ui.style()).fill(t.sidebar_bg))
+            .show(ui, |ui| self.sidebar.show(ui, t, false))
+            .inner;
+        self.send_all(sent);
     }
 
     /// A folder dropped on the window (desktop) opens the New workspace form on it; files
@@ -849,7 +852,7 @@ impl ByobApp {
         let msgs = self.plugins.take();
         self.send_all(msgs);
         if self.plugins.take_open_request() {
-            self.show_settings = true;
+            self.open_settings_at(settings::Tab::Plugins);
         }
         for (level, text) in notices {
             self.notice(level, text);
@@ -1093,6 +1096,9 @@ mod app_tests {
     use byob_protocol::{ChatSummary, EngineState, Link};
 
     use super::*;
+
+    /// The app settings page: tabs, deep links, and the area it covers.
+    mod settings_page;
 
     /// A connection that delivers queued messages and records what the app sends.
     #[derive(Clone, Default)]
@@ -1431,7 +1437,8 @@ mod app_tests {
         frame(&ctx, &mut app, 1600.0);
         frame(&ctx, &mut app, 1600.0);
         let back = app.header_rects.settings_back;
-        assert!(back.is_positive() && back.center().x < 300.0, "{back:?}");
+        let page = app.header_rects.settings_page;
+        assert!(back.is_positive() && back.left() - page.left() < 24.0, "{back:?} in {page:?}");
         click(&ctx, &mut app, 1600.0, back.center());
         assert!(!app.show_settings);
     }
@@ -1829,7 +1836,7 @@ mod app_tests {
         frame(&ctx, &mut app, 1000.0);
         app.open_connection();
         frame(&ctx, &mut app, 1000.0);
-        assert!(app.show_settings && !app.reveal_connection);
+        assert!(app.show_settings && app.appearance.tab == settings::Tab::Models);
     }
 
     /// Plugins' header items open their views once the engine says it has live views, and

@@ -1,7 +1,8 @@
 //! Small icons drawn with shapes, for glyphs the UI fonts don't have (the app settings
 //! gear, chat settings sliders, the chat list and overflow buttons, a disclosure triangle,
 //! where a workspace runs its commands, the plugins puzzle piece, the chat list's plus,
-//! search, clear and folders, and the composer's paperclip, send arrow and stop square).
+//! search, clear and folders, the settings tabs, and the composer's paperclip, send arrow and
+//! stop square).
 
 use byob_protocol::workspace::EnvKind;
 use egui::{Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
@@ -180,6 +181,64 @@ pub fn arrow_up(painter: &egui::Painter, r: Rect, color: Color32) {
 pub fn stop(painter: &egui::Painter, r: Rect, color: Color32) {
     let s = r.width().min(r.height());
     painter.rect_filled(Rect::from_center_size(r.center(), vec2(s * 0.56, s * 0.56)), s * 0.1, color);
+}
+
+/// "Models": a chip with two pins on each side.
+pub fn chip(painter: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    let stroke = Stroke::new((s * 0.09).max(1.2), color);
+    let body = Rect::from_center_size(r.center(), vec2(s * 0.58, s * 0.58));
+    painter.rect_stroke(body, s * 0.08, stroke, egui::StrokeKind::Middle);
+    painter.rect_filled(Rect::from_center_size(r.center(), vec2(s * 0.2, s * 0.2)), s * 0.03, color);
+    for f in [0.36_f32, 0.64] {
+        let (x, y) = (r.left() + s * f + (r.width() - s) / 2.0, r.top() + s * f + (r.height() - s) / 2.0);
+        painter.line_segment([pos2(x, body.top()), pos2(x, body.top() - s * 0.14)], stroke);
+        painter.line_segment([pos2(x, body.bottom()), pos2(x, body.bottom() + s * 0.14)], stroke);
+        painter.line_segment([pos2(body.left(), y), pos2(body.left() - s * 0.14, y)], stroke);
+        painter.line_segment([pos2(body.right(), y), pos2(body.right() + s * 0.14, y)], stroke);
+    }
+}
+
+/// "Appearance": a circle, half filled (light and dark).
+pub fn contrast(painter: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    let (c, radius) = (r.center(), s * 0.38);
+    painter.circle_stroke(c, radius, Stroke::new((s * 0.09).max(1.2), color));
+    let half: Vec<Pos2> = (0..=16)
+        .map(|k| {
+            #[allow(clippy::cast_precision_loss)] // 0..=16
+            let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * k as f32 / 16.0;
+            c + vec2(a.cos(), a.sin()) * radius
+        })
+        .collect();
+    painter.add(Shape::convex_polygon(half, color, Stroke::NONE));
+}
+
+/// "Text and layout": a big and a small A.
+pub fn text_size(painter: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    let stroke = Stroke::new((s * 0.09).max(1.2), color);
+    let a = |left: f32, w: f32, h: f32| {
+        let base = r.center().y + s * 0.34;
+        let (l, rt, top) = (pos2(left, base), pos2(left + w, base), pos2(left + w / 2.0, base - h));
+        painter.line(vec![l, top, rt], stroke);
+        let y = base - h * 0.38;
+        let k = 0.38 * 0.5;
+        painter.line_segment([pos2(left + w * k, y), pos2(left + w * (1.0 - k), y)], stroke);
+    };
+    let x0 = r.center().x - s * 0.46;
+    a(x0, s * 0.52, s * 0.68);
+    a(x0 + s * 0.56, s * 0.36, s * 0.44);
+}
+
+/// "Colours": three overlapping circles.
+pub fn colours(painter: &egui::Painter, r: Rect, color: Color32) {
+    let s = r.width().min(r.height());
+    let stroke = Stroke::new((s * 0.08).max(1.1), color);
+    let c = r.center();
+    for (dx, dy) in [(0.0_f32, -0.14_f32), (-0.15, 0.12), (0.15, 0.12)] {
+        painter.circle_stroke(c + vec2(dx * s, dy * s), s * 0.24, stroke);
+    }
 }
 
 /// A small chevron pointing down (menus, split buttons), centred in `rect`.

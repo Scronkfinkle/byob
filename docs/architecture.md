@@ -238,6 +238,26 @@ Funnel (public internet) requests get `Tailscale-Funnel-Request: ?1` and no iden
   unless `--serve` already runs.
 - Not yet: read-only clients.
 
+## App settings
+
+`ui-egui/src/settings.rs`, one tab per group (`settings::Tab`): **Models** (saved models and
+their roles, `models.rs`; the connection form on engines without profiles), **Chat defaults**
+(the global layer, drawn by `workspace.rs`'s `LayerEditor` like a workspace's and a chat's
+settings), **Plugins** (`plugins.rs`), and, per device, **Appearance** (light/dark, the theme
+gallery, accent, corners, bubbles, chart colours, theme files), **Text & layout** (zoom, text
+and code sizes, fonts, density, widths, accessibility) and **Colours** (every colour role). The
+page takes everything below the header beside the chat list (the whole window on phones); the
+chat, its composer and the side panes aren't drawn while it is open. The tabs are a list on the
+left (a strip that scrolls sideways under the title on phones); the selected one scrolls on its
+own, in a column at most `form::MAX_W` wide. The tab is kept for the session, and every way in
+selects its own: `open_connection()` (⋯ → Models…, the model chip's Manage models…, a failed
+reply's card) → Models; `PluginsUi::open` (⋯ → Plugins…, the header chip, a card's Files) →
+Plugins; `--settings-section NAME` (a tab id: `models`, `defaults`, `plugins`, `appearance`,
+`text`, `colours`; also `knobs`, `advanced`, `model:<id>`); `--open-panel
+models|plugins|plugin:<id>|add-models:<url>|edit-model:<id>`. Spacing comes from `form.rs`
+(page padding, a fixed label column via `form::row` / `form::grid`, one control height, row
+and section gaps, all through `Tokens::pad`), shared with the workspace and chat settings.
+
 ## Themes
 
 Appearance is per device (`theme::Prefs`, eframe storage: a file natively, `localStorage` in

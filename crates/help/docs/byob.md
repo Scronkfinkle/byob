@@ -99,6 +99,10 @@ sliders next to a chat's title show what's inherited and what's set there: model
 saved models), approvals, tool calling, compaction, subagents and their model, extra
 instructions.
 
+**Settings** (Ctrl/Cmd+, or the bottom of the chat list) has a tab per group: Models, Chat
+defaults (what every chat starts with), Plugins and, on this device only, Appearance (light or
+dark, themes, accent, theme files), Text & layout (zoom, sizes, fonts, density) and Colours.
+
 ## Plugins
 
 Settings → Plugins lists what the chat in view can use. Any bundled plugin can be forked to your
