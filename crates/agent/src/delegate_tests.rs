@@ -508,12 +508,12 @@ fn an_agents_model_role_picks_its_endpoint() {
     let runs = Arc::new(AtomicUsize::new(0));
     let mut tools = Registry::default();
     tools.register(Arc::new(Fake { name: "echo", access: Access::Read, runs, reply: None, change: false }));
-    let mut config = EngineConfig::new(InferenceConfig { base_url: url, model: "main-model".into(), api_key: None, api: None });
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, model: "main-model".into(), api_key: None, api: None, ..Default::default() });
     config.subagents = SubagentOptions { max_parallel: Some(3), ..SubagentOptions::default() };
     config.workspace = ws.path().to_path_buf();
     config.tools = tools;
     config.auto_title = false;
-    config.models.insert("fast".into(), InferenceConfig { base_url: role_url, model: "small".into(), api_key: None, api: None });
+    config.models.insert("fast".into(), InferenceConfig { base_url: role_url, model: "small".into(), api_key: None, api: None, ..Default::default() });
     let engine = EngineHandle::spawn_with(config).unwrap();
     let (mut c, _) = hello(&engine);
     let view = run(&mut c, "go", |_, _| {});
@@ -620,7 +620,7 @@ fn id_slot_goes_only_to_endpoints_that_reported_slots() {
         source: std::path::PathBuf::new(),
         meta: Default::default(),
     };
-    let role = InferenceConfig { base_url: url.clone(), model: "fast-model".into(), api_key: None, api: None };
+    let role = InferenceConfig { base_url: url.clone(), model: "fast-model".into(), api_key: None, api: None, ..Default::default() };
     let engine = slotted(url, ws.path(), 4, Some(2), |c| {
         c.models.insert("fast".into(), role);
         c.agents = vec![agent("roled", "fast"), agent("raw", "some-model-id")];
@@ -885,7 +885,7 @@ fn with_profiles(
 ) -> EngineConfig {
     let mut tools = Registry::default();
     tools.register(Arc::new(Fake { name: "echo", access: Access::Read, runs: Arc::default(), reply: None, change: false }));
-    let mut config = EngineConfig::new(InferenceConfig { base_url: url.into(), model: "chat-model".into(), api_key: None, api: None });
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url.into(), model: "chat-model".into(), api_key: None, api: None, ..Default::default() });
     config.workspace = workspace.to_path_buf();
     config.tools = tools;
     config.auto_title = false;
@@ -910,7 +910,8 @@ fn a_delegate_calls_model_runs_on_that_profiles_server_with_its_key_and_slots() 
     let config = with_profiles(&url, ws.path(), vec![saved("Coder", &coder_url, "coder-model", true, None), quiet], &[("coder", "sk-coder")], |_| {});
     let engine = EngineHandle::spawn_with(config).unwrap();
     // The coder's server has slots; the chat's doesn't say.
-    let coder_config = InferenceConfig { base_url: coder_url.clone(), model: "coder-model".into(), api_key: Some("sk-coder".into()), api: None };
+    let coder_config =
+        InferenceConfig { base_url: coder_url.clone(), model: "coder-model".into(), api_key: Some("sk-coder".into()), api: None, ..Default::default() };
     engine.probed(&coder_config, byob_llm::Capabilities { slots: Some(3), ..Default::default() });
     let (mut c, _) = hello(&engine);
     let view = run(&mut c, "go", |_, _| {});

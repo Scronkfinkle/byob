@@ -50,11 +50,27 @@ pub struct InferenceConfig {
     /// The API the endpoint speaks; `None` decides from the URL ([`InferenceConfig::api_kind`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<ApiKind>,
+    /// Request options of the profile this endpoint came from (temperature, `max_tokens`,
+    /// effort, extra body fields): byob-llm adds them to every chat request made with it
+    /// (see `byob_llm::params`). Never to the probe's own requests.
+    #[serde(default, skip_serializing_if = "profile::Params::is_empty")]
+    pub params: profile::Params,
+    /// Context window to budget against, beating what the probe found (a profile's
+    /// [`profile::Profile::context`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<u32>,
 }
 
 impl Default for InferenceConfig {
     fn default() -> Self {
-        Self { base_url: "http://127.0.0.1:8080/v1".into(), model: "default".into(), api_key: None, api: None }
+        Self {
+            base_url: "http://127.0.0.1:8080/v1".into(),
+            model: "default".into(),
+            api_key: None,
+            api: None,
+            params: profile::Params::default(),
+            context: None,
+        }
     }
 }
 
@@ -62,6 +78,11 @@ impl InferenceConfig {
     /// The API to speak: the configured one, else Anthropic for `api.anthropic.com`, else OpenAI.
     pub fn api_kind(&self) -> ApiKind {
         self.api.unwrap_or_else(|| if url_host(&self.base_url).eq_ignore_ascii_case("api.anthropic.com") { ApiKind::Anthropic } else { ApiKind::OpenAi })
+    }
+
+    /// The same endpoint (URL, model, key, API), whatever the request options.
+    pub fn same_endpoint(&self, other: &Self) -> bool {
+        self.base_url == other.base_url && self.model == other.model && self.api_key == other.api_key && self.api == other.api
     }
 }
 

@@ -29,7 +29,8 @@
 //!     --screenshot FILE       PNG of the window once the conversation settles, then exit
 //!     --screenshot-after SECS minimum wait before the screenshot (default 2)
 //!     --open-settings         start with the settings panel open
-//!     --settings-section NAME open the settings at an appearance section (knobs, advanced)
+//!     --settings-section NAME open the settings at an appearance section (knobs, advanced) or at
+//!                             model profile ID's form, Advanced expanded (model:ID)
 //!     --window-size WxH       window size in points (default 1100x750)
 //!     --tool-mode MODE        auto | native | prompt: force how tools are passed to the model
 //!     --compact-at TOKENS     compact the context when a request passes TOKENS (default:
@@ -168,7 +169,7 @@ fn parse_args() -> Result<Args, String> {
                 args.theme = Some(it.next().ok_or("--theme needs a name")?);
             }
             "--open-settings" => args.open_settings = true,
-            "--settings-section" => args.settings_section = Some(it.next().ok_or("--settings-section needs knobs or advanced")?),
+            "--settings-section" => args.settings_section = Some(it.next().ok_or("--settings-section needs knobs, advanced or model:<id>")?),
             "--window-size" => {
                 let v = it.next().ok_or("--window-size needs WxH")?;
                 let size = v.split_once('x').and_then(|(w, h)| Some([w.parse::<f32>().ok()?, h.parse::<f32>().ok()?]));
@@ -335,6 +336,7 @@ fn inference_config(args: &Args, settings: &Settings, secrets: &Secrets) -> Infe
         model: pick(&args.model, &settings.inference.model, defaults.model),
         api_key: args.api_key.clone().or_else(|| secrets.api_key.clone().filter(|k| !k.is_empty())),
         api,
+        ..Default::default()
     }
 }
 
@@ -351,7 +353,7 @@ fn model_roles(main: &InferenceConfig, settings: &Settings, secrets: &Secrets) -
             let api_key = secrets.model_keys.get(name).filter(|k| !k.is_empty()).cloned().or_else(|| main.api_key.clone().filter(|_| same));
             let model = role.model.clone().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| main.model.clone());
             let api = role.api.or_else(|| main.api.filter(|_| same));
-            (name.clone(), InferenceConfig { base_url, model, api_key, api })
+            (name.clone(), InferenceConfig { base_url, model, api_key, api, ..Default::default() })
         })
         .collect()
 }
@@ -611,7 +613,7 @@ mod tests {
 
     #[test]
     fn model_roles_default_to_the_main_endpoint() {
-        let main = InferenceConfig { base_url: "http://main/v1".into(), model: "big".into(), api_key: Some("sk-main".into()), api: None };
+        let main = InferenceConfig { base_url: "http://main/v1".into(), model: "big".into(), api_key: Some("sk-main".into()), api: None, ..Default::default() };
         let mut settings = Settings::default();
         settings.models.insert("fast".into(), byob_store::ModelRole { model: Some("small".into()), ..Default::default() });
         settings.models.insert("remote".into(), byob_store::ModelRole { base_url: Some("http://other/v1".into()), ..Default::default() });
@@ -620,7 +622,10 @@ mod tests {
         let roles = model_roles(&main, &settings, &secrets);
         assert_eq!(roles["fast"], InferenceConfig { model: "small".into(), ..main.clone() });
         // Another endpoint never gets the main key; its own comes from secrets.json.
-        assert_eq!(roles["remote"], InferenceConfig { base_url: "http://other/v1".into(), model: "big".into(), api_key: None, api: None });
+        assert_eq!(
+            roles["remote"],
+            InferenceConfig { base_url: "http://other/v1".into(), model: "big".into(), api_key: None, api: None, ..Default::default() }
+        );
         assert_eq!(roles["keyed"].api_key.as_deref(), Some("sk-third"));
     }
 

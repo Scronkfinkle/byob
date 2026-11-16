@@ -47,7 +47,7 @@ fn config_view(c: &mut LocalConnection) -> ConfigView {
 }
 
 fn engine(url: &str, paths: &Paths, workspace: &Path) -> EngineHandle {
-    let mut config = EngineConfig::new(InferenceConfig { base_url: url.into(), model: "global-model".into(), api_key: None, api: None });
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url.into(), model: "global-model".into(), api_key: None, api: None, ..Default::default() });
     config.workspace = workspace.to_path_buf();
     config.paths = Some(paths.clone());
     config.auto_title = false;

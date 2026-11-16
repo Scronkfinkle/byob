@@ -211,6 +211,32 @@ pub enum Failure {
     Error(String),
 }
 
+/// Another model that writes the summaries (the `utility` model role), with its plan.
+#[derive(Debug, Clone)]
+pub struct Helper {
+    pub llm: byob_llm::Client,
+    pub plan: Plan,
+}
+
+/// [`summarize`] by the `utility` model when there is one, else (or if it fails) by the
+/// chat's own `llm`. A stop isn't a failure: it isn't tried again.
+pub fn summarize_via(
+    utility: Option<&Helper>,
+    llm: &byob_llm::Client,
+    messages: &[ChatMessage],
+    focus: Option<&str>,
+    plan: &Plan,
+    cancel: &AtomicBool,
+) -> Result<Summary, Failure> {
+    if let Some(h) = utility {
+        match summarize(&h.llm, messages, focus, &h.plan, cancel) {
+            Err(Failure::Error(e)) => log::warn!("the utility model couldn't summarise ({e}); the chat's model tries"),
+            done => return done,
+        }
+    }
+    summarize(llm, messages, focus, plan, cancel)
+}
+
 /// Ask the model for a summary of `messages` (the system prompt is left out). Not streamed
 /// to anyone; bounded in size and time. `focus` is what the user wants kept in detail.
 pub fn summarize(llm: &byob_llm::Client, messages: &[ChatMessage], focus: Option<&str>, plan: &Plan, cancel: &AtomicBool) -> Result<Summary, Failure> {
@@ -476,7 +502,7 @@ impl crate::hooks::NativeHook for CompactionHook {
         log::info!("compacting the context of entry {} (~{before} tokens, threshold {})", ctx.entry, auto.at);
         let id = ctx.entry;
         (ctx.emit)(TurnEvent::Compacting { id, on: true });
-        let result = summarize(ctx.llm, &covered, None, ctx.plan, ctx.cancel);
+        let result = summarize_via(auto.utility.as_ref(), ctx.llm, &covered, None, ctx.plan, ctx.cancel);
         (ctx.emit)(TurnEvent::Compacting { id, on: false });
         let summary = match result {
             Ok(s) => s,

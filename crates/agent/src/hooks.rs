@@ -154,7 +154,7 @@ pub struct RequestCtx<'a> {
     /// The chat's last entry before this turn.
     pub prior: u64,
     /// The chat's automatic compaction settings (`None`: off).
-    pub compact: Option<AutoCompact>,
+    pub compact: Option<&'a AutoCompact>,
     /// The turn's token use and model requests (a hook that calls the model adds to them).
     pub usage: &'a mut Usage,
     pub model_calls: &'a mut u64,

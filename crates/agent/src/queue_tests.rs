@@ -96,7 +96,7 @@ fn server() -> (String, Seen, Sender<()>) {
 }
 
 fn engine(url: String, compaction: CompactOptions) -> EngineHandle {
-    let mut config = EngineConfig::new(InferenceConfig { base_url: url, model: "m".into(), api_key: None, api: None });
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, model: "m".into(), api_key: None, api: None, ..Default::default() });
     config.workspace = PathBuf::from("/ws");
     config.system_prompt = "You are a test.".into();
     config.auto_title = false;

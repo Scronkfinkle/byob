@@ -886,7 +886,7 @@ mod tests {
             name: name.into(),
             description: format!("{name} is good at things"),
             offered,
-            config: InferenceConfig { base_url: url.into(), model: format!("{id}-model"), api_key: Some(format!("key-{id}")), api: None },
+            config: InferenceConfig { base_url: url.into(), model: format!("{id}-model"), api_key: Some(format!("key-{id}")), api: None, ..Default::default() },
             plan: plan(url),
             limit: None,
         }

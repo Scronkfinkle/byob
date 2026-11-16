@@ -138,7 +138,9 @@ pub fn detect() -> Vec<Detected> {
             .filter(|p| p.local)
             .map(|p| {
                 s.spawn(move || {
-                    let client = Client::new(InferenceConfig { base_url: p.base_url.into(), model: String::new(), api_key: None, api: None }).ok()?;
+                    let client =
+                        Client::new(InferenceConfig { base_url: p.base_url.into(), model: String::new(), api_key: None, api: None, ..Default::default() })
+                            .ok()?;
                     let models = client.list_models_within(DETECT_TIMEOUT).ok().filter(|m| !m.is_empty())?;
                     Some(Detected { preset: p.id.into(), base_url: p.base_url.into(), models })
                 })
@@ -275,8 +277,13 @@ impl Engine {
             self.send_to(id, ServerMsg::InferenceTested(answer(None, "a test is already running".into())));
             return;
         }
-        let config =
-            InferenceConfig { api_key: self.key_for(&base_url, api_key), api: self.api_for(&base_url), base_url: base_url.clone(), model: model.clone() };
+        let config = InferenceConfig {
+            api_key: self.key_for(&base_url, api_key),
+            api: self.api_for(&base_url),
+            base_url: base_url.clone(),
+            model: model.clone(),
+            ..Default::default()
+        };
         let client = match Client::new(config) {
             Ok(c) => c,
             Err(e) => {

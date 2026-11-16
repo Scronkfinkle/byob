@@ -1,7 +1,6 @@
 //! Chats on disk: mapping between `byob-store` rows and protocol types, chat ids, and titles
 //! (a first-line heuristic at once, then a short model request after the first reply).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -312,8 +311,10 @@ pub fn clean_title(raw: &str, max: usize) -> String {
 }
 
 /// Ask the model for a short title in the background; the answer arrives as
-/// [`Input::Titled`]. Never streams to clients and gives up quietly.
-pub fn spawn_titler(llm: byob_llm::Client, chat: String, user: String, reply: String, inbox: Sender<Input>) {
+/// [`Input::Titled`]. `utility` (the `utility` model role) is asked first when set, and if
+/// its request fails, `llm` (the chat's model) once. Never streams to clients and gives up
+/// quietly.
+pub fn spawn_titler(utility: Option<byob_llm::Client>, llm: byob_llm::Client, chat: String, user: String, reply: String, inbox: Sender<Input>) {
     let spawned = thread::Builder::new().name("byob-title".into()).spawn(move || {
         let convo = format!("User: {}\n\nAssistant: {}", prefix(&user, 1500), prefix(&reply, 1500));
         let messages = vec![
@@ -322,28 +323,13 @@ pub fn spawn_titler(llm: byob_llm::Client, chat: String, user: String, reply: St
             ),
             ChatMessage::user(convo),
         ];
-        let cancel = Arc::new(AtomicBool::new(false));
-        let started = Instant::now();
-        let (mut content, mut reasoning) = (0usize, 0usize);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let until = byob_llm::StopWhen { cancel: &cancel, also: None, deadline: started.checked_add(TITLE_TIMEOUT) };
-            llm.stream_chat_until(&messages, &[], until, |ev| {
-                match ev {
-                    StreamEvent::Content(t) => content = content.saturating_add(t.len()),
-                    StreamEvent::Reasoning(t) => reasoning = reasoning.saturating_add(t.len()),
-                }
-                if content > TITLE_MAX_BYTES || reasoning > TITLE_MAX_REASONING || started.elapsed() > TITLE_TIMEOUT {
-                    cancel.store(true, Ordering::Relaxed);
-                }
-            })
-        }));
-        let title = match result {
-            Ok(Ok(out)) => Some(clean_title(&out.content, MAX_TITLE_CHARS)).filter(|t| !t.is_empty()),
-            Ok(Err(e)) => {
-                log::info!("chat title request failed: {e}");
-                None
+        let title = match utility.map(|u| ask_title(&u, &messages)) {
+            Some(Ok(title)) => title,
+            Some(Err(e)) => {
+                log::info!("chat title request to the utility model failed ({e}); asking the chat's model");
+                ask_title(&llm, &messages).unwrap_or_else(|e| fail(&e))
             }
-            Err(_) => None,
+            None => ask_title(&llm, &messages).unwrap_or_else(|e| fail(&e)),
         };
         if let Some(title) = title {
             let _ = inbox.send(Input::Titled { chat, title });
@@ -351,6 +337,35 @@ pub fn spawn_titler(llm: byob_llm::Client, chat: String, user: String, reply: St
     });
     if let Err(e) = spawned {
         log::warn!("could not start the title request: {e}");
+    }
+}
+
+fn fail(e: &str) -> Option<String> {
+    log::info!("chat title request failed: {e}");
+    None
+}
+
+/// One title request: the title (`None`: the model gave none), or why the request failed.
+fn ask_title(llm: &byob_llm::Client, messages: &[ChatMessage]) -> Result<Option<String>, String> {
+    let cancel = AtomicBool::new(false);
+    let started = Instant::now();
+    let (mut content, mut reasoning) = (0usize, 0usize);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let until = byob_llm::StopWhen { cancel: &cancel, also: None, deadline: started.checked_add(TITLE_TIMEOUT) };
+        llm.stream_chat_until(messages, &[], until, |ev| {
+            match ev {
+                StreamEvent::Content(t) => content = content.saturating_add(t.len()),
+                StreamEvent::Reasoning(t) => reasoning = reasoning.saturating_add(t.len()),
+            }
+            if content > TITLE_MAX_BYTES || reasoning > TITLE_MAX_REASONING || started.elapsed() > TITLE_TIMEOUT {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        })
+    }));
+    match result {
+        Ok(Ok(out)) => Ok(Some(clean_title(&out.content, MAX_TITLE_CHARS)).filter(|t| !t.is_empty())),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("internal error".into()),
     }
 }
 

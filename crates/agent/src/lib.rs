@@ -71,6 +71,8 @@ mod subagents;
 mod test_store;
 mod turn;
 #[cfg(test)]
+mod utility_tests;
+#[cfg(test)]
 mod view_tests;
 mod web;
 #[cfg(test)]
@@ -1367,7 +1369,7 @@ impl Engine {
             return;
         }
         let (base_url, model) = (base_url.trim().to_owned(), model.trim().to_owned());
-        let config = InferenceConfig { api_key: self.key_for(&base_url, api_key), api: self.api_for(&base_url), base_url, model };
+        let config = InferenceConfig { api_key: self.key_for(&base_url, api_key), api: self.api_for(&base_url), base_url, model, ..Default::default() };
         if let Err(e) = byob_llm::Client::new(config.clone()) {
             self.notice(id, e.to_string());
             return;
@@ -1721,6 +1723,7 @@ impl Engine {
         self.viewer_states(&chat);
         self.emit(&chat, "turn_started", serde_json::json!({"entry": reply}));
         let slot = self.leases.for_chat(&plan, llm.config(), &chat);
+        let utility = compaction.auto.then(|| self.utility_role(llm.config())).flatten();
         let setup = turn::Setup {
             llm,
             history,
@@ -1732,7 +1735,7 @@ impl Engine {
             workspace,
             chat: chat.clone(),
             step_ids: Arc::clone(&self.step_ids),
-            compact: compaction.auto.then(|| turn::AutoCompact { at: compaction.threshold(&plan), keep_turns: compaction.keep_turns }),
+            compact: compaction.auto.then(|| turn::AutoCompact { at: compaction.threshold(&plan), keep_turns: compaction.keep_turns, utility }),
             plan,
             ids,
             prior,
@@ -1855,6 +1858,7 @@ impl Engine {
             Err(e) => return error(format!("inference URL is invalid: {e}")),
         };
         let plan = self.endpoints.plan_with(&settings.inference, settings.effective.tool_mode.value);
+        let utility = self.utility_role(&settings.inference);
         let specs = turn::specs(&self.tools);
         let types = self.artifact_types.clone();
         let chat_prompt = self.chat_prompt(&chat);
@@ -1880,7 +1884,7 @@ impl Engine {
         let spawned = thread::Builder::new().name("byob-compact".into()).spawn(move || {
             let started = Instant::now();
             let covered = messages.get(start..).unwrap_or_default();
-            let result = catch_unwind(AssertUnwindSafe(|| compact::summarize(&llm, covered, f.as_deref(), &plan, &flag)))
+            let result = catch_unwind(AssertUnwindSafe(|| compact::summarize_via(utility.as_ref(), &llm, covered, f.as_deref(), &plan, &flag)))
                 .unwrap_or_else(|_| Err(compact::Failure::Error("internal error while summarising".into())))
                 .map(|summary| {
                     let mut after: Vec<byob_llm::ChatMessage> = messages.get(..start).unwrap_or_default().to_vec();
@@ -2050,7 +2054,8 @@ impl Engine {
         // A changed link shows in the header of everyone looking at the chat.
         self.viewer_states(&run.chat);
         if let (Some(user), Some(reply), None) = (run.title_from, content, &error) {
-            chats::spawn_titler(run.llm.clone(), run.chat.clone(), user, reply, self.inbox.clone());
+            let utility = self.utility_role(run.llm.config()).map(|h| h.llm);
+            chats::spawn_titler(utility, run.llm.clone(), run.chat.clone(), user, reply, self.inbox.clone());
         }
         // On to the next queued message, unless the turn was stopped or failed.
         let pause = if run.cancel.load(Ordering::Relaxed) {
