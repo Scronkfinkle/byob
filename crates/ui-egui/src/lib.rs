@@ -5,6 +5,7 @@
 pub mod appview;
 pub mod artifact;
 pub mod chart;
+pub mod compose_md;
 pub mod composer;
 pub mod connect;
 mod envpanel;
@@ -1099,6 +1100,9 @@ mod app_tests {
 
     /// The app settings page: tabs, deep links, and the area it covers.
     mod settings_page;
+
+    /// Markdown in the composer: heights and the bold/italic shortcuts.
+    mod composer_md;
 
     /// A connection that delivers queued messages and records what the app sends.
     #[derive(Clone, Default)]
