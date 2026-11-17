@@ -1349,6 +1349,36 @@ fn the_model_undoes_its_layout_change() {
     let _ = Layout::default();
 }
 
+/// Going back: the first message, edited, is sent again; what came after it is gone from
+/// the chat and from what the model sees.
+#[test]
+fn going_back_to_a_message_starts_over_from_there() {
+    let h = harness(vec![Reply::Text("one"), Reply::Text("two"), Reply::Text("three")], "echo", Access::Read);
+    let (mut c, _) = client(&h);
+    let earlier = run_turn(&mut c, "first", |_, _| {});
+    run_turn(&mut c, "second", |_, _| {});
+    let (first, reply) = (earlier.entries[0].id, earlier.entries[1].id);
+    // Not a user message, or not here: refused, nothing changes.
+    c.send(ClientMsg::Rewind { entry: reply, text: "x".into() });
+    loop {
+        if let ServerMsg::Notice { text, .. } = recv(&mut c) {
+            assert!(text.contains("isn't in this chat"), "{text}");
+            break;
+        }
+    }
+    c.send(ClientMsg::Rewind { entry: first, text: "first, edited".into() });
+    let mut view = View::default();
+    while view.error.is_none() {
+        view.apply(recv(&mut c));
+    }
+    let texts: Vec<&str> = view.entries.iter().map(|e| e.content.as_str()).collect();
+    assert_eq!(texts, ["first, edited", "three"]);
+    let reqs = h.requests.lock().unwrap();
+    let sent: Vec<String> =
+        messages(reqs.last().unwrap()).iter().filter(|m| m["role"] != "system").map(|m| m["content"].as_str().unwrap_or("").to_owned()).collect();
+    assert_eq!(sent, ["first, edited"], "the model sees only the new start");
+}
+
 /// Without a window that reports its look, `ui_look` says so.
 #[test]
 fn ui_look_needs_a_window() {

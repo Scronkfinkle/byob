@@ -131,6 +131,7 @@ pub const ELEMENTS: &[Element] = &[
     ),
     el("message.step_files", "Files changed", "\"1 file\" (\"3 files\") on a tool's row when it changed files", None, Show::Shown, false),
     el("message.subagent_details", "Subagent details", "the model and tokens on a subagent's row", None, Show::Shown, false),
+    el("message.edit", "Edit button", "\"Edit\" on your messages: change one and start the chat over from there", None, Show::Hover, true),
     el("message.undo", "Undo button", "\"Undo changes\" under a reply that changed files", None, Show::Shown, true),
     el("reply.tokens", "Tokens", "tokens in and out, under each reply", Some(REPLY), Show::Shown, true),
     el("reply.time", "Time", "how long the reply took, under each reply", Some(REPLY), Show::Shown, true),

@@ -128,6 +128,17 @@ pub struct ByobApp {
     look_answer: Option<(u64, Vec<String>)>,
     /// Looks from before each change the model made, newest last (`ui_look`'s undo).
     look_history: Vec<theme::Prefs>,
+    /// One of your messages being changed, to start over from it.
+    editing: Editing,
+}
+
+/// Changing one of your messages to start the chat over from it (`ClientMsg::Rewind`).
+#[derive(Default)]
+struct Editing {
+    /// The message being changed, and its text so far.
+    open: Option<(u64, String)>,
+    /// Going back is possible now: the engine takes it and no reply is running.
+    allowed: bool,
 }
 
 /// Where a draft is kept: `chat:<id>` for a chat, `new:<workspace>` for the new chat about
@@ -186,6 +197,7 @@ impl ByobApp {
             look_reported: None,
             look_answer: None,
             look_history: Vec::new(),
+            editing: Editing::default(),
         }
     }
 
@@ -926,6 +938,9 @@ impl ByobApp {
             self.empty_chat(ui);
             return;
         }
+        // Going back needs an engine that takes it and no reply running.
+        let can_rewind = self.engine_has(byob_protocol::version::CAP_REWIND) && !self.state.as_ref().is_some_and(|s| s.busy);
+        self.editing.allowed = can_rewind;
         if self.markdown.len() > self.entries.len() {
             let entries = &self.entries;
             self.markdown.retain(|id| entries.iter().any(|e| e.id == id));
@@ -943,12 +958,24 @@ impl ByobApp {
         // Only the last reply, failed before it produced anything, can be run again.
         let busy = self.state.as_ref().is_some_and(|s| s.busy);
         let retry_id = self.entries.last().filter(|e| retryable(e) && !busy).map(|e| e.id);
+        let editing = &mut self.editing;
         egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
             readable_column(ui, &t, |ui| {
                 ui.add_space(t.pad(8.0));
                 usage.dividers(ui, &t, 0);
                 for entry in &self.entries {
-                    answers.extend(entry_view(ui, &t, entry, markdown, media, artifacts, (plugins, views, &latest), retry_id == Some(entry.id), &mut card));
+                    answers.extend(entry_view(
+                        ui,
+                        &t,
+                        entry,
+                        markdown,
+                        media,
+                        artifacts,
+                        (plugins, views, &latest),
+                        retry_id == Some(entry.id),
+                        &mut card,
+                        editing,
+                    ));
                     ui.add_space(t.pad(8.0));
                     usage.dividers(ui, &t, entry.id);
                 }
@@ -1021,6 +1048,69 @@ fn retryable(e: &Entry) -> bool {
     e.role == EntryRole::Assistant && e.done && e.error.is_some() && e.content.is_empty() && e.steps.is_empty()
 }
 
+const EDIT_TIP: &str = "Change this message and start over from it";
+
+/// The Edit button on one of your messages.
+fn edit_button(ui: &mut egui::Ui) -> bool {
+    ui.add(egui::Button::new(egui::RichText::new("Edit").small())).on_hover_text(EDIT_TIP).clicked()
+}
+
+/// One of your messages, being changed: its text, what sending does, Cancel and Send
+/// (Ctrl+Enter sends, Esc cancels). Sending goes back to it (`ClientMsg::Rewind`).
+fn edit_box(ui: &mut egui::Ui, t: &theme::Tokens, entry: &Entry, editing: &mut Editing) -> Option<ClientMsg> {
+    let allowed = editing.allowed;
+    let (id, text) = editing.open.as_mut()?;
+    let field_id = egui::Id::unique(("edit-message", *id));
+    let first = !ui.data(|d| d.get_temp::<bool>(field_id).unwrap_or(false));
+    // Ctrl+Enter and Esc are ours, taken before the field would turn them into a new line
+    // or a lost focus.
+    let focused = ui.memory(|m| m.has_focus(field_id));
+    let keys = if focused {
+        ui.input_mut(|i| (i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter), i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)))
+    } else {
+        (false, false)
+    };
+    let resp = ui.add(egui::TextEdit::multiline(text).id(field_id).desired_width(f32::INFINITY).desired_rows(2));
+    if first {
+        resp.request_focus();
+        ui.data_mut(|d| d.insert_temp(field_id, true));
+    }
+    let attached = match entry.attachments.len() {
+        0 => String::new(),
+        1 => " It keeps its attachment.".to_owned(),
+        n => format!(" It keeps its {n} attachments."),
+    };
+    let note = format!("Sending starts over from here: the replies after this message are removed (files they changed stay as they are).{attached}");
+    ui.add(egui::Label::new(egui::RichText::new(note).small().color(t.text_dim)).wrap());
+    let ready = allowed && !text.trim().is_empty();
+    let (mut send, mut cancel) = (false, false);
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let tip = if allowed { "Send it (Ctrl+Enter)" } else { "Wait for the reply to finish, or stop it" };
+            send = ui
+                .add_enabled(ready, egui::Button::new(egui::RichText::new("Send").color(t.on_accent)).fill(t.accent))
+                .on_hover_text(tip)
+                .on_disabled_hover_text(tip)
+                .clicked();
+            cancel = ui.button("Cancel").on_hover_text("Keep the chat as it is (Esc)").clicked();
+        });
+    });
+    send |= keys.0 && ready;
+    cancel |= keys.1;
+    let id = *id;
+    if send {
+        let msg = ClientMsg::Rewind { entry: id, text: text.trim_end().to_owned() };
+        editing.open = None;
+        ui.data_mut(|d| d.remove::<bool>(field_id));
+        return Some(msg);
+    }
+    if cancel {
+        editing.open = None;
+        ui.data_mut(|d| d.remove::<bool>(field_id));
+    }
+    None
+}
+
 /// Draws one entry; returns a message to send if the user answered an approval card. A
 /// connection error is a card (with Retry if `retry`) whose button lands in `card`.
 #[allow(clippy::too_many_arguments)] // the transcript's per-entry caches
@@ -1034,6 +1124,7 @@ fn entry_view(
     (plugins, views, latest): (&mut plugins::PluginsUi, &mut views::ViewRegistry, &std::collections::BTreeMap<(String, String), u64>),
     retry: bool,
     card: &mut Option<connect::CardAction>,
+    editing: &mut Editing,
 ) -> Option<ClientMsg> {
     let mut answer = None;
     let user = entry.role == EntryRole::User;
@@ -1116,14 +1207,28 @@ fn entry_view(
                             views.show_step_with(ui, t, step, latest, plugins, artifacts.web_mut());
                         });
                     }
-                    EntryRole::User if !entry.content.is_empty() => {
-                        let mut text = egui::RichText::new(&entry.content).color(t.text);
-                        if let Some(h) = theme::line_height(t, egui::TextStyle::Body.resolve(ui.style()).size) {
-                            text = text.line_height(Some(h));
-                        }
-                        ui.add(egui::Label::new(text).selectable(true));
+                    EntryRole::User if editing.open.as_ref().is_some_and(|(id, _)| *id == entry.id) => {
+                        answer = edit_box(ui, t, entry, editing);
                     }
-                    EntryRole::User => {}
+                    EntryRole::User => {
+                        if !entry.content.is_empty() {
+                            let mut text = egui::RichText::new(&entry.content).color(t.text);
+                            if let Some(h) = theme::line_height(t, egui::TextStyle::Body.resolve(ui.style()).size) {
+                                text = text.line_height(Some(h));
+                            }
+                            ui.add(egui::Label::new(text).selectable(true));
+                        }
+                        if editing.allowed && shape.show("message.edit") == byob_protocol::layout::Show::Shown {
+                            // One row (a bare right-to-left layout would take the rest of the height).
+                            ui.horizontal(|ui| {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if edit_button(ui) {
+                                        editing.open = Some((entry.id, entry.content.clone()));
+                                    }
+                                });
+                            });
+                        }
+                    }
                 }
                 media.show_entry(ui, t, entry);
                 if let Some(err) = &entry.error
@@ -1150,6 +1255,15 @@ fn entry_view(
             let solid = if fill == egui::Color32::TRANSPARENT { t.app_bg } else { fill };
             p.rect_filled(tag, theme::inner_radius(t.round(8.0), inset), solid);
             p.galley(tag.min + pad, galley, t.text_dim);
+        }
+        // Edit on hover: over your message's bottom-right corner while the pointer is on it.
+        let editing_this = editing.open.as_ref().is_some_and(|(id, _)| *id == entry.id);
+        if user && editing.allowed && !editing_this && hovered && shape.show("message.edit") == byob_protocol::layout::Show::Hover {
+            let size = egui::vec2(44.0, 20.0);
+            let at = egui::Rect::from_min_size(bubble.right_bottom() - size - egui::vec2(4.0, 4.0), size);
+            if ui.put(at, egui::Button::new(egui::RichText::new("Edit").small())).on_hover_text(EDIT_TIP).clicked() {
+                editing.open = Some((entry.id, entry.content.clone()));
+            }
         }
     });
     answer
@@ -1227,6 +1341,7 @@ mod app_tests {
 
     /// The window reports its look and applies changes the model asks for.
     mod look;
+    mod rewind;
 
     /// A connection that delivers queued messages and records what the app sends.
     #[derive(Clone, Default)]

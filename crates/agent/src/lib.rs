@@ -66,6 +66,7 @@ mod profiles;
 mod queue;
 #[cfg(test)]
 mod queue_tests;
+mod rewind;
 mod slot_leases;
 mod steps;
 mod subagents;
@@ -1167,6 +1168,7 @@ impl Engine {
             ClientMsg::TestInference { base_url, model, api_key } => self.test_inference(id, base_url, model, api_key),
             ClientMsg::DetectEndpoints => self.detect_endpoints(),
             ClientMsg::Retry => self.retry(id),
+            ClientMsg::Rewind { entry, text } => self.rewind(id, entry, &text),
             ClientMsg::SendMessage { text, attachments } => self.start_turn(id, text, &attachments),
             ClientMsg::Unqueue { id: item } => self.unqueue(id, item),
             ClientMsg::EditQueued { id: item, text, attachments } => self.edit_queued(id, item, text, &attachments),

@@ -82,6 +82,15 @@ pub enum ClientMsg {
     /// Run the last message of the chat in view again, after its reply failed before
     /// producing anything (e.g. the server was down). The failed reply is removed.
     Retry,
+    /// Go back to user message `entry` of the chat in view and start over from there: it
+    /// and everything after it are removed, and `text` is sent in its place (with its
+    /// attachments). The same text runs it again; new text is an edit. Refused while a
+    /// reply runs. Files the removed replies changed stay as they are (13.13, engine cap
+    /// [`version::CAP_REWIND`]).
+    Rewind {
+        entry: u64,
+        text: String,
+    },
     /// Send a user message and start a turn; while a reply runs in the chat, queue it
     /// instead (see [`queue`]). `attachments` are paths the engine returned in
     /// [`ServerMsg::Uploaded`].
@@ -1313,6 +1322,7 @@ mod tests {
             ClientMsg::TestInference { base_url: "https://api.openai.com/v1".into(), model: "m".into(), api_key: Some("sk".into()) },
             ClientMsg::DetectEndpoints,
             ClientMsg::Retry,
+            ClientMsg::Rewind { entry: 7, text: "again, differently".into() },
         ] {
             assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m);
         }
