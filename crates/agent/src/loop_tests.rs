@@ -331,6 +331,28 @@ fn image_parts(req: &Value) -> (Vec<String>, usize) {
     (urls, notes)
 }
 
+/// Regression: after a tool call the model ended with only thinking, and the reply was
+/// blank. It's asked once for the reply; a second blank one is the answer.
+#[test]
+fn a_blank_reply_gets_one_nudge() {
+    let h = harness(vec![call("echo", r#"{"text":"pong"}"#), Reply::Text(""), Reply::Text("Switched to dark.")], "echo", Access::Read);
+    let (mut c, _) = client(&h);
+    let view = run_turn(&mut c, "pls do dark mode", |_, _| panic!("reads must not ask"));
+    assert_eq!(view.error, Some(None));
+    assert_eq!(view.reply().content, "Switched to dark.");
+    let reqs = h.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 3);
+    let last = messages(&reqs[2]);
+    assert!(last.last().unwrap()["content"].as_str().unwrap().contains("the user saw nothing"), "{last:?}");
+    drop(reqs);
+    // Blank twice: no third ask.
+    let h = harness(vec![Reply::Text("")], "echo", Access::Read);
+    let (mut c, _) = client(&h);
+    let view = run_turn(&mut c, "hi", |_, _| {});
+    assert_eq!(view.error, Some(None));
+    assert_eq!(h.requests.lock().unwrap().len(), 2);
+}
+
 #[test]
 fn images_from_tools_reach_the_model_and_only_the_latest_stay() {
     // Ten looks, one per round (the last one again), then the answer.

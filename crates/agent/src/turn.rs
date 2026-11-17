@@ -51,6 +51,9 @@ fn ask_vision(vision: &byob_llm::Client, question: &str, images: Vec<String>, ca
     Ok(cap(answer.to_owned(), MAX_VISION_ANSWER, "the vision model's answer was cut"))
 }
 
+/// Sent when a turn ends with nothing for the user to read.
+const NO_ANSWER_NUDGE: &str = "(byob: your last reply had no text, so the user saw nothing. Finish what you were doing if anything is left, then tell them in a sentence or two what you did.)";
+
 /// Images from tool calls kept in a turn's messages (the latest ones).
 const MAX_LIVE_IMAGES: usize = 8;
 const OLD_IMAGE_NOTE: &str = "[an image shown earlier, no longer kept; look at it again if you need it]";
@@ -343,6 +346,8 @@ struct Turn {
     /// `name:args` → result text, for repeated-call detection.
     seen: BTreeMap<String, String>,
     repeats: usize,
+    /// The model was asked once to answer after it ended with nothing to show.
+    nudged: bool,
     /// Undo journal for the file changes of this turn.
     journal: Journal,
     /// Model requests made (compactions included).
@@ -422,6 +427,7 @@ impl Turn {
             output_used: 0,
             seen: BTreeMap::new(),
             repeats: 0,
+            nudged: false,
             journal,
             model_calls: 0,
             hook_state: BTreeMap::new(),
@@ -480,6 +486,13 @@ impl Turn {
             let calls = usable_calls(calls, self.s.entry);
             // With tools off, calls the model makes anyway are ignored: its text is the answer.
             if calls.is_empty() || !tools_on {
+                // It stopped without a word for the user (its thinking said what it meant to
+                // do next, nothing else did): ask once for the reply, tools still on.
+                if text.trim().is_empty() && self.content.trim().is_empty() && !self.nudged && round + 1 < max_rounds {
+                    self.nudged = true;
+                    self.messages.push(ChatMessage::user(NO_ANSWER_NUDGE));
+                    continue;
+                }
                 self.answer = text;
                 return Ok(());
             }
