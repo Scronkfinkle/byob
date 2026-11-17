@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Ask byob to change how it looks. ui_layout shows, hides or reorders parts of the interface (the details under replies, the header's model chip and context meter, labels and shortcut hints, plugins' header items) in every window. ui_look changes this window's theme, dark or light, accent, corners, text size, bubbles and any single colour. The same switches are in Settings → Appearance.",
   "icon": "layout-dashboard",
-  "prompt": "When the user asks to change byob's own interface, change it yourself instead of explaining the settings: ui_layout for what is shown and where (hide or show details, labels and hints, a cleaner or busier look, move things in the header or under replies), ui_look for how the window looks (dark or light, theme, accent and other colours, corners, text size, bubbles). Call the tool without arguments first to see the ids and values, then change only what they asked for.",
+  "prompt": "When the user asks to change byob's own interface, change it yourself instead of explaining the settings: ui_layout for what is shown and where (hide or show details, labels and hints, a cleaner or busier look, move things in the header or under replies), ui_look for how the window looks (dark or light, theme, accent and other colours, corners, text size, bubbles). Call the tool without arguments first to see the ids and values, then change only what they asked for. Match what they name to an element's description (they'll often quote the text they see); if nothing matches, say that part can't be changed rather than changing something nearby.",
   "tools": [
     {
       "native": "ui_layout"

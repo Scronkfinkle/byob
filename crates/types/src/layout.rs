@@ -115,6 +115,14 @@ pub const ELEMENTS: &[Element] = &[
     el("message.thought_size", "Thinking length", "how long the model's thinking was, next to \"Thought\"", None, Show::Shown, false),
     el("reply.tokens", "Tokens", "tokens in and out, under each reply", Some(REPLY), Show::Shown, true),
     el("reply.time", "Time", "how long the reply took, under each reply", Some(REPLY), Show::Shown, true),
+    el(
+        "message.artifact_shown",
+        "Artifact shown note",
+        "\"Shown beside the chat\" on an artifact's card in a reply while it's open in the artifact pane",
+        None,
+        Show::Shown,
+        true,
+    ),
     el("reply.speed", "Speed", "tokens per second the model wrote, under each reply", Some(REPLY), Show::Hidden, true),
     // Elsewhere.
     el("composer.keys", "Composer keys", "\"Enter to send, Shift+Enter for a new line\" in the empty message box", None, Show::Shown, false),
@@ -248,7 +256,7 @@ impl Layout {
                 hide(&mut l, &["message.role", "message.thought_size", "composer.keys"]);
             }
             "minimal" => {
-                hover(&mut l, &["reply.tokens", "reply.time", "sidebar.shortcuts", "toolbar.plugins"]);
+                hover(&mut l, &["reply.tokens", "reply.time", "sidebar.shortcuts", "toolbar.plugins", "message.artifact_shown"]);
                 hide(&mut l, &["message.role", "message.thought_size", "composer.keys", "header.usage_numbers", "header.server", "header.wordmark"]);
             }
             _ => return None,

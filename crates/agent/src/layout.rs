@@ -227,6 +227,9 @@ fn describe(layout: &Layout, views: &[PluginView]) -> String {
     for (name, what) in PRESETS {
         let _ = writeln!(out, "- {name}: {what}");
     }
+    out.push_str(
+        "\nOnly these can be changed. If the user names something that isn't listed, tell them it can't be hidden or moved yet; don't change something else in its place.",
+    );
     out
 }
 

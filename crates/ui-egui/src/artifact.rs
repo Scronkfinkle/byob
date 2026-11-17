@@ -716,10 +716,13 @@ impl Artifacts {
             ui,
             |ui| {
                 ui.set_width(ui.available_width());
+                let hovered = ui.ui_contains_pointer();
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if in_chat && selected {
-                            ui.label(RichText::new("Shown beside the chat").small().color(t.text_dim));
+                            if crate::layout::visible(ui.ctx(), "message.artifact_shown", hovered) {
+                                ui.label(RichText::new("Shown beside the chat").small().color(t.text_dim));
+                            }
                         } else if ui.small_button("Restore").on_hover_text("Show it in full again").clicked() {
                             self.actions.push(Action::Minimize { id: a.id.clone(), minimized: false });
                         }
@@ -1292,6 +1295,44 @@ mod tests {
         s.handle(&ctx, Action::CloseTab("app".into()));
         run(&mut s);
         assert_eq!(drain(&log), ["card app/1", "card app/2"]);
+    }
+
+    /// "Shown beside the chat" on a card whose artifact is open in the pane follows the
+    /// layout (`message.artifact_shown`), so asking byob to hide it hides it.
+    #[test]
+    fn the_shown_beside_the_chat_note_follows_the_layout() {
+        use byob_protocol::layout::{Layout, Show};
+        fn walk(shape: &egui::Shape, out: &mut String) {
+            match shape {
+                egui::Shape::Text(t) => out.push_str(t.galley.text()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut s = Artifacts::default();
+        s.apply(&ServerMsg::Artifacts { chat: Some("c".into()), artifacts: vec![artifact("notes", ArtifactKind::Markdown, "notes.md", &[1])] });
+        let ctx = egui::Context::default();
+        let t = Tokens::dark();
+        let refs = [ArtifactRef { id: "notes".into(), version: 1 }];
+        s.handle(&ctx, Action::Select { id: "notes".into(), version: Some(1) });
+        let mut run = |layout: Layout| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                crate::layout::store(ui.ctx(), &std::sync::Arc::new(layout.clone()));
+                s.begin_frame(ui.ctx(), &t, false);
+                s.side_panel(ui, &t);
+                egui::CentralPanel::default().show(ui, |ui| s.cards(ui, &t, &refs));
+            });
+            out.textures_delta.clear();
+            s.end_frame(&ctx);
+            let mut text = String::new();
+            out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
+            text
+        };
+        assert!(run(Layout::default()).contains("Shown beside the chat"));
+        let mut hidden = Layout::default();
+        hidden.set_show("message.artifact_shown", Show::Hidden);
+        let text = run(hidden);
+        assert!(!text.contains("Shown beside the chat") && text.contains("NOTES"), "{text}");
     }
 
     /// Maximize: the pane takes the window (drawn the way `ByobApp::ui` does), the same app
