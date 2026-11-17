@@ -117,6 +117,12 @@ impl ByobApp {
                     ui.selectable_value(&mut k.assistant_bubble, s, s.label());
                 }
             }
+            Key::BubblePadding => {
+                ui.add(egui::Slider::new(&mut k.bubble_padding, Knobs::PADDING_RANGE).step_by(1.0).suffix(" pt"));
+            }
+            Key::LineSpacing => {
+                ui.add(egui::Slider::new(&mut k.line_spacing, Knobs::LINE_SPACING_RANGE).step_by(0.05).fixed_decimals(2));
+            }
             Key::ShownPreset => self.layout_presets(ui, t),
             Key::ShownList => self.layout_list(ui, t),
             Key::ImportTheme => self.import_buttons(ui),
@@ -126,6 +132,7 @@ impl ByobApp {
                     let dk = Knobs::default();
                     d.prefs.accent = Accent::Theme;
                     (k.radius, k.user_bubble, k.assistant_bubble, k.chart) = (dk.radius, dk.user_bubble, dk.assistant_bubble, dk.chart);
+                    (k.bubble_padding, k.line_spacing) = (dk.bubble_padding, dk.line_spacing);
                 }
             }
             Key::ResetAppearance => {

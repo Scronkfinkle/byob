@@ -25,7 +25,7 @@ keys! {
     ModelList, VisionRole, SubagentRole, UtilityRole,
     Instructions, Approvals, ToolCalls, Subagents, Compaction, ModelImages, ToolCalling, WorkspaceSettings,
     PluginList,
-    Mode, ThemePair, Gallery, Accent, Radius, ChartColours, MessageLayout, UserBubble, ReplyBubble, ShownPreset, ShownList, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
+    Mode, ThemePair, Gallery, Accent, Radius, ChartColours, MessageLayout, UserBubble, ReplyBubble, BubblePadding, LineSpacing, ShownPreset, ShownList, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
     Zoom, TextSize, CodeSize, Font, CodeFont, Density, ColumnWidth, ChatListWidth, ArtifactPane, HighContrast, ReduceMotion, ResetText,
     ColourRoles,
 }
@@ -294,6 +294,16 @@ pub static SETTINGS: &[Setting] = &[
     ),
     s(Key::UserBubble, "user-bubble", &MESSAGES, "Your messages", "How your messages are drawn.", "bubble user style filled outlined minimal", Row),
     s(Key::ReplyBubble, "reply-bubble", &MESSAGES, "Replies", "How the model's replies are drawn.", "assistant bubble response answer style", Row),
+    s(
+        Key::BubblePadding,
+        "bubble-padding",
+        &MESSAGES,
+        "Bubble padding",
+        "Space between a message's edge and its text.",
+        "padding inset margin space bubble indent",
+        Row,
+    ),
+    s(Key::LineSpacing, "line-spacing", &MESSAGES, "Line spacing", "Space between the lines of messages.", "line height leading spacing density text", Row),
     s(
         Key::ShownPreset,
         "shown-preset",

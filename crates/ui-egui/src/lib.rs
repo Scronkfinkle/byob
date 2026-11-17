@@ -1032,11 +1032,13 @@ fn entry_view(
     let user = entry.role == EntryRole::User;
     let (fill, style) = if user { (t.user_bubble, t.knobs.user_bubble) } else { (t.assistant_bubble, t.knobs.assistant_bubble) };
     let (fill, stroke, margin) = match style {
-        theme::BubbleStyle::Filled => (fill, egui::Stroke::NONE, t.pad(10.0)),
-        theme::BubbleStyle::Outlined => {
-            (egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, if user { theme::mix(t.border, t.accent, 0.6) } else { t.border }), t.pad(10.0))
-        }
-        theme::BubbleStyle::Minimal => (egui::Color32::TRANSPARENT, egui::Stroke::NONE, t.pad(4.0)),
+        theme::BubbleStyle::Filled => (fill, egui::Stroke::NONE, t.pad(t.knobs.bubble_padding)),
+        theme::BubbleStyle::Outlined => (
+            egui::Color32::TRANSPARENT,
+            egui::Stroke::new(1.0, if user { theme::mix(t.border, t.accent, 0.6) } else { t.border }),
+            t.pad(t.knobs.bubble_padding),
+        ),
+        theme::BubbleStyle::Minimal => (egui::Color32::TRANSPARENT, egui::Stroke::NONE, t.pad(t.knobs.bubble_padding * 0.4)),
     };
     // Chat alignment: your messages on the right, as wide as they need up to 80 %.
     let full = ui.available_width();
@@ -1108,7 +1110,11 @@ fn entry_view(
                         });
                     }
                     EntryRole::User if !entry.content.is_empty() => {
-                        ui.add(egui::Label::new(egui::RichText::new(&entry.content).color(t.text)).selectable(true));
+                        let mut text = egui::RichText::new(&entry.content).color(t.text);
+                        if let Some(h) = theme::line_height(t, egui::TextStyle::Body.resolve(ui.style()).size) {
+                            text = text.line_height(Some(h));
+                        }
+                        ui.add(egui::Label::new(text).selectable(true));
                     }
                     EntryRole::User => {}
                 }

@@ -156,6 +156,8 @@ const SETTING_ALIASES: &[(&[&str], &str)] = &[
     (&["radius", "rounding", "corner_radius", "roundness", "border_radius"], "corners"),
     (&["scale", "ui_scale"], "zoom"),
     (&["spacing"], "density"),
+    (&["padding", "text_padding", "inset", "bubble_inset", "message_padding", "inner_padding", "bubble_margin"], "bubble_padding"),
+    (&["line_height", "leading", "line_gap"], "line_spacing"),
     (&["width", "max_width", "content_width"], "column_width"),
     (&["layout", "alignment"], "message_layout"),
     (&["contrast"], "high_contrast"),

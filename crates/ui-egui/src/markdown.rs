@@ -620,7 +620,8 @@ pub fn layout_job(t: &Tokens, inline: &Inline, font: &FontId, bold: &FontFamily,
         let Some(text) = inline.text.get(start..run.end) else { break };
         start = run.end;
         let s = run.style;
-        let mut fmt = TextFormat { font_id: font.clone(), color, italics: s.emphasis, ..TextFormat::default() };
+        let line_height = crate::theme::line_height(t, font.size);
+        let mut fmt = TextFormat { font_id: font.clone(), color, italics: s.emphasis, line_height, ..TextFormat::default() };
         if s.strong {
             fmt.font_id.family = bold.clone();
             fmt.color = t.text_strong;

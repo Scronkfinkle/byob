@@ -53,6 +53,8 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef]) -> LookR
         field("your_messages", json!(bubble(k.user_bubble)), "how your messages are drawn: filled, outlined or minimal"),
         field("replies", json!(bubble(k.assistant_bubble)), "how replies are drawn: filled, outlined or minimal"),
         field("message_layout", json!(if k.align == Align::Chat { "chat" } else { "stacked" }), "stacked (one column) or chat (your messages on the right)"),
+        field("bubble_padding", round2(k.bubble_padding), "space inside message bubbles between their edge and the text, 0 to 32 (10 is normal)"),
+        field("line_spacing", round2(k.line_spacing), "space between lines of message text, 0.9 to 2 (1 is normal)"),
         field("column_width", round2(k.max_width), "widest the conversation gets in points, 480 to 2000, or 0 for the whole window"),
         field("font", json!(if k.ui_font == UiFont::Ubuntu { "ubuntu" } else { "inter" }), "the interface font: inter or ubuntu"),
         field("code_font", json!(if k.mono_font == MonoFont::JetBrainsMono { "jetbrains_mono" } else { "hack" }), "the code font: hack or jetbrains_mono"),
@@ -141,6 +143,8 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
                 }
             }
             "corners" => number(v, Knobs::RADIUS_RANGE, key).map(|n| k.radius = n.round()),
+            "bubble_padding" => number(v, Knobs::PADDING_RANGE, key).map(|n| k.bubble_padding = n.round()),
+            "line_spacing" => number(v, Knobs::LINE_SPACING_RANGE, key).map(|n| k.line_spacing = n),
             "text_size" => number(v, Knobs::SCALE_RANGE, key).map(|n| k.font_scale = n),
             "code_size" => number(v, Knobs::SCALE_RANGE, key).map(|n| k.code_scale = n),
             "zoom" => number(v, Prefs::ZOOM_RANGE, key).map(|n| prefs.zoom = n),
@@ -278,5 +282,17 @@ mod tests {
         assert!(apply(&mut p, &changes(json!({"accent": "#ff8800", "colour.app_bg": ""})), true, &[]).is_empty());
         assert_eq!(p.accent, Accent::Custom("#ff8800".into()));
         assert!(p.overrides[p.theme_id(true)].is_empty());
+    }
+
+    /// Bubble padding and line spacing: asked for in a stress test, now settings.
+    #[test]
+    fn bubble_padding_and_line_spacing_are_settings() {
+        let mut p = Prefs::default();
+        let problems = apply(&mut p, &changes(json!({"bubble_padding": 18, "line_spacing": 1.3})), true, &[]);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!((p.knobs.bubble_padding, p.knobs.line_spacing), (18.0, 1.3));
+        assert!(!apply(&mut p, &changes(json!({"line_spacing": 9})), true, &[]).is_empty());
+        let r = report(&p, &crate::theme::Tokens::dark(), &[]);
+        assert_eq!(r.get("bubble_padding"), Some(&json!(18.0)));
     }
 }

@@ -261,6 +261,10 @@ pub struct Knobs {
     /// No spinners, animations or smooth scrolling.
     pub reduce_motion: bool,
     pub chart: ChartPalette,
+    /// Space inside a message's bubble, in points (before density).
+    pub bubble_padding: f32,
+    /// Line spacing of message text (1 = the font's own).
+    pub line_spacing: f32,
     /// Starting width of the chat list, in points.
     pub sidebar_width: f32,
     /// Starting share of the window the artifact pane takes.
@@ -283,6 +287,8 @@ impl Default for Knobs {
             high_contrast: false,
             reduce_motion: false,
             chart: ChartPalette::Theme,
+            bubble_padding: 10.0,
+            line_spacing: 1.0,
             sidebar_width: 240.0,
             pane_share: 0.48,
         }
@@ -293,6 +299,8 @@ impl Knobs {
     pub const FONT_SCALES: [(f32, &'static str); 5] = [(0.85, "S"), (1.0, "M"), (1.15, "L"), (1.3, "XL"), (1.5, "XXL")];
     pub const SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.75..=2.0;
     pub const RADIUS_RANGE: std::ops::RangeInclusive<f32> = 0.0..=16.0;
+    pub const PADDING_RANGE: std::ops::RangeInclusive<f32> = 0.0..=32.0;
+    pub const LINE_SPACING_RANGE: std::ops::RangeInclusive<f32> = 0.9..=2.0;
     pub const SIDEBAR_RANGE: std::ops::RangeInclusive<f32> = 180.0..=420.0;
     pub const PANE_RANGE: std::ops::RangeInclusive<f32> = 0.3..=0.75;
     /// Readable column widths offered (0 = full width); anything 480..=2000 is accepted.

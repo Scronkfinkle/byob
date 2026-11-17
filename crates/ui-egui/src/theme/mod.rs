@@ -254,6 +254,13 @@ tokens! {
     }
 }
 
+/// The line height message text of `size` gets with the line spacing knob (`None`: the
+/// font's own, at 1).
+pub fn line_height(t: &Tokens, size: f32) -> Option<f32> {
+    let k = t.knobs.line_spacing;
+    ((k - 1.0).abs() > 0.01 && k.is_finite()).then(|| size * 1.25 * k.clamp(0.9, 2.0))
+}
+
 /// Linear blend in sRGB space: `t = 0` → `a`, `t = 1` → `b` (opaque result).
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.0 };
