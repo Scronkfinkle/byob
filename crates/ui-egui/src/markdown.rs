@@ -567,7 +567,11 @@ fn table_view(ui: &mut egui::Ui, t: &Tokens, head: &[Inline], rows: &[Vec<Inline
     let body = body_font(ui);
     #[allow(clippy::cast_precision_loss)] // column counts are small
     let col_width = ((ui.available_width() - 24.0) / cols as f32 - 16.0).max(80.0);
-    egui::Frame::new().stroke(Stroke::new(1.0, t.border)).corner_radius(t.radius).inner_margin(6.0).show(ui, |ui| {
+    // The grid's stripes reach half a row gap (3) past their row: 3 more at the bottom keeps
+    // the last stripe as far from the border as the sides, so its square corners sit evenly
+    // inside the rounded ones (radius − inset = 0, see `theme::inner_radius`).
+    let margin = egui::Margin { left: 6, right: 6, top: 6, bottom: 9 };
+    egui::Frame::new().stroke(Stroke::new(1.0, t.border)).corner_radius(t.radius).inner_margin(margin).show(ui, |ui| {
         egui::ScrollArea::horizontal().id_salt(id.with("scroll")).auto_shrink([true, true]).show(ui, |ui| {
             egui::Grid::new(id.with("grid")).striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
                 for cell in head {

@@ -123,11 +123,12 @@ impl ByobApp {
         let has_content = !self.input.trim().is_empty() || self.uploads.has_ready();
         let ready = has_content && !self.uploads.busy();
         let d = control_size(ui);
+        let (outer_radius, control_radius) = radii(t, d);
         let frame = egui::Frame::new()
             .fill(t.field_bg)
-            .stroke(Stroke::new(1.0, t.field_border))
-            .corner_radius(t.round(14.0).min(d / 2.0 + 6.0))
-            .inner_margin(Margin::same(6));
+            .stroke(Stroke::new(FRAME_STROKE, t.field_border))
+            .corner_radius(outer_radius)
+            .inner_margin(Margin::same(FRAME_MARGIN));
         let mut prepared = frame.begin(ui);
         let mut rects = Rects::default();
         {
@@ -150,44 +151,44 @@ impl ByobApp {
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
             let gap = 6.0;
             let attach_rect = Rect::from_min_size(egui::pos2(row.left(), row.bottom() - d), vec2(d, d));
-            rects.attach = ui.scope_builder(egui::UiBuilder::new().max_rect(attach_rect), |ui| self.uploads.button(ui, t, d)).inner.rect;
+            rects.attach = ui.scope_builder(egui::UiBuilder::new().max_rect(attach_rect), |ui| self.uploads.button(ui, t, d, control_radius)).inner.rect;
             let controls_rect = Rect::from_min_max(egui::pos2(attach_rect.right() + gap, row.bottom() - d), row.max);
             let controls_left = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(controls_rect).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
                     ui.spacing_mut().item_spacing.x = gap;
                     if editing.is_some() {
-                        let save = pill(ui, t, "Save", d, true).on_hover_text("Save the queued message (Enter)");
+                        let save = pill(ui, t, "Save", d, control_radius, true).on_hover_text("Save the queued message (Enter)");
                         send |= save.clicked();
                         rects.send = save.rect;
                         rects.send_fill = t.accent;
-                        let cancel = pill(ui, t, "Cancel", d, false).on_hover_text("Stop editing (Esc)");
+                        let cancel = pill(ui, t, "Cancel", d, control_radius, false).on_hover_text("Stop editing (Esc)");
                         cancel_edit |= cancel.clicked();
                         rects.second = cancel.rect;
                     } else if busy {
                         // Stop is the strong one until there's a follow-up to queue.
                         let fill = if ready { t.button_bg } else { t.text_strong };
                         let icon = if ready { t.text_strong } else { t.field_bg };
-                        let stop = round_button(ui, t, d, fill, icon, icons::stop, true).on_hover_text("Stop the reply");
+                        let stop = round_button(ui, t, d, control_radius, fill, icon, icons::stop, true).on_hover_text("Stop the reply");
                         if stop.clicked() {
                             self.conn.send(ClientMsg::Cancel);
                         }
                         rects.send = stop.rect;
                         rects.send_fill = fill;
                         if ready {
-                            let queue = pill(ui, t, "Queue", d, true).on_hover_text("Send this when the reply is done (Enter)");
+                            let queue = pill(ui, t, "Queue", d, control_radius, true).on_hover_text("Send this when the reply is done (Enter)");
                             send |= queue.clicked();
                             rects.second = queue.rect;
                         }
                     } else {
                         let (fill, icon) = if ready { (t.accent, t.on_accent) } else { (t.button_bg, t.text_faint) };
                         let tip = if ready {
-                            "Send (Enter)"
+                            "Send (Enter; Shift+Enter for a new line)"
                         } else if self.uploads.busy() {
                             "Waiting for the files to upload"
                         } else {
                             "Type a message to send"
                         };
-                        let b = round_button(ui, t, d, fill, icon, icons::arrow_up, ready).on_hover_text(tip);
+                        let b = round_button(ui, t, d, control_radius, fill, icon, icons::arrow_up, ready).on_hover_text(tip);
                         send |= b.clicked();
                         rects.send = b.rect;
                         rects.send_fill = fill;
@@ -201,16 +202,16 @@ impl ByobApp {
                 egui::pos2((controls_left - gap).max(attach_rect.right() + gap + 40.0), row.bottom()),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
-                // Keyboard help only where it fits on one line (phones have no Shift anyway),
-                // and a shorter hint still where even the plain one would wrap.
-                let (long, short, tiny) = match (editing.is_some(), busy) {
-                    (true, _) => ("Edit the queued message…  (Enter to save, Esc to cancel)", "Edit the queued message…", "Edit…"),
-                    (false, true) => ("Queue a follow-up…  (Enter to queue, Shift+Enter for newline)", "Queue a follow-up…", "Queue…"),
-                    (false, false) => ("Message byob…  (Enter to send, Shift+Enter for newline)", "Message byob…", "Message…"),
+                // Just what the box is for (the keys are in the buttons' tooltips), shorter
+                // still where even that would wrap.
+                let (short, tiny) = match (editing.is_some(), busy) {
+                    (true, _) => ("Edit the queued message…", "Edit…"),
+                    (false, true) => ("Queue a follow-up…", "Queue…"),
+                    (false, false) => ("Message byob…", "Message…"),
                 };
                 let room = ui.available_width() - 8.0;
                 let fits = |hint: &str| ui.painter().layout_no_wrap(hint.to_owned(), egui::TextStyle::Body.resolve(ui.style()), t.text).size().x <= room;
-                let hint = [long, short].into_iter().find(|h| fits(h)).unwrap_or(tiny);
+                let hint = if fits(short) { short } else { tiny };
                 let input = &mut self.input;
                 let tk = *t;
                 // Live Markdown: the text stays as typed, styled as it is laid out.
@@ -279,7 +280,8 @@ impl ByobApp {
         let outer = prepared.end(ui).rect;
         if focused {
             // A soft ring outside the border.
-            let radius = CornerRadius::from(t.round(14.0).min(d / 2.0 + 6.0) + 1.0);
+            // Outside the frame, so its radius grows by the ring's offset (the same rule outwards).
+            let radius = CornerRadius::from(outer_radius + 0.5);
             ui.painter().rect_stroke(outer.expand(0.5), radius, Stroke::new(3.0, t.accent.gamma_multiply(0.22)), egui::StrokeKind::Outside);
         }
         rects.frame = outer;
@@ -341,7 +343,22 @@ fn consume_plain_enter(i: &mut egui::InputState) -> bool {
 
 /// A round button `d` across: `fill` with `paint` in `icon` on it, a shade lighter or darker
 /// on hover. Not `enabled`: it only shows its tooltip.
-pub fn round_button(ui: &mut Ui, t: &Tokens, d: f32, fill: Color32, icon: Color32, paint: icons::Paint, enabled: bool) -> Response {
+/// The composer frame's inner margin and border, in points: what its controls are inset by.
+const FRAME_MARGIN: i8 = 6;
+const FRAME_STROKE: f32 = 1.0;
+
+/// The composer frame's corner radius and its controls': at the default corner radius the
+/// frame is a pill around round controls; smaller radii square both off together, the
+/// controls always `outer − inset` ([`crate::theme::inner_radius`]) so the corners stay
+/// concentric.
+pub fn radii(t: &Tokens, d: f32) -> (f32, f32) {
+    let inset = f32::from(FRAME_MARGIN) + FRAME_STROKE;
+    let outer = t.round(d / 2.0 + inset).min(d / 2.0 + inset);
+    (outer, crate::theme::inner_radius(outer, inset).min(d / 2.0))
+}
+
+#[allow(clippy::too_many_arguments)] // a painter helper: size, shape, colours, icon, state
+pub fn round_button(ui: &mut Ui, t: &Tokens, d: f32, radius: f32, fill: Color32, icon: Color32, paint: icons::Paint, enabled: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(d, d), if enabled { Sense::click() } else { Sense::hover() });
     if ui.is_rect_visible(rect) {
         let fill = if enabled && resp.is_pointer_button_down_on() {
@@ -351,21 +368,21 @@ pub fn round_button(ui: &mut Ui, t: &Tokens, d: f32, fill: Color32, icon: Color3
         } else {
             fill
         };
-        ui.painter().circle_filled(rect.center(), d / 2.0, fill);
+        ui.painter().rect_filled(rect, radius, fill);
         paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(d * 0.55, d * 0.55)), icon);
     }
     resp
 }
 
 /// A frameless round icon button (the paperclip): tinted on hover.
-pub fn ghost_icon(ui: &mut Ui, t: &Tokens, d: f32, paint: icons::Paint, enabled: bool) -> Response {
+pub fn ghost_icon(ui: &mut Ui, t: &Tokens, d: f32, radius: f32, paint: icons::Paint, enabled: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(d, d), if enabled { Sense::click() } else { Sense::hover() });
     if ui.is_rect_visible(rect) {
         let hot = enabled && resp.hovered();
         if enabled && resp.is_pointer_button_down_on() {
-            ui.painter().circle_filled(rect.center(), d / 2.0, t.pressed);
+            ui.painter().rect_filled(rect, radius, t.pressed);
         } else if hot {
-            ui.painter().circle_filled(rect.center(), d / 2.0, t.hover);
+            ui.painter().rect_filled(rect, radius, t.hover);
         }
         let color = if !enabled {
             t.text_faint
@@ -380,7 +397,7 @@ pub fn ghost_icon(ui: &mut Ui, t: &Tokens, d: f32, paint: icons::Paint, enabled:
 }
 
 /// A text button `d` high with round ends: the accent when `primary`, else frameless.
-pub fn pill(ui: &mut Ui, t: &Tokens, label: &str, d: f32, primary: bool) -> Response {
+pub fn pill(ui: &mut Ui, t: &Tokens, label: &str, d: f32, radius: f32, primary: bool) -> Response {
     let color = if primary { t.on_accent } else { t.text };
     let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::TextStyle::Button.resolve(ui.style()), color);
     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + d * 0.9, d), Sense::click());
@@ -395,7 +412,7 @@ pub fn pill(ui: &mut Ui, t: &Tokens, label: &str, d: f32, primary: bool) -> Resp
             (false, false, false) => None,
         };
         if let Some(fill) = fill {
-            ui.painter().rect_filled(rect, d / 2.0, fill);
+            ui.painter().rect_filled(rect, radius, fill);
         }
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
     }

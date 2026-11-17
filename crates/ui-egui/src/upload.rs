@@ -167,8 +167,9 @@ impl Uploads {
     }
 
     /// The composer's paperclip, `d` across.
-    pub fn button(&mut self, ui: &mut egui::Ui, t: &Tokens, d: f32) -> egui::Response {
-        let b = crate::composer::ghost_icon(ui, t, d, crate::icons::paperclip, !self.picking).on_hover_text("Attach files (or drop them onto the window)");
+    pub fn button(&mut self, ui: &mut egui::Ui, t: &Tokens, d: f32, radius: f32) -> egui::Response {
+        let b =
+            crate::composer::ghost_icon(ui, t, d, radius, crate::icons::paperclip, !self.picking).on_hover_text("Attach files (or drop them onto the window)");
         if b.clicked() {
             // A browser doesn't tell us reliably when its dialog is cancelled, so the button
             // only waits for the desktop dialog.

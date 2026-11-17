@@ -37,7 +37,12 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, tb: Table<'_>, id: eg
     let font = egui::TextStyle::Body.resolve(ui.style());
     // The selected row, a field like any other (the tree has no say in it).
     let selected = cx.st.field(tb.name, || Value::Null, |_| true).as_u64().and_then(|r| usize::try_from(r).ok());
-    let frame = egui::Frame::new().stroke(Stroke::new(1.0, t.border)).corner_radius(t.round(6.0)).inner_margin(1.0);
+    let outer = t.round(6.0);
+    let frame = egui::Frame::new().stroke(Stroke::new(1.0, t.border)).corner_radius(outer).inner_margin(1.0);
+    // Fills 1 inside the border round their outer corners by `outer − 1`, concentric with it.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a few points
+    let inner = crate::theme::inner_radius(outer, 1.0).round().clamp(0.0, 255.0) as u8;
+    let last = tb.rows.len().saturating_sub(1);
     frame.show(ui, |ui| {
         let ws = widths(tb.columns, ui.available_width());
         let total: f32 = ws.iter().sum();
@@ -49,7 +54,7 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, tb: Table<'_>, id: eg
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             // Header.
             let (hr, _) = ui.allocate_exact_size(vec2(total, row_h), Sense::hover());
-            ui.painter().rect_filled(hr, 0.0, t.table_header_bg);
+            ui.painter().rect_filled(hr, egui::CornerRadius { nw: inner, ne: inner, sw: 0, se: 0 }, t.table_header_bg);
             let mut x = hr.left();
             for (ci, (c, w)) in tb.columns.iter().zip(&ws).enumerate() {
                 let cell = Rect::from_min_size(pos2(x, hr.top()), vec2(*w, row_h));
@@ -70,7 +75,8 @@ pub(super) fn show(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, tb: Table<'_>, id: eg
                         (r % 2 == 1).then_some(t.table_stripe)
                     };
                     if let Some(bg) = bg {
-                        ui.painter().rect_filled(rect, 0.0, bg);
+                        let bottom = if r == last { inner } else { 0 };
+                        ui.painter().rect_filled(rect, egui::CornerRadius { nw: 0, ne: 0, sw: bottom, se: bottom }, bg);
                     }
                     let mut x = rect.left();
                     for (ci, (c, w)) in tb.columns.iter().zip(&ws).enumerate() {

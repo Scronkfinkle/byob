@@ -992,7 +992,7 @@ fn entry_view(
 ) -> Option<ClientMsg> {
     let mut answer = None;
     let user = entry.role == EntryRole::User;
-    let (who, fill, style) = if user { ("You", t.user_bubble, t.knobs.user_bubble) } else { ("byob", t.assistant_bubble, t.knobs.assistant_bubble) };
+    let (fill, style) = if user { (t.user_bubble, t.knobs.user_bubble) } else { (t.assistant_bubble, t.knobs.assistant_bubble) };
     let (fill, stroke, margin) = match style {
         theme::BubbleStyle::Filled => (fill, egui::Stroke::NONE, t.pad(10.0)),
         theme::BubbleStyle::Outlined => {
@@ -1009,33 +1009,38 @@ fn entry_view(
         full
     };
     let layout = if width < full { egui::Layout::right_to_left(egui::Align::Min) } else { egui::Layout::top_down(egui::Align::Min) };
+    // The bubble's rect from the last frame: the reply's details show while the pointer is on it.
+    let rect_id = ui.make_persistent_id(("bubble-rect", entry.id));
+    let hovered = ui.data(|d| d.get_temp::<egui::Rect>(rect_id)).is_some_and(|r| ui.rect_contains_pointer(r));
     ui.with_layout(layout, |ui| {
-        egui::Frame::new().fill(fill).stroke(stroke).corner_radius(t.round(8.0)).inner_margin(margin).show(ui, |ui| {
+        let shown = egui::Frame::new().fill(fill).stroke(stroke).corner_radius(t.round(8.0)).inner_margin(margin).show(ui, |ui| {
             ui.set_width(width - 2.0 * margin);
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(who).strong().color(t.accent));
-                    if entry.pending_approvals().next().is_some() {
-                        steps::waiting_badge(ui, t);
-                    } else if !entry.done {
-                        theme::spinner(ui, t, None);
-                    }
-                });
+                // No "You"/"byob" label: the bubbles tell them apart. Only what's going on.
+                if entry.pending_approvals().next().is_some() {
+                    ui.horizontal(|ui| steps::waiting_badge(ui, t));
+                } else if !entry.done && entry.content.is_empty() && entry.steps.is_empty() && entry.reasoning.is_empty() {
+                    theme::spinner(ui, t, None);
+                }
                 if !entry.reasoning.is_empty() {
                     let thinking = !entry.done && entry.content.is_empty() && entry.steps.iter().all(|s| s.status == StepStatus::Running);
-                    let title = format!("{} · {}", if thinking { "Thinking…" } else { "Thought" }, size_label(entry.reasoning.chars().count()));
-                    egui::CollapsingHeader::new(egui::RichText::new(title).color(t.text_dim)).id_salt(("thinking", entry.id)).show(ui, |ui| {
-                        // Reasoning can run to many thousands of words: keep it in its own scroll box,
-                        // following the newest text while the model is still thinking.
-                        egui::ScrollArea::vertical()
-                            .id_salt(("thinking-scroll", entry.id))
-                            .max_height(THINKING_MAX_HEIGHT)
-                            .auto_shrink([false, true])
-                            .stick_to_bottom(thinking)
-                            .show(ui, |ui| {
-                                ui.add(egui::Label::new(egui::RichText::new(&entry.reasoning).color(t.text_dim).small()).selectable(true).wrap());
-                            });
-                    });
+                    let title = if thinking { "Thinking…" } else { "Thought" };
+                    egui::CollapsingHeader::new(egui::RichText::new(title).color(t.text_dim))
+                        .id_salt(("thinking", entry.id))
+                        .show(ui, |ui| {
+                            // Reasoning can run to many thousands of words: keep it in its own scroll box,
+                            // following the newest text while the model is still thinking.
+                            egui::ScrollArea::vertical()
+                                .id_salt(("thinking-scroll", entry.id))
+                                .max_height(THINKING_MAX_HEIGHT)
+                                .auto_shrink([false, true])
+                                .stick_to_bottom(thinking)
+                                .show(ui, |ui| {
+                                    ui.add(egui::Label::new(egui::RichText::new(&entry.reasoning).color(t.text_dim).small()).selectable(true).wrap());
+                                });
+                        })
+                        .header_response
+                        .on_hover_text(format!("{} of reasoning", size_label(entry.reasoning.chars().count())));
                 }
                 match entry.role {
                     // reply text with its tool steps where they happened, approval cards, undo
@@ -1057,15 +1062,25 @@ fn entry_view(
                 {
                     *card = Some(action);
                 }
-                if let Some(s) = entry.stats.filter(|_| entry.role == EntryRole::Assistant) {
-                    #[allow(clippy::cast_precision_loss)] // display only
-                    let secs = s.elapsed_ms as f64 / 1000.0;
-                    ui.label(
-                        egui::RichText::new(format!("{} in · {} out tokens · {secs:.1}s", s.prompt_tokens, s.completion_tokens)).small().color(t.text_dim),
-                    );
-                }
             });
         });
+        let bubble = shown.response.rect;
+        ui.data_mut(|d| d.insert_temp(rect_id, bubble));
+        // Time and tokens only while the pointer is on the reply, over its bottom-right corner
+        // (a row of its own on every reply was noise, and a hidden one left a gap).
+        if hovered && let Some(s) = entry.stats.filter(|_| entry.role == EntryRole::Assistant) {
+            #[allow(clippy::cast_precision_loss)] // display only
+            let secs = s.elapsed_ms as f64 / 1000.0;
+            let text = format!("{secs:.1} s · {} in, {} out tokens", s.prompt_tokens, s.completion_tokens);
+            let p = ui.painter();
+            let galley = p.layout_no_wrap(text, egui::TextStyle::Small.resolve(ui.style()), t.text_dim);
+            let pad = egui::vec2(6.0, 2.0);
+            let inset = 4.0;
+            let tag = egui::Rect::from_min_size(bubble.right_bottom() - galley.size() - 2.0 * pad - egui::vec2(inset, inset), galley.size() + 2.0 * pad);
+            let solid = if fill == egui::Color32::TRANSPARENT { t.app_bg } else { fill };
+            p.rect_filled(tag, theme::inner_radius(t.round(8.0), inset), solid);
+            p.galley(tag.min + pad, galley, t.text_dim);
+        }
     });
     answer
 }
@@ -1112,6 +1127,9 @@ mod app_tests {
 
     /// Markdown in the composer: heights and the bold/italic shortcuts.
     mod composer_md;
+
+    /// What replies, the composer and the header leave out until asked.
+    mod declutter;
 
     /// A connection that delivers queued messages and records what the app sends.
     #[derive(Clone, Default)]

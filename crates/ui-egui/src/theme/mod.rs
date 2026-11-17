@@ -119,6 +119,13 @@ fn emoji_font_paths() -> Vec<std::path::PathBuf> {
     out
 }
 
+/// The corner radius of something inset `inset` points inside a container with corners of
+/// `outer`: `outer − inset`, so the two curves stay parallel (concentric) instead of the
+/// inner one bulging towards the outer corner. Never negative.
+pub fn inner_radius(outer: f32, inset: f32) -> f32 {
+    (outer - inset).max(0.0)
+}
+
 /// A colour role: a field of [`Tokens`] users can override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Role {

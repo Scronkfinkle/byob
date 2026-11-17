@@ -378,3 +378,30 @@ fn every_family_can_draw_emoji_without_a_system_font() {
         }
     }
 }
+
+/// Nested corners stay concentric: inner = outer − inset, never negative.
+#[test]
+fn inner_radius_is_outer_minus_inset() {
+    assert_eq!(inner_radius(14.0, 6.0), 8.0);
+    assert_eq!(inner_radius(6.0, 6.0), 0.0);
+    assert_eq!(inner_radius(4.0, 10.0), 0.0);
+}
+
+/// The composer's controls follow its corners at every corner-radius setting: a pill around
+/// round controls by default, both square at 0, and the controls always `outer − inset`.
+#[test]
+fn composer_controls_are_concentric_with_the_frame() {
+    let d = 32.0;
+    for radius in [0.0, 2.0, 6.0, 12.0] {
+        let mut t = Tokens::dark();
+        t.radius = radius;
+        let (outer, inner) = crate::composer::radii(&t, d);
+        assert!(outer <= d / 2.0 + 7.0 + 1e-3 && inner <= d / 2.0 + 1e-3, "radius {radius}: {outer} {inner}");
+        assert!((inner - inner_radius(outer, 7.0)).abs() < 1e-3, "radius {radius}: {outer} {inner}");
+    }
+    let mut t = Tokens::dark();
+    t.radius = 6.0;
+    assert_eq!(crate::composer::radii(&t, d), (d / 2.0 + 7.0, d / 2.0), "default: a pill around a circle");
+    t.radius = 0.0;
+    assert_eq!(crate::composer::radii(&t, d), (0.0, 0.0));
+}

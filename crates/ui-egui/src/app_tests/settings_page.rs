@@ -184,6 +184,9 @@ fn back_and_esc_return_to_the_chat_exactly_as_it_was() {
     let back = app.header_rects.settings_back;
     click(&ctx, &mut app, 1000.0, back.center());
     assert!(!app.show_settings);
+    // The pointer back where it was: Back sits over New chat, which shows its keys on hover.
+    let moved = vec![egui::Event::PointerMoved(egui::pos2(500.0, 300.0))];
+    ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events: moved, ..Default::default() }, |ui| app.ui(ui)).textures_delta.clear();
     frame(&ctx, &mut app, 1000.0);
     assert_eq!(drawn_text(&ctx, &mut app, 1000.0), before, "the same messages, scrolled the same, the same panes");
     assert_eq!(app.composer_rects.field, composer);

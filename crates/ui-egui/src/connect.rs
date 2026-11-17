@@ -7,7 +7,7 @@
 
 use byob_protocol::{ClientMsg, Detected, EngineState, InferenceTest, Link, PRESETS, Preset, Problem};
 use egui::text::LayoutJob;
-use egui::{Color32, RichText, TextFormat};
+use egui::{Color32, Rect, RichText, Stroke, TextFormat, pos2, vec2};
 
 use crate::theme::{self, Tokens};
 
@@ -506,14 +506,24 @@ pub fn chip(ui: &mut egui::Ui, t: &Tokens, state: &EngineState, detail: ChipDeta
         }
         Link::Unknown => {}
     }
-    tip.push_str(if switch {
-        "\n\nClick to switch this chat's model"
-    } else if own.is_some() {
-        "\n\nClick to change this chat's model"
-    } else {
-        "\n\nClick to change the connection"
-    });
-    let resp = ui.add(egui::Button::new(job).frame(false)).on_hover_text(tip);
+    tip.push_str(if switch || own.is_some() { "\n\nClick to change this chat's model" } else { "\n\nClick to change the connection" });
+    // A button that looks like one: outlined, with a chevron when it opens the model menu, so
+    // it doesn't read as a status label. Room for the chevron is a few spaces of text.
+    // Either way a click leads to changing the model (the menu, or the connection settings).
+    let menu = detail != ChipDetail::Dot;
+    if menu {
+        job.append("    ", 0.0, fmt(ui, t.text_dim));
+    }
+    let height = ui.spacing().interact_size.y;
+    let radius = t.round(height / 2.0).min(height / 2.0);
+    let button = egui::Button::new(job).fill(t.button_bg).stroke(Stroke::new(1.0, t.border)).corner_radius(radius).min_size(vec2(0.0, height));
+    let resp = ui.add(if detail == ChipDetail::Dot { button.frame(false) } else { button }).on_hover_text(tip);
+    if menu {
+        let pad = ui.spacing().button_padding.x;
+        let size = height * 0.7;
+        let at = Rect::from_center_size(pos2(resp.rect.right() - pad - size * 0.4, resp.rect.center().y), vec2(size, size));
+        crate::icons::chevron_down(ui.painter(), at, if resp.hovered() { t.text_strong } else { t.text_dim });
+    }
     let click = (resp.clicked() && !switch).then_some(if own.is_some() { ChipClick::ChatSettings } else { ChipClick::Connection });
     (resp, click)
 }

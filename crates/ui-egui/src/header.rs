@@ -22,7 +22,6 @@ use crate::{ByobApp, icons, steps, theme};
 pub const SETTINGS_SHORTCUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma);
 
 /// Window widths at which the header spells more out.
-const SHOW_USAGE_LABEL: f32 = 1000.0;
 const SHOW_SERVER: f32 = 1200.0;
 const SHOW_WORDMARK: f32 = 1300.0;
 
@@ -35,8 +34,6 @@ pub struct Layout {
     pub workspace_name: bool,
     /// How much of the connection the chip spells out.
     pub chip: ChipDetail,
-    /// "~3.4k / 262k" next to the context bar.
-    pub usage_label: bool,
     /// How many plugins are on, next to the puzzle chip.
     pub plugin_count: bool,
 }
@@ -54,7 +51,6 @@ impl Layout {
             } else {
                 ChipDetail::Model
             },
-            usage_label: width >= SHOW_USAGE_LABEL,
             plugin_count: !phone,
         }
     }
@@ -390,7 +386,7 @@ impl ByobApp {
             Some(connect::ChipClick::ChatSettings) | None => {}
         }
         if ui.available_width() > 40.0
-            && let Some(msg) = self.usage.meter(ui, t, !layout.usage_label)
+            && let Some(msg) = self.usage.meter(ui, t)
         {
             self.conn.send(msg);
         }
@@ -471,19 +467,19 @@ mod tests {
     #[test]
     fn details_drop_as_the_window_narrows() {
         let full = Layout::for_width(1600.0);
-        assert_eq!(full, Layout { wordmark: true, workspace_name: true, chip: ChipDetail::Full, usage_label: true, plugin_count: true });
+        assert_eq!(full, Layout { wordmark: true, workspace_name: true, chip: ChipDetail::Full, plugin_count: true });
         let laptop = Layout::for_width(1100.0);
-        assert_eq!(laptop, Layout { wordmark: false, workspace_name: true, chip: ChipDetail::Model, usage_label: true, plugin_count: true });
+        assert_eq!(laptop, Layout { wordmark: false, workspace_name: true, chip: ChipDetail::Model, plugin_count: true });
         let small = Layout::for_width(800.0);
-        assert_eq!(small, Layout { wordmark: false, workspace_name: true, chip: ChipDetail::Model, usage_label: false, plugin_count: true });
+        assert_eq!(small, Layout { wordmark: false, workspace_name: true, chip: ChipDetail::Model, plugin_count: true });
         let phone = Layout::for_width(390.0);
-        assert_eq!(phone, Layout { wordmark: false, workspace_name: false, chip: ChipDetail::Dot, usage_label: false, plugin_count: false });
+        assert_eq!(phone, Layout { wordmark: false, workspace_name: false, chip: ChipDetail::Dot, plugin_count: false });
         // Narrowing never brings something back.
         let mut last = full;
         for w in (320..=1600).rev().step_by(10) {
             #[allow(clippy::cast_precision_loss)] // small
             let l = Layout::for_width(w as f32);
-            assert!(l.wordmark <= last.wordmark && l.usage_label <= last.usage_label, "{w}");
+            assert!(l.wordmark <= last.wordmark, "{w}");
             assert!(l.plugin_count <= last.plugin_count, "{w}");
             assert!(l.workspace_name <= last.workspace_name && (l.chip as u8) <= (last.chip as u8), "{w}");
             last = l;

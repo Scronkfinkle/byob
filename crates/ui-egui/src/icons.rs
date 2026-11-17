@@ -170,11 +170,16 @@ pub fn paperclip(painter: &egui::Painter, r: Rect, color: Color32) {
 /// "Send": an arrow pointing up.
 pub fn arrow_up(painter: &egui::Painter, r: Rect, color: Color32) {
     let s = r.width().min(r.height());
-    let c = r.center();
-    let stroke = Stroke::new((s * 0.12).max(1.5), color);
-    let (top, bottom, wing) = (c.y - s * 0.32, c.y + s * 0.32, s * 0.28);
-    painter.line_segment([pos2(c.x, bottom), pos2(c.x, top + stroke.width * 0.3)], stroke);
-    painter.line(vec![pos2(c.x - wing, top + wing), pos2(c.x, top), pos2(c.x + wing, top + wing)], stroke);
+    // A whole number of pixels wide, on the pixel grid: an odd width centred on a pixel, an
+    // even one between two, so the stem is crisp instead of smeared over three columns.
+    let ppp = painter.pixels_per_point();
+    let px = (s * 0.11 * ppp).round().max(2.0);
+    let stroke = Stroke::new(px / ppp, color);
+    let cx = if px % 2.0 == 1.0 { painter.round_to_pixel_center(r.center().x) } else { (r.center().x * ppp).round() / ppp };
+    let snap = |y: f32| (y * ppp).round() / ppp;
+    let (top, bottom, wing) = (snap(r.center().y - s * 0.3), snap(r.center().y + s * 0.3), snap(s * 0.27));
+    painter.line_segment([pos2(cx, bottom), pos2(cx, top + stroke.width * 0.5)], stroke);
+    painter.add(egui::epaint::PathShape::line(vec![pos2(cx - wing, top + wing), pos2(cx, top), pos2(cx + wing, top + wing)], stroke));
 }
 
 /// "Stop": a filled square with softened corners.

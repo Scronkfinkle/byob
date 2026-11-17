@@ -490,7 +490,8 @@ impl Sidebar {
             let label_right = label_pos.x + label.size().x;
             p.galley(label_pos, label, t.text_strong);
             let keys = p.layout_no_wrap(ui.ctx().format_shortcut(&new_chat_shortcut()), egui::TextStyle::Small.resolve(ui.style()), t.text_faint);
-            if !narrow && label_right + 12.0 + keys.size().x < main_rect.right() - 8.0 {
+            // The keys only while the pointer is on it: always there, they're one more thing to read.
+            if !narrow && main.hovered() && label_right + 12.0 + keys.size().x < main_rect.right() - 8.0 {
                 p.galley(pos2(main_rect.right() - 8.0 - keys.size().x, rect.center().y - keys.size().y / 2.0), keys, t.text_faint);
             }
             icons::chevron_down(
@@ -568,7 +569,7 @@ impl Sidebar {
         let c = resp.rect.left_center() + vec2(8.0 + ICON / 2.0, 0.0);
         icons::search(p, Rect::from_center_size(c, vec2(ICON, ICON)), if resp.has_focus() { t.text } else { t.text_faint });
         if self.search.is_empty() {
-            if !resp.has_focus() && !narrow {
+            if !resp.has_focus() && !narrow && resp.hovered() {
                 let keys = p.layout_no_wrap(ui.ctx().format_shortcut(&SEARCH_SHORTCUT), egui::TextStyle::Small.resolve(ui.style()), t.text_faint);
                 p.galley(pos2(resp.rect.right() - 8.0 - keys.size().x, resp.rect.center().y - keys.size().y / 2.0), keys, t.text_faint);
             }

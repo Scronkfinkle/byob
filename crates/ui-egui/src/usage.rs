@@ -11,9 +11,8 @@ use egui::{Color32, RichText, Sense, Stroke};
 use crate::markdown;
 use crate::theme::{Tokens, mix};
 
-/// Bar size in the header (narrow screens show only the bar).
-const BAR_WIDTH: f32 = 72.0;
-const BAR_WIDTH_NARROW: f32 = 44.0;
+/// Bar size in the header.
+const BAR_WIDTH: f32 = 56.0;
 const BAR_HEIGHT: f32 = 7.0;
 
 /// Usage and compactions of the chat in view.
@@ -68,19 +67,14 @@ impl Usage {
     }
 
     /// The header meter. Returns a message if the user asked to compact now.
-    pub fn meter(&mut self, ui: &mut egui::Ui, t: &Tokens, narrow: bool) -> Option<ClientMsg> {
+    /// The bar alone; the numbers are in its tooltip (and its popup).
+    pub fn meter(&mut self, ui: &mut egui::Ui, t: &Tokens) -> Option<ClientMsg> {
         let u = self.usage.as_ref()?;
-        let width = if narrow { BAR_WIDTH_NARROW } else { BAR_WIDTH };
         let row = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            bar(ui, t, u, width);
+            bar(ui, t, u, BAR_WIDTH);
             if u.compacting {
                 ui.label(RichText::new("compacting…").small().color(t.text_dim));
-            } else if !narrow {
-                ui.label(RichText::new(u.label()).small().color(t.text_dim));
-                if let Some(split) = u.split_label() {
-                    ui.label(RichText::new(split).small().color(t.text_faint));
-                }
             }
         });
         let response = row.response.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
