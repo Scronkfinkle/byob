@@ -133,7 +133,27 @@ pub fn which(name: &OsStr) -> Option<PathBuf> {
         return is_executable(p).then(|| p.to_path_buf());
     }
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).filter(|d| d.is_absolute()).map(|d| d.join(name)).find(|p| is_executable(p))
+    let exts = executable_extensions(p, std::env::var_os("PATHEXT").as_deref());
+    std::env::split_paths(&path)
+        .filter(|d| d.is_absolute())
+        .flat_map(|d| exts.iter().map(move |ext| d.join(with_extension(name, ext))))
+        .find(|p| is_executable(p))
+}
+
+/// The suffixes to try for a command name: on Windows `PATHEXT`'s (`.COM;.EXE;.BAT;.CMD;…`)
+/// unless the name has one already, so `python` finds `python.exe`; elsewhere just the name.
+fn executable_extensions(name: &Path, pathext: Option<&OsStr>) -> Vec<String> {
+    if !cfg!(windows) || name.extension().is_some() {
+        return vec![String::new()];
+    }
+    let list = pathext.and_then(OsStr::to_str).filter(|s| !s.trim().is_empty()).unwrap_or(".COM;.EXE;.BAT;.CMD");
+    list.split(';').map(str::trim).filter(|e| e.starts_with('.') && e.len() > 1).map(str::to_ascii_lowercase).collect()
+}
+
+fn with_extension(name: &OsStr, ext: &str) -> OsString {
+    let mut n = name.to_owned();
+    n.push(ext);
+    n
 }
 
 #[cfg(unix)]
@@ -174,6 +194,28 @@ fn looks_like_python_prefix(prefix: &Path) -> bool {
         || std::fs::read_dir(prefix.join("lib")).is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("python3")))
 }
 
+/// Windows variables programs need to start at all (Python can't seed its hash without
+/// `SystemRoot`; PowerShell wants `PSModulePath`), plus where things are installed.
+const PASS_ENV_WINDOWS: &[&str] = &[
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "ComSpec",
+    "PATHEXT",
+    "OS",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "NUMBER_OF_PROCESSORS",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
+    "PSModulePath",
+];
+
 /// Inherited variables that are safe and useful to pass to sandboxed code.
 const PASS_ENV: &[&str] = &[
     "PATH",
@@ -201,18 +243,19 @@ const PASS_ENV: &[&str] = &[
 /// tokens), `HOME` and temp folders pointing at `tmp`, matplotlib on the Agg backend.
 pub fn clean_env(cmd: &mut Command, tmp: &Path) {
     cmd.env_clear();
-    for k in PASS_ENV {
+    let windows: &[&str] = if cfg!(windows) { PASS_ENV_WINDOWS } else { &[] };
+    for k in PASS_ENV.iter().chain(windows) {
         if let Some(v) = std::env::var_os(k) {
             cmd.env(k, v);
         }
     }
-    if std::env::var_os("PATH").is_none() {
+    if std::env::var_os("PATH").is_none() && !cfg!(windows) {
         cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
     }
     if std::env::var_os("LANG").is_none() && std::env::var_os("LC_ALL").is_none() {
         cmd.env("LANG", "C.UTF-8");
     }
-    for k in ["HOME", "TMPDIR", "TMP", "TEMP", "USERPROFILE"] {
+    for k in ["HOME", "TMPDIR", "TMP", "TEMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
         cmd.env(k, tmp);
     }
     cmd.env("XDG_CACHE_HOME", tmp.join(".cache"))
@@ -270,6 +313,23 @@ impl Drop for TempDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `which` finds Windows programs by name without their extension (`cmd` is `cmd.exe`).
+    #[cfg(windows)]
+    #[test]
+    fn which_tries_pathext_on_windows() {
+        let cmd = which(OsStr::new("cmd")).expect("cmd.exe is on PATH");
+        assert!(cmd.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")), "{}", cmd.display());
+        assert_eq!(executable_extensions(Path::new("py.exe"), None), vec![String::new()]);
+        assert!(executable_extensions(Path::new("python"), Some(OsStr::new(".COM;.EXE;junk;"))).contains(&".exe".to_owned()));
+    }
+
+    #[test]
+    fn names_are_tried_as_given_off_windows() {
+        if !cfg!(windows) {
+            assert_eq!(executable_extensions(Path::new("python3"), Some(OsStr::new(".EXE"))), vec![String::new()]);
+        }
+    }
 
     #[test]
     fn argv_shape() {

@@ -214,9 +214,9 @@ its own `pixi.toml` is loaded like a flake (after asking).
 
 ## Plan for the rest
 
-- **Windows.** There is no sandbox on Windows yet (`sandbox/src/other.rs`), and
-  `run_command` uses `sh -c`, which Windows doesn't have (it needs PowerShell/`cmd`
-  handling). pixi then works the same way (win-64 has jq, ffmpeg, nodejs, the Python
+- **Windows.** There is no sandbox on Windows yet (`sandbox/src/other.rs`): commands run
+  unconfined, with a note saying so. `run_command` uses PowerShell there (`pwsh` if
+  installed, else Windows PowerShell; `exec/src/shell.rs`). pixi works the same way (win-64 has jq, ffmpeg, nodejs, the Python
   stack); winget is already the last resort. scoop (user-level, no admin) could be a
   fallback for CLI tools conda-forge lacks. Containers need a path mapping.
 - **macOS.** Seatbelt denies unix sockets under `(deny network*)`; the Nix daemon socket

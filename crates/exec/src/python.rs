@@ -69,9 +69,29 @@ impl Python {
     }
 }
 
-/// `python3` (or `python`) on `PATH`, ignoring `$BYOB_PYTHON` and the managed venv.
+/// `python3` (or `python`) on `PATH`, ignoring `$BYOB_PYTHON` and the managed venv. On
+/// Windows, the Microsoft Store's `python.exe` aliases don't count (without Python installed
+/// they open the Store), and the `py` launcher is asked where its Python 3 is.
 pub fn system_python() -> Option<PathBuf> {
-    which(OsStr::new("python3")).or_else(|| which(OsStr::new("python")))
+    let found = ["python3", "python"].into_iter().filter_map(|n| which(OsStr::new(n))).find(|p| !is_store_alias(p));
+    if found.is_some() || !cfg!(windows) {
+        return found;
+    }
+    let launcher = which(OsStr::new("py"))?;
+    let out = std::process::Command::new(launcher)
+        .args(["-3", "-c", "import sys; print(sys.executable)"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let path = PathBuf::from(String::from_utf8(out.stdout).ok()?.trim());
+    (path.is_absolute() && path.is_file() && !is_store_alias(&path)).then_some(path)
+}
+
+/// A Windows App Execution Alias (`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`).
+fn is_store_alias(p: &Path) -> bool {
+    p.components().any(|c| c.as_os_str().eq_ignore_ascii_case("WindowsApps"))
 }
 
 /// A package requirement the model may ask for: a name with optional extras and version
@@ -83,6 +103,22 @@ pub fn valid_requirement(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The Windows runners have Python installed: it's found by name (`python.exe`), not
+    /// through a Store alias.
+    #[cfg(windows)]
+    #[test]
+    fn windows_finds_an_installed_python() {
+        let p = system_python().expect("a Python on PATH or through py");
+        assert!(!is_store_alias(&p) && p.is_file(), "{}", p.display());
+    }
+
+    #[test]
+    fn store_aliases_are_not_python() {
+        assert!(is_store_alias(Path::new("/Users/me/AppData/Local/Microsoft/WindowsApps/python.exe")));
+        assert!(is_store_alias(Path::new("/x/windowsapps/python3.exe")));
+        assert!(!is_store_alias(Path::new("/usr/bin/python3")));
+    }
+
     use super::*;
 
     #[test]

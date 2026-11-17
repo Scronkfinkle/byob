@@ -20,6 +20,7 @@
 
 pub mod env;
 pub mod python;
+pub mod shell;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -35,6 +36,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub use python::Python;
+use shell::Shell;
 
 pub const DEFAULT_TIMEOUT_S: u64 = 120;
 pub const MAX_TIMEOUT_S: u64 = 600;
@@ -161,11 +163,13 @@ pub struct Job {
     pub env: Vec<(String, OsString)>,
     /// No address-space limit: package managers (pixi) map far more than they use.
     pub big_memory: bool,
+    /// Bytes of each stream kept (head and tail), [`MAX_OUTPUT`] unless raised.
+    pub max_output: usize,
 }
 
 impl Job {
     pub fn new(program: OsString, args: Vec<OsString>, timeout: Duration) -> Self {
-        Self { program, args, network: false, timeout, layer: Layer::default(), env: Vec::new(), big_memory: false }
+        Self { program, args, network: false, timeout, layer: Layer::default(), env: Vec::new(), big_memory: false, max_output: MAX_OUTPUT }
     }
 }
 
@@ -248,7 +252,7 @@ impl Exec {
             }
         }
         cmd.envs(job.env);
-        let opts = RunOptions { timeout: job.timeout, max_output: MAX_OUTPUT, ..Default::default() };
+        let opts = RunOptions { timeout: job.timeout, max_output: job.max_output, ..Default::default() };
         let out = byob_sandbox::run(cmd, &opts, &|| ctx.cancelled())?;
         match out.sandbox_error() {
             Some(e) => Err(format!(
@@ -463,9 +467,19 @@ impl Tool for RunCommand {
         ToolSpec {
             name: "run_command".into(),
             description: format!(
-                "Run a shell command (`sh -c`) in the workspace folder and get its exit code, output and the files it created or changed. \
-                Sandboxed: it can read system files and read/write only the workspace (plus a private temp folder); no network unless `network` is true. \
-                Use it to inspect, search, convert or process files (e.g. `wc -l data.csv`, `head -5 data.csv`, `ls -R`). No interactive programs.{}",
+                "Run a shell command ({}) in the workspace folder and get its exit code, output and the files it created or changed. {} \
+                Use it to inspect, search, convert or process files (e.g. {}). No interactive programs.{}",
+                shell_doc(),
+                if cfg!(windows) {
+                    "Not sandboxed on Windows: it runs as the user, with no network rule."
+                } else {
+                    "Sandboxed: it can read system files and read/write only the workspace (plus a private temp folder); no network unless `network` is true."
+                },
+                if cfg!(windows) {
+                    "`Get-ChildItem -Recurse`, `(Get-Content data.csv).Count`, `Get-Content data.csv -TotalCount 5`"
+                } else {
+                    "`wc -l data.csv`, `head -5 data.csv`, `ls -R`"
+                },
                 self.0.envs.installer().map_or(String::new(), |_| {
                     " Packages from install_packages are on PATH, and so is the workspace's own environment (flake.nix, pixi.toml, …) once the user agrees to load it. \
                     If a program is missing, call install_packages instead of pip, apt or sudo."
@@ -475,7 +489,11 @@ impl Tool for RunCommand {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "The shell command, e.g. `ls -la` or `grep -c error log.txt`."},
+                    "command": {"type": "string", "description": if cfg!(windows) {
+                        "The PowerShell command, e.g. `Get-ChildItem` or `(Select-String error log.txt).Count`."
+                    } else {
+                        "The shell command, e.g. `ls -la` or `grep -c error log.txt`."
+                    }},
                     "timeout_s": {"type": "number", "description": format!("Stop it after this many seconds (default {DEFAULT_TIMEOUT_S}, max {MAX_TIMEOUT_S}).")},
                     "network": {"type": "boolean", "description": NETWORK_DOC}
                 },
@@ -506,12 +524,23 @@ impl Tool for RunCommand {
             return ToolOutput::err(format!("the command must be non-empty text of at most {MAX_COMMAND_LEN} bytes"));
         }
         let command = a.command.clone();
-        let build = |_: &Layer, _: Where| {
-            let mut job = Job::new("sh".into(), vec!["-c".into(), a.command.into()], timeout_of(a.timeout_s));
+        let build = |_: &Layer, at: Where| {
+            let shell = if at == Where::Container { Shell::Sh } else { Shell::host() };
+            let (program, args) = shell.argv(&a.command);
+            let mut job = Job::new(program, args, timeout_of(a.timeout_s));
             job.network = a.network;
             Ok(job)
         };
         self.0.run_in_workspace(build, |_| Ok(Vec::new()), Some(&command), ctx)
+    }
+}
+
+/// How `run_command`'s description names its shell.
+fn shell_doc() -> String {
+    match Shell::host() {
+        Shell::Sh => Shell::Sh.describe().into(),
+        // A workspace container is Linux whatever the host.
+        h => format!("{} on Windows; `sh -c` when the workspace runs in a container", h.describe()),
     }
 }
 
@@ -897,6 +926,35 @@ mod tests {
 
     fn exec() -> Arc<Exec> {
         Arc::new(Exec { mode: Mode::Unsandboxed, data_dir: None, envs: Arc::new(Envs::none()) })
+    }
+
+    /// On Windows commands go to PowerShell, quotes and all, and a failing program's exit
+    /// code comes back (there is no `sh` there).
+    #[cfg(windows)]
+    #[test]
+    fn windows_commands_run_in_powershell() {
+        let mut reg = Registry::default();
+        register(&mut reg, Exec { mode: Mode::Unsandboxed, data_dir: None, envs: Arc::new(Envs::none()) });
+        let ws = tempfile::tempdir().unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let ctx = ToolContext::new(ws.path(), &cancel);
+        let tool = reg.get("run_command").unwrap();
+        assert!(tool.spec().description.contains("PowerShell"));
+        let out = tool.run(&json!({"command": r#"Set-Content -Path "a b.txt" -Value 'it''s "quoted" ✓'; Get-Content "a b.txt""#}), &ctx);
+        assert!(!out.failed && out.text.contains(r#"it's "quoted" ✓"#), "{}", out.text);
+        let out = tool.run(&json!({"command": "cmd /c exit 3"}), &ctx);
+        assert!(out.text.contains('3'), "{}", out.text);
+        assert!(out.failed || out.text.to_lowercase().contains("exit"), "{}", out.text);
+    }
+
+    /// The sandbox helper accepts a Windows workspace policy (it once carried `/usr`, which
+    /// isn't absolute on Windows, so nothing ran).
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_workspace_policy_is_valid() {
+        let ws = tempfile::tempdir().unwrap();
+        let p = Policy::for_workspace(ws.path(), &std::env::temp_dir());
+        assert!(Policy::from_json(&p.to_json()).is_ok(), "{}", p.to_json());
     }
 
     #[test]

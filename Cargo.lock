@@ -785,6 +785,7 @@ dependencies = [
 name = "byob-exec"
 version = "0.3.6"
 dependencies = [
+ "base64 0.22.1",
  "byob-protocol",
  "byob-sandbox",
  "byob-tools",

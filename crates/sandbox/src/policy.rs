@@ -181,6 +181,11 @@ impl Policy {
 /// most of `/etc`. Symlinks *through* those (e.g. NixOS's `/run/current-system/sw/bin`)
 /// still work: Landlock checks the file reached, not the folders walked through.
 pub fn system_read_paths() -> Vec<PathBuf> {
+    // Windows has no sandbox to hand these to, and `/usr` isn't even absolute there (no
+    // drive), so the helper would refuse the policy and nothing could run.
+    if cfg!(windows) {
+        return Vec::new();
+    }
     if cfg!(target_os = "macos") {
         return ["/usr", "/bin", "/sbin", "/System", "/Library", "/opt/homebrew", "/usr/local", "/private/etc", "/dev", "/nix/store"]
             .iter()
@@ -230,6 +235,9 @@ pub fn system_read_paths() -> Vec<PathBuf> {
 
 /// Device files that are safe to write.
 pub fn system_write_paths() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        return Vec::new();
+    }
     ["/dev/null", "/dev/zero", "/dev/full"].iter().map(PathBuf::from).collect()
 }
 
