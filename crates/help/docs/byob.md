@@ -12,7 +12,7 @@
   calls when the server has none.
 - **Artifacts beside the chat.** Spreadsheets (xlsx/csv), charts, Markdown documents,
   images and HTML apps, each with its version history.
-- **Hands, with a leash.** File tools, `run_command` and `run_python` (sandboxed on Linux); approval
+- **Hands, with a leash.** File tools, `run_command` (PowerShell on Windows) and `run_python` (sandboxed on Linux); approval
   cards with diffs; undo per turn.
 - **Reads, searches and remembers.** PDF, Word and PowerPoint files; images, for models that can see;
   web search and page reading (Exa by default, or your own SearXNG, Brave or Tavily); notes kept
