@@ -140,6 +140,28 @@ struct Request {
     reset: bool,
     show: Vec<(String, Show)>,
     order: Vec<(String, Vec<String>)>,
+    /// What of the call was skipped, and why (the rest still applies).
+    problems: Vec<String>,
+}
+
+/// The element `guess` most likely meant, by the words they share (`header.context_meter`
+/// → `header.usage`, "Context meter").
+fn closest(guess: &str, views: &[PluginView]) -> Option<String> {
+    let words = |s: &str| -> Vec<String> { s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() > 2).map(str::to_owned).collect() };
+    let want = words(guess);
+    let score = |text: String| want.iter().filter(|w| text.contains(w.as_str())).count();
+    let mut best: Option<(usize, String)> = None;
+    let candidates = ELEMENTS
+        .iter()
+        .map(|e| (e.id.to_owned(), format!("{} {} {}", e.id, e.label, e.describe).to_lowercase()))
+        .chain(views.iter().map(|v| (v.id.clone(), format!("{} {}", v.id, v.describe).to_lowercase())));
+    for (id, text) in candidates {
+        let n = score(text);
+        if n > 0 && best.as_ref().is_none_or(|(b, _)| n > *b) {
+            best = Some((n, id));
+        }
+    }
+    best.map(|(_, id)| id)
 }
 
 impl Request {
@@ -147,46 +169,72 @@ impl Request {
         self.preset.is_none() && !self.reset && self.show.is_empty() && self.order.is_empty()
     }
 
-    /// Check the model's arguments against what exists (`views`: the plugin views there are).
-    fn parse(args: &Value, views: &[PluginView]) -> Result<Self, String> {
+    /// Check the model's arguments against what exists (`views`: the plugin views there
+    /// are). What doesn't fit is skipped with a reason; the rest goes ahead.
+    fn parse(args: &Value, views: &[PluginView]) -> Self {
         let known = |id: &str| element(id).is_some() || id.starts_with("view:") && (views.is_empty() || views.iter().any(|v| v.id == id));
+        let unknown = |id: &str| match closest(id, views) {
+            Some(c) => format!("there's no {id:?}; did you mean {c}? (call ui_layout without arguments for the list)"),
+            None => format!("there's no {id:?} (call ui_layout without arguments for the list)"),
+        };
         let mut r = Self { reset: args.get("reset").and_then(Value::as_bool).unwrap_or(false), ..Self::default() };
         if let Some(p) = args.get("preset").and_then(Value::as_str).filter(|p| !p.trim().is_empty()) {
             let names: Vec<&str> = PRESETS.iter().map(|(n, _)| *n).collect();
-            r.preset = Some(Layout::preset(p).ok_or_else(|| format!("no preset {p:?}; there are: {}", names.join(", ")))?);
-        }
-        if let Some(show) = args.get("show") {
-            let map = show.as_object().ok_or("show: an object of element id → \"shown\", \"hover\" or \"hidden\"")?;
-            for (id, mode) in map {
-                if !known(id) {
-                    return Err(format!("no element {id:?} (call ui_layout without arguments for the list)"));
-                }
-                let m = mode.as_str().and_then(Show::parse).ok_or_else(|| format!("{id}: the mode is \"shown\", \"hover\" or \"hidden\", not {mode}"))?;
-                r.show.push((id.clone(), m));
+            match Layout::preset(p) {
+                Some(l) => r.preset = Some(l),
+                None => r.problems.push(format!("no preset {p:?}; there are: {}", names.join(", "))),
             }
         }
-        if let Some(order) = args.get("order") {
-            let map = order.as_object().ok_or("order: an object of region → element ids, left to right")?;
-            for (reg, ids) in map {
-                let Some(region) = region(reg) else {
-                    let names: Vec<&str> = REGIONS.iter().map(|r| r.id).collect();
-                    return Err(format!("no region {reg:?}; there are: {}", names.join(", ")));
-                };
-                let ids: Vec<String> = match ids {
-                    Value::Array(a) => a.iter().filter_map(Value::as_str).map(str::to_owned).collect(),
-                    Value::String(s) => s.split([',', ' ']).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
-                    _ => return Err(format!("order.{reg}: a list of element ids")),
-                };
-                for id in &ids {
-                    let here = element(id).is_some_and(|e| e.region == Some(region.id)) || region.plugin_views && id.starts_with("view:") && known(id);
-                    if !here {
-                        return Err(format!("{id:?} isn't in the {reg} region"));
+        match args.get("show") {
+            None | Some(Value::Null) => {}
+            Some(Value::Object(map)) => {
+                for (id, mode) in map {
+                    if !known(id) {
+                        r.problems.push(unknown(id));
+                    } else if let Some(m) = mode.as_str().and_then(Show::parse) {
+                        r.show.push((id.clone(), m));
+                    } else {
+                        r.problems.push(format!("{id}: the mode is \"shown\", \"hover\" or \"hidden\", not {mode}"));
                     }
                 }
-                r.order.push((reg.clone(), ids));
             }
+            Some(_) => r.problems.push("show: an object of element id → \"shown\", \"hover\" or \"hidden\"".into()),
         }
-        Ok(r)
+        match args.get("order") {
+            None | Some(Value::Null) => {}
+            Some(Value::Object(map)) => {
+                for (reg, ids) in map {
+                    let Some(region) = region(reg) else {
+                        let names: Vec<&str> = REGIONS.iter().map(|r| r.id).collect();
+                        r.problems.push(format!("no region {reg:?}; there are: {}", names.join(", ")));
+                        continue;
+                    };
+                    let ids: Vec<String> = match ids {
+                        Value::Array(a) => a.iter().filter_map(Value::as_str).map(str::to_owned).collect(),
+                        Value::String(s) => s.split([',', ' ']).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
+                        _ => {
+                            r.problems.push(format!("order.{reg}: a list of element ids"));
+                            continue;
+                        }
+                    };
+                    let mut here = Vec::new();
+                    for id in ids {
+                        if element(&id).is_some_and(|e| e.region == Some(region.id)) || region.plugin_views && id.starts_with("view:") && known(&id) {
+                            here.push(id);
+                        } else if known(&id) {
+                            r.problems.push(format!("{id} isn't in the {reg} region, so it can't be moved there"));
+                        } else {
+                            r.problems.push(unknown(&id));
+                        }
+                    }
+                    if !here.is_empty() {
+                        r.order.push((reg.clone(), here));
+                    }
+                }
+            }
+            Some(_) => r.problems.push("order: an object of region → element ids, left to right".into()),
+        }
+        r
     }
 
     /// `layout` with this applied: the reset or preset first, then the modes and orders.
@@ -203,6 +251,28 @@ impl Request {
         }
         l
     }
+}
+
+/// What differs between `before` and `after`, one line each (modes, then orders).
+fn changes(before: &Layout, after: &Layout, views: &[PluginView]) -> Vec<String> {
+    let view_ids: Vec<String> = views.iter().map(|v| v.id.clone()).collect();
+    let mut ids: Vec<String> = ELEMENTS.iter().map(|e| e.id.to_owned()).chain(view_ids.iter().cloned()).collect();
+    ids.extend(before.show.keys().chain(after.show.keys()).filter(|k| !ids.contains(k)).cloned().collect::<Vec<_>>());
+    let mut out: Vec<String> = ids
+        .iter()
+        .filter_map(|id| {
+            let (a, b) = (before.show(id), after.show(id));
+            (a != b).then(|| format!("{id}: {} → {}", a.as_str(), b.as_str()))
+        })
+        .collect();
+    for r in REGIONS {
+        let extra: &[String] = if r.plugin_views { &view_ids } else { &[] };
+        let (a, b) = (before.arrange(r.id, extra), after.arrange(r.id, extra));
+        if a != b {
+            out.push(format!("{} order: {}", r.id, b.join(", ")));
+        }
+    }
+    out
 }
 
 /// The layout for the model: every element with its mode, by region, and the presets.
@@ -278,13 +348,13 @@ impl Tool for UiLayout {
         let presets: Vec<&str> = PRESETS.iter().map(|(n, _)| *n).collect();
         ToolSpec {
             name: TOOL.into(),
-            description: "Show, hide or reorder parts of byob's own interface (the details under replies, the header's model chip and context meter, labels, shortcut hints, plugins' header items). Without arguments: every element with its id and mode. The change shows in every byob window at once and is kept.".into(),
+            description: "Show, hide or reorder parts of byob's own interface (the details under replies, the header's model chip and context meter, labels, shortcut hints, plugins' header items). Without arguments: every element with its id and mode. The change shows in every byob window at once and is kept; the result lists what changed and anything it skipped.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "show": {"type": "object", "description": "Element id → \"shown\", \"hover\" (only while the pointer is on it) or \"hidden\", e.g. {\"reply.tokens\": \"hidden\"}.", "additionalProperties": {"type": "string", "enum": ["shown", "hover", "hidden"]}},
                     "order": {"type": "object", "description": format!("Region ({}) → its element ids left to right; ones left out follow in their usual order.", regions.join(", ")), "additionalProperties": {"type": "array", "items": {"type": "string"}}},
-                    "preset": {"type": "string", "enum": presets, "description": "Start from a ready-made layout (the show settings above apply on top)."},
+                    "preset": {"type": "string", "enum": presets, "description": "Replace every element's mode with a ready-made layout's (earlier changes are lost; `show` in the same call applies on top)."},
                     "reset": {"type": "boolean", "description": "Back to byob's default layout first."}
                 }
             }),
@@ -292,15 +362,19 @@ impl Tool for UiLayout {
     }
 
     fn title(&self, args: &Value) -> String {
-        match Request::parse(args, &[]) {
-            Ok(r) if r.is_read() => "Read the layout".into(),
-            Ok(r) => touched(&r),
-            Err(_) => "Change the layout".into(),
+        let r = Request::parse(args, &[]);
+        if r.is_read() && r.problems.is_empty() {
+            "Read the layout".into()
+        } else if r.is_read() {
+            "Change the layout".into()
+        } else {
+            touched(&r)
         }
     }
 
     fn pending_title(&self, args: &Value) -> String {
-        if Request::parse(args, &[]).is_ok_and(|r| r.is_read()) { "Read the layout".into() } else { "Change the layout".into() }
+        let r = Request::parse(args, &[]);
+        if r.is_read() && r.problems.is_empty() { "Read the layout".into() } else { "Change the layout".into() }
     }
 
     fn preview(&self, _args: &Value, _workspace: &Path) -> Option<byob_tools::Preview> {
@@ -315,16 +389,17 @@ impl Tool for UiLayout {
 
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
         let views = plugin_views(&self.inbox, ctx);
-        let req = match Request::parse(args, &views) {
-            Ok(r) => r,
-            Err(e) => return ToolOutput::err(e),
-        };
+        let req = Request::parse(args, &views);
         let current = match request(&self.inbox, None, ctx.cancel_flag()) {
             Ok(l) => l,
             Err(e) => return ToolOutput::err(e),
         };
+        if req.is_read() && req.problems.is_empty() {
+            *self.seen.lock().unwrap_or_else(PoisonError::into_inner) = Some(current.clone());
+            return ToolOutput::ok(describe(&current, &views));
+        }
         let layout = if req.is_read() {
-            current
+            current.clone()
         } else {
             match request(&self.inbox, Some(req.apply(&current)), ctx.cancel_flag()) {
                 Ok(l) => l,
@@ -332,8 +407,28 @@ impl Tool for UiLayout {
             }
         };
         *self.seen.lock().unwrap_or_else(PoisonError::into_inner) = Some(layout.clone());
-        let head = if req.is_read() { String::new() } else { "Done; every byob window shows it now.\n\n".to_owned() };
-        ToolOutput::ok(format!("{head}{}", describe(&layout, &views)))
+        let changed = changes(&current, &layout, &views);
+        let mut out = String::new();
+        if changed.is_empty() {
+            out.push_str("Nothing changed.\n");
+        } else {
+            out.push_str("Changed in every byob window:\n");
+            for c in &changed {
+                let _ = writeln!(out, "- {c}");
+            }
+        }
+        if !req.problems.is_empty() {
+            out.push_str("Not applied:\n");
+            for p in &req.problems {
+                let _ = writeln!(out, "- {p}");
+            }
+        }
+        if req.preset.is_some() || req.reset {
+            out.push_str(
+                "(A preset or reset sets every element's mode, so earlier changes it covers are undone; add them again in `show` if they should stay.)\n",
+            );
+        }
+        if changed.is_empty() && !req.problems.is_empty() { ToolOutput::err(out.trim_end().to_owned()) } else { ToolOutput::ok(out.trim_end().to_owned()) }
     }
 }
 
@@ -347,16 +442,40 @@ mod tests {
 
     #[test]
     fn requests_are_checked_against_what_exists() {
-        let r = Request::parse(&json!({"show": {"reply.tokens": "hide", "view:todo/count": "hover"}}), &views()).unwrap();
+        let r = Request::parse(&json!({"show": {"reply.tokens": "hide", "view:todo/count": "hover"}}), &views());
         assert_eq!(r.show, [("reply.tokens".to_owned(), Show::Hidden), ("view:todo/count".to_owned(), Show::Hover)]);
-        assert!(Request::parse(&json!({"show": {"reply.colour": "hidden"}}), &views()).unwrap_err().contains("no element"));
-        assert!(Request::parse(&json!({"show": {"reply.time": "sometimes"}}), &views()).unwrap_err().contains("mode"));
-        assert!(Request::parse(&json!({"show": {"view:gone/x": "hidden"}}), &views()).is_err());
-        assert!(Request::parse(&json!({"order": {"footer": []}}), &views()).unwrap_err().contains("no region"));
-        assert!(Request::parse(&json!({"order": {"reply": ["header.model"]}}), &views()).unwrap_err().contains("isn't in the reply region"));
-        assert!(Request::parse(&json!({"order": {"reply": ["view:todo/count"]}}), &views()).is_err(), "plugin views only go in the toolbar");
-        assert!(Request::parse(&json!({"preset": "sparkly"}), &views()).unwrap_err().contains("minimal"));
-        assert!(Request::parse(&json!({}), &views()).unwrap().is_read());
+        assert!(r.problems.is_empty());
+        let problem = |args: Value| Request::parse(&args, &views()).problems.join("\n");
+        assert!(problem(json!({"show": {"reply.colour": "hidden"}})).contains("there's no \"reply.colour\""));
+        assert!(problem(json!({"show": {"reply.time": "sometimes"}})).contains("mode"));
+        assert!(problem(json!({"show": {"view:gone/x": "hidden"}})).contains("view:gone/x"));
+        assert!(problem(json!({"order": {"footer": []}})).contains("no region"));
+        assert!(problem(json!({"order": {"reply": ["header.model"]}})).contains("isn't in the reply region"));
+        assert!(problem(json!({"order": {"reply": ["view:todo/count"]}})).contains("isn't in the reply region"), "plugin views only go in the toolbar");
+        assert!(problem(json!({"preset": "sparkly"})).contains("minimal"));
+        assert!(Request::parse(&json!({}), &views()).is_read());
+    }
+
+    /// Regression: one guessed id ("header.context_meter") threw away the whole call. The
+    /// guesses are skipped with the likely element; the rest applies.
+    #[test]
+    fn guessed_ids_are_skipped_with_a_suggestion_and_the_rest_applies() {
+        let r = Request::parse(
+            &json!({"show": {"header.context_meter": "hidden", "reply.role_names": "hidden", "reply.undo": "hover", "code.copy": "hidden"}}),
+            &views(),
+        );
+        assert_eq!(r.show, [("code.copy".to_owned(), Show::Hidden)]);
+        let p = r.problems.join("\n");
+        assert!(p.contains("did you mean header.usage?"), "{p}");
+        assert!(p.contains("did you mean message.undo?"), "{p}");
+        assert!(p.contains("\"reply.role_names\""), "{p}");
+        let after = r.apply(&Layout::default());
+        assert_eq!(changes(&Layout::default(), &after, &views()), ["code.copy: shown → hidden"]);
+        // A preset sets every mode: what it undoes shows in the changes.
+        let mut mine = Layout::default();
+        mine.set_show("message.steps", Show::Hidden);
+        let after = Request::parse(&json!({"preset": "everything"}), &[]).apply(&mine);
+        assert_eq!(changes(&mine, &after, &[]), ["message.steps: hidden → shown"]);
     }
 
     #[test]
@@ -366,14 +485,13 @@ mod tests {
         let r = Request::parse(
             &json!({"reset": true, "preset": "minimal", "show": {"reply.tokens": "shown"}, "order": {"reply": "reply.time, reply.tokens"}}),
             &[],
-        )
-        .unwrap();
+        );
         let l = r.apply(&current);
         assert_eq!(l.show("reply.tokens"), Show::Shown);
         assert_eq!(l.show("message.role"), Show::Hidden, "from the preset");
         assert_eq!(l.arrange("reply", &[]), ["reply.time", "reply.tokens", "reply.speed"]);
         assert_eq!(touched(&r), "Reset the layout");
-        let r = Request::parse(&json!({"show": {"reply.tokens": "hidden"}, "order": {"header": ["header.usage"]}}), &[]).unwrap();
+        let r = Request::parse(&json!({"show": {"reply.tokens": "hidden"}, "order": {"header": ["header.usage"]}}), &[]);
         assert_eq!(touched(&r), "Layout: Hid Tokens, reordered the header");
     }
 

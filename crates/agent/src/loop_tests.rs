@@ -1236,8 +1236,8 @@ fn the_model_changes_the_layout_and_every_window_follows() {
     let view = run_turn(&mut c, "hide the token counts", |step, _| panic!("no approval for the layout: {step:?}"));
     let results = tool_results(requests.lock().unwrap().last().unwrap());
     assert!(results[0].contains("- reply.tokens: shown") && results[0].contains("Region toolbar"), "{}", results[0]);
-    assert!(results[1].starts_with("Done") && results[1].contains("- reply.tokens: hidden"), "{}", results[1]);
-    assert!(results[2].contains("no element \"reply.colour\""), "{}", results[2]);
+    assert!(results[1].starts_with("Changed") && results[1].contains("- reply.tokens: shown → hidden"), "{}", results[1]);
+    assert!(results[2].contains("there's no \"reply.colour\""), "{}", results[2]);
     let titles: Vec<&str> = view.reply().steps.iter().map(|s| s.title.as_str()).collect();
     assert_eq!(titles[..2], ["Read the layout", "Layout: Hover for Speed, hid Tokens, reordered the reply"]);
 
