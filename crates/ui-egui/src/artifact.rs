@@ -662,10 +662,15 @@ impl Artifacts {
                             self.actions.push(Action::Minimize { id: a.id.clone(), minimized: true });
                         }
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            kind_badge(ui, t, &caps.label);
+                            let shape = crate::layout::get(ui.ctx());
+                            if shape.visible("artifact.kind", false) {
+                                kind_badge(ui, t, &caps.label);
+                            }
                             ui.add(egui::Label::new(RichText::new(&a.title).strong().color(t.text_strong)).truncate());
-                            ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
-                            if !note.is_empty() {
+                            if shape.visible("artifact.version", false) {
+                                ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
+                            }
+                            if !note.is_empty() && shape.visible("artifact.version", false) {
                                 ui.add(egui::Label::new(RichText::new(&note).small().color(t.text_dim)).truncate()).on_hover_text(&note);
                             }
                         });
@@ -720,7 +725,7 @@ impl Artifacts {
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if in_chat && selected {
-                            if crate::layout::visible(ui.ctx(), "message.artifact_shown", hovered) {
+                            if crate::layout::visible(ui.ctx(), "artifact.shown", hovered) {
                                 ui.label(RichText::new("Shown beside the chat").small().color(t.text_dim));
                             }
                         } else if ui.small_button("Restore").on_hover_text("Show it in full again").clicked() {
@@ -730,9 +735,14 @@ impl Artifacts {
                             self.actions.push(Action::Select { id: a.id.clone(), version: Some(version) });
                         }
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            kind_badge(ui, t, &caps.label);
+                            let shape = crate::layout::get(ui.ctx());
+                            if shape.visible("artifact.kind", false) {
+                                kind_badge(ui, t, &caps.label);
+                            }
                             ui.add(egui::Label::new(RichText::new(&a.title).color(t.text_strong)).truncate()).on_hover_text(&a.filename);
-                            ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
+                            if shape.visible("artifact.version", false) {
+                                ui.label(RichText::new(format!("v{version}")).small().color(t.text_dim));
+                            }
                             if let Some(label) = status.label() {
                                 status_dot(ui, t, status);
                                 ui.label(RichText::new(label).small().color(t.text_dim));
@@ -1298,7 +1308,7 @@ mod tests {
     }
 
     /// "Shown beside the chat" on a card whose artifact is open in the pane follows the
-    /// layout (`message.artifact_shown`), so asking byob to hide it hides it.
+    /// layout (`artifact.shown`), so asking byob to hide it hides it.
     #[test]
     fn the_shown_beside_the_chat_note_follows_the_layout() {
         use byob_protocol::layout::{Layout, Show};
@@ -1330,7 +1340,7 @@ mod tests {
         };
         assert!(run(Layout::default()).contains("Shown beside the chat"));
         let mut hidden = Layout::default();
-        hidden.set_show("message.artifact_shown", Show::Hidden);
+        hidden.set_show("artifact.shown", Show::Hidden);
         let text = run(hidden);
         assert!(!text.contains("Shown beside the chat") && text.contains("NOTES"), "{text}");
     }

@@ -135,8 +135,9 @@ Appearance (light or dark, themes, accent, messages, theme files), Text & layout
 fonts, density, accessibility) and Colours. Back or Esc returns to the chat as you left it.
 
 **What's shown** (Settings → Appearance, shared by every window and browser tab): each detail
-of the interface (who wrote a message, the thinking's length, a reply's tokens, time and
-speed, the context numbers, shortcut hints, the wordmark, the server's address, plugins'
+of the interface (who wrote a message, the thinking and its length, tool steps, Undo, a reply's
+tokens, time and speed, artifact badges, code blocks' language and Copy, the paperclip,
+suggestions, the context numbers, shortcut hints, the wordmark, the server's address, plugins'
 header items) is shown, shown on hover, or hidden, and the header and a reply's details can be
 reordered. Everything / Balanced / Minimal set them all at once. Or ask byob: "hide the token
 counts and show the speed" or "make it cleaner" changes it in every window (the `ui_layout`

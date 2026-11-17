@@ -150,9 +150,15 @@ impl ByobApp {
             // below a fixed-height row.
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
             let gap = 6.0;
-            let attach_rect = Rect::from_min_size(egui::pos2(row.left(), row.bottom() - d), vec2(d, d));
-            rects.attach = ui.scope_builder(egui::UiBuilder::new().max_rect(attach_rect), |ui| self.uploads.button(ui, t, d, control_radius)).inner.rect;
-            let controls_rect = Rect::from_min_max(egui::pos2(attach_rect.right() + gap, row.bottom() - d), row.max);
+            // Without the paperclip (the layout's `composer.attach`) the text starts at the left.
+            let text_left = if crate::layout::visible(ui.ctx(), "composer.attach", false) {
+                let attach_rect = Rect::from_min_size(egui::pos2(row.left(), row.bottom() - d), vec2(d, d));
+                rects.attach = ui.scope_builder(egui::UiBuilder::new().max_rect(attach_rect), |ui| self.uploads.button(ui, t, d, control_radius)).inner.rect;
+                attach_rect.right() + gap
+            } else {
+                row.left() + gap
+            };
+            let controls_rect = Rect::from_min_max(egui::pos2(text_left, row.bottom() - d), row.max);
             let controls_left = ui
                 .scope_builder(egui::UiBuilder::new().max_rect(controls_rect).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
                     ui.spacing_mut().item_spacing.x = gap;
@@ -197,10 +203,7 @@ impl ByobApp {
                 })
                 .inner;
             // The text takes what's left between the paperclip and the controls.
-            let text_rect = Rect::from_min_max(
-                egui::pos2(attach_rect.right() + gap, row.top()),
-                egui::pos2((controls_left - gap).max(attach_rect.right() + gap + 40.0), row.bottom()),
-            );
+            let text_rect = Rect::from_min_max(egui::pos2(text_left, row.top()), egui::pos2((controls_left - gap).max(text_left + 40.0), row.bottom()));
             ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
                 // What the box is for, with its keys where the layout shows them (they're
                 // also in the buttons' tooltips); shorter where the long one would wrap.

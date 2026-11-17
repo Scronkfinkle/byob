@@ -5,7 +5,7 @@
 //! and whenever it changes (a client's [`crate::ClientMsg::SetLayout`], or the model's
 //! `ui_layout` tool), to every client that lists the cap.
 
-pub use byob_types::layout::{ELEMENTS, Element, HEADER, Layout, PRESETS, REGIONS, REPLY, Region, Show, TOOLBAR, element, region, view_id};
+pub use byob_types::layout::{ELEMENTS, Element, GROUPS, HEADER, Layout, PRESETS, REGIONS, REPLY, Region, Show, TOOLBAR, element, group, region, view_id};
 
 /// Cap: the peer handles layout messages.
 pub const CAP_LAYOUT: &str = "layout";

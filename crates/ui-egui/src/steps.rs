@@ -75,9 +75,18 @@ pub fn segments<'a>(content: &'a str, steps: &[Step]) -> Vec<Segment<'a>> {
 /// Draw an assistant entry's text and steps, interleaved, plus the undo action. Returns a
 /// message to send if the user answered a card or asked to undo.
 /// `cards` draws the artifact and plugin cards of a step that has any, right below its row.
-pub fn body(ui: &mut egui::Ui, t: &Tokens, entry: &Entry, cache: &mut markdown::Cache, cards: &mut dyn FnMut(&mut egui::Ui, &Step)) -> Option<ClientMsg> {
+/// `hovered`: the pointer is on the reply (its details on hover show).
+pub fn body(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    entry: &Entry,
+    hovered: bool,
+    cache: &mut markdown::Cache,
+    cards: &mut dyn FnMut(&mut egui::Ui, &Step),
+) -> Option<ClientMsg> {
     let mut msg = transcript(ui, t, Thread { key: entry.id, content: &entry.content, steps: &entry.steps, done: entry.done, agent: None }, cache, cards);
-    if entry.done && (entry.undoable || entry.undone) {
+    // "File changes undone" stays: it says what happened.
+    if entry.done && (entry.undone || (entry.undoable && crate::layout::visible(ui.ctx(), "message.undo", hovered))) {
         msg = msg.or(undo_row(ui, t, entry));
     }
     msg
@@ -120,7 +129,11 @@ fn transcript(ui: &mut egui::Ui, t: &Tokens, th: Thread<'_>, cache: &mut markdow
                     } else if let Some(d) = step.delegation.as_deref() {
                         msg = msg.or(delegation(ui, t, step, d, cache, cards));
                     } else {
-                        row(ui, t, step);
+                        // Finished fine and the layout hides tool steps: only what it made.
+                        let quiet = step.status == StepStatus::Done && !crate::layout::visible(ui.ctx(), "message.steps", false);
+                        if !quiet {
+                            row(ui, t, step);
+                        }
                         if !step.artifacts.is_empty() || !step.views.is_empty() {
                             cards(ui, step);
                         }
@@ -189,11 +202,12 @@ fn delegation(
                 }
                 ui.label(RichText::new(d.status_line()).color(if waiting { t.warning } else { t.text }));
                 // Which model it ran on: the saved model's name, else the model id.
-                if let Some(m) = d.profile.as_deref().or(Some(d.model.as_str())).map(str::trim).filter(|m| !m.is_empty()) {
+                let details = crate::layout::visible(ui.ctx(), "message.subagent_details", false);
+                if let Some(m) = d.profile.as_deref().or(Some(d.model.as_str())).map(str::trim).filter(|m| details && !m.is_empty()) {
                     ui.label(RichText::new(m).small().color(t.text_faint)).on_hover_text(format!("Model: {}", d.model));
                 }
                 let tokens = d.prompt_tokens.saturating_add(d.completion_tokens);
-                if tokens > 0 {
+                if tokens > 0 && details {
                     ui.label(RichText::new(format!("{} tokens", byob_protocol::usage::short_tokens(tokens))).small().color(t.text_faint));
                 }
             })
@@ -375,7 +389,7 @@ fn row(ui: &mut egui::Ui, t: &Tokens, step: &Step) {
             if let Some(s) = suffix {
                 ui.label(RichText::new(s).small().color(t.text_faint));
             }
-            if !step.changes.is_empty() {
+            if !step.changes.is_empty() && crate::layout::visible(ui.ctx(), "message.step_files", false) {
                 let n = step.changes.len();
                 let text = if n == 1 { "1 file".to_owned() } else { format!("{n} files") };
                 ui.label(RichText::new(text).small().color(t.accent));
@@ -843,7 +857,7 @@ mod tests {
         for tokens in [Tokens::dark(), Tokens::light()] {
             let mut answer = Some(ClientMsg::Cancel);
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                answer = body(ui, &tokens, &e, &mut cache, &mut |_, _| {});
+                answer = body(ui, &tokens, &e, false, &mut cache, &mut |_, _| {});
                 waiting_badge(ui, &tokens);
             });
             out.textures_delta.clear();
@@ -852,7 +866,7 @@ mod tests {
         e.done = true;
         e.undoable = true;
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            assert_eq!(body(ui, &Tokens::dark(), &e, &mut cache, &mut |_, _| {}), None);
+            assert_eq!(body(ui, &Tokens::dark(), &e, false, &mut cache, &mut |_, _| {}), None);
         });
         out.textures_delta.clear();
     }
@@ -876,7 +890,7 @@ mod tests {
         let mut run = |events: Vec<Event>| {
             let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(700.0, 900.0))), events, ..Default::default() };
             let mut sent = None;
-            let mut out = ctx.run_ui(input, |ui| sent = body(ui, &t, &e, &mut cache, &mut |_, _| {}));
+            let mut out = ctx.run_ui(input, |ui| sent = body(ui, &t, &e, false, &mut cache, &mut |_, _| {}));
             out.textures_delta.clear();
             (crate::plugins::tests::texts_of(&out), sent)
         };

@@ -10,7 +10,7 @@ use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use byob_protocol::layout::{CAP_LAYOUT, ELEMENTS, Layout, PRESETS, REGIONS, Show, element, region, view_id};
+use byob_protocol::layout::{CAP_LAYOUT, ELEMENTS, GROUPS, Layout, PRESETS, REGIONS, Show, element, group, region, view_id};
 use byob_protocol::{ServerMsg, Site};
 use byob_tools::{Access, Tool, ToolContext, ToolOutput, ToolSpec};
 use serde_json::{Value, json};
@@ -218,10 +218,16 @@ fn describe(layout: &Layout, views: &[PluginView]) -> String {
             let _ = writeln!(out, "- {id}: {} — {what}", layout.show(&id).as_str());
         }
     }
-    out.push_str("\nElsewhere (not reorderable):\n");
-    for e in ELEMENTS.iter().filter(|e| e.region.is_none()) {
-        let hover = if e.hover { "" } else { " (no hover mode)" };
-        let _ = writeln!(out, "- {}: {} — {}{hover}", e.id, layout.show(e.id).as_str(), e.describe);
+    for (_, name) in GROUPS {
+        let mut members = ELEMENTS.iter().filter(|e| e.region.is_none() && group(e.id) == *name).peekable();
+        if members.peek().is_none() {
+            continue;
+        }
+        let _ = writeln!(out, "\n{name} (not reorderable):");
+        for e in members {
+            let hover = if e.hover { "" } else { " (no hover mode)" };
+            let _ = writeln!(out, "- {}: {} — {}{hover}", e.id, layout.show(e.id).as_str(), e.describe);
+        }
     }
     out.push_str("\nPresets:\n");
     for (name, what) in PRESETS {

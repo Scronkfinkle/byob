@@ -145,3 +145,57 @@ fn the_header_follows_the_layout() {
     let (meter, model) = (text.find("3.4k / 262k"), text.find("yet-another-extremely-long-model-name"));
     assert!(meter.zip(model).is_some_and(|(a, b)| a < b), "{text}");
 }
+
+/// Every detail of a busy reply can be hidden: the thinking row, a tool's row and its file
+/// count, the undo button, a code block's language and Copy. A failed step still shows.
+#[test]
+fn a_busy_replys_details_can_each_be_hidden() {
+    use byob_protocol::layout::{Layout, Show};
+    use byob_protocol::{FileChange, Step, StepStatus, ToolAccess};
+    let step = |id, title: &str, status| Step {
+        id,
+        tool: "write_file".into(),
+        title: title.into(),
+        access: ToolAccess::Write,
+        status,
+        detail: String::new(),
+        changes: vec![FileChange::Created { path: "a.txt".into() }],
+        at: 0,
+        preview: None,
+        media: vec![],
+        artifacts: vec![],
+        delegation: None,
+        ask: None,
+        views: vec![],
+    };
+    let busy = || {
+        let stats = byob_protocol::TurnStats { prompt_tokens: 10, completion_tokens: 5, elapsed_ms: 1000, model_calls: 1 };
+        let mut e = entry(2, byob_protocol::EntryRole::Assistant, "Done.\n\n```rust\nfn main() {}\n```\n", Some(stats));
+        e.steps = vec![step(1, "Wrote a.txt", StepStatus::Done), step(2, "Wrote b.txt", StepStatus::Failed)];
+        e.undoable = true;
+        e
+    };
+    let run = |layout: Option<Layout>| {
+        let fake = Fake::default();
+        let mut app = crowded_with(fake.clone());
+        fake.inbox.lock().unwrap().push(ServerMsg::Transcript { entries: vec![entry(1, byob_protocol::EntryRole::User, "Go", None), busy()] });
+        if let Some(l) = layout {
+            fake.inbox.lock().unwrap().push(ServerMsg::Layout(l));
+        }
+        away(&egui::Context::default(), &mut app)
+    };
+    let all = ["Thought", "Wrote a.txt", "1 file", "Undo changes", "rust\n", "Copy\n"];
+    let text = run(None);
+    for want in all {
+        assert!(text.contains(want), "{want:?} isn't drawn: {text}");
+    }
+    let mut l = Layout::default();
+    for id in ["message.thinking", "message.steps", "message.step_files", "message.undo", "code.language", "code.copy"] {
+        l.set_show(id, Show::Hidden);
+    }
+    let text = run(Some(l));
+    for gone in all {
+        assert!(!text.contains(gone), "{gone:?} drew: {text}");
+    }
+    assert!(text.contains("Wrote b.txt") && text.contains("fn main"), "failed steps and the code stay: {text}");
+}

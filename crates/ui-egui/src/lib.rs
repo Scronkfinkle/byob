@@ -981,7 +981,7 @@ impl ByobApp {
             connect::EmptyView::Ready | connect::EmptyView::Waiting => {
                 // Switched-on plugins' starters (`starters` in their manifests): a click
                 // sends the prompt.
-                let starters = self.plugins.starters();
+                let starters = if crate::layout::visible(ui.ctx(), "chat.starters", false) { self.plugins.starters() } else { Vec::new() };
                 if starters.is_empty() {
                     ui.centered_and_justified(|ui| {
                         ui.label(egui::RichText::new("Ask anything to get started.").color(t.text_dim));
@@ -1072,8 +1072,8 @@ fn entry_view(
                 } else if !entry.done && entry.content.is_empty() && entry.steps.is_empty() && entry.reasoning.is_empty() {
                     theme::spinner(ui, t, None);
                 }
-                if !entry.reasoning.is_empty() {
-                    let thinking = !entry.done && entry.content.is_empty() && entry.steps.iter().all(|s| s.status == StepStatus::Running);
+                let thinking = !entry.done && entry.content.is_empty() && entry.steps.iter().all(|s| s.status == StepStatus::Running);
+                if !entry.reasoning.is_empty() && (thinking || shape.visible("message.thinking", hovered)) {
                     let size = size_label(entry.reasoning.chars().count());
                     let title = match (thinking, shape.visible("message.thought_size", hovered)) {
                         (true, true) => format!("Thinking… · {size}"),
@@ -1102,7 +1102,7 @@ fn entry_view(
                     // reply text with its tool steps where they happened, approval cards, undo
                     EntryRole::Assistant => {
                         let newest = artifact::newest_cards(&entry.steps);
-                        answer = steps::body(ui, t, entry, markdown, &mut |ui, step| {
+                        answer = steps::body(ui, t, entry, hovered, markdown, &mut |ui, step| {
                             artifacts.step_cards(ui, t, step.id, &step.artifacts, &newest);
                             views.show_step_with(ui, t, step, latest, plugins, artifacts.web_mut());
                         });

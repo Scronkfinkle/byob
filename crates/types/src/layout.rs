@@ -112,22 +112,72 @@ pub const ELEMENTS: &[Element] = &[
     el("toolbar.plugins", "Plugins chip", "how many plugins are on, with a badge when one has trouble", Some(TOOLBAR), Show::Shown, true),
     // Messages.
     el("message.role", "Who said it", "\"You\" and \"byob\" above each message", None, Show::Shown, false),
-    el("message.thought_size", "Thinking length", "how long the model's thinking was, next to \"Thought\"", None, Show::Shown, false),
+    el(
+        "message.thinking",
+        "Thinking",
+        "the \"Thought\" row that opens the model's thinking; hidden, it shows only while the model is still thinking",
+        None,
+        Show::Shown,
+        false,
+    ),
+    el("message.thought_size", "Thinking length", "how long the model's thinking was, next to \"Thought\" (\"1.1k chars\")", None, Show::Shown, false),
+    el(
+        "message.steps",
+        "Tool steps",
+        "a row for each tool the model ran (\"Read notes.md\", \"Made Rain haiku\"); hidden, only running, failed and waiting ones show",
+        None,
+        Show::Shown,
+        false,
+    ),
+    el("message.step_files", "Files changed", "\"1 file\" (\"3 files\") on a tool's row when it changed files", None, Show::Shown, false),
+    el("message.subagent_details", "Subagent details", "the model and tokens on a subagent's row", None, Show::Shown, false),
+    el("message.undo", "Undo button", "\"Undo changes\" under a reply that changed files", None, Show::Shown, true),
     el("reply.tokens", "Tokens", "tokens in and out, under each reply", Some(REPLY), Show::Shown, true),
     el("reply.time", "Time", "how long the reply took, under each reply", Some(REPLY), Show::Shown, true),
+    el("reply.speed", "Speed", "tokens per second the model wrote, under each reply", Some(REPLY), Show::Hidden, true),
+    // Artifacts and code in replies.
+    el("artifact.kind", "Artifact kind", "the kind badge on an artifact's card in a reply (\"DOCUMENT\", \"APP\", \"CHART\")", None, Show::Shown, false),
+    el("artifact.version", "Artifact version", "the version on an artifact's card in a reply (\"v1\") and its note", None, Show::Shown, false),
     el(
-        "message.artifact_shown",
+        "artifact.shown",
         "Artifact shown note",
         "\"Shown beside the chat\" on an artifact's card in a reply while it's open in the artifact pane",
         None,
         Show::Shown,
         true,
     ),
-    el("reply.speed", "Speed", "tokens per second the model wrote, under each reply", Some(REPLY), Show::Hidden, true),
+    el("code.language", "Code language", "the language (\"rust\", \"code\") at the top left of a code block", None, Show::Shown, true),
+    el("code.copy", "Code copy button", "\"Copy\" at the top right of a code block", None, Show::Shown, true),
     // Elsewhere.
+    el("chat.starters", "Suggestions", "the suggested prompts in an empty chat (\"Ask anything to get started, or try:\")", None, Show::Shown, false),
+    el(
+        "composer.attach",
+        "Attach button",
+        "the paperclip that attaches files, left of the message box (dropping or pasting files still works)",
+        None,
+        Show::Shown,
+        false,
+    ),
     el("composer.keys", "Composer keys", "\"Enter to send, Shift+Enter for a new line\" in the empty message box", None, Show::Shown, false),
     el("sidebar.shortcuts", "Sidebar shortcuts", "the keyboard shortcuts on New chat and the search field", None, Show::Shown, true),
 ];
+
+/// Where elements that aren't in a region are, by id prefix, in the order Settings lists them.
+pub const GROUPS: &[(&str, &str)] = &[
+    ("header", "Header"),
+    ("message", "Messages"),
+    ("artifact", "Artifacts in replies"),
+    ("code", "Code blocks"),
+    ("chat", "Empty chat"),
+    ("composer", "Message box"),
+    ("sidebar", "Sidebar"),
+];
+
+/// The heading of the group element `id` is in ([`GROUPS`]).
+pub fn group(id: &str) -> &'static str {
+    let prefix = id.split('.').next().unwrap_or_default();
+    GROUPS.iter().find(|(p, _)| *p == prefix).map_or("Other", |(_, name)| name)
+}
 
 /// The element with id `id`.
 pub fn element(id: &str) -> Option<&'static Element> {
@@ -256,8 +306,22 @@ impl Layout {
                 hide(&mut l, &["message.role", "message.thought_size", "composer.keys"]);
             }
             "minimal" => {
-                hover(&mut l, &["reply.tokens", "reply.time", "sidebar.shortcuts", "toolbar.plugins", "message.artifact_shown"]);
-                hide(&mut l, &["message.role", "message.thought_size", "composer.keys", "header.usage_numbers", "header.server", "header.wordmark"]);
+                hover(&mut l, &["reply.tokens", "reply.time", "sidebar.shortcuts", "toolbar.plugins", "artifact.shown", "message.undo", "code.copy"]);
+                hide(
+                    &mut l,
+                    &[
+                        "message.role",
+                        "message.thought_size",
+                        "message.step_files",
+                        "message.subagent_details",
+                        "artifact.version",
+                        "code.language",
+                        "composer.keys",
+                        "header.usage_numbers",
+                        "header.server",
+                        "header.wordmark",
+                    ],
+                );
             }
             _ => return None,
         }

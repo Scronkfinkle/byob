@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use byob_protocol::ClientMsg;
-use byob_protocol::layout::{ELEMENTS, Layout, PRESETS, REGIONS, Show, element};
+use byob_protocol::layout::{ELEMENTS, GROUPS, Layout, PRESETS, REGIONS, Show, element, group};
 use egui::RichText;
 
 use crate::ByobApp;
@@ -71,10 +71,16 @@ impl ByobApp {
                 });
             }
         }
-        ui.add_space(t.pad(6.0));
-        ui.label(RichText::new("Elsewhere").small().color(t.text_dim));
-        for e in ELEMENTS.iter().filter(|e| e.region.is_none()) {
-            ui.horizontal(|ui| self.layout_row(ui, t, &mut layout, e.id));
+        for (_, name) in GROUPS {
+            let mut members = ELEMENTS.iter().filter(|e| e.region.is_none() && group(e.id) == *name).peekable();
+            if members.peek().is_none() {
+                continue;
+            }
+            ui.add_space(t.pad(6.0));
+            ui.label(RichText::new(*name).small().color(t.text_dim));
+            for e in members {
+                ui.horizontal(|ui| self.layout_row(ui, t, &mut layout, e.id));
+            }
         }
         ui.add_space(t.pad(6.0));
         if !layout.is_default() && ui.button("Reset").on_hover_text("Every part as byob shows it by default").clicked() {

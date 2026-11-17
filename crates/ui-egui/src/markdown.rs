@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
+use byob_protocol::layout::Show;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, FontFamily, FontId, Stroke, TextStyle};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -536,9 +537,23 @@ fn code_block(ui: &mut egui::Ui, t: &Tokens, lang: &str, code: &str, id: egui::I
         .inner_margin(egui::Margin { left: 10, right: 6, top: 4, bottom: 8 })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            let shape = crate::layout::get(ui.ctx());
+            let hovered = ui.ui_contains_pointer();
+            let (show_lang, show_copy) = (shape.visible("code.language", hovered), shape.visible("code.copy", hovered));
+            // Both hidden: no row. Else the row keeps its height, so hovering doesn't move the code.
+            let row = [shape.show("code.language"), shape.show("code.copy")].iter().any(|s| *s != Show::Hidden);
             ui.horizontal(|ui| {
-                let label = if lang.is_empty() { "code" } else { lang };
-                ui.label(egui::RichText::new(label).small().color(t.text_faint));
+                if !row {
+                    return;
+                }
+                ui.set_min_height(ui.text_style_height(&egui::TextStyle::Small).max(ui.spacing().interact_size.y * 0.75));
+                if show_lang {
+                    let label = if lang.is_empty() { "code" } else { lang };
+                    ui.label(egui::RichText::new(label).small().color(t.text_faint));
+                }
+                if !show_copy {
+                    return;
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let copied_at: Option<f64> = ui.data(|d| d.get_temp(id));
                     let now = ui.input(|i| i.time);
