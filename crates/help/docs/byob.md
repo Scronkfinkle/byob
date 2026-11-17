@@ -112,7 +112,9 @@ speed, the context numbers, shortcut hints, the wordmark, the server's address, 
 header items) is shown, shown on hover, or hidden, and the header and a reply's details can be
 reordered. Everything / Balanced / Minimal set them all at once. Or ask byob: "hide the token
 counts and show the speed" or "make it cleaner" changes it in every window (the `ui_layout`
-tool of the bundled Appearance plugin).
+tool of the bundled Appearance plugin). The look itself can be asked for too: "make it warmer,
+rounder, with bigger text" changes the theme, accent, corners, text size, bubbles or any colour
+of the window showing the chat (`ui_look`; looks stay per device, like the settings).
 
 ## Plugins
 
