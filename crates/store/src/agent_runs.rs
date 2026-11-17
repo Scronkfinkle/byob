@@ -78,10 +78,18 @@ impl Store {
         let n = self
             .conn
             .prepare_cached(
-                "UPDATE agent_steps SET output = ?4, failed = ?5, changes = ?6
+                "UPDATE agent_steps SET output = ?4, failed = ?5, changes = ?6, title = coalesce(?7, title)
                  WHERE run_id = ?1 AND seq = ?3 AND EXISTS (SELECT 1 FROM agent_runs WHERE id = ?1 AND chat_id = ?2)",
             )?
-            .execute(params![run_id, chat_id, seq, bound(&result.output, MAX_STEP_OUTPUT), result.failed, serde_json::to_string(&result.changes)?])?;
+            .execute(params![
+                run_id,
+                chat_id,
+                seq,
+                bound(&result.output, MAX_STEP_OUTPUT),
+                result.failed,
+                serde_json::to_string(&result.changes)?,
+                result.title
+            ])?;
         found(n, || format!("agent step {run_id}/{seq}"))
     }
 

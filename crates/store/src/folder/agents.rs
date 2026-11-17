@@ -57,6 +57,8 @@ pub(crate) enum RunEvent {
         failed: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         changes: Vec<StepChange>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
     #[serde(rename = "run_finished")]
     Finished {
@@ -158,9 +160,12 @@ pub(crate) fn replay(path: &Path, run_id: &str, chat_id: &str) -> Option<RunRec>
                 r.run.steps.retain(|s| s.seq != seq);
                 r.run.steps.push(Step { message_id: MessageId(0), seq, tool, title, access, args, result: None });
             }
-            (RunEvent::StepFinished { seq, output, failed, changes }, Some(r)) => {
+            (RunEvent::StepFinished { seq, output, failed, changes, title }, Some(r)) => {
                 if let Some(s) = r.run.steps.iter_mut().find(|s| s.seq == seq) {
-                    s.result = Some(StepResult { output, failed, changes, card: None });
+                    if let Some(t) = title {
+                        s.title = t;
+                    }
+                    s.result = Some(StepResult { output, failed, changes, card: None, title: None });
                 }
             }
             (RunEvent::Finished { error, stats }, Some(r)) => {
@@ -218,7 +223,10 @@ pub(crate) fn import_text(run: &AgentRun, m: u32) -> Result<String> {
     for s in &run.steps {
         out.push_str(&encode(ts, RunEvent::StepAdded { seq: s.seq, tool: s.tool.clone(), title: s.title.clone(), access: s.access, args: s.args.clone() })?);
         if let Some(r) = &s.result {
-            out.push_str(&encode(ts, RunEvent::StepFinished { seq: s.seq, output: r.output.clone(), failed: r.failed, changes: r.changes.clone() })?);
+            out.push_str(&encode(
+                ts,
+                RunEvent::StepFinished { seq: s.seq, output: r.output.clone(), failed: r.failed, changes: r.changes.clone(), title: None },
+            )?);
         }
     }
     if run.done {

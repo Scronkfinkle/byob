@@ -77,7 +77,7 @@ fn agent_runs_record_child_threads(s: &dyn ChatStore) {
     let step = NewStep { tool: "read_file".into(), title: "Read a.txt".into(), access: StepAccess::Read, args: json!({"path": "a.txt"}) };
     assert_eq!(s.add_agent_step("c", "run-a", &step).unwrap(), 1);
     assert_eq!(s.add_agent_step("c", "run-a", &step).unwrap(), 2);
-    s.finish_agent_step("c", "run-a", 1, &StepResult { output: "hello".into(), failed: false, changes: vec![], card: None }).unwrap();
+    s.finish_agent_step("c", "run-a", 1, &StepResult { output: "hello".into(), failed: false, changes: vec![], card: None, title: None }).unwrap();
     assert!(s.finish_agent_step("c", "run-a", 9, &StepResult::default()).is_err());
     assert!(s.append_agent_text("other", "run-a", "x", "").is_err(), "runs are per chat");
     assert!(s.append_agent_text("c", "nope", "x", "").is_err());
@@ -133,8 +133,18 @@ fn everything_survives_reopen() {
         s.append_message_text(a, "Hel", "hmm").unwrap();
         s.append_message_text(a, "lo", "").unwrap();
         s.add_step(a, &NewStep { tool: "write_file".into(), title: "Write a.txt".into(), access: StepAccess::Write, args: json!({"path": "a.txt"}) }).unwrap();
-        s.finish_step(a, 1, &StepResult { output: "ok".into(), failed: false, changes: vec![StepChange::Created { path: "/w/a.txt".into() }], card: None })
-            .unwrap();
+        s.finish_step(
+            a,
+            1,
+            &StepResult {
+                output: "ok".into(),
+                failed: false,
+                changes: vec![StepChange::Created { path: "/w/a.txt".into() }],
+                card: None,
+                title: Some("Wrote a.txt".into()),
+            },
+        )
+        .unwrap();
         s.add_undo_op("t1", &UndoOp::Created { path: "/w/a.txt".into() }).unwrap();
         s.finish_message(a, None, Some(&MessageStats { prompt_tokens: 1, completion_tokens: 2, elapsed_ms: 3, model_calls: 1 })).unwrap();
         s.set_message_undone(u, true).unwrap();
@@ -147,6 +157,8 @@ fn everything_survives_reopen() {
         let f = f.reopen();
         let s = &*f;
         assert_eq!(s.export_chat("c").unwrap().unwrap(), before, "{:?}", s.kind());
+        // Regression: a reopened chat showed every step's title as it was while running.
+        assert_eq!(s.steps(a).unwrap()[0].title, "Wrote a.txt", "{:?}", s.kind());
         assert_eq!(s.list_chats(10, None).unwrap().chats, std::slice::from_ref(&before.chat));
         assert_eq!(s.pinned_chats().unwrap(), std::slice::from_ref(&before.chat));
         assert!(s.is_allowed("c", "read_file").unwrap());
@@ -217,7 +229,7 @@ fn import_keeps_everything(s: &dyn ChatStore) {
     reply.error = Some("partial".into());
     reply.stats = Some(MessageStats { prompt_tokens: 5, completion_tokens: 6, elapsed_ms: 7, model_calls: 1 });
     reply.undone = true;
-    reply.steps = vec![step(1, Some(StepResult { output: "a\nb".into(), failed: true, changes: vec![], card: None })), step(2, None)];
+    reply.steps = vec![step(1, Some(StepResult { output: "a\nb".into(), failed: true, changes: vec![], card: None, title: None })), step(2, None)];
     let mut streaming = msg("half", Role::Assistant, 1_700_000_003_000);
     streaming.done = false;
     let exp = ChatExport {
@@ -252,7 +264,7 @@ fn import_keeps_everything(s: &dyn ChatStore) {
                 error: None,
                 stats: Some(MessageStats { prompt_tokens: 9, completion_tokens: 3, elapsed_ms: 40, model_calls: 2 }),
                 created_at: 1_700_000_002_500,
-                steps: vec![step(1, Some(StepResult { output: "3".into(), failed: false, changes: vec![], card: None }))],
+                steps: vec![step(1, Some(StepResult { output: "3".into(), failed: false, changes: vec![], card: None, title: None }))],
             },
         }],
     };
@@ -489,9 +501,9 @@ fn steps_crud_and_bounds(s: &dyn ChatStore) {
 
     let big = "x".repeat(MAX_STEP_OUTPUT * 2);
     let changes = vec![StepChange::Created { path: "/w/a".into() }, StepChange::Moved { from: "/w/b".into(), to: "/w/c".into() }];
-    s.finish_step(a, 1, &StepResult { output: big, failed: false, changes: changes.clone(), card: None }).unwrap();
+    s.finish_step(a, 1, &StepResult { output: big, failed: false, changes: changes.clone(), card: None, title: None }).unwrap();
     let card = json!({"plugin": "weather", "scope": "chat", "action": "made", "tools": ["weather"]});
-    s.finish_step(a, 2, &StepResult { output: "no such file".into(), failed: true, changes: vec![], card: Some(card.clone()) }).unwrap();
+    s.finish_step(a, 2, &StepResult { output: "no such file".into(), failed: true, changes: vec![], card: Some(card.clone()), title: None }).unwrap();
     assert!(matches!(s.finish_step(a, 3, &StepResult::default()), Err(StoreError::NotFound(_))));
 
     let steps = s.steps(a).unwrap();

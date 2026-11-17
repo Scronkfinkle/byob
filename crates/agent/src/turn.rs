@@ -558,6 +558,7 @@ impl Turn {
             cancel: Arc::clone(&self.s.cancel),
             tool: "plugins".into(),
             at: self.content_len,
+            host: None,
         };
         let q = Question {
             title: format!("Turn on this workspace's plugins: {}", ask.plugins.join(", ")),
@@ -749,7 +750,7 @@ impl Turn {
             Err(text) => return text,
         };
         let host = self.host(&opened.step);
-        let asker = self.asker(&opened.name);
+        let asker = self.asker(&opened.step);
         let views = Mutex::new(Vec::new());
         let images = Mutex::new(Vec::new());
         let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel)
@@ -771,7 +772,7 @@ impl Turn {
     /// Start a concurrent call on a thread of its own (with its own undo journal).
     fn start(&mut self, opened: Opened) -> Result<Started, String> {
         let host = self.host(&opened.step);
-        let asker = self.asker(&opened.name);
+        let asker = self.asker(&opened.step);
         let (tool, args) = (Arc::clone(&opened.tool), opened.args.clone());
         let (workspace, cancel, chat, env) = (Arc::clone(&self.s.workspace), Arc::clone(&self.s.cancel), self.s.chat.clone(), Arc::clone(&self.s.env));
         let tag = format!("{}-c{}", self.s.entry, opened.step.id);
@@ -799,15 +800,16 @@ impl Turn {
         }
     }
 
-    fn asker(&self, tool: &str) -> TurnAsker {
+    fn asker(&self, step: &Step) -> TurnAsker {
         TurnAsker {
             inbox: self.s.inbox.clone(),
             child: self.s.child,
             entry: self.s.entry,
             step_ids: Arc::clone(&self.s.step_ids),
             cancel: Arc::clone(&self.s.cancel),
-            tool: tool.to_owned(),
+            tool: step.tool.clone(),
             at: self.content_len,
+            host: Some(step.clone()),
         }
     }
 
@@ -1168,30 +1170,44 @@ struct TurnAsker {
     /// The asking tool's name.
     tool: String,
     at: usize,
+    /// The asking call's own step: its question shows there (one row, not a second one
+    /// that stays after the answer). `None`: a step of its own (nothing called).
+    host: Option<Step>,
 }
 
 impl Asker for TurnAsker {
     fn ask(&self, q: &Question) -> Answer {
-        let mut step = Step {
-            id: self.step_ids.fetch_add(1, Ordering::Relaxed),
-            tool: self.tool.clone(),
-            title: one_line(&q.title, DETAIL_CHARS),
-            access: to_protocol(q.access),
-            status: StepStatus::Running,
-            detail: one_line(&q.text, DETAIL_CHARS),
-            changes: Vec::new(),
-            at: self.at,
-            preview: None,
-            media: Vec::new(),
-            artifacts: Vec::new(),
-            delegation: None,
-            ask: Some(Box::new(Ask {
-                text: prefix(&q.text, MAX_ASK_TEXT).to_owned(),
-                warning: q.warning.as_deref().map(|w| prefix(w, MAX_ASK_TEXT).to_owned()),
-                always: q.always_ask,
-                choice: None,
-            })),
-            views: vec![],
+        let ask = Some(Box::new(Ask {
+            text: prefix(&q.text, MAX_ASK_TEXT).to_owned(),
+            warning: q.warning.as_deref().map(|w| prefix(w, MAX_ASK_TEXT).to_owned()),
+            always: q.always_ask,
+            choice: None,
+        }));
+        let mut step = match &self.host {
+            Some(h) => Step {
+                title: one_line(&q.title, DETAIL_CHARS),
+                access: to_protocol(q.access),
+                status: StepStatus::Running,
+                detail: one_line(&q.text, DETAIL_CHARS),
+                ask,
+                ..h.clone()
+            },
+            None => Step {
+                id: self.step_ids.fetch_add(1, Ordering::Relaxed),
+                tool: self.tool.clone(),
+                title: one_line(&q.title, DETAIL_CHARS),
+                access: to_protocol(q.access),
+                status: StepStatus::Running,
+                detail: one_line(&q.text, DETAIL_CHARS),
+                changes: Vec::new(),
+                at: self.at,
+                preview: None,
+                media: Vec::new(),
+                artifacts: Vec::new(),
+                delegation: None,
+                ask,
+                views: vec![],
+            },
         };
         emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step: step.clone() });
         let (reply, answer) = channel();
@@ -1203,9 +1219,15 @@ impl Asker for TurnAsker {
             Verdict::Answered(true) | Verdict::Replied(_) => Answer::Yes,
             Verdict::Answered(false) => Answer::No,
         };
-        step.status = if answer.allowed() { StepStatus::Done } else { StepStatus::Denied };
-        if let Some(reason) = verdict.denied() {
-            step.detail = one_line(&reason, DETAIL_CHARS);
+        match (&self.host, answer.allowed()) {
+            // Yes: the call's own row again, running (it finishes it).
+            (Some(h), true) => step = Step { status: StepStatus::Running, ..h.clone() },
+            _ => {
+                step.status = if answer.allowed() { StepStatus::Done } else { StepStatus::Denied };
+                if let Some(reason) = verdict.denied() {
+                    step.detail = one_line(&reason, DETAIL_CHARS);
+                }
+            }
         }
         emit_to(&self.inbox, self.child, TurnEvent::Step { id: self.entry, step });
         answer

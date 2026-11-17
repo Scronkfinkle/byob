@@ -616,6 +616,7 @@ fn import_lines(e: &ChatExport) -> Result<Vec<Line>> {
                         failed: r.failed,
                         changes: r.changes.clone(),
                         card: r.card.clone(),
+                        title: None,
                     },
                 ));
             }
@@ -889,6 +890,7 @@ impl ChatStore for FolderStore {
             failed: result.failed,
             changes: result.changes.clone(),
             card: result.card.clone(),
+            title: result.title.clone(),
         };
         inner.write(&chat, vec![event], false, false)
     }
@@ -1000,8 +1002,13 @@ impl ChatStore for FolderStore {
         if seq < 1 || inner.runs.get(run_id).is_none_or(|(_, last)| seq > *last) {
             return Err(not_found(format!("agent step {run_id}/{seq}")));
         }
-        let event =
-            agents::RunEvent::StepFinished { seq, output: bound(&result.output, MAX_STEP_OUTPUT), failed: result.failed, changes: result.changes.clone() };
+        let event = agents::RunEvent::StepFinished {
+            seq,
+            output: bound(&result.output, MAX_STEP_OUTPUT),
+            failed: result.failed,
+            changes: result.changes.clone(),
+            title: result.title.clone(),
+        };
         agents::append(&dir, run_id, &agents::encode(now(), event)?, false)
     }
 

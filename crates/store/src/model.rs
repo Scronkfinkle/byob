@@ -168,6 +168,9 @@ pub struct StepResult {
     /// (protocol 13 on), or a bare plugin card (rows written by protocol 12). The store keeps
     /// it without looking inside. Steps of subagent runs don't keep one.
     pub card: Option<Value>,
+    /// The title it ended with ("Wrote notes.md" for "Write notes.md"); `None` keeps the
+    /// one it started with. Read back as part of the step, not here.
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

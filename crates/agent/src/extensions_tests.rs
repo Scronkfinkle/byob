@@ -430,6 +430,8 @@ fn keeping_a_plugin_asks_and_everywhere_needs_a_person() {
     let (r, _) = turn(&mut c, "make and keep", |s, _| panic!("asked under allow-all: {}", s.title));
     let kept = step(&r, "keep_plugin");
     assert_eq!(kept.status, StepStatus::Done, "{}", kept.detail);
+    // Regression: the question asked mid-call was a second row that stayed.
+    assert_eq!(r.steps.iter().filter(|s| s.tool == "keep_plugin").count(), 1, "{:?}", r.steps);
     assert_eq!(kept.view::<byob_protocol::PluginCard>().map(|c| (c.action, c.scope)), Some((PluginAction::Kept, PluginScope::Workspace)));
     let dir = h.ws.join(".byob/plugins/shouting");
     assert!(dir.join("tools/shout.py").is_file());
@@ -454,6 +456,9 @@ fn keeping_a_plugin_asks_and_everywhere_needs_a_person() {
     });
     assert_eq!(cards, [Some(true)]);
     assert_eq!(step(&r, "keep_plugin").status, StepStatus::Done);
+    let rows: Vec<&Step> = r.steps.iter().filter(|s| s.tool == "keep_plugin").collect();
+    assert_eq!(rows.len(), 1, "the card was the call's own row: {rows:?}");
+    assert!(rows[0].ask.is_none(), "answered, it's the call's row again");
     let global = h2.home.path().join("plugins/loud");
     assert!(global.join("tools/shout.py").is_file() && global.join(crate::extensions::MADE_MARKER).is_file());
     c2.send(ClientMsg::GetExtensions);

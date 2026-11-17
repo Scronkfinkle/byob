@@ -115,6 +115,9 @@ pub(crate) enum Event {
         /// The step's card (see [`crate::StepResult::card`]).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         card: Option<Value>,
+        /// The title it ended with (see [`crate::StepResult::title`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
     StepsDeleted {
         m: u32,

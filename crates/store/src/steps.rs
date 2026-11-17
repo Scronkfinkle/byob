@@ -67,7 +67,7 @@ impl Raw {
             });
             // A card that doesn't parse is only lost decoration.
             let card = self.card.and_then(|c| serde_json::from_str(&c).ok());
-            StepResult { output, failed: self.failed, changes, card }
+            StepResult { output, failed: self.failed, changes, card, title: None }
         });
         Ok(Step { message_id: MessageId(self.message_id), seq: self.seq, tool: self.tool, title: self.title, access, args, result })
     }
@@ -97,8 +97,18 @@ impl Store {
         let card = result.card.as_ref().map(serde_json::to_string).transpose()?;
         let n = self
             .conn
-            .prepare_cached("UPDATE steps SET output = ?3, failed = ?4, changes = ?5, card = ?6 WHERE message_id = ?1 AND seq = ?2")?
-            .execute(params![message_id.0, seq, bound(&result.output, MAX_STEP_OUTPUT), result.failed, serde_json::to_string(&result.changes)?, card])?;
+            .prepare_cached(
+                "UPDATE steps SET output = ?3, failed = ?4, changes = ?5, card = ?6, title = coalesce(?7, title) WHERE message_id = ?1 AND seq = ?2",
+            )?
+            .execute(params![
+                message_id.0,
+                seq,
+                bound(&result.output, MAX_STEP_OUTPUT),
+                result.failed,
+                serde_json::to_string(&result.changes)?,
+                card,
+                result.title
+            ])?;
         found(n, || format!("step {}/{seq}", message_id.0))
     }
 

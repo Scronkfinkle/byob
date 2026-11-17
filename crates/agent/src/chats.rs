@@ -218,6 +218,7 @@ pub fn step_result(step: &Step) -> StepResult {
         failed: step.status != StepStatus::Done,
         changes: step.changes.iter().filter_map(to_change).collect(),
         card: if step.views.is_empty() { None } else { serde_json::to_value(&step.views).ok() },
+        title: Some(step.title.clone()),
     }
 }
 
