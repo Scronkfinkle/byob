@@ -147,7 +147,7 @@ fn the_header_follows_the_layout() {
 }
 
 /// Every detail of a busy reply can be hidden: the thinking row, a tool's row and its file
-/// count, the undo button, a code block's language and Copy. A failed step still shows.
+/// count, the undo button, a code block's language and Copy. Failed steps go too (asked for).
 #[test]
 fn a_busy_replys_details_can_each_be_hidden() {
     use byob_protocol::layout::{Layout, Show};
@@ -197,5 +197,5 @@ fn a_busy_replys_details_can_each_be_hidden() {
     for gone in all {
         assert!(!text.contains(gone), "{gone:?} drew: {text}");
     }
-    assert!(text.contains("Wrote b.txt") && text.contains("fn main"), "failed steps and the code stay: {text}");
+    assert!(!text.contains("Wrote b.txt") && text.contains("fn main"), "failed steps go too, the code stays: {text}");
 }

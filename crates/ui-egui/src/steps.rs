@@ -129,8 +129,9 @@ fn transcript(ui: &mut egui::Ui, t: &Tokens, th: Thread<'_>, cache: &mut markdow
                     } else if let Some(d) = step.delegation.as_deref() {
                         msg = msg.or(delegation(ui, t, step, d, cache, cards));
                     } else {
-                        // Finished fine and the layout hides tool steps: only what it made.
-                        let quiet = step.status == StepStatus::Done && !crate::layout::visible(ui.ctx(), "message.steps", false);
+                        // Finished (failed ones too) and the layout hides tool steps: only what
+                        // it made. A running one still shows; approvals are cards, above.
+                        let quiet = step.status.finished() && !crate::layout::visible(ui.ctx(), "message.steps", false);
                         if !quiet {
                             row(ui, t, step);
                         }

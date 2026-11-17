@@ -124,7 +124,7 @@ pub const ELEMENTS: &[Element] = &[
     el(
         "message.steps",
         "Tool steps",
-        "a row for each tool the model ran (\"Read notes.md\", \"Made Rain haiku\"); hidden, only running, failed and waiting ones show",
+        "a row for each tool the model ran (\"Read notes.md\", \"Made Rain haiku\"); hidden, they show only while running (failed ones are hidden too; questions and approvals always show)",
         None,
         Show::Shown,
         false,
