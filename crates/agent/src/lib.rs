@@ -51,6 +51,7 @@ mod hooks_tests;
 pub mod layout;
 mod limits;
 mod live_views;
+pub mod look;
 #[cfg(test)]
 mod loop_tests;
 #[cfg(test)]
@@ -269,6 +270,12 @@ enum Input {
         client: ClientId,
         msg: Box<ServerMsg>,
     },
+    /// The `ui_look` tool reads (and with `changes`, changes) the look of the windows showing `chat`.
+    Look {
+        chat: String,
+        changes: Option<byob_protocol::look::LookChanges>,
+        reply: Sender<look::Answer>,
+    },
     /// The `ui_layout` tool reads (and with `change`, replaces) the layout.
     Layout {
         change: layout::Change,
@@ -430,11 +437,13 @@ struct Client {
     new_in: Option<String>,
     new_layer: Layer,
     new_key: Option<String>,
+    /// Its look as it last reported it, and when (`Engine::look_seq`; see [`look`]).
+    look: Option<(u64, byob_protocol::look::LookReport)>,
 }
 
 impl Client {
     fn new(tx: Sender<ServerMsg>, wake: Waker) -> Self {
-        Self { tx, wake, chat: None, attached: false, caps: Vec::new(), new_in: None, new_layer: Layer::default(), new_key: None }
+        Self { tx, wake, chat: None, attached: false, caps: Vec::new(), new_in: None, new_layer: Layer::default(), new_key: None, look: None }
     }
 }
 
@@ -572,6 +581,9 @@ struct Engine {
     roles: BTreeMap<String, String>,
     /// What the interface shows ([`layout`]).
     layout: byob_protocol::layout::Layout,
+    /// Look reports and requests, numbered; requests waiting for a window's answer ([`look`]).
+    look_seq: u64,
+    look_waits: BTreeMap<u64, look::Waiting>,
     /// Profiles levels point at that don't exist, warned about once.
     missing_warned: std::sync::Mutex<BTreeSet<String>>,
     /// Profiles with a test running.
@@ -666,6 +678,7 @@ impl Engine {
             authoring::register(&mut tools, &env);
             // Offered while the bundled `appearance` plugin (which names it) is on.
             tools.register(layout::UiLayout::new(inbox.clone()));
+            tools.register(Arc::new(look::UiLook { inbox: inbox.clone() }));
         }
         let plugin_values = Self::load_plugin_values(config.paths.as_ref());
         let layout = Self::load_layout(config.paths.as_ref());
@@ -733,6 +746,8 @@ impl Engine {
             profile_keys: config.profile_keys,
             roles: config.roles,
             layout,
+            look_seq: 0,
+            look_waits: BTreeMap::new(),
             missing_warned: std::sync::Mutex::default(),
             profile_tests: BTreeSet::new(),
             subagents: config.subagents,
@@ -1104,6 +1119,7 @@ impl Engine {
             Input::Reply { client, msg } => self.send_to(client, *msg),
             Input::Plugins { chat, op, reply } => self.plugin_op(&chat, op, &reply),
             Input::Layout { change, reply } => self.tool_layout(change, &reply),
+            Input::Look { chat, changes, reply } => self.tool_look(&chat, changes, reply),
             Input::Connected { key, result } => self.server_connected(&key, result),
             Input::Backend { dir, plugin, generation, out } => self.backend_out(&dir, &plugin, generation, out),
             Input::ViewReply { dir, view, key, starts, result } => self.view_reply(&dir, &view, &key, starts, result),
@@ -1198,6 +1214,7 @@ impl Engine {
             ClientMsg::TestProfile { id: p } => self.test_profile(id, p),
             ClientMsg::SetLevelProfile { scope, profile } => self.set_level_profile(id, scope, profile),
             ClientMsg::SetLayout { layout } => self.client_set_layout(id, layout),
+            ClientMsg::ReportLook(report) => self.report_look(id, report),
             ClientMsg::SetConfig { scope, layer, api_key } => self.set_config(id, scope, layer, api_key),
             ClientMsg::ListFolders { path } => self.list_folders(id, path),
             ClientMsg::CheckContainers => self.check_containers(id),

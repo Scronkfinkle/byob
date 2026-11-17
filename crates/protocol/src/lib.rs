@@ -10,6 +10,7 @@ pub mod connect;
 pub mod delegation;
 pub mod env;
 pub mod layout;
+pub mod look;
 pub mod media;
 pub mod plugins;
 pub mod profiles;
@@ -368,6 +369,9 @@ pub enum ClientMsg {
     SetLayout {
         layout: layout::Layout,
     },
+    /// This client's look (13.12+, cap [`look::CAP_LOOK`]): after connecting, after every
+    /// change, and in answer to [`ServerMsg::SetLook`].
+    ReportLook(look::LookReport),
     /// A message from a newer client this engine doesn't know (answered with a notice).
     #[serde(other)]
     Unknown,
@@ -479,6 +483,10 @@ pub enum ServerMsg {
     /// What the interface shows and in what order (13.11+, only to clients that list
     /// [`layout::CAP_LAYOUT`]); after the Welcome and whenever it changes.
     Layout(layout::Layout),
+    /// Change these settings of this client's look (13.12+, cap [`look::CAP_LOOK`]; to the
+    /// windows showing the chat where the model asked). Answered with a
+    /// [`ClientMsg::ReportLook`] whose `answered` is `request`.
+    SetLook { request: u64, changes: look::LookChanges },
     /// A message from a newer engine this client doesn't know: skip it.
     #[serde(other)]
     Unknown,

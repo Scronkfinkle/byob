@@ -1240,3 +1240,71 @@ fn the_model_changes_the_layout_and_every_window_follows() {
     }
     drop(home);
 }
+
+/// `ui_look` reads the look of the window showing the chat and changes it there: the window
+/// answers with its new look, and the model hears what changed and what wasn't applied.
+#[test]
+fn the_model_changes_the_windows_look() {
+    use byob_protocol::look::{LookField, LookReport};
+    let script = vec![
+        call("ui_look", "{}"),
+        call("ui_look", r#"{"set": {"accent": "orange", "corners": 99}}"#),
+        call("ui_look", r#"{"set": {"sparkle": true}}"#),
+        Reply::Text("done"),
+    ];
+    let (url, requests) = fake_llm(script, "final answer");
+    let home = tempfile::tempdir().unwrap();
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = home.path().join("ws");
+    config.auto_title = false;
+    config.detect_local = false;
+    config.plugins = Some(crate::extensions::PluginsConfig::default());
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let mut c = hello(&engine);
+    let report = |accent: &str, corners: u32| LookReport {
+        fields: vec![
+            LookField { key: "accent".into(), value: serde_json::json!(accent), describe: "theme, blue, orange or #rrggbb".into() },
+            LookField { key: "corners".into(), value: serde_json::json!(corners), describe: "0 to 16".into() },
+        ],
+        ..Default::default()
+    };
+    c.send(ClientMsg::ReportLook(report("theme", 8)));
+    c.send(ClientMsg::SendMessage { text: "make it orange and rounder".into(), attachments: vec![] });
+    let mut asked = Vec::new();
+    loop {
+        match recv(&mut c) {
+            ServerMsg::SetLook { request, changes } => {
+                asked.push(changes.clone());
+                // The window applies what it can.
+                let accent = changes.get("accent").and_then(|v| v.as_str()).unwrap_or("theme").to_owned();
+                let mut r = report(&accent, 8);
+                r.answered = Some(request);
+                r.problems = vec!["corners: 99 is out of range (0 to 16)".into()];
+                c.send(ClientMsg::ReportLook(r));
+            }
+            ServerMsg::EntryFinished { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(asked.len(), 1, "an unknown setting never reaches the window");
+    let results = tool_results(requests.lock().unwrap().last().unwrap());
+    assert!(results[0].contains("- accent: \"theme\" — theme, blue"), "{}", results[0]);
+    assert!(results[1].contains("- accent: \"theme\" → \"orange\"") && results[1].contains("corners: 99 is out of range"), "{}", results[1]);
+    assert!(results[2].contains("no setting \"sparkle\""), "{}", results[2]);
+}
+
+/// Without a window that reports its look, `ui_look` says so.
+#[test]
+fn ui_look_needs_a_window() {
+    let (url, requests) = fake_llm(vec![call("ui_look", "{}"), Reply::Text("ok")], "final answer");
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = PathBuf::from("/ws");
+    config.auto_title = false;
+    config.detect_local = false;
+    config.plugins = Some(crate::extensions::PluginsConfig::default());
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let mut c = hello(&engine);
+    run_turn(&mut c, "go dark", |s, _| panic!("{s:?}"));
+    let results = tool_results(requests.lock().unwrap().last().unwrap());
+    assert!(results[0].contains("no byob window is showing this chat"), "{}", results[0]);
+}

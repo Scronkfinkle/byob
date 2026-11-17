@@ -15,6 +15,7 @@ pub mod header;
 mod highlight;
 mod icons;
 pub mod layout;
+pub mod look;
 pub mod markdown;
 pub mod media;
 pub mod models;
@@ -121,6 +122,10 @@ pub struct ByobApp {
     sent_new: bool,
     /// What the interface shows, as the engine last said ([`layout`]).
     layout: std::sync::Arc<byob_protocol::layout::Layout>,
+    /// The look last reported to the engine (preferences generation, dark), and a change it
+    /// asked for to answer in the next report ([`look`]).
+    look_reported: Option<(u64, bool)>,
+    look_answer: Option<(u64, Vec<String>)>,
 }
 
 /// Where a draft is kept: `chat:<id>` for a chat, `new:<workspace>` for the new chat about
@@ -176,6 +181,8 @@ impl ByobApp {
             draft_key: String::new(),
             sent_new: false,
             layout: std::sync::Arc::default(),
+            look_reported: None,
+            look_answer: None,
         }
     }
 
@@ -380,6 +387,14 @@ impl ByobApp {
                 // Handled by the models section above.
                 ServerMsg::Profiles(_) | ServerMsg::ProfileTested(_) => {}
                 ServerMsg::Layout(l) => self.layout = std::sync::Arc::new(l.sanitized()),
+                ServerMsg::SetLook { request, changes } => {
+                    let mut prefs = self.prefs.clone();
+                    let problems = look::apply(&mut prefs, &changes, self.tokens.dark, &self.user_themes);
+                    self.set_prefs(prefs);
+                    // Answered once the new look is drawn (its colours are what the theme makes).
+                    self.look_answer = Some((request, problems));
+                    self.look_reported = None;
+                }
                 // Handled by the queue above.
                 ServerMsg::Queue(_) => {}
                 // Handled by the plugins above.
@@ -402,6 +417,22 @@ impl ByobApp {
     /// Per-device appearance preferences, for the app to persist.
     pub fn prefs(&self) -> &theme::Prefs {
         &self.prefs
+    }
+
+    /// Tell the engine this window's look when it changed (or it asked for a change), once
+    /// the tokens are built from it.
+    fn report_look(&mut self) {
+        let now = (self.prefs_gen, self.tokens.dark);
+        if self.look_reported == Some(now) || !self.engine_has(byob_protocol::look::CAP_LOOK) {
+            return;
+        }
+        self.look_reported = Some(now);
+        let mut report = look::report(&self.prefs, &self.tokens, &self.user_themes);
+        if let Some((request, problems)) = self.look_answer.take() {
+            report.answered = Some(request);
+            report.problems = problems;
+        }
+        self.conn.send(ClientMsg::ReportLook(report));
     }
 
     /// Restore (or change) appearance preferences; applied on the next frame.
@@ -742,6 +773,7 @@ impl ByobApp {
         self.poll_appearance();
         self.apply_theme(ui.ctx());
         layout::store(ui.ctx(), &self.layout);
+        self.report_look();
         let narrow = ui.available_width() < sidebar::NARROW;
         self.artifacts.begin_frame(ui.ctx(), &self.tokens, narrow);
         let list_open = self.sidebar.is_open(narrow);
@@ -1177,8 +1209,11 @@ mod app_tests {
     /// Markdown in the composer: heights and the bold/italic shortcuts.
     mod composer_md;
 
-    /// What replies, the composer and the header leave out until asked.
+    /// The layout: what replies, the composer and the header show, and in what order.
     mod declutter;
+
+    /// The window reports its look and applies changes the model asks for.
+    mod look;
 
     /// A connection that delivers queued messages and records what the app sends.
     #[derive(Clone, Default)]
