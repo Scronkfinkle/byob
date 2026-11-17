@@ -405,3 +405,16 @@ fn composer_controls_are_concentric_with_the_frame() {
     t.radius = 0.0;
     assert_eq!(crate::composer::radii(&t, d), (0.0, 0.0));
 }
+
+/// The chat is drawn on app_bg: every preset's bubbles and the composer's field read as
+/// apart from it (light schemes whose background and fields were nearly one colour lost
+/// their reply bubbles).
+#[test]
+fn bubbles_stand_apart_from_the_chat_background() {
+    for p in PRESETS {
+        let t = Tokens::derive(p, rgb(p.accents[0].1), &Knobs::default());
+        let min = if p.dark { 1.07 } else { 1.05 };
+        assert!(contrast(t.assistant_bubble, t.app_bg) >= min - 0.001, "{}: replies {:.3}", p.id, contrast(t.assistant_bubble, t.app_bg));
+        assert!(contrast(t.user_bubble, t.app_bg) >= min, "{}: your messages {:.3}", p.id, contrast(t.user_bubble, t.app_bg));
+    }
+}

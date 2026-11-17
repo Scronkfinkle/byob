@@ -835,8 +835,12 @@ impl ByobApp {
             self.artifacts.side_panel(ui, &t);
             self.plugins.sites.side_panel(ui, &t, self.artifacts.web_mut());
         }
-        egui::Panel::bottom("composer").show_separator_line(false).show(ui, |ui| self.composer(ui));
-        egui::CentralPanel::default().show(ui, |ui| {
+        // The chat and its composer sit on the window background (app_bg); the header, chat
+        // list and panes on the panel colour.
+        let composer_frame = egui::Frame::side_top_panel(ui.style()).fill(t.app_bg);
+        let chat_frame = egui::Frame::central_panel(ui.style()).fill(t.app_bg);
+        egui::Panel::bottom("composer").show_separator_line(false).frame(composer_frame).show(ui, |ui| self.composer(ui));
+        egui::CentralPanel::default().frame(chat_frame).show(ui, |ui| {
             self.plugins.trust_card(ui, &t, &self.entries);
             self.transcript(ui);
         });

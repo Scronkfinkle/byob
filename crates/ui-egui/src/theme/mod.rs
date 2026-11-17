@@ -194,10 +194,10 @@ fn chart_slot(role: &str) -> Option<usize> {
 
 tokens! {
     "Surfaces" => {
-        /// Behind the Settings page and apps shown in the pane (the chat itself is a panel).
-        app_bg: "Page background (Settings, apps)",
-        /// The chat, header and composer: what most of the window is.
-        panel_bg: "Chat, header and composer background",
+        /// Behind the chat and its composer (and the Settings page).
+        app_bg: "Chat background",
+        /// The header, panes and settings panels.
+        panel_bg: "Header and panels",
         sidebar_bg: "Sidebar (chat list)",
         /// Text inputs.
         field_bg: "Text fields",
@@ -267,6 +267,23 @@ pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=255
     let ch = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round().clamp(0.0, 255.0) as u8;
     Color32::from_rgb(ch(a.r(), b.r()), ch(a.g(), b.g()), ch(a.b(), b.b()))
+}
+
+/// `c`, moved toward each of `toward` in turn just until it reaches `min` contrast against
+/// `bg` (a surface that must read as apart from the one it sits on). Unchanged if it does.
+pub fn separate(c: Color32, bg: Color32, min: f32, toward: &[Color32]) -> Color32 {
+    if contrast(c, bg) >= min {
+        return c;
+    }
+    for target in toward {
+        for step in 1..=20u8 {
+            let m = mix(c, *target, f32::from(step) / 20.0);
+            if contrast(m, bg) >= min {
+                return m;
+            }
+        }
+    }
+    c
 }
 
 /// `0xRRGGBB` → colour.
@@ -381,7 +398,10 @@ impl Tokens {
         let (bg, panel, field) = (rgb(p.bg), rgb(p.panel), rgb(p.field));
         let [s0, s1, s2] = p.surface.map(rgb);
         let extreme = if dark { Color32::WHITE } else { Color32::BLACK };
+        // Replies sit on the chat background (app_bg): far enough from it to read as a
+        // bubble even where the scheme's background and fields are nearly one colour.
         let assistant = if dark { mix(bg, s0, 0.45) } else { mix(bg, field, 0.7) };
+        let assistant = if dark { separate(assistant, bg, 1.07, &[s1, Color32::WHITE]) } else { separate(assistant, bg, 1.05, &[Color32::WHITE, s0]) };
         let base_surfaces = [bg, panel, field, assistant];
         let accent0 = ensure_contrast(accent, &base_surfaces, 4.5);
         let user = mix(assistant, accent0, if dark { 0.13 } else { 0.10 });

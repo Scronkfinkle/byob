@@ -15,7 +15,7 @@ pub struct Palette {
     pub credit: &'static str,
     /// Window background (the transcript).
     pub bg: u32,
-    /// Header, composer, settings, sidebar.
+    /// Header, panes, settings panels (and the sidebar, unless a theme file sets it).
     pub panel: u32,
     /// Text inputs (and code blocks on dark themes).
     pub field: u32,
