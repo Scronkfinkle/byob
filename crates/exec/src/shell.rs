@@ -44,12 +44,15 @@ impl Shell {
 }
 
 /// `command` with UTF-8 output (Windows PowerShell writes the console code page into pipes
-/// otherwise), no progress bars, and a failing program's exit code as the script's.
+/// otherwise) and UTF-8 files (its `Set-Content` and `Out-File` write the ANSI code page or
+/// UTF-16, so a `✓` became `?`; 5.1's UTF-8 has a BOM, PowerShell 7's doesn't), no progress
+/// bars, and a failing program's exit code as the script's.
 fn powershell_script(command: &str) -> String {
     format!(
         "$ProgressPreference = 'SilentlyContinue'\n\
          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n\
          $OutputEncoding = [System.Text.Encoding]::UTF8\n\
+         if ($PSVersionTable.PSVersion.Major -lt 6) {{ $PSDefaultParameterValues['*:Encoding'] = 'utf8' }}\n\
          {command}\n\
          if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}\n"
     )
@@ -82,6 +85,7 @@ mod tests {
         let units: Vec<u16> = raw.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         let script = String::from_utf16(&units).unwrap();
         assert!(script.contains(r#"Get-ChildItem "my files" | Select-Object -First 2"#), "{script}");
+        assert!(script.contains("$PSDefaultParameterValues['*:Encoding'] = 'utf8'"), "{script}");
         assert!(script.contains("[Console]::OutputEncoding") && script.trim_end().ends_with("exit $LASTEXITCODE }"), "{script}");
     }
 
