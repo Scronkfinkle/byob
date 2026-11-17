@@ -405,6 +405,12 @@ pub trait Tool: Send + Sync {
     fn concurrent(&self) -> bool {
         false
     }
+
+    /// The same call can mean something new each time, so the turn's repeat guard ("you
+    /// already called this") lets it through: reads of state that changes, or undo.
+    fn repeatable(&self, _args: &Value) -> bool {
+        false
+    }
 }
 
 /// Parse tool arguments into a typed struct, with a model-readable error.

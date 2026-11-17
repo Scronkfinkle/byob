@@ -125,11 +125,16 @@ pub(crate) struct UiLayout {
     pub inbox: Sender<Input>,
     /// The last layout this tool saw (for titles; the engine has the real one).
     seen: Mutex<Option<Layout>>,
+    /// Layouts from before each change this tool made, newest last (for undo).
+    history: Mutex<Vec<Layout>>,
 }
+
+/// Most layouts kept to undo to.
+const HISTORY: usize = 20;
 
 impl UiLayout {
     pub(crate) fn new(inbox: Sender<Input>) -> Arc<Self> {
-        Arc::new(Self { inbox, seen: Mutex::new(None) })
+        Arc::new(Self { inbox, seen: Mutex::new(None), history: Mutex::new(Vec::new()) })
     }
 }
 
@@ -138,6 +143,8 @@ impl UiLayout {
 struct Request {
     preset: Option<Layout>,
     reset: bool,
+    /// Back to the layout before the tool's last change (the rest is ignored).
+    undo: bool,
     show: Vec<(String, Show)>,
     order: Vec<(String, Vec<String>)>,
     /// What of the call was skipped, and why (the rest still applies).
@@ -166,7 +173,7 @@ fn closest(guess: &str, views: &[PluginView]) -> Option<String> {
 
 impl Request {
     fn is_read(&self) -> bool {
-        self.preset.is_none() && !self.reset && self.show.is_empty() && self.order.is_empty()
+        !self.undo && self.preset.is_none() && !self.reset && self.show.is_empty() && self.order.is_empty()
     }
 
     /// Check the model's arguments against what exists (`views`: the plugin views there
@@ -177,7 +184,11 @@ impl Request {
             Some(c) => format!("there's no {id:?}; did you mean {c}? (call ui_layout without arguments for the list)"),
             None => format!("there's no {id:?} (call ui_layout without arguments for the list)"),
         };
-        let mut r = Self { reset: args.get("reset").and_then(Value::as_bool).unwrap_or(false), ..Self::default() };
+        let flag = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
+        let mut r = Self { reset: flag("reset"), undo: flag("undo"), ..Self::default() };
+        if r.undo {
+            return r;
+        }
         if let Some(p) = args.get("preset").and_then(Value::as_str).filter(|p| !p.trim().is_empty()) {
             let names: Vec<&str> = PRESETS.iter().map(|(n, _)| *n).collect();
             match Layout::preset(p) {
@@ -311,6 +322,9 @@ fn describe(layout: &Layout, views: &[PluginView]) -> String {
 
 /// The ids a change touched, for the step's title.
 fn touched(r: &Request) -> String {
+    if r.undo {
+        return "Layout: undid the last change".into();
+    }
     if r.reset {
         return "Reset the layout".into();
     }
@@ -355,7 +369,8 @@ impl Tool for UiLayout {
                     "show": {"type": "object", "description": "Element id → \"shown\", \"hover\" (only while the pointer is on it) or \"hidden\", e.g. {\"reply.tokens\": \"hidden\"}.", "additionalProperties": {"type": "string", "enum": ["shown", "hover", "hidden"]}},
                     "order": {"type": "object", "description": format!("Region ({}) → its element ids left to right; ones left out follow in their usual order.", regions.join(", ")), "additionalProperties": {"type": "array", "items": {"type": "string"}}},
                     "preset": {"type": "string", "enum": presets, "description": "Replace every element's mode with a ready-made layout's (earlier changes are lost; `show` in the same call applies on top)."},
-                    "reset": {"type": "boolean", "description": "Back to byob's default layout first."}
+                    "reset": {"type": "boolean", "description": "Back to byob's default layout first."},
+                    "undo": {"type": "boolean", "description": "Put back the layout from before the last change you made (again to go further back). For \"undo that\" or \"put it back\"."}
                 }
             }),
         }
@@ -387,6 +402,11 @@ impl Tool for UiLayout {
         Access::Read
     }
 
+    /// What it reads changes (the user changes it too), and undo steps further back each time.
+    fn repeatable(&self, _args: &Value) -> bool {
+        true
+    }
+
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
         let views = plugin_views(&self.inbox, ctx);
         let req = Request::parse(args, &views);
@@ -398,14 +418,32 @@ impl Tool for UiLayout {
             *self.seen.lock().unwrap_or_else(PoisonError::into_inner) = Some(current.clone());
             return ToolOutput::ok(describe(&current, &views));
         }
+        let history = || self.history.lock().unwrap_or_else(PoisonError::into_inner);
+        let want = if req.undo {
+            let Some(before) = history().pop() else {
+                return ToolOutput::err(
+                    "there's no earlier layout to go back to (only changes made with ui_layout are kept); reset: true goes back to byob's default",
+                );
+            };
+            before
+        } else {
+            req.apply(&current)
+        };
         let layout = if req.is_read() {
             current.clone()
         } else {
-            match request(&self.inbox, Some(req.apply(&current)), ctx.cancel_flag()) {
+            match request(&self.inbox, Some(want), ctx.cancel_flag()) {
                 Ok(l) => l,
                 Err(e) => return ToolOutput::err(e),
             }
         };
+        if !req.undo && layout != current {
+            let mut h = history();
+            h.push(current.clone());
+            if h.len() > HISTORY {
+                h.remove(0);
+            }
+        }
         *self.seen.lock().unwrap_or_else(PoisonError::into_inner) = Some(layout.clone());
         let changed = changes(&current, &layout, &views);
         let mut out = String::new();

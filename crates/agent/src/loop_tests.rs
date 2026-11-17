@@ -1272,6 +1272,7 @@ fn the_model_changes_the_windows_look() {
         call("ui_look", "{}"),
         call("ui_look", r#"{"set": {"accent": "orange", "corners": 99}}"#),
         call("ui_look", r#"{"set": {"sparkle": true}}"#),
+        call("ui_look", r#"{"undo": true}"#),
         Reply::Text("done"),
     ];
     let (url, requests) = fake_llm(script, "final answer");
@@ -1308,11 +1309,44 @@ fn the_model_changes_the_windows_look() {
             _ => {}
         }
     }
-    assert_eq!(asked.len(), 1, "an unknown setting never reaches the window");
+    assert_eq!(asked.len(), 2, "an unknown setting never reaches the window");
+    assert_eq!(asked[1].get("undo"), Some(&serde_json::json!(true)), "undo is the window's to do");
     let results = tool_results(requests.lock().unwrap().last().unwrap());
     assert!(results[0].contains("- accent: \"theme\" — theme, blue"), "{}", results[0]);
     assert!(results[1].contains("- accent: \"theme\" → \"orange\"") && results[1].contains("corners: 99 is out of range"), "{}", results[1]);
     assert!(results[2].contains("no setting \"sparkle\"") && results[2].contains("the settings are: accent, corners"), "{}", results[2]);
+    assert!(results[3].contains("- accent: \"orange\" → \"theme\""), "undo says what moved: {}", results[3]);
+}
+
+/// "Undo that": the layout before the model's last change comes back; with nothing left to
+/// undo, it says so.
+#[test]
+fn the_model_undoes_its_layout_change() {
+    use byob_protocol::layout::Layout;
+    let script = vec![
+        call("ui_layout", r#"{"show": {"reply.tokens": "hidden"}}"#),
+        call("ui_layout", r#"{"undo": true}"#),
+        call("ui_layout", r#"{"undo": true}"#),
+        Reply::Text("done"),
+    ];
+    let (url, requests) = fake_llm(script, "final answer");
+    let home = tempfile::tempdir().unwrap();
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = home.path().join("ws");
+    config.policy = Some(Policy { read: Rule::Allow, write: Rule::Ask, network: Rule::Ask, execute: Rule::Ask });
+    config.auto_title = false;
+    config.detect_local = false;
+    config.plugins = Some(crate::extensions::PluginsConfig::default());
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let mut c = hello(&engine);
+    let view = run_turn(&mut c, "hide the tokens, no, undo that", |s, _| panic!("{s:?}"));
+    assert_eq!(view.error, Some(None));
+    let results = tool_results(requests.lock().unwrap().last().unwrap());
+    assert!(results[0].contains("reply.tokens: shown → hidden"), "{}", results[0]);
+    assert!(results[1].contains("reply.tokens: hidden → shown"), "{}", results[1]);
+    assert!(results[2].contains("no earlier layout"), "{}", results[2]);
+    assert_eq!(view.reply().steps[1].title, "Layout: undid the last change");
+    let _ = Layout::default();
 }
 
 /// Without a window that reports its look, `ui_look` says so.

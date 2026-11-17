@@ -99,12 +99,61 @@ fn bubble_style(v: &Value, key: &str) -> Result<BubbleStyle, String> {
     BubbleStyle::ALL.into_iter().find(|b| lower(b.label()) == text(v)).ok_or_else(|| format!("{key}: filled, outlined or minimal, not {v}"))
 }
 
+/// Most looks kept to undo to.
+pub const HISTORY: usize = 20;
+
+/// A change the model asked for (`ServerMsg::SetLook`), with undo: `{"undo": true}` puts back
+/// the look before the last change (`history`, newest last); `{"reset": true}` goes back to
+/// the theme's own colours and byob's defaults (keeping the themes, mode and zoom). Anything
+/// else is [`apply`]'d. What couldn't be done, and why.
+pub fn change(prefs: &mut Prefs, history: &mut Vec<Prefs>, changes: &LookChanges, dark: bool, user_themes: &[ThemeDef]) -> Vec<String> {
+    let flag = |k: &str| changes.get(k).is_some_and(|v| v.as_bool().unwrap_or(true));
+    if flag("undo") {
+        return match history.pop() {
+            Some(before) => {
+                *prefs = before;
+                Vec::new()
+            }
+            None => vec!["undo: there's no earlier look to go back to (only changes made by asking are kept)".into()],
+        };
+    }
+    let before = prefs.clone();
+    let mut problems = Vec::new();
+    if flag("reset") {
+        *prefs = Prefs {
+            imported: std::mem::take(&mut prefs.imported),
+            theme: prefs.theme,
+            dark_theme: prefs.dark_theme.clone(),
+            light_theme: prefs.light_theme.clone(),
+            zoom: prefs.zoom,
+            ..Prefs::default()
+        };
+    }
+    let rest: LookChanges = changes.iter().filter(|(k, _)| *k != "reset" && *k != "undo").map(|(k, v)| (k.clone(), v.clone())).collect();
+    problems.extend(apply(prefs, &rest, dark, user_themes));
+    if *prefs != before {
+        history.push(before);
+        if history.len() > HISTORY {
+            history.remove(0);
+        }
+    }
+    problems
+}
+
 /// Apply `changes` to `prefs` (`dark`: the window draws dark; `user_themes`: theme files).
 /// What couldn't be applied, and why.
 pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: &[ThemeDef]) -> Vec<String> {
     let mut problems = Vec::new();
     let themes = file::all(user_themes);
-    for (key, v) in changes {
+    // Colours last, into the theme the window draws with after the rest: "dark mode, and
+    // this background" colours the dark theme.
+    let (colours, rest): (Vec<_>, Vec<_>) = changes.iter().partition(|(k, _)| k.starts_with("colour."));
+    for (key, v) in rest.into_iter().chain(colours) {
+        let dark = match prefs.theme {
+            ThemeKind::Dark => true,
+            ThemeKind::Light => false,
+            ThemeKind::System => dark,
+        };
         let k: &mut Knobs = &mut prefs.knobs;
         let r: Result<(), String> = match key.as_str() {
             "mode" => ThemeKind::from_name(&text(v)).map(|m| prefs.theme = m).ok_or_else(|| format!("mode: dark, light or system, not {v}")),
@@ -273,7 +322,7 @@ mod tests {
         );
         assert_eq!(p.accent, Accent::Orange);
         assert_eq!((p.knobs.radius, p.theme, p.knobs.assistant_bubble), (12.0, ThemeKind::Light, BubbleStyle::Outlined));
-        assert_eq!(p.overrides[p.theme_id(true)]["app_bg"], "#202124");
+        assert_eq!(p.overrides[p.theme_id(false)]["app_bg"], "#202124", "the light theme: the mode asked for with it");
         assert_eq!(problems.len(), 4, "{problems:?}");
         assert!(problems.iter().any(|e| e.starts_with("zoom:")) && problems.iter().any(|e| e.contains("sparkle")), "{problems:?}");
         assert!(problems.iter().any(|e| e.starts_with("text_size:")), "120% isn't a scale: {problems:?}");
@@ -281,7 +330,7 @@ mod tests {
         // A custom accent, and a colour back to the theme's.
         assert!(apply(&mut p, &changes(json!({"accent": "#ff8800", "colour.app_bg": ""})), true, &[]).is_empty());
         assert_eq!(p.accent, Accent::Custom("#ff8800".into()));
-        assert!(p.overrides[p.theme_id(true)].is_empty());
+        assert!(p.overrides[p.theme_id(false)].is_empty());
     }
 
     /// Bubble padding and line spacing: asked for in a stress test, now settings.
@@ -294,5 +343,28 @@ mod tests {
         assert!(!apply(&mut p, &changes(json!({"line_spacing": 9})), true, &[]).is_empty());
         let r = report(&p, &crate::theme::Tokens::dark(), &[]);
         assert_eq!(r.get("bubble_padding"), Some(&json!(18.0)));
+    }
+
+    /// Undo puts back the look before the model's last change (exactly: overrides too);
+    /// reset goes back to the theme's; colours asked for with a mode go to that mode's theme.
+    #[test]
+    fn changes_can_be_undone_and_reset() {
+        let start = Prefs::default();
+        let mut p = start.clone();
+        let mut history = Vec::new();
+        assert!(change(&mut p, &mut history, &changes(json!({"mode": "dark", "colour.app_bg": "#191724", "corners": 16})), false, &[]).is_empty());
+        assert_eq!(p.overrides[&p.dark_theme]["app_bg"], "#191724", "the colour went to the dark theme, the one now in use");
+        assert!(!p.overrides.contains_key(&p.light_theme));
+        assert!(change(&mut p, &mut history, &changes(json!({"accent": "pink"})), true, &[]).is_empty());
+        assert!(change(&mut p, &mut history, &changes(json!({"undo": true})), true, &[]).is_empty());
+        assert_eq!((p.knobs.radius, p.accent.clone()), (16.0, Accent::Theme), "one step back");
+        change(&mut p, &mut history, &changes(json!({"undo": true})), true, &[]);
+        assert_eq!(p, start, "back to the start");
+        assert!(change(&mut p, &mut history, &changes(json!({"undo": true})), true, &[])[0].contains("no earlier look"));
+        // Reset keeps the themes and mode, drops the rest.
+        change(&mut p, &mut history, &changes(json!({"mode": "dark", "colour.text": "#ff0000", "corners": 3})), false, &[]);
+        change(&mut p, &mut history, &changes(json!({"reset": true})), true, &[]);
+        assert_eq!((p.theme, p.knobs.radius), (ThemeKind::Dark, Knobs::default().radius));
+        assert!(p.overrides.values().all(std::collections::BTreeMap::is_empty), "{:?}", p.overrides);
     }
 }

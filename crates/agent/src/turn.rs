@@ -853,7 +853,7 @@ impl Turn {
             }
         };
         let key = format!("{name}:{args}");
-        if let Some(earlier) = self.seen.get(&key) {
+        if let Some(earlier) = self.seen.get(&key).filter(|_| !tool.repeatable(&args)) {
             self.repeats = self.repeats.saturating_add(1);
             return Err(format!(
                 "You already called {name} with exactly these arguments in this turn. The result was:\n{}\nDon't repeat it; continue with something else or answer.",

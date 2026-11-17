@@ -260,12 +260,24 @@ struct Checked {
 /// The `set` argument, checked against what the window has (`None`: only read it; an
 /// error when nothing is left to change).
 fn changes(args: &Value, have: &LookReport) -> Result<Option<Checked>, String> {
-    let Some(set) = args.get("set") else { return Ok(None) };
-    let map = set.as_object().ok_or("set: an object of setting → new value")?;
-    if map.is_empty() {
-        return Ok(None);
-    }
+    let flag = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
     let mut c = Checked::default();
+    // Undo is on its own: the look before the last change, whatever else was asked.
+    if flag("undo") {
+        c.set.insert("undo".into(), Value::Bool(true));
+        return Ok(Some(c));
+    }
+    if flag("reset") {
+        c.set.insert("reset".into(), Value::Bool(true));
+    }
+    let empty = serde_json::Map::new();
+    let map = match args.get("set") {
+        None | Some(Value::Null) => &empty,
+        Some(set) => set.as_object().ok_or("set: an object of setting → new value")?,
+    };
+    if map.is_empty() {
+        return Ok((!c.set.is_empty()).then_some(c));
+    }
     let mut unknown = false;
     for (k, v) in flatten(map) {
         if matches!(v, Value::Object(_) | Value::Array(_)) {
@@ -310,13 +322,21 @@ impl Tool for UiLook {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "set": {"type": "object", "description": "Setting → new value, e.g. {\"accent\": \"orange\", \"corners\": 12}. Call without arguments first for the settings there are.", "additionalProperties": true}
+                    "set": {"type": "object", "description": "Setting → new value, e.g. {\"accent\": \"orange\", \"corners\": 12}. Call without arguments first for the settings there are.", "additionalProperties": true},
+                    "undo": {"type": "boolean", "description": "Put back the look from before the last change you made (again to go further back). For \"undo that\" or \"put it back\"."},
+                    "reset": {"type": "boolean", "description": "Back to the theme's own colours and byob's default sizes, corners and bubbles first (themes, dark or light, and zoom stay); `set` applies on top."}
                 }
             }),
         }
     }
 
     fn title(&self, args: &Value) -> String {
+        if args.get("undo").and_then(Value::as_bool) == Some(true) {
+            return "Look: undid the last change".into();
+        }
+        if args.get("reset").and_then(Value::as_bool) == Some(true) {
+            return "Look: reset".into();
+        }
         match args.get("set").and_then(Value::as_object).filter(|m| !m.is_empty()) {
             Some(m) => {
                 let keys: Vec<&str> = m.keys().map(String::as_str).take(4).collect();
@@ -328,6 +348,10 @@ impl Tool for UiLook {
     }
 
     fn pending_title(&self, args: &Value) -> String {
+        let flag = |k: &str| args.get(k).and_then(Value::as_bool) == Some(true);
+        if flag("undo") || flag("reset") {
+            return "Change the look".into();
+        }
         if args.get("set").and_then(Value::as_object).is_some_and(|m| !m.is_empty()) { "Change the look".into() } else { "Read the look".into() }
     }
 
@@ -341,6 +365,11 @@ impl Tool for UiLook {
         Access::Read
     }
 
+    /// What it reads changes (the user changes it too), and undo steps further back each time.
+    fn repeatable(&self, _args: &Value) -> bool {
+        true
+    }
+
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
         let Some(chat) = ctx.chat() else { return ToolOutput::err(NO_WINDOW) };
         let now = match request(&self.inbox, chat, None, ctx.cancel_flag()) {
@@ -352,7 +381,8 @@ impl Tool for UiLook {
             Ok(None) => return ToolOutput::ok(describe(&now)),
             Err(e) => return ToolOutput::err(e),
         };
-        let asked: Vec<String> = set.keys().cloned().collect();
+        let whole = set.contains_key("undo") || set.contains_key("reset");
+        let asked: Vec<String> = set.keys().filter(|k| *k != "undo" && *k != "reset").cloned().collect();
         let (before, after) = match request(&self.inbox, chat, Some(set), ctx.cancel_flag()) {
             Ok((b, Some(a))) => (b, a),
             Ok((_, None)) => return ToolOutput::err("the window didn't answer"),
@@ -376,7 +406,16 @@ impl Tool for UiLook {
                 }
             }
         }
-        let follow = changed.iter().filter(|(k, _, _)| !asked.contains(k)).count();
+        // Undo and reset: every setting that moved (colours as a count, below).
+        if whole {
+            for (k, old, new) in changed.iter().filter(|(k, _, _)| !asked.contains(k) && !k.starts_with("colour.")) {
+                let _ = writeln!(out, "- {k}: {} → {}", shown(old), shown(new));
+            }
+            if changed.is_empty() {
+                out.push_str("- nothing differed\n");
+            }
+        }
+        let follow = changed.iter().filter(|(k, _, _)| !asked.contains(k) && (!whole || k.starts_with("colour."))).count();
         if follow > 0 {
             let _ = writeln!(out, "({follow} colours that follow from these changed with them.)");
         }

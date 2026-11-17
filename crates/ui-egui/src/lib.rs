@@ -126,6 +126,8 @@ pub struct ByobApp {
     /// asked for to answer in the next report ([`look`]).
     look_reported: Option<(u64, bool)>,
     look_answer: Option<(u64, Vec<String>)>,
+    /// Looks from before each change the model made, newest last (`ui_look`'s undo).
+    look_history: Vec<theme::Prefs>,
 }
 
 /// Where a draft is kept: `chat:<id>` for a chat, `new:<workspace>` for the new chat about
@@ -183,6 +185,7 @@ impl ByobApp {
             layout: std::sync::Arc::default(),
             look_reported: None,
             look_answer: None,
+            look_history: Vec::new(),
         }
     }
 
@@ -389,7 +392,7 @@ impl ByobApp {
                 ServerMsg::Layout(l) => self.layout = std::sync::Arc::new(l.sanitized()),
                 ServerMsg::SetLook { request, changes } => {
                     let mut prefs = self.prefs.clone();
-                    let problems = look::apply(&mut prefs, &changes, self.tokens.dark, &self.user_themes);
+                    let problems = look::change(&mut prefs, &mut self.look_history, &changes, self.tokens.dark, &self.user_themes);
                     self.set_prefs(prefs);
                     // Answered once the new look is drawn (its colours are what the theme makes).
                     self.look_answer = Some((request, problems));
