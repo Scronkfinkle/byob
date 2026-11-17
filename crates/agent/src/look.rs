@@ -136,11 +136,14 @@ fn roles(have: &LookReport) -> Vec<&str> {
 /// Names models reach for → the setting they mean (checked against the window's settings
 /// before use). Colours by role, then other settings.
 const COLOUR_ALIASES: &[(&[&str], &str)] = &[
-    (&["bg", "background", "window", "window_bg", "app_background", "canvas", "base"], "app_bg"),
+    // What the eye calls the background is the chat's panel (app_bg is behind Settings).
+    (&["bg", "background", "window", "window_bg", "app_background", "canvas", "base", "chat", "chat_bg", "transcript"], "panel_bg"),
+    (&["page", "page_bg", "settings_bg"], "app_bg"),
     (&["fg", "foreground", "body", "body_text", "text_colour", "main_text"], "text"),
     (&["muted", "dim", "secondary", "subtle", "text_muted", "subtext", "muted_text"], "text_dim"),
     (&["faint", "text_faint_colour"], "text_faint"),
     (&["surface", "panel", "panels", "header", "header_bg", "title_bar", "titlebar", "toolbar", "composer", "chrome"], "panel_bg"),
+    (&["buttons", "button"], "button_bg"),
     (&["sidebar", "chat_list", "nav"], "sidebar_bg"),
     (&["input", "field", "input_bg", "textbox"], "field_bg"),
     (&["reply", "replies", "reply_bg", "assistant", "assistant_bg", "bot", "bot_bubble"], "assistant_bubble"),
@@ -479,8 +482,8 @@ mod tests {
                 field("replies", json!("filled"), "how replies' bubbles look: filled, outlined or minimal"),
                 field("your_messages", json!("filled"), "how your messages' bubbles look: filled, outlined or minimal"),
                 field("corners", json!(8), "corner radius 0 to 16"),
-                field("colour.app_bg", json!("#ffffff"), "Window background (Surfaces)"),
-                field("colour.panel_bg", json!("#eeeeee"), "Header and panels (Surfaces)"),
+                field("colour.app_bg", json!("#ffffff"), "Page background (Settings, apps) (Surfaces)"),
+                field("colour.panel_bg", json!("#eeeeee"), "Chat, header and composer background (Surfaces)"),
                 field("colour.text", json!("#111111"), "Body text (Text)"),
                 field("colour.text_dim", json!("#555555"), "Secondary text (Text)"),
                 field("colour.assistant_bubble", json!("#f0f0f0"), "Replies (Messages)"),
@@ -500,14 +503,13 @@ mod tests {
         assert_eq!(got("colour.text_dim"), "#a87886");
         assert_eq!(got("colour.assistant_bubble"), "#fffafc", "a colour for replies is their colour");
         assert_eq!(got("colour.text"), "#000000");
-        assert_eq!(got("colour.panel_bg"), "#000080");
+        assert!(c.set.contains_key("colour.panel_bg"));
         assert_eq!(got("colour.border"), "#808080");
         assert_eq!(got("light_theme"), "rose-pine-dawn", "the theme in use");
         assert_eq!(got("replies"), "outlined", "a style for replies is their style");
         assert_eq!(got("accent"), "#e07a9a");
         assert_eq!(got("corners"), 0);
-        assert!(c.set.contains_key("colour.app_bg"), "bg and colour.background both mean the window background");
-        assert!(c.read_as.iter().any(|n| n == "bg as colour.app_bg"), "{:?}", c.read_as);
+        assert!(c.read_as.iter().any(|n| n == "bg as colour.panel_bg"), "the background you see is the chat's: {:?}", c.read_as);
         let skipped = c.skipped.join("\n");
         assert!(skipped.contains("\"bubbles\"; did you mean"), "{skipped}");
         assert!(skipped.contains("\"colour.reply.bg\""), "{skipped}");

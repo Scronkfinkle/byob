@@ -194,10 +194,10 @@ fn chart_slot(role: &str) -> Option<usize> {
 
 tokens! {
     "Surfaces" => {
-        /// Window background behind everything (the transcript).
-        app_bg: "Window background",
-        /// Header, composer and settings panels.
-        panel_bg: "Header and panels",
+        /// Behind the Settings page and apps shown in the pane (the chat itself is a panel).
+        app_bg: "Page background (Settings, apps)",
+        /// The chat, header and composer: what most of the window is.
+        panel_bg: "Chat, header and composer background",
         sidebar_bg: "Sidebar (chat list)",
         /// Text inputs.
         field_bg: "Text fields",
