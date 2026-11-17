@@ -37,8 +37,13 @@ pub fn bold_or_regular(ctx: &egui::Context) -> FontFamily {
 /// or JetBrains Mono (OFL) for code, egui's defaults (symbols, monochrome Noto Emoji) as
 /// fallbacks, and before those the system's colour emoji font when there is one.
 pub fn install_fonts(ctx: &egui::Context, ui_font: UiFont, mono_font: MonoFont) {
+    ctx.set_fonts(font_definitions(ui_font, mono_font, system_emoji()));
+}
+
+/// The fonts [`install_fonts`] installs, given the colour emoji font (if any).
+fn font_definitions(ui_font: UiFont, mono_font: MonoFont, color_emoji: Option<Arc<FontData>>) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
-    if let Some(emoji) = system_emoji() {
+    if let Some(emoji) = color_emoji {
         fonts.font_data.insert(COLOR_EMOJI.into(), emoji);
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
             let list = fonts.families.entry(family).or_default();
@@ -58,7 +63,7 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: UiFont, mono_font: MonoFont) 
         fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jetbrains-mono".into());
     }
     fonts.families.insert(bold_family(), std::iter::once("inter-semibold".to_owned()).chain(fallbacks).collect());
-    ctx.set_fonts(fonts);
+    fonts
 }
 
 const COLOR_EMOJI: &str = "system-color-emoji";

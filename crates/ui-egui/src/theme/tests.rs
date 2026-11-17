@@ -362,3 +362,19 @@ fn zoom_is_kept_in_range_and_old_prefs_get_100_percent() {
     assert_eq!(Prefs::zoom_step(0.5, -1), 0.5);
     assert_eq!(Prefs::zoom_step(3.0, 1), 3.0);
 }
+
+/// Emoji need a font in every family even without a system colour emoji font (the browser,
+/// bare systems): egui 0.37 moved its emoji fonts behind `monochrome_emoji_fonts`, and without
+/// it they drew as boxes.
+#[test]
+fn every_family_can_draw_emoji_without_a_system_font() {
+    let ctx = egui::Context::default();
+    ctx.set_fonts(font_definitions(UiFont::Inter, MonoFont::JetBrainsMono, None));
+    ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+    for family in [FontFamily::Proportional, FontFamily::Monospace, bold_family()] {
+        let id = FontId::new(14.0, family.clone());
+        for c in ['😀', '🚀', '🎉'] {
+            assert!(ctx.fonts_mut(|f| f.has_glyph(&id, c)), "{family:?} has no glyph for {c}");
+        }
+    }
+}
