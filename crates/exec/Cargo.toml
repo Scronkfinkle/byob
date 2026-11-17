@@ -9,6 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+base64.workspace = true
 byob-tools.workspace = true
 byob-protocol.workspace = true
 byob-sandbox.workspace = true

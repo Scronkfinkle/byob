@@ -102,11 +102,18 @@ pub(crate) struct ToolRun<'a> {
 pub(crate) fn run_tool(t: &ToolRun<'_>, args: &[&str], run: &dyn Runner, capture: bool) -> Result<Option<String>, String> {
     let tmp = byob_sandbox::TempDir::new("byob-env-")?;
     let out_file = tmp.path().join("env.json");
-    // `sh -c 'exec "$@" > "$BYOB_OUT"' sh tool args…`: the file avoids the output cap.
-    let mut argv: Vec<OsString> = vec!["-c".into(), if capture { r#"exec "$@" > "$BYOB_OUT""# } else { r#"exec "$@""# }.into(), "sh".into()];
-    argv.push(t.program.as_os_str().to_owned());
-    argv.extend(args.iter().map(OsString::from));
-    let mut job = Job::new("sh".into(), argv, LOAD_TIMEOUT);
+    let mut job = if cfg!(windows) {
+        // No `sh` to redirect with: run the tool itself and keep all of its stdout.
+        let mut j = Job::new(t.program.as_os_str().to_owned(), args.iter().map(OsString::from).collect(), LOAD_TIMEOUT);
+        j.max_output = usize::try_from(MAX_JSON).unwrap_or(usize::MAX).saturating_mul(2);
+        j
+    } else {
+        // `sh -c 'exec "$@" > "$BYOB_OUT"' sh tool args…`: the file avoids the output cap.
+        let mut argv: Vec<OsString> = vec!["-c".into(), if capture { r#"exec "$@" > "$BYOB_OUT""# } else { r#"exec "$@""# }.into(), "sh".into()];
+        argv.push(t.program.as_os_str().to_owned());
+        argv.extend(args.iter().map(OsString::from));
+        Job::new("sh".into(), argv, LOAD_TIMEOUT)
+    };
     job.network = true;
     job.big_memory = true;
     for w in &t.write {
@@ -126,6 +133,12 @@ pub(crate) fn run_tool(t: &ToolRun<'_>, args: &[&str], run: &dyn Runner, capture
     }
     if !capture {
         return Ok(None);
+    }
+    if cfg!(windows) {
+        if out.stdout.dropped > 0 || out.stdout.bytes().len() as u64 > MAX_JSON {
+            return Err("the environment is too large".into());
+        }
+        return Ok(Some(out.stdout.text()));
     }
     let size = std::fs::metadata(&out_file).map(|m| m.len()).unwrap_or(0);
     if size > MAX_JSON {
