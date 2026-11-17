@@ -39,12 +39,7 @@ fn entry(id: u64, role: byob_protocol::EntryRole, content: &str, stats: Option<b
     }
 }
 
-/// A reply shows its text, not who wrote it, how long its reasoning was, or its token
-/// counts; those (the counts) appear while the pointer is on it.
-#[test]
-fn replies_keep_their_details_out_of_the_way_until_hovered() {
-    let fake = Fake::default();
-    let mut app = crowded_with(fake.clone());
+fn pears(fake: &Fake) {
     let stats = byob_protocol::TurnStats { prompt_tokens: 1234, completion_tokens: 56, elapsed_ms: 2500, model_calls: 1 };
     fake.inbox.lock().unwrap().push(ServerMsg::Transcript {
         entries: vec![
@@ -52,39 +47,101 @@ fn replies_keep_their_details_out_of_the_way_until_hovered() {
             entry(2, byob_protocol::EntryRole::Assistant, "Seven pears.", Some(stats)),
         ],
     });
-    let ctx = egui::Context::default();
-    let away = egui::pos2(999.0, 1.0);
-    for _ in 0..4 {
-        drawn(&ctx, &mut app, away);
-    }
-    let text = drawn(&ctx, &mut app, away);
-    assert!(text.contains("Seven pears.") && text.contains("How many pears?"), "{text}");
-    for noise in ["You\n", "byob\n", "out tokens", "chars"] {
-        assert!(!text.contains(noise), "{noise:?} drew: {text}");
-    }
-    assert!(text.contains("Thought\n"), "{text}");
-    // On the reply (somewhere above the composer): its time and tokens. The bubble's rect is
-    // last frame's, so each spot gets two frames.
-    let x = app.composer_rects.frame.center().x;
-    let bottom = app.composer_rects.frame.top();
-    let shows = (40..bottom as i32).step_by(8).any(|y| {
-        let at = egui::pos2(x, y as f32);
-        drawn(&ctx, &mut app, at);
-        drawn(&ctx, &mut app, at).contains("2.5 s · 1234 in, 56 out tokens")
-    });
-    assert!(shows, "hovering the reply shows its stats");
 }
 
-/// The composer's hint says what the box is for, nothing about keys.
-#[test]
-fn the_composer_hint_is_plain() {
-    let fake = Fake::default();
-    let mut app = crowded_with(fake);
-    let ctx = egui::Context::default();
-    for _ in 0..3 {
-        drawn(&ctx, &mut app, egui::pos2(999.0, 1.0));
+/// Settle and draw with the pointer away from everything.
+fn away(ctx: &egui::Context, app: &mut ByobApp) -> String {
+    let away = egui::pos2(999.0, 1.0);
+    for _ in 0..4 {
+        drawn(ctx, app, away);
     }
-    let text = drawn(&ctx, &mut app, egui::pos2(999.0, 1.0));
-    assert!(text.contains("Message byob…\n"), "{text}");
-    assert!(!text.contains("Shift+Enter"), "{text}");
+    drawn(ctx, app, away)
+}
+
+/// Whether hovering somewhere on the reply (above the composer) draws `want`. The bubble's
+/// rect is last frame's, so each spot gets two frames.
+fn hovering_the_reply_shows(ctx: &egui::Context, app: &mut ByobApp, want: &str) -> bool {
+    let x = app.composer_rects.frame.center().x;
+    let bottom = app.composer_rects.frame.top();
+    (40..bottom as i32).step_by(8).any(|y| {
+        let at = egui::pos2(x, y as f32);
+        drawn(ctx, app, at);
+        drawn(ctx, app, at).contains(want)
+    })
+}
+
+/// By default (and with an engine that has no layout) a reply says who wrote it, how long
+/// its reasoning was, and its tokens and time under it, and the composer shows its keys.
+#[test]
+fn by_default_every_detail_is_shown() {
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    pears(&fake);
+    let ctx = egui::Context::default();
+    let text = away(&ctx, &mut app);
+    for want in ["Seven pears.", "You\n", "byob\n", "Thought · 25 chars", "1234 in · 56 out tokens · 2.5 s", "Shift+Enter for a new line", "3.4k"] {
+        assert!(text.contains(want), "{want:?} isn't drawn: {text}");
+    }
+    assert!(!text.contains("tokens/s"), "speed is off by default: {text}");
+}
+
+/// The minimal preset: no labels, no reasoning length, no keys in the hint, and a reply's
+/// tokens and time only while the pointer is on it.
+#[test]
+fn the_minimal_layout_keeps_details_out_of_the_way_until_hovered() {
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    pears(&fake);
+    fake.inbox.lock().unwrap().push(ServerMsg::Layout(byob_protocol::layout::Layout::preset("minimal").unwrap()));
+    let ctx = egui::Context::default();
+    let text = away(&ctx, &mut app);
+    assert!(text.contains("Seven pears.") && text.contains("How many pears?"), "{text}");
+    for noise in ["You\n", "byob\n", "out tokens", "chars", "Shift+Enter"] {
+        assert!(!text.contains(noise), "{noise:?} drew: {text}");
+    }
+    assert!(text.contains("Thought\n") && text.contains("Message byob…\n"), "{text}");
+    assert!(hovering_the_reply_shows(&ctx, &mut app, "1234 in · 56 out tokens · 2.5 s"), "hovering the reply shows its stats");
+}
+
+/// A reply's details in the layout's order, with speed switched on and tokens hidden.
+#[test]
+fn a_replys_details_follow_the_layouts_order() {
+    use byob_protocol::layout::{Layout, REPLY, Show};
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    pears(&fake);
+    let mut l = Layout::default();
+    l.set_show("reply.speed", Show::Shown);
+    l.set_show("reply.tokens", Show::Hidden);
+    l.set_order(REPLY, vec!["reply.speed".into(), "reply.time".into()]);
+    fake.inbox.lock().unwrap().push(ServerMsg::Layout(l));
+    let ctx = egui::Context::default();
+    let text = away(&ctx, &mut app);
+    assert!(text.contains("22 tokens/s · 2.5 s"), "{text}");
+    assert!(!text.contains("out tokens"), "{text}");
+}
+
+/// The header follows the layout: the meter before the model chip, and its numbers only
+/// while the pointer is on the header.
+#[test]
+fn the_header_follows_the_layout() {
+    use byob_protocol::layout::{HEADER, Layout, Show};
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    let mut l = Layout::default();
+    l.set_show("header.usage_numbers", Show::Hover);
+    l.set_order(HEADER, vec!["header.usage".into()]);
+    fake.inbox.lock().unwrap().push(ServerMsg::Layout(l));
+    let ctx = egui::Context::default();
+    let below = egui::pos2(500.0, 400.0);
+    for _ in 0..4 {
+        drawn(&ctx, &mut app, below);
+    }
+    assert!(!drawn(&ctx, &mut app, below).contains("3.4k"));
+    // On the header (its rect is last frame's): the numbers, left of the model.
+    let on = egui::pos2(500.0, 10.0);
+    drawn(&ctx, &mut app, on);
+    let text = drawn(&ctx, &mut app, on);
+    let (meter, model) = (text.find("3.4k / 262k"), text.find("yet-another-extremely-long-model-name"));
+    assert!(meter.zip(model).is_some_and(|(a, b)| a < b), "{text}");
 }

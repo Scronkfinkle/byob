@@ -25,7 +25,7 @@ keys! {
     ModelList, VisionRole, SubagentRole, UtilityRole,
     Instructions, Approvals, ToolCalls, Subagents, Compaction, ModelImages, ToolCalling, WorkspaceSettings,
     PluginList,
-    Mode, ThemePair, Gallery, Accent, Radius, ChartColours, MessageLayout, UserBubble, ReplyBubble, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
+    Mode, ThemePair, Gallery, Accent, Radius, ChartColours, MessageLayout, UserBubble, ReplyBubble, ShownPreset, ShownList, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
     Zoom, TextSize, CodeSize, Font, CodeFont, Density, ColumnWidth, ChatListWidth, ArtifactPane, HighContrast, ReduceMotion, ResetText,
     ColourRoles,
 }
@@ -85,6 +85,12 @@ pub static PLUGINS: Section = sec(Tab::Plugins, "plugins", "", "");
 pub static THEME: Section = sec(Tab::Appearance, "theme", "Theme", "");
 pub static STYLE: Section = sec(Tab::Appearance, "style", "Accent and shape", "Used across the whole app, on top of the theme.");
 pub static MESSAGES: Section = sec(Tab::Appearance, "messages", "Messages", "How the conversation is drawn.");
+pub static SHOWN: Section = sec(
+    Tab::Appearance,
+    "shown",
+    "What's shown",
+    "Details, labels and hints, and the order of the header and of a reply's details. Kept for every window and browser tab. Or ask byob, e.g. \"hide the token counts\".",
+);
 pub static THEME_FILES: Section =
     sec(Tab::Appearance, "theme-files", "Theme files", "Keep the current look (colours and the settings above) as a .json theme file, or add someone else's.");
 pub static RESET_LOOK: Section = sec(Tab::Appearance, "reset", "Reset", "");
@@ -107,6 +113,7 @@ pub static SECTIONS: &[&Section] = &[
     &THEME,
     &STYLE,
     &MESSAGES,
+    &SHOWN,
     &THEME_FILES,
     &RESET_LOOK,
     &SIZE,
@@ -287,6 +294,24 @@ pub static SETTINGS: &[Setting] = &[
     ),
     s(Key::UserBubble, "user-bubble", &MESSAGES, "Your messages", "How your messages are drawn.", "bubble user style filled outlined minimal", Row),
     s(Key::ReplyBubble, "reply-bubble", &MESSAGES, "Replies", "How the model's replies are drawn.", "assistant bubble response answer style", Row),
+    s(
+        Key::ShownPreset,
+        "shown-preset",
+        &SHOWN,
+        "Detail",
+        "Everything, or details on hover and fewer labels.",
+        "layout minimal clean clutter busy details hide show preset simple",
+        Row,
+    ),
+    s(
+        Key::ShownList,
+        "shown-list",
+        &SHOWN,
+        "Each part",
+        "Show, hide or move each part.",
+        "layout hide show hover order reorder move tokens time speed stats header model chip context meter wordmark shortcuts hints labels you byob thinking plugins toolbar",
+        Block,
+    ),
     s(Key::ImportTheme, "import-theme", &THEME_FILES, "Add a theme", "Import a .json theme file.", "import load file json reload folder", Row),
     s(
         Key::ExportTheme,

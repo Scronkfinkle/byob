@@ -255,8 +255,26 @@ impl Sites {
 
     /// The header's status items (right to left, like the rest of the header's actions).
     pub fn status_items(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        let items: Vec<Declared> = self.declared.iter().filter(|d| d.decl.site == Site::Status).cloned().collect();
-        for d in items.iter().rev() {
+        for id in self.status_ids().iter().rev() {
+            self.status_item(ui, t, id);
+        }
+    }
+
+    /// The layout ids (`view:<plugin>/<view>`) of the status items there are, in declared order.
+    pub fn status_ids(&self) -> Vec<String> {
+        self.declared.iter().filter(|d| d.decl.site == Site::Status).map(|d| byob_protocol::layout::view_id(&d.plugin, &d.decl.id)).collect()
+    }
+
+    /// What the status item with layout id `id` is called: its title and plugin.
+    pub fn status_label(&self, id: &str) -> Option<String> {
+        let d = self.declared.iter().find(|d| d.decl.site == Site::Status && byob_protocol::layout::view_id(&d.plugin, &d.decl.id) == id)?;
+        Some(format!("{} ({})", d.title(), d.plugin_name))
+    }
+
+    /// The status item with layout id `id` (nothing if there's none).
+    pub fn status_item(&mut self, ui: &mut egui::Ui, t: &Tokens, id: &str) {
+        let found = self.declared.iter().find(|d| d.decl.site == Site::Status && byob_protocol::layout::view_id(&d.plugin, &d.decl.id) == id).cloned();
+        if let Some(d) = found {
             let r = d.view_ref();
             let w = self.status_w.get(&r).copied().unwrap_or(STATUS_WIDTH);
             let shown = ui.allocate_ui_with_layout(vec2(w, ui.available_height()), egui::Layout::left_to_right(egui::Align::Center), |ui| {

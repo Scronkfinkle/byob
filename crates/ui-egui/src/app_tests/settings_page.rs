@@ -53,7 +53,7 @@ fn full_app() -> ByobApp {
     let list = byob_protocol::profiles::ProfileList { items: vec![view("local"), view("cloud")], roles: [("main".to_owned(), "local".to_owned())].into() };
     let config = crate::workspace::tests::view(byob_protocol::ConfigScope::Global, byob_protocol::workspace::Layer::default(), None);
     let app = crowded_with(fake.clone());
-    fake.inbox.lock().unwrap().extend([ServerMsg::Profiles(Box::new(list)), ServerMsg::Config(Box::new(config))]);
+    fake.inbox.lock().unwrap().extend([ServerMsg::Welcome(Welcome::current()), ServerMsg::Profiles(Box::new(list)), ServerMsg::Config(Box::new(config))]);
     app
 }
 

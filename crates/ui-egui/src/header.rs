@@ -39,6 +39,19 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// This, less what the user's layout hides (`header.wordmark`, `header.workspace`,
+    /// `header.server`).
+    #[must_use]
+    pub fn shaped(mut self, ctx: &egui::Context) -> Self {
+        use crate::layout::in_header;
+        self.wordmark &= in_header(ctx, "header.wordmark");
+        self.workspace_name &= in_header(ctx, "header.workspace");
+        if self.chip == ChipDetail::Full && !in_header(ctx, "header.server") {
+            self.chip = ChipDetail::Model;
+        }
+        self
+    }
+
     pub fn for_width(width: f32) -> Self {
         let phone = width < crate::sidebar::NARROW;
         Self {
@@ -190,8 +203,8 @@ impl ByobApp {
 
     pub(crate) fn header(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
-        let layout = Layout::for_width(ui.available_width());
-        egui::Panel::top("header").show(ui, |ui| {
+        let layout = Layout::for_width(ui.available_width()).shaped(ui.ctx());
+        let shown = egui::Panel::top("header").show(ui, |ui| {
             ui.horizontal(|ui| {
                 // The row's full height up front: items line up on its centre whatever order
                 // they are drawn in.
@@ -208,6 +221,7 @@ impl ByobApp {
                 });
             });
         });
+        crate::layout::set_header_rect(ui.ctx(), shown.response.rect);
     }
 
     /// Right to left: the "⋯" menu (App settings is in it and in the sidebar), the plugins
@@ -224,10 +238,19 @@ impl ByobApp {
             self.header_rects.plugins = Rect::NOTHING;
             return;
         }
-        self.header_rects.plugins = self.plugins.chip(ui, t, layout.plugin_count, false).map_or(Rect::NOTHING, |r| r.rect);
-        self.artifacts.header_toggle(ui);
-        self.plugins.sites.pane_toggles(ui, t);
-        self.plugins.sites.status_items(ui, t);
+        self.header_rects.plugins = Rect::NOTHING;
+        // The toolbar in the layout's order, drawn right to left.
+        let shape = crate::layout::get(ui.ctx());
+        let items = shape.arrange(byob_protocol::layout::TOOLBAR, &self.plugins.sites.status_ids());
+        let ctx = ui.ctx().clone();
+        for id in items.iter().rev().filter(|id| crate::layout::in_header(&ctx, id)) {
+            match id.as_str() {
+                "toolbar.plugins" => self.header_rects.plugins = self.plugins.chip(ui, t, layout.plugin_count, false).map_or(Rect::NOTHING, |r| r.rect),
+                "toolbar.artifacts" => self.artifacts.header_toggle(ui),
+                "toolbar.panes" => self.plugins.sites.pane_toggles(ui, t),
+                view => self.plugins.sites.status_item(ui, t, view),
+            }
+        }
     }
 
     /// The profile the chat in view uses: its own or its workspace's, else the default one
@@ -352,7 +375,29 @@ impl ByobApp {
         }
         self.header_context(ui, t, layout);
         ui.add_space(4.0);
-        // The connection: its status dot, model and server; a click opens its settings.
+        // The model chip and the context meter, in the layout's order.
+        let shape = crate::layout::get(ui.ctx());
+        for id in shape.arrange(byob_protocol::layout::HEADER, &[]) {
+            if !crate::layout::in_header(ui.ctx(), &id) {
+                continue;
+            }
+            match id.as_str() {
+                "header.model" => self.header_model(ui, t, layout),
+                "header.usage" => {
+                    if ui.available_width() > 40.0
+                        && let Some(msg) = self.usage.meter(ui, t)
+                    {
+                        self.conn.send(msg);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The connection: its status dot, model and server; a click switches the chat's model
+    /// (or opens the connection's settings).
+    fn header_model(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, layout: Layout) {
         let room = ui.available_width();
         // With saved models, the chip switches this chat's model.
         let current = self.chat_profile();
@@ -384,11 +429,6 @@ impl ByobApp {
             Some(connect::ChipClick::Connection) => self.open_connection(),
             Some(connect::ChipClick::ChatSettings) if self.workspaces.chat.is_none() => self.workspaces.toggle_chat(),
             Some(connect::ChipClick::ChatSettings) | None => {}
-        }
-        if ui.available_width() > 40.0
-            && let Some(msg) = self.usage.meter(ui, t)
-        {
-            self.conn.send(msg);
         }
     }
 

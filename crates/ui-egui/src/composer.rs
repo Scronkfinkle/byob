@@ -202,16 +202,17 @@ impl ByobApp {
                 egui::pos2((controls_left - gap).max(attach_rect.right() + gap + 40.0), row.bottom()),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
-                // Just what the box is for (the keys are in the buttons' tooltips), shorter
-                // still where even that would wrap.
-                let (short, tiny) = match (editing.is_some(), busy) {
-                    (true, _) => ("Edit the queued message…", "Edit…"),
-                    (false, true) => ("Queue a follow-up…", "Queue…"),
-                    (false, false) => ("Message byob…", "Message…"),
+                // What the box is for, with its keys where the layout shows them (they're
+                // also in the buttons' tooltips); shorter where the long one would wrap.
+                let (long, short, tiny) = match (editing.is_some(), busy) {
+                    (true, _) => ("Edit the queued message…  (Enter to save, Esc to cancel)", "Edit the queued message…", "Edit…"),
+                    (false, true) => ("Queue a follow-up…  (Enter to queue, Shift+Enter for a new line)", "Queue a follow-up…", "Queue…"),
+                    (false, false) => ("Message byob…  (Enter to send, Shift+Enter for a new line)", "Message byob…", "Message…"),
                 };
+                let keys = crate::layout::visible(ui.ctx(), "composer.keys", false);
                 let room = ui.available_width() - 8.0;
                 let fits = |hint: &str| ui.painter().layout_no_wrap(hint.to_owned(), egui::TextStyle::Body.resolve(ui.style()), t.text).size().x <= room;
-                let hint = if fits(short) { short } else { tiny };
+                let hint = [long].into_iter().filter(|_| keys).chain([short]).find(|h| fits(h)).unwrap_or(tiny);
                 let input = &mut self.input;
                 let tk = *t;
                 // Live Markdown: the text stays as typed, styled as it is laid out.

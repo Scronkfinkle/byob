@@ -67,14 +67,22 @@ impl Usage {
     }
 
     /// The header meter. Returns a message if the user asked to compact now.
-    /// The bar alone; the numbers are in its tooltip (and its popup).
+    /// The bar, and its numbers where the layout shows them (`header.usage_numbers`; never
+    /// on phones); they're always in its tooltip and popup.
     pub fn meter(&mut self, ui: &mut egui::Ui, t: &Tokens) -> Option<ClientMsg> {
         let u = self.usage.as_ref()?;
+        let narrow = ui.ctx().content_rect().width() < crate::sidebar::NARROW;
+        let numbers = !narrow && crate::layout::in_header(ui.ctx(), "header.usage_numbers");
         let row = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             bar(ui, t, u, BAR_WIDTH);
             if u.compacting {
                 ui.label(RichText::new("compacting…").small().color(t.text_dim));
+            } else if numbers {
+                ui.label(RichText::new(u.label()).small().color(t.text_dim));
+                if let Some(split) = u.split_label() {
+                    ui.label(RichText::new(split).small().color(t.text_faint));
+                }
             }
         });
         let response = row.response.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);

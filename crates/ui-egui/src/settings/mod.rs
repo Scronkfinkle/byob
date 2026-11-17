@@ -11,6 +11,7 @@
 
 mod controls;
 pub(crate) mod registry;
+mod shown;
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 

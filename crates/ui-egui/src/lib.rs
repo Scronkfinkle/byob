@@ -14,6 +14,7 @@ mod form;
 pub mod header;
 mod highlight;
 mod icons;
+pub mod layout;
 pub mod markdown;
 pub mod media;
 pub mod models;
@@ -118,6 +119,8 @@ pub struct ByobApp {
     draft_key: String,
     /// The first message of a new chat went out: the chat it makes keeps the composer.
     sent_new: bool,
+    /// What the interface shows, as the engine last said ([`layout`]).
+    layout: std::sync::Arc<byob_protocol::layout::Layout>,
 }
 
 /// Where a draft is kept: `chat:<id>` for a chat, `new:<workspace>` for the new chat about
@@ -172,6 +175,7 @@ impl ByobApp {
             drafts: std::collections::BTreeMap::new(),
             draft_key: String::new(),
             sent_new: false,
+            layout: std::sync::Arc::default(),
         }
     }
 
@@ -375,6 +379,7 @@ impl ByobApp {
                 }
                 // Handled by the models section above.
                 ServerMsg::Profiles(_) | ServerMsg::ProfileTested(_) => {}
+                ServerMsg::Layout(l) => self.layout = std::sync::Arc::new(l.sanitized()),
                 // Handled by the queue above.
                 ServerMsg::Queue(_) => {}
                 // Handled by the plugins above.
@@ -736,6 +741,7 @@ impl ByobApp {
         }
         self.poll_appearance();
         self.apply_theme(ui.ctx());
+        layout::store(ui.ctx(), &self.layout);
         let narrow = ui.available_width() < sidebar::NARROW;
         self.artifacts.begin_frame(ui.ctx(), &self.tokens, narrow);
         let list_open = self.sidebar.is_open(narrow);
@@ -1012,19 +1018,37 @@ fn entry_view(
     // The bubble's rect from the last frame: the reply's details show while the pointer is on it.
     let rect_id = ui.make_persistent_id(("bubble-rect", entry.id));
     let hovered = ui.data(|d| d.get_temp::<egui::Rect>(rect_id)).is_some_and(|r| ui.rect_contains_pointer(r));
+    let shape = crate::layout::get(ui.ctx());
+    let (details, on_hover) = entry.stats.filter(|_| entry.role == EntryRole::Assistant).map(|s| reply_details(&shape, &s)).unwrap_or_default();
     ui.with_layout(layout, |ui| {
         let shown = egui::Frame::new().fill(fill).stroke(stroke).corner_radius(t.round(8.0)).inner_margin(margin).show(ui, |ui| {
             ui.set_width(width - 2.0 * margin);
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                // No "You"/"byob" label: the bubbles tell them apart. Only what's going on.
-                if entry.pending_approvals().next().is_some() {
+                let waiting = entry.pending_approvals().next().is_some();
+                if shape.visible("message.role", hovered) {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(if user { "You" } else { "byob" }).strong().color(t.accent));
+                        if waiting {
+                            steps::waiting_badge(ui, t);
+                        } else if !entry.done {
+                            theme::spinner(ui, t, None);
+                        }
+                    });
+                } else if waiting {
+                    // Without the label, only what's going on.
                     ui.horizontal(|ui| steps::waiting_badge(ui, t));
                 } else if !entry.done && entry.content.is_empty() && entry.steps.is_empty() && entry.reasoning.is_empty() {
                     theme::spinner(ui, t, None);
                 }
                 if !entry.reasoning.is_empty() {
                     let thinking = !entry.done && entry.content.is_empty() && entry.steps.iter().all(|s| s.status == StepStatus::Running);
-                    let title = if thinking { "Thinking…" } else { "Thought" };
+                    let size = size_label(entry.reasoning.chars().count());
+                    let title = match (thinking, shape.visible("message.thought_size", hovered)) {
+                        (true, true) => format!("Thinking… · {size}"),
+                        (true, false) => "Thinking…".to_owned(),
+                        (false, true) => format!("Thought · {size}"),
+                        (false, false) => "Thought".to_owned(),
+                    };
                     egui::CollapsingHeader::new(egui::RichText::new(title).color(t.text_dim))
                         .id_salt(("thinking", entry.id))
                         .show(ui, |ui| {
@@ -1040,7 +1064,7 @@ fn entry_view(
                                 });
                         })
                         .header_response
-                        .on_hover_text(format!("{} of reasoning", size_label(entry.reasoning.chars().count())));
+                        .on_hover_text(format!("{size} of reasoning"));
                 }
                 match entry.role {
                     // reply text with its tool steps where they happened, approval cards, undo
@@ -1062,16 +1086,17 @@ fn entry_view(
                 {
                     *card = Some(action);
                 }
+                if !details.is_empty() {
+                    ui.label(egui::RichText::new(details.join(" · ")).small().color(t.text_dim));
+                }
             });
         });
         let bubble = shown.response.rect;
         ui.data_mut(|d| d.insert_temp(rect_id, bubble));
-        // Time and tokens only while the pointer is on the reply, over its bottom-right corner
-        // (a row of its own on every reply was noise, and a hidden one left a gap).
-        if hovered && let Some(s) = entry.stats.filter(|_| entry.role == EntryRole::Assistant) {
-            #[allow(clippy::cast_precision_loss)] // display only
-            let secs = s.elapsed_ms as f64 / 1000.0;
-            let text = format!("{secs:.1} s · {} in, {} out tokens", s.prompt_tokens, s.completion_tokens);
+        // Details on hover: over the reply's bottom-right corner while the pointer is on it
+        // (a row that appeared and disappeared would move everything under it).
+        if hovered && !on_hover.is_empty() {
+            let text = on_hover.join(" · ");
             let p = ui.painter();
             let galley = p.layout_no_wrap(text, egui::TextStyle::Small.resolve(ui.style()), t.text_dim);
             let pad = egui::vec2(6.0, 2.0);
@@ -1083,6 +1108,30 @@ fn entry_view(
         }
     });
     answer
+}
+
+/// A finished reply's details in the layout's order: those always shown, and those shown
+/// while the pointer is on the reply.
+fn reply_details(layout: &byob_protocol::layout::Layout, s: &byob_protocol::TurnStats) -> (Vec<String>, Vec<String>) {
+    use byob_protocol::layout::{REPLY, Show};
+    #[allow(clippy::cast_precision_loss)] // display only
+    let secs = s.elapsed_ms as f64 / 1000.0;
+    let (mut shown, mut hover) = (Vec::new(), Vec::new());
+    for id in layout.arrange(REPLY, &[]) {
+        let text = match id.as_str() {
+            "reply.tokens" => format!("{} in · {} out tokens", s.prompt_tokens, s.completion_tokens),
+            "reply.time" => format!("{secs:.1} s"),
+            #[allow(clippy::cast_precision_loss)] // display only
+            "reply.speed" if secs > 0.05 && s.completion_tokens > 0 => format!("{:.0} tokens/s", s.completion_tokens as f64 / secs),
+            _ => continue,
+        };
+        match layout.show(&id) {
+            Show::Shown => shown.push(text),
+            Show::Hover => hover.push(text),
+            Show::Hidden => {}
+        }
+    }
+    (shown, hover)
 }
 
 /// The transcript in a centred column no wider than the user's readable width.

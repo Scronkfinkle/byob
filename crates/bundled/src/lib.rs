@@ -48,6 +48,7 @@ mod tests {
         assert_eq!(
             ids,
             [
+                "appearance",
                 "artifacts",
                 "ask-user",
                 "calendar",

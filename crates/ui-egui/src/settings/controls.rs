@@ -41,6 +41,8 @@ impl ByobApp {
     pub(crate) fn setting_shown(&self, key: Key) -> bool {
         match key {
             Key::VisionRole | Key::SubagentRole | Key::UtilityRole => self.models.list.as_ref().is_some_and(|l| !l.items.is_empty()),
+            // The engine keeps the layout: only with one that does.
+            Key::ShownPreset | Key::ShownList => self.engine_has(byob_protocol::layout::CAP_LAYOUT),
             _ => true,
         }
     }
@@ -115,6 +117,8 @@ impl ByobApp {
                     ui.selectable_value(&mut k.assistant_bubble, s, s.label());
                 }
             }
+            Key::ShownPreset => self.layout_presets(ui, t),
+            Key::ShownList => self.layout_list(ui, t),
             Key::ImportTheme => self.import_buttons(ui),
             Key::ExportTheme => self.export_controls(ui, t, d),
             Key::ResetLook => {
