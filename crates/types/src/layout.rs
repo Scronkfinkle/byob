@@ -89,7 +89,7 @@ pub const REPLY: &str = "reply";
 /// The regions that can be reordered, each listed left to right.
 pub const REGIONS: &[Region] = &[
     Region { id: HEADER, describe: "the header after the chat's title, left to right", plugin_views: false },
-    Region { id: TOOLBAR, describe: "the header's buttons on the right, left to right (the ⋯ menu always stays last)", plugin_views: true },
+    Region { id: TOOLBAR, describe: "the header's buttons on the right, left to right (the More menu always stays last)", plugin_views: true },
     Region { id: REPLY, describe: "the details under a reply, left to right", plugin_views: false },
 ];
 

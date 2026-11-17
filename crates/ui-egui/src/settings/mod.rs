@@ -425,7 +425,7 @@ impl ByobApp {
             Tab::Models => "The model server byob talks to; saved for every window and browser tab.".into(),
             Tab::Defaults => "Defaults for every chat, saved in settings.json. A workspace or a chat can change each of them for itself.".into(),
             Tab::Plugins => "What the chat in view can use: plugins of this chat, its workspace and every chat.".into(),
-            Tab::Appearance => "How byob looks. Saved on this device only.".into(),
+            Tab::Appearance => "How byob looks. Saved on this device only, except what's shown, which every window shares.".into(),
             Tab::Text => "Sizes, fonts and how the window is laid out. Saved on this device only.".into(),
             Tab::Colours => {
                 let current = file::resolve(self.prefs.theme_id(self.tokens.dark), self.tokens.dark, &self.user_themes);
