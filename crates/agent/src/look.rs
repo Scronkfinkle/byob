@@ -115,24 +115,40 @@ fn describe(r: &LookReport) -> String {
     out
 }
 
-/// The `set` argument, checked against what the window has.
-fn changes(args: &Value, have: &LookReport) -> Result<Option<LookChanges>, String> {
+/// The window's setting names (the colours as one `colour.<role>`), for a model that guessed.
+fn names(have: &LookReport) -> String {
+    let mut names: Vec<&str> = have.fields.iter().map(|f| f.key.as_str()).filter(|k| !k.starts_with("colour.")).collect();
+    if have.fields.iter().any(|f| f.key.starts_with("colour.")) {
+        names.push("colour.<role>");
+    }
+    names.join(", ")
+}
+
+/// The `set` argument, checked against what the window has: the changes to send, and what
+/// was left out and why (an error when nothing is left).
+fn changes(args: &Value, have: &LookReport) -> Result<Option<(LookChanges, Vec<String>)>, String> {
     let Some(set) = args.get("set") else { return Ok(None) };
     let map = set.as_object().ok_or("set: an object of setting → new value")?;
     if map.is_empty() {
         return Ok(None);
     }
-    let mut out = LookChanges::new();
+    let (mut out, mut skipped) = (LookChanges::new(), Vec::new());
     for (k, v) in map {
-        if have.get(k).is_none() && !k.starts_with("colour.") {
-            return Err(format!("this window has no setting {k:?} (call ui_look without arguments for the list)"));
+        if have.get(k).is_none() {
+            skipped.push(format!("there's no setting {k:?}"));
+        } else if matches!(v, Value::Object(_) | Value::Array(_)) {
+            skipped.push(format!("{k}: one value (a string, number or true/false)"));
+        } else {
+            out.insert(k.clone(), v.clone());
         }
-        if matches!(v, Value::Object(_) | Value::Array(_)) {
-            return Err(format!("{k}: one value (a string, number or true/false)"));
-        }
-        out.insert(k.clone(), v.clone());
     }
-    Ok(Some(out))
+    if skipped.iter().any(|s| s.starts_with("there's no setting")) {
+        skipped.push(format!("the settings are: {}", names(have)));
+    }
+    if out.is_empty() {
+        return Err(skipped.join("; "));
+    }
+    Ok(Some((out, skipped)))
 }
 
 /// The model's tool: read the window's look, or change it.
@@ -185,33 +201,44 @@ impl Tool for UiLook {
             Ok((r, _)) => r,
             Err(e) => return ToolOutput::err(e),
         };
-        let set = match changes(args, &now) {
+        let (set, skipped) = match changes(args, &now) {
             Ok(Some(c)) => c,
             Ok(None) => return ToolOutput::ok(describe(&now)),
             Err(e) => return ToolOutput::err(e),
         };
+        let asked: Vec<String> = set.keys().cloned().collect();
         let (before, after) = match request(&self.inbox, chat, Some(set), ctx.cancel_flag()) {
             Ok((b, Some(a))) => (b, a),
             Ok((_, None)) => return ToolOutput::err("the window didn't answer"),
             Err(e) => return ToolOutput::err(e),
         };
-        let mut out = String::new();
+        // What was asked for, setting by setting; colours that follow from it (an accent
+        // changes links and selections too) only as a count.
         let changed = after.changes_since(&before);
-        if changed.is_empty() {
-            out.push_str("Nothing changed.\n");
-        } else {
-            out.push_str("Changed in the window:\n");
-            for (k, old, new) in &changed {
-                let _ = writeln!(out, "- {k}: {} → {}", shown(old), shown(new));
+        let mut out = String::from("In the window now:\n");
+        for k in &asked {
+            match changed.iter().find(|(c, _, _)| c == k) {
+                Some((_, old, new)) => {
+                    let _ = writeln!(out, "- {k}: {} → {}", shown(old), shown(new));
+                }
+                None if after.problems.iter().any(|p| p.starts_with(&format!("{k}:"))) => {}
+                None => {
+                    let _ = writeln!(out, "- {k}: already {}", after.get(k).map_or_else(|| "(unset)".to_owned(), shown));
+                }
             }
         }
-        if !after.problems.is_empty() {
+        let follow = changed.iter().filter(|(k, _, _)| !asked.contains(k)).count();
+        if follow > 0 {
+            let _ = writeln!(out, "({follow} colours that follow from these changed with them.)");
+        }
+        let problems: Vec<&String> = after.problems.iter().chain(&skipped).collect();
+        if !problems.is_empty() {
             out.push_str("\nNot applied:\n");
-            for p in &after.problems {
+            for p in &problems {
                 let _ = writeln!(out, "- {p}");
             }
         }
-        if changed.is_empty() && !after.problems.is_empty() { ToolOutput::err(out) } else { ToolOutput::ok(out) }
+        if changed.is_empty() && !problems.is_empty() { ToolOutput::err(out) } else { ToolOutput::ok(out) }
     }
 }
 
@@ -222,7 +249,10 @@ mod tests {
 
     fn report() -> LookReport {
         LookReport {
-            fields: vec![LookField { key: "accent".into(), value: json!("theme"), describe: "theme, blue, orange or #rrggbb".into() }],
+            fields: vec![
+                LookField { key: "accent".into(), value: json!("theme"), describe: "theme, blue, orange or #rrggbb".into() },
+                LookField { key: "colour.app_bg".into(), value: json!("#101010"), describe: "Background".into() },
+            ],
             ..Default::default()
         }
     }
@@ -231,11 +261,14 @@ mod tests {
     fn changes_are_checked_against_the_windows_settings() {
         assert_eq!(changes(&json!({}), &report()), Ok(None));
         assert_eq!(changes(&json!({"set": {}}), &report()), Ok(None));
-        assert_eq!(changes(&json!({"set": {"accent": "orange"}}), &report()).unwrap().unwrap()["accent"], "orange");
-        assert!(changes(&json!({"set": {"sparkle": true}}), &report()).unwrap_err().contains("no setting \"sparkle\""));
+        assert_eq!(changes(&json!({"set": {"accent": "orange"}}), &report()).unwrap().unwrap().0["accent"], "orange");
+        let e = changes(&json!({"set": {"sparkle": true}}), &report()).unwrap_err();
+        assert!(e.contains("no setting \"sparkle\"") && e.contains("the settings are: accent, colour.<role>"), "{e}");
         assert!(changes(&json!({"set": {"accent": ["a"]}}), &report()).is_err());
-        // Any colour role may be overridden (the window says which exist).
-        assert!(changes(&json!({"set": {"colour.app_bg": "#202020"}}), &report()).is_ok());
+        // What it knows goes ahead; what it doesn't is said.
+        let (set, skipped) = changes(&json!({"set": {"accent": "teal", "bubbles": "outlined"}}), &report()).unwrap().unwrap();
+        assert_eq!((set.len(), skipped.len()), (1, 2));
+        assert!(changes(&json!({"set": {"colour.app_bg": "#202020"}}), &report()).unwrap().is_some());
         assert!(describe(&report()).contains("- accent: \"theme\" — theme, blue"));
     }
 }

@@ -1290,7 +1290,7 @@ fn the_model_changes_the_windows_look() {
     let results = tool_results(requests.lock().unwrap().last().unwrap());
     assert!(results[0].contains("- accent: \"theme\" — theme, blue"), "{}", results[0]);
     assert!(results[1].contains("- accent: \"theme\" → \"orange\"") && results[1].contains("corners: 99 is out of range"), "{}", results[1]);
-    assert!(results[2].contains("no setting \"sparkle\""), "{}", results[2]);
+    assert!(results[2].contains("no setting \"sparkle\"") && results[2].contains("the settings are: accent, corners"), "{}", results[2]);
 }
 
 /// Without a window that reports its look, `ui_look` says so.
