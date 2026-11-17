@@ -106,6 +106,14 @@ chat starts with: instructions, approvals, limits, context), Plugins and, on thi
 Appearance (light or dark, themes, accent, messages, theme files), Text & layout (zoom, sizes,
 fonts, density, accessibility) and Colours. Back or Esc returns to the chat as you left it.
 
+**What's shown** (Settings → Appearance, shared by every window and browser tab): each detail
+of the interface (who wrote a message, the thinking's length, a reply's tokens, time and
+speed, the context numbers, shortcut hints, the wordmark, the server's address, plugins'
+header items) is shown, shown on hover, or hidden, and the header and a reply's details can be
+reordered. Everything / Balanced / Minimal set them all at once. Or ask byob: "hide the token
+counts and show the speed" or "make it cleaner" changes it in every window (the `ui_layout`
+tool of the bundled Appearance plugin).
+
 ## Plugins
 
 Settings → Plugins lists what the chat in view can use. Any bundled plugin can be forked to your
