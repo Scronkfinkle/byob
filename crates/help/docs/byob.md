@@ -46,7 +46,7 @@ On macOS the builds aren't signed by an Apple developer yet. Fetched from a term
 archive never meets Gatekeeper (use `x86_64` instead of `aarch64` on an Intel Mac):
 
 ```sh
-v=0.3.6; curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-aarch64-apple-darwin.tar.gz | tar xz
+v=0.3.7; curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-aarch64-apple-darwin.tar.gz | tar xz
 ./byob-$v-aarch64-apple-darwin/byob
 ```
 
