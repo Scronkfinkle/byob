@@ -34,9 +34,19 @@ pub fn bold_or_regular(ctx: &egui::Context) -> FontFamily {
 }
 
 /// Install the UI fonts: Inter (OFL) or egui's Ubuntu for text, Inter SemiBold for bold, Hack
-/// or JetBrains Mono (OFL) for code, egui's defaults (emoji, symbols) as fallbacks.
+/// or JetBrains Mono (OFL) for code, egui's defaults (symbols, monochrome Noto Emoji) as
+/// fallbacks, and before those the system's colour emoji font when there is one.
 pub fn install_fonts(ctx: &egui::Context, ui_font: UiFont, mono_font: MonoFont) {
     let mut fonts = FontDefinitions::default();
+    if let Some(emoji) = system_emoji() {
+        fonts.font_data.insert(COLOR_EMOJI.into(), emoji);
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            let list = fonts.families.entry(family).or_default();
+            // Ahead of egui's own fallbacks (its icons, then the monochrome emoji).
+            let at = list.iter().position(|f| f == "egui-icons").unwrap_or(list.len());
+            list.insert(at, COLOR_EMOJI.into());
+        }
+    }
     fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/Inter-Regular.ttf"))));
     fonts.font_data.insert("inter-semibold".into(), Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/Inter-SemiBold.ttf"))));
     fonts.font_data.insert("jetbrains-mono".into(), Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf"))));
@@ -49,6 +59,59 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: UiFont, mono_font: MonoFont) 
     }
     fonts.families.insert(bold_family(), std::iter::once("inter-semibold".to_owned()).chain(fallbacks).collect());
     ctx.set_fonts(fonts);
+}
+
+const COLOR_EMOJI: &str = "system-color-emoji";
+
+/// Largest emoji font we load: Noto Color Emoji is about 10 MB and Segoe UI Emoji 2 MB, while
+/// Apple Color Emoji (well over 100 MB of bitmaps) is left to the bundled monochrome one.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_EMOJI_FONT_BYTES: u64 = 40 * 1024 * 1024;
+
+/// The system's colour emoji font, read once. None in the browser (it can't read the disk),
+/// on systems without one, or when it is too large to keep in memory.
+fn system_emoji() -> Option<Arc<FontData>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static FONT: std::sync::OnceLock<Option<Arc<FontData>>> = std::sync::OnceLock::new();
+        FONT.get_or_init(|| {
+            let path = emoji_font_paths().into_iter().find(|p| p.metadata().is_ok_and(|m| m.is_file() && m.len() <= MAX_EMOJI_FONT_BYTES))?;
+            let bytes = std::fs::read(&path).ok()?;
+            log::info!("colour emoji from {}", path.display());
+            Some(Arc::new(FontData::from_owned(bytes).tweak(egui::FontTweak { scale: 0.85, ..Default::default() })))
+        })
+        .clone()
+    }
+    #[cfg(target_arch = "wasm32")]
+    None
+}
+
+/// Where colour emoji fonts live: fontconfig's pick first (most Linux and BSD desktops), then
+/// the usual install paths.
+#[cfg(not(target_arch = "wasm32"))]
+fn emoji_font_paths() -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if cfg!(all(unix, not(target_os = "macos")))
+        && let Ok(o) = std::process::Command::new("fc-match").args(["-f", "%{file}", "emoji:color"]).stderr(std::process::Stdio::null()).output()
+        && o.status.success()
+        && let Ok(file) = String::from_utf8(o.stdout)
+        && file.to_ascii_lowercase().contains("emoji")
+    {
+        out.push(file.into());
+    }
+    let windir = std::env::var_os("WINDIR").map(std::path::PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
+    out.push(windir.join("Fonts").join("seguiemj.ttf"));
+    for p in [
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf",
+        "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
+        "/usr/share/fonts/TTF/NotoColorEmoji.ttf",
+        "/run/current-system/sw/share/X11/fonts/NotoColorEmoji.ttf",
+    ] {
+        out.push(p.into());
+    }
+    out
 }
 
 /// A colour role: a field of [`Tokens`] users can override.

@@ -970,6 +970,7 @@ dependencies = [
  "byob-types",
  "directories",
  "egui",
+ "epaint",
  "ewebsock",
  "image",
  "js-sys",
@@ -2163,6 +2164,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "log",
  "peniko",
+ "png",
  "skrifa 0.44.0",
  "smallvec",
  "vello_common 0.2.0",
@@ -5308,6 +5310,7 @@ dependencies = [
  "guillotiere",
  "log",
  "peniko",
+ "png",
  "smallvec",
  "thiserror 2.0.21",
 ]
@@ -5337,6 +5340,7 @@ dependencies = [
  "bytemuck",
  "glifo 0.3.0",
  "hashbrown 0.17.1",
+ "png",
  "vello_common 0.2.0",
 ]
 

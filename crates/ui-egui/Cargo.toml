@@ -11,6 +11,8 @@ homepage.workspace = true
 [dependencies]
 byob-protocol.workspace = true
 egui.workspace = true
+# Only for its `color_fonts` feature (colour emoji); egui re-exports the API.
+epaint.workspace = true
 ewebsock.workspace = true
 log.workspace = true
 web-time.workspace = true
