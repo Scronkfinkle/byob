@@ -197,8 +197,8 @@ tokens! {
         /// Window background behind everything (the transcript).
         app_bg: "Window background",
         /// Header, composer and settings panels.
-        panel_bg: "Panels",
-        sidebar_bg: "Chat list",
+        panel_bg: "Header and panels",
+        sidebar_bg: "Sidebar (chat list)",
         /// Text inputs.
         field_bg: "Text fields",
         field_border: "Text field border",
