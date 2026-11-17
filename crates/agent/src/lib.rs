@@ -48,6 +48,7 @@ mod extensions_tests;
 pub mod hooks;
 #[cfg(test)]
 mod hooks_tests;
+pub mod layout;
 mod limits;
 mod live_views;
 #[cfg(test)]
@@ -267,6 +268,11 @@ enum Input {
     Reply {
         client: ClientId,
         msg: Box<ServerMsg>,
+    },
+    /// The `ui_layout` tool reads (and with `change`, replaces) the layout.
+    Layout {
+        change: layout::Change,
+        reply: Sender<Result<byob_protocol::layout::Layout, String>>,
     },
     /// An authoring tool (or a turn) asks about the chat's plugins.
     Plugins {
@@ -564,6 +570,8 @@ struct Engine {
     profiles: BTreeMap<String, byob_types::profile::Profile>,
     profile_keys: BTreeMap<String, String>,
     roles: BTreeMap<String, String>,
+    /// What the interface shows ([`layout`]).
+    layout: byob_protocol::layout::Layout,
     /// Profiles levels point at that don't exist, warned about once.
     missing_warned: std::sync::Mutex<BTreeSet<String>>,
     /// Profiles with a test running.
@@ -656,8 +664,11 @@ impl Engine {
                 global_skills: p.global_skills.clone(),
             });
             authoring::register(&mut tools, &env);
+            // Offered while the bundled `appearance` plugin (which names it) is on.
+            tools.register(layout::UiLayout::new(inbox.clone()));
         }
         let plugin_values = Self::load_plugin_values(config.paths.as_ref());
+        let layout = Self::load_layout(config.paths.as_ref());
         let sink_inbox = inbox.clone();
         let sink: backends::SinkFor = Arc::new(move |dir, plugin, generation| {
             let (inbox, dir, plugin) = (sink_inbox.clone(), dir.to_path_buf(), plugin.to_owned());
@@ -721,6 +732,7 @@ impl Engine {
             profiles: config.profiles,
             profile_keys: config.profile_keys,
             roles: config.roles,
+            layout,
             missing_warned: std::sync::Mutex::default(),
             profile_tests: BTreeSet::new(),
             subagents: config.subagents,
@@ -1091,6 +1103,7 @@ impl Engine {
             Input::Env { client, env } => self.send_to(client, ServerMsg::WorkspaceEnv(env)),
             Input::Reply { client, msg } => self.send_to(client, *msg),
             Input::Plugins { chat, op, reply } => self.plugin_op(&chat, op, &reply),
+            Input::Layout { change, reply } => self.tool_layout(change, &reply),
             Input::Connected { key, result } => self.server_connected(&key, result),
             Input::Backend { dir, plugin, generation, out } => self.backend_out(&dir, &plugin, generation, out),
             Input::ViewReply { dir, view, key, starts, result } => self.view_reply(&dir, &view, &key, starts, result),
@@ -1130,6 +1143,7 @@ impl Engine {
                 self.send_to(id, ServerMsg::State(self.client_state(id)));
                 self.send_to(id, self.workspaces_msg());
                 self.send_profiles(id);
+                self.send_layout(id);
                 self.send_chats(id, None, FIRST_PAGE);
                 self.show_chat_with(id, chat, false);
             }
@@ -1183,6 +1197,7 @@ impl Engine {
             ClientMsg::SetRole { role, profile } => self.set_role(id, &role, profile),
             ClientMsg::TestProfile { id: p } => self.test_profile(id, p),
             ClientMsg::SetLevelProfile { scope, profile } => self.set_level_profile(id, scope, profile),
+            ClientMsg::SetLayout { layout } => self.client_set_layout(id, layout),
             ClientMsg::SetConfig { scope, layer, api_key } => self.set_config(id, scope, layer, api_key),
             ClientMsg::ListFolders { path } => self.list_folders(id, path),
             ClientMsg::CheckContainers => self.check_containers(id),

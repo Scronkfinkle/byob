@@ -1169,3 +1169,74 @@ fn a_vision_role_answers_for_the_model() {
     let parts = &asked[0]["messages"][0]["content"];
     assert_eq!((parts[0]["text"].as_str(), parts[1]["image_url"]["url"].as_str()), (Some("what colour?"), Some("data:image/png;base64,AAAA")));
 }
+
+/// The layout: a client gets it after the Welcome; the model's `ui_layout` reads it,
+/// changes it (no approval card), and every client hears of it and it's in settings.json;
+/// a client's `SetLayout` does the same, and a client without the cap hears nothing.
+#[test]
+fn the_model_changes_the_layout_and_every_window_follows() {
+    use byob_protocol::layout::{Layout, Show};
+    let home = tempfile::tempdir().unwrap();
+    let paths = byob_store::Paths::at(home.path());
+    paths.ensure().unwrap();
+    let ask = Policy { read: Rule::Allow, write: Rule::Ask, network: Rule::Ask, execute: Rule::Ask };
+    let script = vec![
+        call("ui_layout", "{}"),
+        call("ui_layout", r#"{"show": {"reply.tokens": "hidden", "reply.speed": "hover"}, "order": {"reply": ["reply.time"]}}"#),
+        call("ui_layout", r#"{"show": {"reply.colour": "hidden"}}"#),
+        Reply::Text("done"),
+    ];
+    let (url, requests) = fake_llm(script, "final answer");
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = home.path().join("ws");
+    config.paths = Some(paths.clone());
+    config.policy = Some(ask);
+    config.auto_title = false;
+    config.detect_local = false;
+    // Plugins on (no bundled ones: the tool isn't named, so it's simply there).
+    config.plugins = Some(crate::extensions::PluginsConfig::default());
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let layout_of = |c: &mut LocalConnection| loop {
+        if let ServerMsg::Layout(l) = recv(c) {
+            return l;
+        }
+    };
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::hello("test"));
+    assert_eq!(layout_of(&mut c), Layout::default());
+    while !matches!(recv(&mut c), ServerMsg::Transcript { .. }) {}
+    let mut other = engine.connect(Arc::new(|| {}));
+    other.send(ClientMsg::hello("other"));
+    assert!(layout_of(&mut other).is_default());
+    let mut old = engine.connect(Arc::new(|| {}));
+    old.send(ClientMsg::Hello { protocol: byob_protocol::PROTOCOL_MAJOR, minor: 10, client: "old".into(), caps: vec![] });
+
+    let view = run_turn(&mut c, "hide the token counts", |step, _| panic!("no approval for the layout: {step:?}"));
+    let results = tool_results(requests.lock().unwrap().last().unwrap());
+    assert!(results[0].contains("- reply.tokens: shown") && results[0].contains("Region toolbar"), "{}", results[0]);
+    assert!(results[1].starts_with("Done") && results[1].contains("- reply.tokens: hidden"), "{}", results[1]);
+    assert!(results[2].contains("no element \"reply.colour\""), "{}", results[2]);
+    let titles: Vec<&str> = view.reply().steps.iter().map(|s| s.title.as_str()).collect();
+    assert_eq!(titles[..2], ["Read the layout", "Layout: Hover for Speed, hid Tokens, reordered the reply"]);
+
+    let now = layout_of(&mut other);
+    assert_eq!((now.show("reply.tokens"), now.show("reply.speed")), (Show::Hidden, Show::Hover));
+    assert_eq!(now.arrange("reply", &[]), ["reply.time", "reply.tokens", "reply.speed"]);
+    assert_eq!(byob_store::Settings::load(&paths.settings()).value.layout, now, "kept");
+
+    // A window's own change (Settings), to everyone.
+    let mut mine = now.clone();
+    mine.set_show("reply.tokens", Show::Shown);
+    other.send(ClientMsg::SetLayout { layout: mine.clone() });
+    assert_eq!(layout_of(&mut other), mine);
+    assert_eq!(layout_of(&mut c), mine);
+    assert_eq!(byob_store::Settings::load(&paths.settings()).value.layout, mine);
+    // The client without the cap got none of it.
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < deadline {
+        if let Some(m) = old.try_recv() {
+            assert!(!matches!(m, ServerMsg::Layout(_)), "a client without the cap got the layout");
+        }
+    }
+    drop(home);
+}

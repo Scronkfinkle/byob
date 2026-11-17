@@ -9,6 +9,7 @@ pub mod artifact;
 pub mod connect;
 pub mod delegation;
 pub mod env;
+pub mod layout;
 pub mod media;
 pub mod plugins;
 pub mod profiles;
@@ -362,6 +363,11 @@ pub enum ClientMsg {
         scope: ConfigScope,
         profile: Option<String>,
     },
+    /// Replace the layout (13.11+, cap [`layout::CAP_LAYOUT`]); every client gets the new
+    /// [`ServerMsg::Layout`].
+    SetLayout {
+        layout: layout::Layout,
+    },
     /// A message from a newer client this engine doesn't know (answered with a notice).
     #[serde(other)]
     Unknown,
@@ -470,6 +476,9 @@ pub enum ServerMsg {
     Profiles(Box<ProfileList>),
     /// Answer to [`ClientMsg::TestProfile`].
     ProfileTested(ProfileTest),
+    /// What the interface shows and in what order (13.11+, only to clients that list
+    /// [`layout::CAP_LAYOUT`]); after the Welcome and whenever it changes.
+    Layout(layout::Layout),
     /// A message from a newer engine this client doesn't know: skip it.
     #[serde(other)]
     Unknown,

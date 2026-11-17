@@ -34,11 +34,11 @@ fn natives() -> Natives {
 }
 
 /// The bundled plugins byob had before spreadsheets (P5): with them the prompt and tools must
-/// be what they were. `sheets`, `web`, `memory`, `plan`, `ask-user` and `help` add their own (tested in
+/// be what they were. `sheets`, `web`, `memory`, `plan`, `ask-user`, `help` and `appearance` add their own (tested in
 /// `bundled_plugins_load_with_no_files_on_disk`, `native_backend_tests` and below).
 fn config(home: &Path, bundled: bool) -> PluginsConfig {
     let mut c = config_all(home, bundled);
-    c.bundled.retain(|e| !matches!(e.id.as_str(), "sheets" | "web" | "memory" | "plan" | "ask-user" | "help"));
+    c.bundled.retain(|e| !matches!(e.id.as_str(), "sheets" | "web" | "memory" | "plan" | "ask-user" | "help" | "appearance"));
     c
 }
 
@@ -63,7 +63,9 @@ fn effective(switches: &[(&str, bool)]) -> byob_types::config::Effective {
 /// Compose a new chat's plugins in `ws` with the built-in tools as the base.
 fn compose(ext: &mut Ext, ws: &Path, switches: &[(&str, bool)]) -> Composed {
     ext.refresh(None, ws);
-    let base = byob_tools::builtin();
+    let mut base = byob_tools::builtin();
+    // The engine registers the layout tool (it talks to the engine); the `appearance` plugin names it.
+    base.register(crate::layout::UiLayout::new(std::sync::mpsc::channel().0));
     let trust = BTreeMap::new();
     let values = BTreeMap::new();
     let eff = effective(switches);
@@ -81,6 +83,7 @@ fn bundled_plugins_load_with_no_files_on_disk() {
     assert_eq!(
         ids,
         [
+            "appearance",
             "artifacts",
             "ask-user",
             "calendar",
@@ -126,11 +129,12 @@ fn bundled_plugins_load_with_no_files_on_disk() {
     assert_eq!(charts.tools, ["make_chart"]);
     // Every tool of the base is offered (run_command & co. are optional: not in this base).
     let mut have: Vec<String> = c.tools.specs().into_iter().map(|s| s.name).collect();
-    have.retain(|n| !matches!(n.as_str(), "use_skill" | "remember" | "forget" | "byob_help"));
+    have.retain(|n| !matches!(n.as_str(), "use_skill" | "remember" | "forget" | "byob_help" | "ui_layout"));
     let memory = c.infos.iter().find(|p| p.id == "memory").unwrap();
     assert_eq!(memory.views.len(), 1, "its pane");
     assert_eq!(c.infos.iter().find(|p| p.id == "plan").unwrap().tools, ["update_plan"]);
     assert_eq!(c.infos.iter().find(|p| p.id == "ask-user").unwrap().tools, ["ask_user"]);
+    assert_eq!(c.infos.iter().find(|p| p.id == "appearance").unwrap().tools, ["ui_layout"]);
     let base: Vec<String> = byob_tools::builtin().specs().into_iter().map(|s| s.name).collect();
     assert_eq!(have, base);
 }

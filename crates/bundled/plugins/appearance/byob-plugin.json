@@ -1,0 +1,13 @@
+{
+  "id": "appearance",
+  "name": "Appearance",
+  "version": "1.0.0",
+  "description": "The ui_layout tool: ask byob to show, hide or reorder parts of its own interface (the details under replies, the header's model chip and context meter, labels and shortcut hints, plugins' header items) and every window changes at once. The same switches are in Settings → Appearance → Layout.",
+  "icon": "layout-dashboard",
+  "prompt": "When the user asks to change what byob's own interface shows (hide or show details, labels or hints, move things in the header or under replies, a cleaner or busier look), use ui_layout: call it without arguments first to see the element ids, then change only what they asked for.",
+  "tools": [
+    {
+      "native": "ui_layout"
+    }
+  ]
+}

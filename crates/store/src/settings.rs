@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 pub use byob_types::ApiKind;
 pub use byob_types::config::{Approvals, Layer, ToolMode};
+use byob_types::layout::Layout;
 pub use byob_types::profile::{Params, Profile};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -246,6 +247,9 @@ pub struct Settings {
     /// in secrets.json ([`Secrets::plugin_settings`]).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
     pub plugin_settings: BTreeMap<String, BTreeMap<String, String>>,
+    /// What the interface shows and in what order (only what differs from the defaults).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Layout::is_default")]
+    pub layout: Layout,
     /// Fields this build doesn't know; preserved across load/save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
