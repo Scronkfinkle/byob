@@ -830,6 +830,7 @@ impl ByobApp {
         math::set_enabled(ui.ctx(), self.math);
         self.report_look();
         let narrow = ui.available_width() < sidebar::NARROW;
+        self.artifacts.network_switch = self.engine_has(byob_protocol::version::CAP_ARTIFACT_NETWORK);
         self.artifacts.begin_frame(ui.ctx(), &self.tokens, narrow);
         let list_open = self.sidebar.is_open(narrow);
         self.header_shortcuts(ui.ctx());

@@ -80,6 +80,8 @@ enum Action {
 }
 
 pub struct Artifacts {
+    /// The engine takes `SetArtifactNetwork` (the pane offers the switch).
+    pub(crate) network_switch: bool,
     chat: Option<String>,
     list: Vec<Artifact>,
     files: Files,
@@ -121,6 +123,7 @@ pub struct Artifacts {
 impl Default for Artifacts {
     fn default() -> Self {
         Self {
+            network_switch: false,
             chat: None,
             list: Vec::new(),
             files: Files::default(),
@@ -380,6 +383,7 @@ impl Artifacts {
             requests: &mut self.requests,
             links: Links { chat: self.chat.as_deref(), base: self.link_base.as_ref(), theme: &self.theme },
             others: &self.list,
+            network_switch: self.network_switch,
         };
         f(&mut cx)
     }

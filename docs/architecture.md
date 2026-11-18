@@ -359,7 +359,10 @@ the same API third parties (and, in P3, bundled plugins) use.
   with labels), the server and `GetArtifact` all go through it. Built-ins, one module each:
   `text` (also the fallback), `markdown`, `html_app` (the prompt's HTML rules, the network-use
   warning, and `wrap_html`: theme defaults, the error-reporting/theme script, no WebRTC — what
-  the server and the desktop helper load), `chart` (spec validation), `image` (not writable;
+  the server and the desktop helper load; an app given internet access, `Artifact::network` set
+  by `create_artifact`/`update_artifact`'s `network` or the pane's switch
+  (`ClientMsg::SetArtifactNetwork`), is served with HTTPS/WSS sources allowed and runs in a
+  helper started with `BYOB_ARTIFACT_NETWORK=1`, `Features::NETWORK`), `chart` (spec validation), `image` (not writable;
   downscaled for clients).
 - **Client: `byob_ui_egui::renderers::ArtifactRenderers`** (`crates/ui-egui/src/renderers/`).
   Content type → `ArtifactRenderer`: an exact registration, else `type/*`, else the fallback

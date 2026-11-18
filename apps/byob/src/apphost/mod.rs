@@ -73,12 +73,16 @@ struct App {
     visible_since: Option<Instant>,
     /// A `<select>` the page opened: its list is drawn here until a pick or a click away.
     select: Option<wire::SelectPrompt>,
+    /// It may use the internet (its helper was started so).
+    network: bool,
+    /// Its helper can't let it online (an older build): said in the pane.
+    offline_note: bool,
 }
 
 impl App {
     /// `web`: a web surface's document, run as it is (it carries its own bridge script);
     /// else an HTML app artifact, wrapped with the theme defaults and helper script.
-    fn new(source: &str, web: bool) -> Self {
+    fn new(source: &str, web: bool, network: bool) -> Self {
         let html = if web { source.to_owned() } else { byob_tools::artifact_types::html_app::wrap_html(source) };
         let state = if html.len() > wire::MAX_HTML { State::Stopped("It's too large to run here.".into()) } else { State::Live };
         Self {
@@ -97,8 +101,19 @@ impl App {
             hidden_sent: false,
             visible_since: None,
             select: None,
+            network,
+            offline_note: false,
         }
     }
+}
+
+/// An app given the internet runs in a helper too old to let it out (said once in the pane).
+fn cant_go_online(network: bool, h: &helper::Helper, key: &Key) -> bool {
+    let cant = network && h.ready() && !h.supports(wire::Features::NETWORK);
+    if cant {
+        log::debug!("artifact {}/v{}: this app renderer can't give it the internet", key.0, key.1);
+    }
+    cant
 }
 
 /// Which surface draws an app this frame.
@@ -151,7 +166,7 @@ impl ServoView {
     fn launch(&mut self, key: &Key, viewport: Viewport) {
         let Some(app) = self.apps.get_mut(key) else { return };
         let ctx = self.ctx.clone();
-        match helper::Helper::spawn(&self.path, move || ctx.request_repaint()) {
+        match helper::Helper::spawn(&self.path, app.network, move || ctx.request_repaint()) {
             Ok(h) => {
                 log::info!("artifact {}/v{}: renderer started (pid {})", key.0, key.1, h.pid().unwrap_or(0));
                 h.send(Request::Load(Box::new(wire::Load { html: app.html.clone(), theme: self.theme.clone(), viewport })));
@@ -176,13 +191,18 @@ impl ServoView {
         if surface == Surface::Pane {
             self.pane_now = Some(key.clone());
         }
+        // Internet access was switched: the app starts again in a helper started for it.
+        if self.apps.get(&key).is_some_and(|a| a.network != doc.network) {
+            log::info!("artifact {}/v{}: internet access {}; restarting it", key.0, key.1, if doc.network { "on" } else { "off" });
+            self.apps.remove(&key);
+        }
         if !self.apps.contains_key(&key) {
             let Some(source) = doc.source else {
                 let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 ui.put(rect, egui::Spinner::new());
                 return rect;
             };
-            self.apps.insert(key.clone(), App::new(source, doc.web));
+            self.apps.insert(key.clone(), App::new(source, doc.web, doc.network));
         }
         let (rect, resp) = ui.allocate_exact_size(size, if owner { egui::Sense::click_and_drag() } else { egui::Sense::click() });
         let ppp = ui.ctx().pixels_per_point();
@@ -306,7 +326,9 @@ impl ServoView {
         for (key, app) in &mut self.apps {
             let verdict = app.life.frame(now, drawn.contains(key), held.contains(key));
             let Some(h) = &mut app.helper else { continue };
-            for e in h.poll() {
+            let events = h.poll();
+            app.offline_note |= cant_go_online(app.network, h, key);
+            for e in events {
                 match e {
                     wire::Event::Error { message, line } => {
                         let text = if line > 0 { format!("{message} (line {line})") } else { message };
@@ -436,6 +458,14 @@ impl AppView for ServoView {
 
     fn errors(&self) -> Vec<String> {
         self.pane.as_ref().and_then(|k| self.apps.get(k)).map(|a| a.errors.clone()).unwrap_or_default()
+    }
+
+    fn note(&self) -> Option<String> {
+        self.pane
+            .as_ref()
+            .and_then(|k| self.apps.get(k))
+            .filter(|a| a.offline_note)
+            .map(|_| "This app may use the internet, but the app renderer here is too old to let it: Open runs it in your browser, where it can.".to_owned())
     }
 
     fn runs_inline(&self) -> bool {
@@ -736,7 +766,7 @@ mod tests {
             let ctx = egui::Context::default();
             let mut v = ServoView::with_helper(&ctx, path);
             let key: Key = ("app".into(), 1);
-            v.apps.insert(key.clone(), App::new("<p>hi</p>", false));
+            v.apps.insert(key.clone(), App::new("<p>hi</p>", false, false));
             v.launch(&key, Viewport { width: 10, height: 10, scale: 1.0 });
             let mut statuses = vec![v.status("app", 1)];
             // On screen until the helper has said hello.
@@ -798,7 +828,7 @@ mod tests {
     /// Run `html` (plus [`REPORT_JS`]) in the real helper at 400x300, send `inputs`, then
     /// press F9. Returns what the page reported and the newest frame.
     fn drive(path: &std::path::Path, html: &str, inputs: &[Input]) -> (Vec<String>, wire::Frame) {
-        let mut h = helper::Helper::spawn(path, || {}).unwrap();
+        let mut h = helper::Helper::spawn(path, false, || {}).unwrap();
         h.send(Request::Load(Box::new(wire::Load {
             html: byob_tools::artifact_types::html_app::wrap_html(&format!("{html}{REPORT_JS}")),
             theme: wire::Theme::default(),
@@ -896,7 +926,7 @@ mod tests {
         let page = "<script>addEventListener('message',e=>{if(e.data&&e.data.echo!==undefined)parent.postMessage({jsonrpc:'2.0',id:e.data.echo,result:{back:e.data.echo}},'*')});\
             addEventListener('load',()=>parent.postMessage({jsonrpc:'2.0',method:'hello',params:{n:1}},'*'))</script><p>echo</p>";
         let html = byob_ui_egui::web::document(page, byob_ui_egui::web::Kind::McpApp, &[]);
-        let mut h = helper::Helper::spawn(&path, || {}).unwrap();
+        let mut h = helper::Helper::spawn(&path, false, || {}).unwrap();
         h.send(Request::Load(Box::new(wire::Load { html, theme: wire::Theme::default(), viewport: Viewport { width: 200, height: 100, scale: 1.0 } })));
         let next = |h: &mut helper::Helper| {
             let start = Instant::now();

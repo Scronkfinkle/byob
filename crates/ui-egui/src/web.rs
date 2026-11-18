@@ -614,7 +614,8 @@ impl Web {
                     ui.label(RichText::new("Apps need byob's web runtime (byob-artifact-host) on this computer, or the browser UI.").small().color(t.text_dim));
                 } else {
                     let height = s.height.map(|h| h.clamp(CARD_MIN, CARD_MAX));
-                    let doc = AppDoc { id: &id, url: None, title: &s.title, version, size: html.len() as u64, source: Some(html), web: true, height };
+                    let doc =
+                        AppDoc { id: &id, url: None, title: &s.title, version, size: html.len() as u64, source: Some(html), web: true, height, network: false };
                     if fill {
                         let _ = self.view.show(ui, t, &doc);
                     } else if self.view.card(ui, t, &doc).is_none() {

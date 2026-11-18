@@ -43,7 +43,7 @@ impl ArtifactRenderer for HtmlApp {
             && let Some(source) = source(cx)
         {
             ui.add_space(4.0);
-            let doc = AppDoc { id: &a.id, url: None, title: &a.title, version, size, source: Some(&source), web: false, height: None };
+            let doc = AppDoc { id: &a.id, url: None, title: &a.title, version, size, source: Some(&source), web: false, height: None, network: a.network };
             if let Some(resp) = cx.web().card(ui, t, &doc) {
                 if resp.open {
                     cx.open_in_browser();
@@ -60,6 +60,10 @@ impl ArtifactRenderer for HtmlApp {
         let url = if cx.web().wants_url() { cx.url().ok() } else { None };
         let source = if cx.web().wants_source() { source(cx) } else { None };
         let errors = cx.web().errors();
+        if let Some(note) = cx.web().note() {
+            ui.label(RichText::new(note).small().color(t.warning));
+            ui.add_space(4.0);
+        }
         if !errors.is_empty() {
             egui::Frame::new().fill(t.code_bg).stroke(Stroke::new(1.0, t.danger)).corner_radius(t.round(6.0)).inner_margin(t.pad(8.0)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -74,13 +78,25 @@ impl ArtifactRenderer for HtmlApp {
             });
             ui.add_space(4.0);
         }
-        let doc = AppDoc { id: &a.id, url: url.as_deref(), title: &a.title, version, size, source: source.as_deref(), web: false, height: None };
+        let doc =
+            AppDoc { id: &a.id, url: url.as_deref(), title: &a.title, version, size, source: source.as_deref(), web: false, height: None, network: a.network };
         if cx.web().show(ui, t, &doc).open {
             cx.open_in_browser();
         }
     }
 
     fn actions(&self, ui: &mut egui::Ui, cx: &mut ArtifactCx<'_>, place: Place) {
+        if place == Place::Pane && cx.can_switch_network() {
+            let on = cx.artifact.network;
+            let (label, tip) = if on {
+                ("Internet: on", "This app can reach the web (HTTPS only). Click to take it offline")
+            } else {
+                ("Internet: off", "This app can't reach the internet. Click to let it use the web (HTTPS only; it restarts)")
+            };
+            if ui.selectable_label(on, label).on_hover_text(tip).clicked() {
+                cx.set_network(!on);
+            }
+        }
         let tip = match place {
             Place::Card => "Open the app in a browser tab",
             Place::Pane => "Open in a browser tab",

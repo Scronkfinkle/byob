@@ -287,6 +287,16 @@ impl Links<'_> {
     }
 }
 
+/// An online app's address is another one (`?online` before the hash), so a view that
+/// loaded it offline loads it again, and the server sends the policy that lets it out.
+pub(crate) fn online_url(url: String, network: bool) -> String {
+    match (network, url.split_once('#')) {
+        (false, _) => url,
+        (true, Some((path, hash))) => format!("{path}?online#{hash}"),
+        (true, None) => format!("{url}?online"),
+    }
+}
+
 /// What a renderer draws with.
 pub struct ArtifactCx<'a> {
     pub t: &'a Tokens,
@@ -303,6 +313,8 @@ pub struct ArtifactCx<'a> {
     pub(crate) links: Links<'a>,
     /// The chat's artifacts (to name and open the ones this one refers to).
     pub(crate) others: &'a [Artifact],
+    /// The engine takes [`ClientMsg::SetArtifactNetwork`].
+    pub(crate) network_switch: bool,
 }
 
 impl ArtifactCx<'_> {
@@ -351,7 +363,17 @@ impl ArtifactCx<'_> {
 
     /// Where this version is served for a browser (theme in the hash).
     pub fn url(&self) -> Result<String, String> {
-        self.links.url(&self.artifact.id, self.version)
+        Ok(online_url(self.links.url(&self.artifact.id, self.version)?, self.artifact.network))
+    }
+
+    /// Whether the user can switch this artifact's internet access here.
+    pub fn can_switch_network(&self) -> bool {
+        self.network_switch
+    }
+
+    /// Let this artifact use the internet, or not (the engine saves it and sends it back).
+    pub fn set_network(&mut self, on: bool) {
+        self.outbox.push(ClientMsg::SetArtifactNetwork { id: self.artifact.id.clone(), on });
     }
 
     /// Open this version in the system browser.
@@ -404,6 +426,14 @@ pub fn card_lines(ui: &mut egui::Ui, t: &Tokens, text: &str, line: impl Fn(&str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_online_apps_address_differs_before_the_hash() {
+        let u = "http://127.0.0.1:9/artifact/c/app/2#--byob-bg=%23000".to_owned();
+        assert_eq!(online_url(u.clone(), false), u);
+        assert_eq!(online_url(u, true), "http://127.0.0.1:9/artifact/c/app/2?online#--byob-bg=%23000");
+        assert_eq!(online_url("/artifact/c/app/2".into(), true), "/artifact/c/app/2?online");
+    }
     use byob_protocol::ArtifactKind;
     use byob_protocol::artifact::{TYPE_CHART, TYPE_HTML, TYPE_JPEG, TYPE_MARKDOWN, TYPE_PNG, TYPE_TEXT};
 

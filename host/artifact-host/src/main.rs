@@ -12,7 +12,8 @@
 //! after it and every resource load that isn't `data:`/`blob:`/`about:` is refused in
 //! [`WebViewDelegate::load_web_resource`]; and Servo's HTTP(S) proxy points at a dead port
 //! so anything that slips past that hook (e.g. `sendBeacon`) fails too. New windows,
-//! permissions and dialogs are denied.
+//! permissions and dialogs are denied. An app the user or the model gave internet access is
+//! started with `BYOB_ARTIFACT_NETWORK=1`: HTTPS and WSS load, still nothing else.
 
 use std::cell::{Cell, RefCell};
 use std::io::{self, BufReader, BufWriter, Write};
@@ -147,7 +148,7 @@ impl WebViewDelegate for Page {
     }
     fn load_web_resource(&self, _: WebView, load: WebResourceLoad) {
         let url = load.request().url.clone();
-        if matches!(url.scheme(), "data" | "blob" | "about") {
+        if matches!(url.scheme(), "data" | "blob" | "about") || (online() && matches!(url.scheme(), "https" | "wss")) {
             return; // not intercepted: loads normally
         }
         log(format!("refused load of {url}"));
@@ -563,11 +564,20 @@ impl Host {
     }
 }
 
+/// This app may use the internet (byob set [`wire::NETWORK_ENV`]): HTTPS and WSS load; plain
+/// HTTP, files and everything else stay refused.
+fn online() -> bool {
+    static ONLINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ONLINE.get_or_init(|| std::env::var_os(wire::NETWORK_ENV).is_some_and(|v| v == "1"))
+}
+
 fn prefs() -> servo::Preferences {
+    // Defence in depth for an offline app: HTTP(S) that gets past load_web_resource hits a
+    // dead proxy. An online app goes direct (load_web_resource still refuses plain HTTP).
+    let dead = if online() { String::new() } else { "http://127.0.0.1:9".into() };
     servo::Preferences {
-        // Defence in depth: HTTP(S) that gets past load_web_resource hits a dead proxy.
-        network_http_proxy_uri: "http://127.0.0.1:9".into(),
-        network_https_proxy_uri: "http://127.0.0.1:9".into(),
+        network_http_proxy_uri: dead.clone(),
+        network_https_proxy_uri: dead,
         dom_geolocation_enabled: false,
         dom_notification_enabled: false,
         dom_serviceworker_enabled: false,

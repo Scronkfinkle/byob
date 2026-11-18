@@ -34,6 +34,8 @@ pub struct AppDoc<'a> {
     pub web: bool,
     /// How tall a card should be (points), when the page said (web surfaces).
     pub height: Option<f32>,
+    /// The app may use the internet (HTTPS): a renderer that runs it offline restarts it.
+    pub network: bool,
 }
 
 /// What the user did in an app view.
@@ -94,6 +96,11 @@ pub trait AppView {
     /// Errors the app on show has reported (untrusted text; cleared when another loads).
     fn errors(&self) -> Vec<String> {
         Vec::new()
+    }
+    /// Something about how the app on show runs here that isn't its fault (e.g. this
+    /// renderer can't give it the internet it was given).
+    fn note(&self) -> Option<String> {
+        None
     }
     /// The app runs inline (otherwise it only runs in a browser via Open).
     fn runs_inline(&self) -> bool;
@@ -613,7 +620,17 @@ mod tests {
     fn placeholder_draws_and_offers_open() {
         let ctx = egui::Context::default();
         let mut view = Placeholder;
-        let doc = AppDoc { id: "calc", url: None, title: "Calc", version: 2, size: 1200, source: Some("<title>Calc</title>"), web: false, height: None };
+        let doc = AppDoc {
+            id: "calc",
+            url: None,
+            title: "Calc",
+            version: 2,
+            size: 1200,
+            source: Some("<title>Calc</title>"),
+            web: false,
+            height: None,
+            network: false,
+        };
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             assert!(!view.show(ui, &Tokens::dark(), &doc).open);
             assert!(view.card(ui, &Tokens::dark(), &doc).is_none());

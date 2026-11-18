@@ -65,9 +65,13 @@ pub struct Helper {
 }
 
 impl Helper {
-    /// Start `path`; `wake` is called whenever something arrives (repaint).
-    pub fn spawn(path: &Path, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
+    /// Start `path`; `wake` is called whenever something arrives (repaint). `online`: the
+    /// app may use the internet (HTTPS).
+    pub fn spawn(path: &Path, online: bool, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
         let mut cmd = Command::new(path);
+        if online {
+            cmd.env(wire::NETWORK_ENV, "1");
+        }
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
         // Its stdout is shared with the libraries inside it: ask for marked frames so what they
         // print there is skipped instead of breaking the stream.
@@ -297,7 +301,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Says Ready (length 1, tag 0), then ignores every ping.
         let path = script(dir.path(), "silent", "printf '\\001\\000\\000\\000\\000'; exec sleep 600");
-        let mut h = Helper::spawn(&path, || {}).unwrap();
+        let mut h = Helper::spawn(&path, false, || {}).unwrap();
         let pid = h.pid().unwrap();
         let start = Instant::now();
         while h.ready_at.is_none() && start.elapsed() < Duration::from_secs(5) {
@@ -317,12 +321,31 @@ mod tests {
         assert!(gone || !cfg!(target_os = "linux"), "pid {pid} still alive");
     }
 
+    /// An app given internet access gets a helper started with the network switch; others
+    /// never do.
+    #[cfg(unix)]
+    #[test]
+    fn only_online_apps_get_a_helper_started_for_the_internet() {
+        let dir = tempfile::tempdir().unwrap();
+        for online in [true, false] {
+            let seen = dir.path().join(format!("env-{online}"));
+            let path = script(dir.path(), &format!("env{online}"), &format!("printf '%s' \"${{{}:-}}\" > '{}'; exit 0", wire::NETWORK_ENV, seen.display()));
+            let mut h = Helper::spawn(&path, online, || {}).unwrap();
+            let start = Instant::now();
+            while !seen.exists() && start.elapsed() < Duration::from_secs(5) {
+                h.poll();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(std::fs::read_to_string(&seen).unwrap(), if online { "1" } else { "" });
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_helper_that_exits_is_reported() {
         let dir = tempfile::tempdir().unwrap();
         let path = script(dir.path(), "crash", "exit 3");
-        let mut h = Helper::spawn(&path, || {}).unwrap();
+        let mut h = Helper::spawn(&path, false, || {}).unwrap();
         let start = Instant::now();
         let mut gone = None;
         while gone.is_none() && start.elapsed() < Duration::from_secs(5) {
@@ -343,7 +366,7 @@ mod tests {
         let var = wire::MARKED_ENV;
         let body = format!("[ \"${var}\" = 1 ] || exit 4; echo 'surfman: Could not find the GPU selection symbols.'; printf '{ready}'; echo 'ok'; sleep 30");
         let path = script(dir.path(), "chatty", &body);
-        let mut h = Helper::spawn(&path, || {}).unwrap();
+        let mut h = Helper::spawn(&path, false, || {}).unwrap();
         let start = Instant::now();
         while !h.ready() && h.check(Instant::now()).is_none() && start.elapsed() < Duration::from_secs(5) {
             h.poll();
@@ -359,7 +382,7 @@ mod tests {
         // A frame that claims to be bigger than anything allowed.
         let dir = tempfile::tempdir().unwrap();
         let path = script(dir.path(), "broken", r"printf '\377BYB\377\377\377\177'; sleep 30");
-        let mut h = Helper::spawn(&path, || {}).unwrap();
+        let mut h = Helper::spawn(&path, false, || {}).unwrap();
         let start = Instant::now();
         let mut gone = None;
         while gone.is_none() && start.elapsed() < Duration::from_secs(5) {

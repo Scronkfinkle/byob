@@ -28,7 +28,9 @@ that draws its own interface on the GPU, with no Electron.
 - **Artifacts beside the chat.** Spreadsheets (xlsx/csv), charts, Markdown documents,
   images and HTML apps, each with its version history. Charts drawn from a spreadsheet stay
   linked to it and redraw when it changes, even when its rows and columns move; select cells
-  and press Chart selection to make one, and Charts to see a sheet's charts.
+  and press Chart selection to make one, and Charts to see a sheet's charts. HTML apps are
+  offline unless they need the web: **Internet: on** in the app's pane (or byob itself, when
+  it makes one that fetches live data) lets that app use HTTPS, still sandboxed.
 - **Math, typeset.** LaTeX in replies and documents (`$…$` inline, `$$…$$` on its own line)
   is drawn like KaTeX, in the desktop app and the browser (the bundled Math plugin).
 - **Hands, with a leash.** File tools, `run_command` (PowerShell on Windows) and `run_python` (sandboxed on Linux); approval

@@ -181,8 +181,11 @@ impl Features {
     /// Pickers the page opens: sends [`Event::Select`] for a `<select>` and understands
     /// [`Request::Select`].
     pub const PICKERS: u32 = 4;
+    /// Started with [`NETWORK_ENV`] set, lets the page use HTTPS and WSS (an HTML app the
+    /// user or the model gave internet access).
+    pub const NETWORK: u32 = 8;
     /// Everything this version of the protocol knows.
-    pub const ALL: Self = Self(Self::VISIBILITY | Self::BRIDGE | Self::PICKERS);
+    pub const ALL: Self = Self(Self::VISIBILITY | Self::BRIDGE | Self::PICKERS | Self::NETWORK);
 
     pub fn has(self, bit: u32) -> bool {
         self.0 & bit != 0
@@ -297,6 +300,10 @@ pub fn send<M: Message>(w: &mut impl Write, msg: &M) -> io::Result<()> {
 
 /// Set (to `1`) in the helper's environment by a byob that reads marked frames.
 pub const MARKED_ENV: &str = "BYOB_WIRE_MARKED";
+
+/// Set (to `1`) in the helper's environment for an app that may use the internet (HTTPS and
+/// WSS only); helpers with [`Features::NETWORK`] honour it, older ones keep it offline.
+pub const NETWORK_ENV: &str = "BYOB_ARTIFACT_NETWORK";
 
 /// Starts every marked frame. Never confused with text (0xFF isn't UTF-8) nor with an
 /// unmarked header, whose last byte is at most 0x04 ([`MAX_FRAME`] < 2^27) where text and
@@ -987,11 +994,11 @@ mod tests {
         assert_eq!(Request::Shutdown.to_bytes(), vec![6]);
         assert_eq!(Request::Visible(true).to_bytes(), vec![7, 1]);
         assert_eq!(Event::Features(Features(Features::VISIBILITY)).to_bytes(), vec![7, 1, 0, 0, 0]);
-        assert_eq!(Event::Features(Features::ALL).to_bytes(), vec![7, 7, 0, 0, 0], "visibility, bridge and pickers");
+        assert_eq!(Event::Features(Features::ALL).to_bytes(), vec![7, 15, 0, 0, 0], "visibility, bridge, pickers and network");
         assert!(Request::from_bytes(&[7]).is_err(), "Visible needs its flag");
         assert!(Request::from_bytes(&[7, 2]).is_err(), "bad bool");
         assert!(Event::from_bytes(&[7, 1, 0]).is_err(), "short features");
-        assert!(Features(Features::VISIBILITY | 8).has(Features::VISIBILITY) && !Features::default().has(Features::VISIBILITY));
+        assert!(Features(Features::VISIBILITY | 16).has(Features::VISIBILITY) && !Features::default().has(Features::VISIBILITY));
     }
 
     /// The bridge is new tags only, negotiated by its feature bit; messages are capped.
