@@ -45,7 +45,8 @@ pub enum Site {
     Pane,
     /// A section under the plugin in Settings → Plugins.
     Settings,
-    /// A small item in the header (a chip, a few words).
+    /// A small item in the header: a chip, a few words, or a compact control (a toggle,
+    /// button or select).
     Status,
     /// A card on a step (a backend tool attaches it).
     Card,

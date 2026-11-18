@@ -171,7 +171,9 @@ it in `backend.py` with a function that returns a **view tree** (a dict; the nod
 below). byob draws it in the user's theme and sends you what the user clicks.
 
 Sites: `"pane"` (a tab beside the chat; the user opens it from its title in the header),
-`"status"` (a small item in the header: use one `chip` or `text`), `"settings"` (a section
+`"status"` (a small item in the header, at most about 220 points wide: a `chip` or `text`
+to show something, or a compact control such as a `toggle` (checkbox), `button` or `select`;
+a `row` of a few of these works too), `"settings"` (a section
 under the plugin in Settings → Plugins), `"card"` (on the step of one of its tools).
 
 A to-do pane and a chip with the count. Write both files with `write_plugin_file`:

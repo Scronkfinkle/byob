@@ -2166,6 +2166,60 @@ mod app_tests {
         assert_eq!(opens(&fake), 2);
     }
 
+    /// A plugin's header item can be a checkbox (any view node, not only a chip): it is drawn
+    /// in the header and flipping it sends the plugin its event with the new value.
+    #[test]
+    fn a_header_item_can_be_a_checkbox() {
+        use byob_protocol::{BackendInfo, Extensions, LiveView, PluginOrigin, PluginScope, Site, ViewDecl, ViewRef};
+        let fake = Fake::default();
+        let mut app = ByobApp::new(Box::new(fake.clone()), "test");
+        let mut p = plugins::tests::info("focus", PluginScope::Global, PluginOrigin::User);
+        p.views = vec![ViewDecl { id: "mode".into(), site: Site::Status, title: "Focus".into(), icon: String::new(), html: String::new() }];
+        p.backend = Some(BackendInfo { state: "running".into(), ..Default::default() });
+        fake.inbox.lock().unwrap().extend([
+            ServerMsg::Welcome(Welcome::current()),
+            ServerMsg::State(state(Link::Ok, true)),
+            ServerMsg::Extensions(Box::new(Extensions { plugins: vec![p], ..Default::default() })),
+        ]);
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut app, 1200.0);
+        let view = ViewRef::new("focus", "mode", "");
+        let tree =
+            serde_json::from_value(serde_json::json!({"type": "toggle", "name": "on", "label": "Focus mode", "value": false, "action": "flip"})).unwrap();
+        fake.inbox.lock().unwrap().push(ServerMsg::LiveView(LiveView { view: view.clone(), tree: Some(tree), ..Default::default() }));
+        // Draw it and find the checkbox's label in the header.
+        let shapes = |ctx: &egui::Context, app: &mut ByobApp, events: Vec<egui::Event>| {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0));
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| app.ui(ui));
+            out.textures_delta.clear();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Text(t) => out.push((t.galley.text().to_owned(), t.pos + t.galley.rect.center().to_vec2())),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    _ => {}
+                }
+            }
+            out.shapes.iter().for_each(|c| walk(&c.shape, &mut found));
+            found
+        };
+        shapes(&ctx, &mut app, vec![]);
+        let text = shapes(&ctx, &mut app, vec![]);
+        let at = text.iter().find(|(t, _)| t == "Focus mode").map(|(_, p)| *p).unwrap_or_else(|| panic!("not in the header: {text:?}"));
+        assert!(at.y < 40.0, "in the header: {at:?}");
+        shapes(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        shapes(&ctx, &mut app, vec![press(true)]);
+        shapes(&ctx, &mut app, vec![press(false)]);
+        let sent = fake.sent.lock().unwrap();
+        let ev = sent.iter().find_map(|m| match m {
+            ClientMsg::ViewEvent { view: v, event } if *v == view => Some(event.clone()),
+            _ => None,
+        });
+        let ev = ev.unwrap_or_else(|| panic!("no event: {sent:?}"));
+        assert_eq!((ev.action.as_str(), ev.values.get("on")), ("flip", Some(&serde_json::json!(true))));
+    }
+
     /// A newer engine's messages are skipped, not fatal; plugin messages go out only when the
     /// engine takes them.
     #[test]

@@ -65,7 +65,7 @@ byob.run()
 ```
 
 - **Sites:** `pane` (a tab of the side pane beside the chat, opened from its title in the
-  header), `status` (a header item: one `chip` or a short `text`), `settings` (a section
+  header), `status` (a header item, about 220 points wide: a `chip`, a short `text`, or a compact control like a `toggle`, `button` or `select`), `settings` (a section
   under the plugin in Settings → Plugins), `card` (on a step of one of the plugin's backend
   tools: `return byob.card(text, "<card view id>", key=...)`, drawn by a `@byob.view` that
   takes the key).
