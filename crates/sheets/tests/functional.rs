@@ -243,6 +243,51 @@ fn charts_drawn_from_a_sheet_follow_its_edits() {
     assert_eq!(b.latest(&other_chart), other_versions);
 }
 
+/// A linked chart follows structural edits like formulas do: an inserted column moves its
+/// columns, a deleted one it charted drops out, and deleting what it needs leaves it with its
+/// last numbers and says so.
+#[test]
+fn linked_charts_follow_inserted_and_deleted_columns() {
+    let mut b = Byob::new();
+    let (aid, _) = b.new_sheet("Profit");
+    b.tool("write_cells", json!({"sheet": aid, "rows": [["Month", "Sales", "Costs", "Profit"], ["Jan", 10, 4, "=B2-C2"], ["Feb", 12, 5, "=B3-C3"]]}));
+    b.tool("chart_sheet", json!({"sheet": aid, "type": "bar", "x": "Month", "series": ["Sales", "Profit"]}));
+    let chart = b.last_id.clone();
+    let spec = |b: &Byob| -> Value {
+        let meta = b.meta(&chart);
+        let v = meta["versions"].as_array().unwrap().last().unwrap().clone();
+        serde_json::from_slice(&std::fs::read(b.ws.path().join(v["path"].as_str().unwrap())).unwrap()).unwrap()
+    };
+    assert_eq!(spec(&b)["source"]["series"], json!(["B", "D"]));
+    // A column inserted at B: Sales is C now, Profit E; the numbers are the same.
+    let out = b.tool("edit_sheet", json!({"sheet": aid, "op": "insert_cols", "at": "B"}));
+    assert!(out.contains("Redrew the linked chart"), "{out}");
+    let s = spec(&b);
+    assert_eq!((&s["source"]["x"], &s["source"]["series"]), (&json!("A"), &json!(["C", "E"])));
+    assert_eq!(s["data"][0]["Profit"], json!(6.0));
+    // Two header rows inserted above: the header moves down with them.
+    b.tool("edit_sheet", json!({"sheet": aid, "op": "insert_rows", "at": 1, "count": 2}));
+    assert_eq!(spec(&b)["source"]["header_row"], json!(3));
+    assert_eq!(spec(&b)["data"][1]["Sales"], json!(12.0));
+    // The empty column deleted again: back to B and D.
+    b.tool("edit_sheet", json!({"sheet": aid, "op": "delete_cols", "at": "B"}));
+    assert_eq!(spec(&b)["source"]["series"], json!(["B", "D"]));
+    // Profit deleted: the chart keeps Sales.
+    b.tool("edit_sheet", json!({"sheet": aid, "op": "delete_cols", "at": "D"}));
+    let s = spec(&b);
+    assert_eq!(s["source"]["series"], json!(["B"]));
+    assert_eq!(s["series"].as_array().unwrap().len(), 1);
+    // An error in what it charts is a gap, as spreadsheets draw it.
+    let out = b.tool("write_cells", json!({"sheet": aid, "cells": {"B4": "=1/0"}}));
+    assert!(out.contains("Redrew the linked chart"), "{out}");
+    assert_eq!(spec(&b)["data"][0]["Sales"], json!(null));
+    // The Month column deleted: it can't follow, keeps its numbers, and the model hears it.
+    let before = b.latest(&chart);
+    let out = b.tool("edit_sheet", json!({"sheet": aid, "op": "delete_cols", "at": "A"}));
+    assert!(out.contains("can't follow the sheet any more") && out.contains("along the bottom"), "{out}");
+    assert_eq!(b.latest(&chart), before);
+}
+
 /// Every node of `tree` (depth first).
 fn nodes(tree: &Value) -> Vec<&Value> {
     let mut out = vec![tree];

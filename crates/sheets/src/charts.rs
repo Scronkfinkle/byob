@@ -56,8 +56,12 @@ fn column(book: &Book, sh: u32, row: i64, name: &str) -> R<i64> {
     msg(format!("There's no column \"{want}\" in row {row}. Columns: {}.", headers.join(", ")))
 }
 
-/// A cell as chart data: numbers as numbers, the rest as shown (`null` when empty).
+/// A cell as chart data: numbers as numbers, the rest as shown; empty and error cells
+/// (`#DIV/0!`) are `null`, a gap, as spreadsheets draw them.
 fn cell(book: &Book, sh: u32, r: i64, c: i64, as_text: bool) -> Value {
+    if book.kind(sh, r, c) == crate::book::Kind::E {
+        return Value::Null;
+    }
     match book.value(sh, r, c) {
         CellValue::None => Value::Null,
         CellValue::Number(n) if !as_text => serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number),
@@ -150,13 +154,7 @@ pub fn chart_sheet(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value> {
     for n in names.iter().take(chart::MAX_SERIES) {
         series.push(col_name(column(book, sh, hr, n)?));
     }
-    let source = ChartSource {
-        sheet: src.aid.clone(),
-        tab: if book.sheet_names().len() > 1 { tab } else { String::new() },
-        header_row: u32::try_from(hr).unwrap_or(1),
-        x: col_name(x),
-        series,
-    };
+    let source = ChartSource { sheet: src.aid.clone(), tab, header_row: u32::try_from(hr).unwrap_or(1), x: col_name(x), series };
     let mut base = Map::new();
     base.insert("type".into(), json!(args.get("type").and_then(Value::as_str).unwrap_or("bar")));
     for k in ["title", "unit", "stacked"] {
@@ -199,6 +197,59 @@ fn slug(title: &str) -> String {
     if out.is_empty() { "chart".into() } else { out }
 }
 
+/// A structural change a save made to the sheet, which linked charts follow (as formulas
+/// do): rows or columns inserted (`delta` > 0) or deleted (`delta` < 0) at `at` (1-based) of
+/// tab `tab`, a tab renamed or deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Move {
+    Rows { tab: String, at: i64, delta: i64 },
+    Cols { tab: String, at: i64, delta: i64 },
+    Renamed { from: String, to: String },
+    Deleted { tab: String },
+}
+
+/// Where row or column `n` is after `delta` were inserted (> 0) or deleted (< 0) at `at`:
+/// `None` when it was deleted.
+fn shift(n: i64, at: i64, delta: i64) -> Option<i64> {
+    if delta >= 0 {
+        Some(if n >= at { n + delta } else { n })
+    } else if n >= at && n < at - delta {
+        None
+    } else if n >= at - delta {
+        Some(n + delta)
+    } else {
+        Some(n)
+    }
+}
+
+/// `src` after `moves` (its tab `first` when it names none, as charts made before tabs were
+/// stored): `Err` with why when what it charts is gone.
+fn adjust(src: &mut ChartSource, first: &str, moves: &[Move]) -> Result<(), String> {
+    if src.tab.is_empty() {
+        src.tab = first.to_owned();
+    }
+    for m in moves {
+        match m {
+            Move::Renamed { from, to } if *from == src.tab => src.tab.clone_from(to),
+            Move::Deleted { tab } if *tab == src.tab => return Err(format!("its sheet {tab:?} was deleted")),
+            Move::Rows { tab, at, delta } if *tab == src.tab => {
+                let r = shift(i64::from(src.header_row), *at, *delta).ok_or("its header row was deleted")?;
+                src.header_row = u32::try_from(r).map_err(|_| "its header row moved off the sheet")?;
+            }
+            Move::Cols { tab, at, delta } if *tab == src.tab => {
+                let x = shift(col_num(&src.x), *at, *delta).ok_or_else(|| format!("its column {} (along the bottom) was deleted", src.x))?;
+                src.x = col_name(x);
+                src.series = src.series.iter().filter_map(|c| shift(col_num(c), *at, *delta)).map(col_name).collect();
+                if src.series.is_empty() {
+                    return Err("all its number columns were deleted".into());
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// A chart linked to a sheet, drawn again from it.
 pub struct Redrawn {
     /// The chart artifact.
@@ -210,10 +261,12 @@ pub struct Redrawn {
 }
 
 /// The charts of chat `chat` drawn from sheet artifact `sheet`, each drawn again from `book`
-/// (just saved) where its rows changed. A chart whose columns no longer work is left as it
-/// was.
-pub fn refresh(ws: &str, chat: Option<&str>, sheet: &str, book: &mut Book) -> Vec<Redrawn> {
+/// (just saved, after `moves`) where it changed; and a line for each that can't follow the
+/// sheet any more (left with its last numbers).
+pub fn refresh(ws: &str, chat: Option<&str>, sheet: &str, book: &mut Book, moves: &[Move]) -> (Vec<Redrawn>, Vec<String>) {
     let mut out = Vec::new();
+    let mut lost = Vec::new();
+    let first = book.sheet_names().first().cloned().unwrap_or_default();
     for m in metas(ws) {
         if out.len() >= MAX_LINKED {
             break;
@@ -224,22 +277,34 @@ pub fn refresh(ws: &str, chat: Option<&str>, sheet: &str, book: &mut Book) -> Ve
         let Some(path) = crate::store::latest(ws, &m).1 else { continue };
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let Ok(old) = serde_json::from_str::<Value>(&text) else { continue };
-        let Some(src) = old.get("source").and_then(|v| serde_json::from_value::<ChartSource>(v.clone()).ok()).filter(|src| src.sheet == sheet) else {
+        let Some(mut src) = old.get("source").and_then(|v| serde_json::from_value::<ChartSource>(v.clone()).ok()).filter(|src| src.sheet == sheet) else {
             continue;
         };
+        let title = s(&old, "title").unwrap_or("chart").to_owned();
+        let id = s(&m, "id").unwrap_or_default().to_owned();
+        if let Err(why) = adjust(&mut src, &first, moves) {
+            lost.push(format!("The linked chart \"{title}\" ({id}) can't follow the sheet any more: {why}. It keeps its last numbers; make it again with chart_sheet if it's still wanted."));
+            continue;
+        }
         let base: Map<String, Value> = ["type", "title", "unit", "stacked"].iter().filter_map(|k| old.get(*k).map(|v| ((*k).to_owned(), v.clone()))).collect();
-        let Ok(new) = spec(book, &src, &base) else { continue };
-        if new.get("data") == old.get("data") && new.get("series") == old.get("series") {
+        let new = match spec(book, &src, &base) {
+            Ok(n) => n,
+            Err(e) => {
+                lost.push(format!("The linked chart \"{title}\" ({id}) couldn't be drawn again: {} It keeps its last numbers.", e.text()));
+                continue;
+            }
+        };
+        if new.get("data") == old.get("data") && new.get("series") == old.get("series") && new.get("source") == old.get("source") {
             continue;
         }
         out.push(Redrawn {
-            id: s(&m, "id").unwrap_or_default().to_owned(),
+            id,
             title: s(&new, "title").unwrap_or("chart").to_owned(),
             filename: s(&m, "filename").unwrap_or("chart.chart.json").to_owned(),
             spec: new,
         });
     }
-    out
+    (out, lost)
 }
 
 /// Write each redrawn chart's spec to a file for byob to save: (chart, file).
@@ -277,8 +342,7 @@ pub fn from_selection(book: &mut Book, sheet: &str, sh: u32, (r1, c1, r2, c2): (
     if r2 <= r1 {
         return msg("Select the header row and the rows under it.");
     }
-    let names = book.sheet_names();
-    let tab = if names.len() > 1 { names.get(sh as usize).cloned().unwrap_or_default() } else { String::new() };
+    let tab = book.sheet_names().get(sh as usize).cloned().unwrap_or_default();
     let series: Vec<String> = (c1 + 2..=c2 + 1).take(chart::MAX_SERIES).map(col_name).collect();
     let source = ChartSource { sheet: sheet.to_owned(), tab, header_row: u32::try_from(r1 + 1).unwrap_or(1), x: col_name(c1 + 1), series };
     let x = header(book, sh, r1 + 1, c1 + 1);
@@ -290,4 +354,43 @@ pub fn from_selection(book: &mut Book, sheet: &str, sh: u32, (r1, c1, r2, c2): (
     let spec = spec(book, &source, &base)?;
     let title = s(&spec, "title").unwrap_or("Chart").to_owned();
     Ok((title.clone(), format!("{}.chart.json", slug(&title)), spec))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn src(x: &str, series: &[&str]) -> ChartSource {
+        ChartSource { sheet: "s".into(), tab: "Data".into(), header_row: 3, x: x.into(), series: series.iter().map(|s| (*s).to_owned()).collect() }
+    }
+    fn cols(tab: &str, at: i64, delta: i64) -> Move {
+        Move::Cols { tab: tab.into(), at, delta }
+    }
+
+    #[test]
+    fn linked_columns_and_rows_follow_inserts_and_deletes() {
+        let mut s = src("A", &["C", "D"]);
+        adjust(&mut s, "Data", &[cols("Data", 2, 2)]).unwrap();
+        assert_eq!((s.x.as_str(), s.series.clone()), ("A", vec!["E".to_owned(), "F".to_owned()]), "inserted before C");
+        adjust(&mut s, "Data", &[cols("Data", 5, -1)]).unwrap();
+        assert_eq!(s.series, ["E"], "a deleted series column goes, the next moves up");
+        adjust(&mut s, "Data", &[cols("Other", 1, 5)]).unwrap();
+        assert_eq!(s.series, ["E"], "another tab's columns don't matter");
+        assert!(adjust(&mut s, "Data", &[cols("Data", 5, -1)]).unwrap_err().contains("number columns"));
+        let mut s = src("B", &["C"]);
+        assert!(adjust(&mut s, "Data", &[cols("Data", 1, -2)]).unwrap_err().contains("along the bottom"));
+        // Rows: the header row moves with rows above it, and can be deleted.
+        let mut s = src("A", &["B"]);
+        adjust(&mut s, "Data", &[Move::Rows { tab: "Data".into(), at: 1, delta: 2 }, Move::Rows { tab: "Data".into(), at: 9, delta: -3 }]).unwrap();
+        assert_eq!(s.header_row, 5);
+        assert!(adjust(&mut s, "Data", &[Move::Rows { tab: "Data".into(), at: 4, delta: -2 }]).unwrap_err().contains("header row"));
+        // Tabs: renamed follows; deleted is gone; a chart with no tab is on the first.
+        let mut s = src("A", &["B"]);
+        adjust(&mut s, "Data", &[Move::Renamed { from: "Data".into(), to: "2025".into() }, cols("2025", 1, 1)]).unwrap();
+        assert_eq!((s.tab.as_str(), s.x.as_str()), ("2025", "B"));
+        assert!(adjust(&mut s, "Data", &[Move::Deleted { tab: "2025".into() }]).is_err());
+        let mut s = ChartSource { tab: String::new(), ..src("A", &["B"]) };
+        adjust(&mut s, "First", &[]).unwrap();
+        assert_eq!(s.tab, "First");
+    }
 }

@@ -524,6 +524,8 @@ fn snapshot(book: &Book, limit: usize) -> Option<BTreeMap<(u32, i64, i64), Strin
 #[derive(Default)]
 struct Change {
     lines: Vec<String>,
+    /// Structural changes, for the charts drawn from the sheet.
+    moves: Vec<crate::charts::Move>,
     shown: Vec<(u32, i64, i64, i64, i64)>,
     cells: Vec<(u32, i64, i64)>,
     listed: Option<Vec<(u32, i64, i64)>>,
@@ -613,11 +615,12 @@ fn write_op(store: &mut Store, cx: &Ctx<'_>, sheet: Option<&Value>, note: &str, 
     lines.extend(lint_hardcoded(book, &written));
     let data = book.to_xlsx()?;
     // Charts drawn from this sheet, drawn again from what it holds now.
-    let redrawn = if src.artifact { crate::charts::refresh(ws, cx.chat, &src.aid, book) } else { Vec::new() };
+    let (redrawn, lost) = if src.artifact { crate::charts::refresh(ws, cx.chat, &src.aid, book, &ch.moves) } else { (Vec::new(), Vec::new()) };
     let redrawn = crate::charts::files(store, redrawn);
     for (r, _) in &redrawn {
         lines.push(format!("Redrew the linked chart \"{}\" ({}).", r.title, r.id));
     }
+    lines.extend(lost);
     lines.extend(user_edit_lines(entry.as_ref()));
     let mut art = Map::new();
     art.insert("note".into(), json!(note));
@@ -1112,6 +1115,7 @@ pub fn edit_sheet(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value> {
                     return msg("rename_sheet needs `new_name`.");
                 }
                 book.rename_sheet(s, &nm)?;
+                ch.moves.push(crate::charts::Move::Renamed { from: here.clone(), to: nm.clone() });
                 ch.lines.push(format!("Renamed sheet {} to {}; formulas that pointed at it were updated.", repr_str(&here), repr_str(&nm)));
             }
             "delete_sheet" => {
@@ -1119,12 +1123,14 @@ pub fn edit_sheet(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value> {
                     return msg("That's the only sheet; a workbook needs at least one.");
                 }
                 book.delete_sheet(s)?;
+                ch.moves.push(crate::charts::Move::Deleted { tab: here.clone() });
                 ch.lines.push(format!("Deleted sheet {}; the sheets are now: {}.", repr_str(&here), book.sheet_names().join(", ")));
             }
             "insert_rows" | "delete_rows" => {
                 let Some(at) = args.get("at").filter(|v| !v.is_null()) else { return msg(format!("{op} needs `at`: a row number.")) };
                 let r = parse_row(at).map_err(|e| SheetError::Msg(e.0))?;
                 let n = count_arg(args.get("count"))?;
+                ch.moves.push(crate::charts::Move::Rows { tab: here.clone(), at: r, delta: if op == "insert_rows" { n } else { -n } });
                 if op == "insert_rows" {
                     book.insert_rows(s, r, n)?;
                     ch.lines.push(format!(
@@ -1141,6 +1147,7 @@ pub fn edit_sheet(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value> {
                 let Some(at) = args.get("at").filter(|v| !v.is_null()) else { return msg(format!("{op} needs `at`: a column letter.")) };
                 let c = parse_col(at).map_err(|e| SheetError::Msg(e.0))?;
                 let n = count_arg(args.get("count"))?;
+                ch.moves.push(crate::charts::Move::Cols { tab: here.clone(), at: c, delta: if op == "insert_cols" { n } else { -n } });
                 if op == "insert_cols" {
                     book.insert_cols(s, c, n)?;
                     ch.lines.push(format!(
