@@ -164,8 +164,27 @@ pub struct Preset {
 }
 
 /// Common servers, local ones first. All speak OpenAI chat completions except Anthropic,
-/// which byob talks to over its Messages API (chosen from the URL).
+/// which byob talks to over its Messages API (chosen from the URL), and the `cli://` agents,
+/// which run a signed-in agent CLI on this computer (`byob_llm::agents`).
 pub const PRESETS: &[Preset] = &[
+    Preset {
+        id: "claude-code",
+        name: "Claude (your plan)",
+        base_url: "cli://claude",
+        model: "sonnet",
+        local: true,
+        needs_key: false,
+        hint: "Uses your claude.ai plan through Claude Code. Sign in once in Terminal: claude auth login",
+    },
+    Preset {
+        id: "codex",
+        name: "ChatGPT (your plan)",
+        base_url: "cli://codex",
+        model: "gpt-5.6-luna",
+        local: true,
+        needs_key: false,
+        hint: "Uses your ChatGPT plan through Codex. Sign in once in Terminal: codex login",
+    },
     Preset {
         id: "llama-server",
         name: "llama-server",
@@ -298,7 +317,10 @@ mod tests {
         assert_eq!(Preset::matching("http://localhost:11434/v1/").map(|p| p.id), Some("ollama"));
         assert_eq!(Preset::matching("http://127.0.0.1:8080/v1").map(|p| p.id), Some("llama-server"));
         assert_eq!(Preset::matching("http://silicon:9931/v1"), None);
-        assert!(PRESETS.iter().all(|p| p.base_url.ends_with("/v1") && (p.local != p.needs_key)));
+        assert!(PRESETS.iter().all(|p| (p.base_url.ends_with("/v1") || p.base_url.starts_with("cli://")) && (p.local != p.needs_key)));
+        // Agent CLIs run on this computer with the user's own sign-in: no key.
+        assert_eq!(Preset::matching("cli://claude").map(|p| (p.id, p.local, p.needs_key)), Some(("claude-code", true, false)));
+        assert_eq!(Preset::matching("cli://codex").map(|p| p.id), Some("codex"));
         assert_eq!(Preset::by_id("openai").map(|p| p.needs_key), Some(true));
         let claude = Preset::by_id("anthropic").map(|p| (p.base_url, p.model, p.needs_key));
         assert_eq!(claude, Some(("https://api.anthropic.com/v1", "claude-opus-5-5", true)));

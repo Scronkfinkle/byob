@@ -6,6 +6,7 @@
 //! through a callback. Everything the server sends is treated as untrusted input.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod agents;
 pub mod anthropic;
 pub mod budget;
 pub mod params;
@@ -99,13 +100,16 @@ impl Client {
             base.push('/');
         }
         let base = url::Url::parse(&base)?;
-        if !matches!(base.scheme(), "http" | "https") {
+        let cli = config.api_kind() == ApiKind::Cli;
+        if !matches!(base.scheme(), "http" | "https") && !cli {
             return Err(LlmError::BadUrl(url::ParseError::RelativeUrlWithoutBase));
         }
-        let endpoint = base.join(match config.api_kind() {
-            ApiKind::OpenAi => "chat/completions",
-            ApiKind::Anthropic => "messages",
-        })?;
+        let endpoint = match config.api_kind() {
+            ApiKind::OpenAi => base.join("chat/completions")?,
+            ApiKind::Anthropic => base.join("messages")?,
+            // Nothing is sent over HTTP: the agent CLI runs as a subprocess.
+            ApiKind::Cli => base.clone(),
+        };
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .timeout_connect(Some(Duration::from_secs(10)))
@@ -114,6 +118,14 @@ impl Client {
             .build()
             .new_agent();
         Ok(Self { config, base, endpoint, agent })
+    }
+
+    /// The agent of a `cli://<agent>` endpoint ([`agents`]), `None` for HTTP ones.
+    pub fn cli_agent(&self) -> Option<&str> {
+        if self.config.api_kind() != ApiKind::Cli {
+            return None;
+        }
+        byob_types::cli_agent(&self.config.base_url)
     }
 
     pub fn endpoint(&self) -> &url::Url {
@@ -142,6 +154,7 @@ impl Client {
         let key = self.config.api_key.as_deref();
         match self.api() {
             ApiKind::OpenAi => key.map(|k| ("Authorization", format!("Bearer {k}"))).into_iter().collect(),
+            ApiKind::Cli => Vec::new(),
             ApiKind::Anthropic => {
                 let mut h = vec![("anthropic-version", anthropic::VERSION.to_owned())];
                 h.extend(key.map(|k| ("x-api-key", k.to_owned())));
@@ -153,7 +166,7 @@ impl Client {
     /// The model list's path under the base URL (Anthropic pages it: ask for all at once).
     pub(crate) fn models_path(&self) -> &'static str {
         match self.api() {
-            ApiKind::OpenAi => "models",
+            ApiKind::OpenAi | ApiKind::Cli => "models",
             ApiKind::Anthropic => "models?limit=1000",
         }
     }
@@ -166,6 +179,11 @@ impl Client {
     /// [`Client::list_models`] that gives up after `timeout` (connecting included): a cheap
     /// "is anything there, and does it take our key" check.
     pub fn list_models_within(&self, timeout: Duration) -> Result<Vec<String>, LlmError> {
+        if let Some(id) = self.cli_agent() {
+            // Detection spawns the CLI (`--version`, `auth status`); it's cached, and its
+            // own short timeouts stand in for `timeout`.
+            return agents::list_models(id);
+        }
         let url = self.base.join(self.models_path())?;
         let mut req = self.agent.get(url.as_str());
         for (name, value) in self.auth_headers() {
@@ -227,6 +245,9 @@ impl Client {
         stop_when: StopWhen<'_>,
         mut on_event: impl FnMut(StreamEvent),
     ) -> Result<ChatOutcome, LlmError> {
+        if let Some(id) = self.cli_agent() {
+            return agents::stream(id, &self.config, messages, tools, &stop_when, &mut on_event);
+        }
         let cancel = &stop_when;
         let api = self.api();
         let mut headers = vec![("Accept", "text/event-stream".to_owned()), ("Content-Type", "application/json".to_owned())];
@@ -242,6 +263,7 @@ impl Client {
                 let body = serde_json::to_vec(&body).map_err(encoding)?;
                 (Attempt { body, headers }, None)
             }
+            ApiKind::Cli => return Err(LlmError::Stream("agent CLIs don't take HTTP requests".into())),
             ApiKind::Anthropic => {
                 let p = &self.config.params;
                 let full = anthropic::request(&self.config.model, messages, tools, true, p)?;
@@ -320,7 +342,7 @@ pub struct StopWhen<'a> {
 }
 
 impl StopWhen<'_> {
-    fn now(&self) -> bool {
+    pub(crate) fn now(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
             || self.also.is_some_and(|f| f.load(Ordering::Relaxed))
             || self.deadline.is_some_and(|d| std::time::Instant::now() >= d)
@@ -368,7 +390,7 @@ fn exchange(
     }
     let reader = BufReader::new(resp.into_body().into_reader());
     match api {
-        ApiKind::OpenAi => read_stream(reader, stop, on_event),
+        ApiKind::OpenAi | ApiKind::Cli => read_stream(reader, stop, on_event),
         ApiKind::Anthropic => anthropic::read_stream(reader, stop, on_event),
     }
 }
