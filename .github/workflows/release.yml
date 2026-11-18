@@ -92,6 +92,12 @@ jobs:
           cache-on-failure: true
       - name: Build
         run: cargo build --release --locked --manifest-path host/artifact-host/Cargo.toml --target ${{ matrix.target }}
+        env:
+          # Windows: newer MSVC STL headers refuse an older Clang ("STL1000: expected Clang 22 or
+          # newer"), which bindgen (mozangle's shader bindings) and clang-cl use; Microsoft's
+          # escape hatch lets them parse anyway.
+          BINDGEN_EXTRA_CLANG_ARGS: ${{ runner.os == 'Windows' && '-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH' || '' }}
+          CXXFLAGS: ${{ runner.os == 'Windows' && '-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH' || '' }}
       # Windows draws through ANGLE (Cargo.toml): its two DLLs go next to the helper, with
       # ANGLE's licence from the exact source that was built.
       - name: Gather the helper's files
