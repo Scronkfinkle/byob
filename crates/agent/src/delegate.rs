@@ -465,9 +465,9 @@ conversation, so say everything it needs (paths, names, what to report back)."
 
 /// The tools a subagent gets: the turn's tools, cut down to the agent definition's list
 /// (Claude Code names mapped, unknown names ignored) and then to what the call asked for.
-/// `delegate` itself is never among them.
+/// `delegate` and `bench` are never among them (a subagent neither delegates nor benchmarks).
 pub fn child_tools(all: &Registry, def: Option<&AgentDef>, asked: Option<&[String]>) -> Result<Registry, String> {
-    let mut names: Vec<String> = all.specs().into_iter().map(|s| s.name).filter(|n| n != TOOL).collect();
+    let mut names: Vec<String> = all.specs().into_iter().map(|s| s.name).filter(|n| n != TOOL && n != crate::bench::TOOL).collect();
     if let Some(listed) = def.and_then(|d| d.tools.as_ref()) {
         let allowed: Vec<&str> = listed.iter().flat_map(|t| tool_aliases(t)).collect();
         names.retain(|n| allowed.contains(&n.as_str()));
@@ -693,6 +693,7 @@ fn run(job: Job, l: &Launch, step: &mut Step, (slots, leases): (&Arc<Slots>, &Ar
         vision: l.vision.clone(),
         // Not the parent's slot (it holds that while it waits): its cache survives.
         slot: leases.for_subagent(&job.model.plan, job.model.llm.config()),
+        scripted: None,
     };
     let out = turn::run_child(setup);
     done.store(true, Ordering::Relaxed);

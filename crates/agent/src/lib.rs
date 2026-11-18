@@ -26,6 +26,7 @@ mod authoring;
 #[cfg(test)]
 mod backend_tests;
 mod backends;
+pub mod bench;
 #[cfg(test)]
 mod bundled_tests;
 mod channel;
@@ -1688,6 +1689,7 @@ impl Engine {
         let plugin_guidance = composed.as_ref().map(|c| c.tool_prompts.clone()).unwrap_or_default();
         // `delegate` is offered while a plugin that names it (bundled `subagents`) is on.
         let delegate_on = composed.as_ref().is_none_or(|c| !c.turn_tools_off.contains(delegate::TOOL));
+        let bench_on = composed.as_ref().is_some_and(|c| c.turn_tools_on.contains(bench::TOOL));
         let delegation = workspace_dir
             .as_deref()
             .filter(|_| eff.subagents.value && delegate_on)
@@ -1712,8 +1714,21 @@ impl Engine {
             Some(c) => (c.tools, c.owners),
             None => (self.tools.clone(), BTreeMap::new()),
         };
-        let extra: Vec<Arc<dyn byob_tools::Tool>> =
+        let mut extra: Vec<Arc<dyn byob_tools::Tool>> =
             delegation.iter().map(|env| Arc::new(delegate::DelegateTool { env: Arc::clone(env) }) as Arc<dyn byob_tools::Tool>).collect();
+        // `bench` measures the chat's own endpoint (an agent CLI isn't a server to measure).
+        let bench_on = bench_on && byob_types::cli_agent(&settings.inference.base_url).is_none();
+        if bench_on {
+            let info = self.endpoints.info_with(&settings.inference, eff.tool_mode.value);
+            let endpoint = bench::Endpoint { slots: info.slots, context: info.context_tokens, server: info.server, model: settings.inference.model.clone() };
+            extra.push(Arc::new(bench::BenchTool { llm: llm.clone(), endpoint }));
+        }
+        // `/bench`: the call runs without the model.
+        let scripted = bench::command(&text).filter(|_| bench_on).map(|args| byob_llm::ToolCall {
+            id: "call_bench".into(),
+            name: bench::TOOL.into(),
+            arguments: args.to_string(),
+        });
         for t in &extra {
             turn_tools.register(Arc::clone(t));
         }
@@ -1786,6 +1801,7 @@ impl Engine {
             prompt: Some(inputs),
             vision: self.vision_role(),
             slot,
+            scripted,
         };
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });

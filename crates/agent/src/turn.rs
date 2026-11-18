@@ -212,6 +212,9 @@ pub struct Setup {
     /// The server slot this turn's requests run in (`None`: the server picks). Held until
     /// the turn ends; see [`crate::slot_leases`].
     pub slot: Option<SlotLease>,
+    /// Run this call instead of asking the model (a builtin command such as `/bench`): its
+    /// result is the reply, and no model request is made.
+    pub scripted: Option<ToolCall>,
 }
 
 /// A turn's tools, swappable between rounds (never during a call: a round works on the
@@ -469,6 +472,9 @@ impl Turn {
         if let Some(ask) = self.s.trust_ask.take() {
             self.ask_trust(&ask);
         }
+        if let Some(call) = self.s.scripted.take() {
+            return self.run_scripted(call);
+        }
         // The system prompt: every before_prompt hook, in order (plugins' backends included).
         if let Some(inputs) = self.s.prompt.take() {
             let text = self.s.hooks.before_prompt(&inputs, &self.s.cancel).map_err(End::Error)?;
@@ -527,6 +533,25 @@ impl Turn {
             }
         }
         Err(End::Error(format!("stopped after {max_rounds} model requests without an answer")))
+    }
+
+    /// A scripted turn: run `call` as the model would have, then show its result as the
+    /// reply. The history keeps the call and its result, so a later turn's model sees both.
+    fn run_scripted(&mut self, call: ToolCall) -> Result<(), End> {
+        self.tools = self.s.tools.snapshot();
+        self.offered = vec![call.name.clone()];
+        let calls = vec![call];
+        self.messages.push(ChatMessage::assistant_tool_calls(None, &calls));
+        let result = self.call_all(&calls).into_iter().next().unwrap_or_default();
+        if self.cancelled() {
+            return Err(End::Stopped);
+        }
+        let mut shown = Shown::new(self.content_len);
+        shown.send(&self.s.inbox, self.s.child, self.s.entry, result.clone(), String::new());
+        self.content_len = shown.len;
+        self.content.push_str(&result);
+        self.answer = result;
+        Ok(())
     }
 
     /// The `before_request` hooks (compaction among them) may change the messages and

@@ -51,6 +51,7 @@ mod tests {
                 "appearance",
                 "artifacts",
                 "ask-user",
+                "bench",
                 "calendar",
                 "charts",
                 "compaction",

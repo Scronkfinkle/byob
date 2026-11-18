@@ -1,0 +1,13 @@
+{
+  "id": "bench",
+  "name": "Benchmark",
+  "version": "1.0.0",
+  "description": "Token throughput of the model a chat runs on: the bench tool and /bench measure generation and prompt speed and time to first token at each concurrency up to the server's slots, for several prompt sizes, and chart them. The model interprets the numbers; /bench shows them without it.",
+  "icon": "gauge",
+  "tools": [
+    { "native": "bench" }
+  ],
+  "starters": [
+    { "title": "Benchmark this model", "prompt": "Benchmark the token throughput of the model you run on and tell me what the numbers mean." }
+  ]
+}

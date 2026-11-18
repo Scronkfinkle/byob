@@ -299,6 +299,9 @@ pub(crate) struct Composed {
     /// Tools the engine makes per turn (`Natives::turn_tools`) that a plugin names but none
     /// that is on offers: the turn goes without them.
     pub turn_tools_off: BTreeSet<String>,
+    /// Tools the engine makes per turn that a switched-on plugin offers (for those offered
+    /// only that way, like `bench`, unlike `delegate`, which is on unless a plugin says no).
+    pub turn_tools_on: BTreeSet<String>,
     /// Workspace environment providers: byob's own that are off, the plugins' commands.
     pub env_providers: byob_tools::EnvProviders,
     /// The switched-on plugins' MCP servers that are up (for MCP Apps' calls).
@@ -718,6 +721,9 @@ impl Extensions {
         // `/compact` belongs to the compaction hook (bundled plugin `compaction`).
         let compaction = out.hooks.iter().any(|b| b.id == crate::compact::HOOK);
         out.slash.retain(|i| compaction || !(i.kind == SlashKind::Builtin && i.name == "compact"));
+        // `/bench` belongs to the `bench` tool (bundled plugin `bench`).
+        let bench = out.turn_tools_on.contains(crate::bench::TOOL);
+        out.slash.retain(|i| bench || !(i.kind == SlashKind::Builtin && i.name == crate::bench::TOOL));
         out.tools.register(Arc::new(UseSkillTool::new(skills.clone())));
         let mut prompt = prompt_lines.join("\n");
         for part in [byob_plugins::skills_prompt(&skills), AUTHORING_LINE.to_owned()] {
@@ -920,6 +926,7 @@ impl NativeParts {
         hooks.extend(hooks::default_bindings(&natives.hooks, |id| !claimed_hooks.contains(id)));
         out.hooks = hooks;
         out.turn_tools_off = claimed_tools.difference(&offered).filter(|t| natives.turn_tools.contains(*t)).cloned().collect();
+        out.turn_tools_on = offered.iter().filter(|t| natives.turn_tools.contains(*t)).cloned().collect();
         out.env_providers = byob_tools::EnvProviders { off: claimed_envs.difference(&offered_envs).cloned().collect(), external: external_envs };
         // The engine's order: unclaimed types stay, claimed ones only as a switched-on
         // plugin declares them; new types after.
@@ -1058,7 +1065,7 @@ fn backend_tools(
     (crate::backends::info(&backend), tools, Some(backend))
 }
 
-/// The `/` menu: `/compact`, then commands, then skills; a name only once.
+/// The `/` menu: `/compact` and `/bench`, then commands, then skills; a name only once.
 fn slash_menu(
     commands: &[Command],
     command_from: &[(PluginScope, String)],
@@ -1074,6 +1081,14 @@ fn slash_menu(
         scope: None,
         plugin: None,
     }];
+    out.push(SlashItem {
+        name: crate::bench::TOOL.into(),
+        kind: SlashKind::Builtin,
+        description: "Benchmark this model's token throughput and chart it (no model needed to read the results)".into(),
+        hint: "[c=1,2,4] [p=512,4k] [gen=256] [runs=1] [charts=off]".into(),
+        scope: None,
+        plugin: None,
+    });
     for (c, (scope, plugin)) in commands.iter().zip(command_from) {
         if out.iter().any(|i| i.name == c.name) {
             continue;

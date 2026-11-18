@@ -702,6 +702,29 @@ the send control is **Stop**, and once something is typed Enter (or **Queue** be
 to the queue; clicking a row edits it in the composer (the draft there is set aside until
 **Save** or Esc/**Cancel**).
 
+## Benchmark
+
+The bundled `bench` plugin measures the token throughput of the chat's own endpoint
+(`bench.rs`). A sweep runs, for each prompt size and concurrency (1, 2, 4, … up to the
+server's slots), that many requests at once; each prompt starts with a random line so no
+prompt cache answers it, and asks for exactly `gen_tokens` tokens (`max_tokens`, plus
+`ignore_eos` on llama.cpp and vLLM). Each request is timed from its stream: time to first
+token, prompt tok/s (prompt tokens over that), per-request generation tok/s (the tokens after
+the first over the rest) and the batch's total generation tok/s (all its tokens over its wall
+time); token counts are the server's usage. It returns a Markdown table and draws four charts
+with `make_chart`. If the engine's probe hadn't finished when the turn started, the tool
+probes (without the tool test) for the slots and server itself.
+
+- **Tool.** `bench::BenchTool`, made per turn like `delegate` but offered only while a
+  switched-on plugin names it (`Composed::turn_tools_on`): its description costs every
+  request. Never given to subagents. Access `Read` (it only talks to the chat's own model and
+  creates chart files, like `make_chart`).
+- **`/bench [c=1,2,4] [p=512,4k] [gen=256] [runs=1] [charts=off]`.** A builtin in the `/`
+  menu while the plugin is on. The turn is *scripted*: `Setup::scripted` holds the `bench`
+  call, which runs through the normal gate and steps without a model request, and its result
+  is the reply. The transcript keeps the call and its result, so a later message can ask the
+  model what the numbers mean.
+
 ## Subagents
 
 The main model can hand a self-contained task to a subagent with the `delegate` tool
@@ -835,7 +858,7 @@ the others switch like any plugin. Since the hooks phase they also include `prom
 the base prompt, plugins' prompt parts, the user's instructions), `workspace-instructions`
 (AGENTS.md), `compaction`, `subagents` (`delegate`) and `environments` (nix, pixi, mise,
 containers); see Hooks below. Then `memory`, `plan` and `ask-user` (Memory, plan and
-questions below). Authoring tools (make_tool & co.) and `use_skill` stay kernel,
+questions below), and `bench` (Benchmark below). Authoring tools (make_tool & co.) and `use_skill` stay kernel,
 never plugins.
 
 **Materialized to disk.** A bundled plugin that runs code (a `backend`, script tools) gets its
@@ -957,6 +980,7 @@ What is kernel and what is a bundled plugin on these registries:
 | child turns (`TurnHost`, a `ToolContext` capability) | `subagents`: `delegate` (a native turn tool) + agents section (500) |
 | environment provider registry (`byob_exec::env::EnvProvider`) | `environments`: nix, pixi, mise, container providers |
 | renderer primitives | `compaction`: `before_request` hook + `/compact`; `core-tools` (locked), `html-apps`, `charts`, `markdown`, `images` |
+| scripted turns (`turn::Setup::scripted`: one given call, no model request) | `bench`: `bench` (a native turn tool, offered only while the plugin is on) + `/bench` |
 | question cards (`Asker::ask_user`, `ClientMsg::AnswerQuestion`) | `memory` (native backend: hook, tools, pane), `plan` (`update_plan` + `before_request` hook), `ask-user` (`ask_user`) |
 
 With the defaults the system prompt is byte-identical to before: the contributors join their

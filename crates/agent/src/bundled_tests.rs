@@ -38,7 +38,7 @@ fn natives() -> Natives {
 /// `bundled_plugins_load_with_no_files_on_disk`, `native_backend_tests` and below).
 fn config(home: &Path, bundled: bool) -> PluginsConfig {
     let mut c = config_all(home, bundled);
-    c.bundled.retain(|e| !matches!(e.id.as_str(), "sheets" | "web" | "memory" | "plan" | "ask-user" | "help" | "appearance" | "math"));
+    c.bundled.retain(|e| !matches!(e.id.as_str(), "sheets" | "web" | "memory" | "plan" | "ask-user" | "help" | "appearance" | "math" | "bench"));
     c
 }
 
@@ -87,6 +87,7 @@ fn bundled_plugins_load_with_no_files_on_disk() {
             "appearance",
             "artifacts",
             "ask-user",
+            "bench",
             "calendar",
             "charts",
             "compaction",
