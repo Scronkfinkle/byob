@@ -27,6 +27,35 @@ pub const MAX_HTML: usize = 16 << 20;
 /// Largest bridge message either side sends ([`Request::Message`], [`Event::Message`]): the
 /// JSON text of one JSON-RPC message between the page and byob.
 pub const MAX_MESSAGE: usize = 256 << 10;
+/// Most options a `<select>` prompt carries ([`Event::Select`]); the rest are left out.
+pub const MAX_OPTIONS: usize = 2000;
+/// Longest option or group label sent (bytes; longer ones are cut).
+pub const MAX_LABEL: usize = 400;
+
+/// One option of a `<select>` ([`SelectPrompt`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectOption {
+    /// What [`Request::Select`] names it by.
+    pub id: u32,
+    pub label: String,
+    /// The `<optgroup>` it is in (empty: none).
+    pub group: String,
+    pub disabled: bool,
+}
+
+/// A `<select>` the user opened: byob shows the list and answers with [`Request::Select`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectPrompt {
+    pub options: Vec<SelectOption>,
+    /// Ids of the options selected now.
+    pub selected: Vec<u32>,
+    pub multiple: bool,
+    /// Where the `<select>` is: device pixels from the surface's top-left.
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
 
 /// Size of the rendering surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -134,6 +163,9 @@ pub enum Request {
     /// a `message` event on its window, as if its parent had posted it. Only sent to helpers
     /// that announced [`Features::BRIDGE`].
     Message(String),
+    /// The answer to the last [`Event::Select`]: the ids now selected, or `None` to leave it
+    /// as it was (dismissed). Only sent to helpers that announced [`Features::PICKERS`].
+    Select(Option<Vec<u32>>),
 }
 
 /// What a helper supports beyond the base protocol, as bits (see [`Event::Features`]).
@@ -146,8 +178,11 @@ impl Features {
     /// The page bridge: understands [`Request::Message`] and sends [`Event::Message`] for
     /// what the page posts to its parent.
     pub const BRIDGE: u32 = 2;
+    /// Pickers the page opens: sends [`Event::Select`] for a `<select>` and understands
+    /// [`Request::Select`].
+    pub const PICKERS: u32 = 4;
     /// Everything this version of the protocol knows.
-    pub const ALL: Self = Self(Self::VISIBILITY | Self::BRIDGE);
+    pub const ALL: Self = Self(Self::VISIBILITY | Self::BRIDGE | Self::PICKERS);
 
     pub fn has(self, bit: u32) -> bool {
         self.0 & bit != 0
@@ -205,6 +240,8 @@ pub enum Event {
     /// A bridge message the page posted to its parent (untrusted JSON text, at most
     /// [`MAX_MESSAGE`] bytes; only from helpers with [`Features::BRIDGE`]).
     Message(String),
+    /// The page opened a `<select>` (only from helpers with [`Features::PICKERS`]).
+    Select(SelectPrompt),
 }
 
 /// A malformed frame.
@@ -502,6 +539,33 @@ fn message(d: &mut Dec<'_>) -> Result<String, WireError> {
     Ok(m)
 }
 
+/// A list of option ids (at most [`MAX_OPTIONS`]).
+fn ids(d: &mut Dec<'_>) -> Result<Vec<u32>, WireError> {
+    let n = d.len()?;
+    if n > MAX_OPTIONS {
+        return Err(WireError(format!("{n} options is over the limit")));
+    }
+    (0..n).map(|_| d.u32()).collect()
+}
+
+/// An option or group label: at most [`MAX_LABEL`] bytes.
+fn label(d: &mut Dec<'_>) -> Result<String, WireError> {
+    let l = d.str()?;
+    if l.len() > MAX_LABEL {
+        return Err(WireError(format!("label of {} bytes is over the limit", l.len())));
+    }
+    Ok(l)
+}
+
+/// `s` cut to [`MAX_LABEL`] bytes at a char boundary (for senders).
+pub fn cut_label(s: &str) -> String {
+    let mut end = s.len().min(MAX_LABEL);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.get(..end).unwrap_or_default().to_owned()
+}
+
 fn bad_tag<T>(what: &str, tag: u8) -> Result<T, WireError> {
     Err(WireError(format!("unknown {what} tag {tag}")))
 }
@@ -641,6 +705,14 @@ impl Message for Request {
                 e.u8(8);
                 e.str(m);
             }
+            Self::Select(ids) => {
+                e.u8(9);
+                e.bool(ids.is_some());
+                if let Some(ids) = ids {
+                    e.len(ids.len());
+                    ids.iter().for_each(|i| e.u32(*i));
+                }
+            }
         }
     }
 
@@ -655,6 +727,7 @@ impl Message for Request {
             6 => Self::Shutdown,
             7 => Self::Visible(d.bool()?),
             8 => Self::Message(message(d)?),
+            9 => Self::Select(if d.bool()? { Some(ids(d)?) } else { None }),
             t => return bad_tag("request", t),
         })
     }
@@ -702,6 +775,22 @@ impl Message for Event {
                 e.u8(8);
                 e.str(m);
             }
+            Self::Select(p) => {
+                e.u8(9);
+                e.len(p.options.len());
+                for o in &p.options {
+                    e.u32(o.id);
+                    e.str(&o.label);
+                    e.str(&o.group);
+                    e.bool(o.disabled);
+                }
+                e.len(p.selected.len());
+                p.selected.iter().for_each(|i| e.u32(*i));
+                e.bool(p.multiple);
+                for v in [p.x, p.y, p.width, p.height] {
+                    e.f32(v);
+                }
+            }
         }
     }
 
@@ -727,6 +816,18 @@ impl Message for Event {
             // Unknown bits are kept (and ignored): a newer helper may know more.
             7 => Self::Features(Features(d.u32()?)),
             8 => Self::Message(message(d)?),
+            9 => {
+                let n = d.len()?;
+                if n > MAX_OPTIONS {
+                    return Err(WireError(format!("{n} options is over the limit")));
+                }
+                let mut options = Vec::with_capacity(n);
+                for _ in 0..n {
+                    options.push(SelectOption { id: d.u32()?, label: label(d)?, group: label(d)?, disabled: d.bool()? });
+                }
+                let selected = ids(d)?;
+                Self::Select(SelectPrompt { options, selected, multiple: d.bool()?, x: d.f32()?, y: d.f32()?, width: d.f32()?, height: d.f32()? })
+            }
             t => return bad_tag("event", t),
         })
     }
@@ -823,6 +924,9 @@ mod tests {
         round_trip(Request::Shutdown);
         round_trip(Request::Visible(false));
         round_trip(Request::Visible(true));
+        round_trip(Request::Select(Some(vec![2])));
+        round_trip(Request::Select(Some(vec![])));
+        round_trip(Request::Select(None));
         round_trip(Request::Message(r#"{"jsonrpc":"2.0","method":"ui/notifications/tool-input","params":{"arguments":{"q":"é"}}}"#.into()));
         for input in [
             Input::MouseMove { x: 1.5, y: -2.0 },
@@ -883,7 +987,7 @@ mod tests {
         assert_eq!(Request::Shutdown.to_bytes(), vec![6]);
         assert_eq!(Request::Visible(true).to_bytes(), vec![7, 1]);
         assert_eq!(Event::Features(Features(Features::VISIBILITY)).to_bytes(), vec![7, 1, 0, 0, 0]);
-        assert_eq!(Event::Features(Features::ALL).to_bytes(), vec![7, 3, 0, 0, 0]);
+        assert_eq!(Event::Features(Features::ALL).to_bytes(), vec![7, 7, 0, 0, 0], "visibility, bridge and pickers");
         assert!(Request::from_bytes(&[7]).is_err(), "Visible needs its flag");
         assert!(Request::from_bytes(&[7, 2]).is_err(), "bad bool");
         assert!(Event::from_bytes(&[7, 1, 0]).is_err(), "short features");
@@ -909,5 +1013,28 @@ mod tests {
     fn mods() {
         let m = Mods(Mods::ALT | Mods::META);
         assert!(m.has(Mods::ALT) && m.has(Mods::META) && !m.has(Mods::SHIFT));
+    }
+
+    /// A `<select>` prompt and its answer; oversized lists and labels are refused.
+    #[test]
+    fn select_prompts_round_trip_and_are_bounded() {
+        let opt = |id, label: &str, group: &str| SelectOption { id, label: label.into(), group: group.into(), disabled: id == 2 };
+        let prompt = SelectPrompt {
+            options: vec![opt(0, "Delica 11/0 (DB)", ""), opt(1, "Delica 15/0", "Small"), opt(2, "gone", "Small")],
+            selected: vec![0],
+            multiple: false,
+            x: 10.0,
+            y: 20.5,
+            width: 180.0,
+            height: 28.0,
+        };
+        round_trip(Event::Select(prompt.clone()));
+        let mut big = prompt.clone();
+        big.options = (0..=u32::try_from(MAX_OPTIONS).unwrap()).map(|i| opt(i, "x", "")).collect();
+        assert!(Event::from_bytes(&Event::Select(big).to_bytes()).is_err());
+        let mut long = prompt;
+        long.options[0].label = "é".repeat(MAX_LABEL);
+        assert!(Event::from_bytes(&Event::Select(long).to_bytes()).is_err());
+        assert!(cut_label(&"é".repeat(MAX_LABEL)).len() <= MAX_LABEL);
     }
 }

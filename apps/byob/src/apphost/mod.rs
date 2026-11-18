@@ -71,6 +71,8 @@ struct App {
     hidden_sent: bool,
     /// On screen continuously since.
     visible_since: Option<Instant>,
+    /// A `<select>` the page opened: its list is drawn here until a pick or a click away.
+    select: Option<wire::SelectPrompt>,
 }
 
 impl App {
@@ -94,6 +96,7 @@ impl App {
             hidden: false,
             hidden_sent: false,
             visible_since: None,
+            select: None,
         }
     }
 }
@@ -239,7 +242,15 @@ impl ServoView {
             painter.text(rect.center() + vec2(0.0, 12.0), egui::Align2::CENTER_CENTER, why, egui::FontId::proportional(12.0), t.text_dim);
         }
 
-        if owner && app.state == State::Live && app.helper.is_some() {
+        // An open `<select>` list takes the input until it closes.
+        if owner && app.select.is_some() && app.helper.is_some() {
+            if let Some(answer) = app.select.as_mut().and_then(|p| select_list(ui, t, &key, rect, p)) {
+                app.select = None;
+                if let Some(h) = &app.helper {
+                    h.send(Request::Select(answer));
+                }
+            }
+        } else if owner && app.state == State::Live && app.helper.is_some() {
             input(ui, app, rect, &resp, surface);
         } else if app.focused {
             app.focused = false;
@@ -305,6 +316,10 @@ impl ServoView {
                     }
                     wire::Event::ContentHeight(height) => app.content_height = Some(height),
                     wire::Event::Cursor(c) => app.cursor = c,
+                    wire::Event::Select(p) => {
+                        app.select = Some(p);
+                        ctx.request_repaint();
+                    }
                     wire::Event::Message(m) => {
                         // Bounded like everything else from the helper; a flood is dropped.
                         if self.inbox.len() < 1024 {
@@ -537,6 +552,63 @@ fn named_key(k: egui::Key) -> Option<&'static str> {
 
 /// Click focuses the app (arrows and Tab go to it); Esc or clicking elsewhere gives focus
 /// back. Pointer input goes to it while hovered; keys while focused.
+/// Tallest a `<select>` list gets before it scrolls.
+const SELECT_MAX_HEIGHT: f32 = 320.0;
+
+/// The list of an open `<select>`, under the element (above it when there is no room below):
+/// `Some(answer)` once it closes, the ids picked (`None`: left as it was). One pick closes a
+/// single select; a multiple one toggles until Esc or a click away.
+fn select_list(ui: &egui::Ui, t: &Tokens, key: &Key, surface: egui::Rect, p: &mut wire::SelectPrompt) -> Option<Option<Vec<u32>>> {
+    let ctx = ui.ctx();
+    let ppp = ctx.pixels_per_point();
+    let element = egui::Rect::from_min_size(surface.min + vec2(p.x, p.y) / ppp, vec2(p.width, p.height) / ppp);
+    let width = element.width().max(140.0);
+    let room_below = ctx.content_rect().bottom() - element.bottom();
+    let above = room_below < SELECT_MAX_HEIGHT.min(28.0 * p.options.len() as f32) && element.top() > room_below;
+    let (anchor, pivot) = if above { (element.left_top(), egui::Align2::LEFT_BOTTOM) } else { (element.left_bottom(), egui::Align2::LEFT_TOP) };
+    let mut answer = None;
+    let area =
+        egui::Area::new(egui::Id::unique(("byob-select", &key.0, key.1))).order(egui::Order::Foreground).fixed_pos(anchor).pivot(pivot).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(t.panel_bg).stroke(Stroke::new(1.0, t.border)).show(ui, |ui| {
+                ui.set_width(width);
+                egui::ScrollArea::vertical().max_height(SELECT_MAX_HEIGHT).show(ui, |ui| {
+                    let mut group = "";
+                    for o in &p.options {
+                        if o.group != group {
+                            group = &o.group;
+                            if !group.is_empty() {
+                                ui.label(RichText::new(group).small().strong().color(t.text_dim));
+                            }
+                        }
+                        let on = p.selected.contains(&o.id);
+                        let text = if o.group.is_empty() { o.label.clone() } else { format!("  {}", o.label) };
+                        let row = ui.add_enabled(!o.disabled, egui::Button::selectable(on, text).min_size(vec2(width, 0.0)));
+                        if row.clicked() {
+                            if p.multiple {
+                                if on {
+                                    p.selected.retain(|i| *i != o.id);
+                                } else {
+                                    p.selected.push(o.id);
+                                }
+                            } else {
+                                answer = Some(Some(vec![o.id]));
+                            }
+                        }
+                    }
+                });
+            });
+        });
+    if answer.is_some() {
+        return answer;
+    }
+    // Esc or a click outside the list closes it: a multiple select keeps what was toggled.
+    let away = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|pos| !area.response.rect.contains(pos)));
+    if away || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        return Some(p.multiple.then(|| p.selected.clone()));
+    }
+    None
+}
+
 fn input(ui: &egui::Ui, app: &mut App, rect: egui::Rect, resp: &egui::Response, surface: Surface) {
     let Some(h) = &app.helper else { return };
     if resp.clicked() || resp.drag_started() {
@@ -861,5 +933,78 @@ mod tests {
         if helper::locate().is_none() {
             assert!(ServoView::new(&egui::Context::default()).is_none());
         }
+    }
+
+    fn prompt(multiple: bool) -> wire::SelectPrompt {
+        let opt = |id, label: &str| wire::SelectOption { id, label: label.into(), group: String::new(), disabled: false };
+        wire::SelectPrompt {
+            options: vec![opt(0, "Delica 11/0"), opt(1, "Delica 15/0"), opt(2, "Delica 10/0")],
+            selected: vec![0],
+            multiple,
+            x: 20.0,
+            y: 40.0,
+            width: 160.0,
+            height: 24.0,
+        }
+    }
+
+    /// One frame of an open list, with `events`; what it answered, if it closed.
+    fn list_frame(ctx: &egui::Context, p: &mut wire::SelectPrompt, events: Vec<egui::Event>) -> (Option<Option<Vec<u32>>>, Vec<(String, egui::Pos2)>) {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0))), events, ..Default::default() };
+        let mut answer = None;
+        let mut out = ctx.run_ui(input, |ui| {
+            answer = select_list(ui, &Tokens::dark(), &("a".to_owned(), 1), egui::Rect::from_min_size(egui::pos2(100.0, 50.0), vec2(500.0, 400.0)), p);
+        });
+        out.textures_delta.clear();
+        fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+            match shape {
+                egui::Shape::Text(t) => out.push((t.galley.text().to_owned(), t.pos + t.galley.rect.center().to_vec2())),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut text = Vec::new();
+        out.shapes.iter().for_each(|s| walk(&s.shape, &mut text));
+        (answer, text)
+    }
+
+    /// Regression: a `<select>` in an app never opened (the helper dropped Servo's request).
+    /// Its list shows its options; a pick answers with that option; Esc or a click away
+    /// leaves it as it was, and a multiple select keeps what was toggled.
+    #[test]
+    fn a_select_list_shows_its_options_and_answers() {
+        let ctx = egui::Context::default();
+        let mut p = prompt(false);
+        // A new popup is laid out unseen first.
+        list_frame(&ctx, &mut p, vec![]);
+        let (answer, text) = list_frame(&ctx, &mut p, vec![]);
+        assert_eq!(answer, None, "open until something happens");
+        assert!(["Delica 11/0", "Delica 15/0", "Delica 10/0"].iter().all(|o| text.iter().any(|(t, _)| t == o)), "{text:?}");
+        let click = |pos: egui::Pos2| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+            ]
+        };
+        let release =
+            |pos: egui::Pos2| vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }];
+        let row = text.iter().find(|(t, _)| t == "Delica 15/0").map(|(_, at)| *at).unwrap();
+        assert!(row.y > 70.0 + 24.0, "under the element: {row:?}");
+        let (answer, _) = list_frame(&ctx, &mut p, click(row));
+        assert_eq!(answer, None, "a press inside isn't a click away");
+        let (answer, _) = list_frame(&ctx, &mut p, release(row));
+        assert_eq!(answer, Some(Some(vec![1])), "picked the second option");
+        // Esc: as it was.
+        let ctx = egui::Context::default();
+        let mut p = prompt(false);
+        list_frame(&ctx, &mut p, vec![]);
+        let esc = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        assert_eq!(list_frame(&ctx, &mut p, vec![esc]).0, Some(None));
+        // A click away from a multiple select keeps its toggles.
+        let ctx = egui::Context::default();
+        let mut p = prompt(true);
+        list_frame(&ctx, &mut p, vec![]);
+        p.selected.push(2);
+        assert_eq!(list_frame(&ctx, &mut p, click(egui::pos2(700.0, 580.0))).0, Some(Some(vec![0, 2])));
     }
 }

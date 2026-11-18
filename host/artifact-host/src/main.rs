@@ -79,6 +79,9 @@ struct Page {
     /// The next `data:` navigation is ours (a `Load`); everything else is refused.
     allow_nav: Cell<bool>,
     out: RefCell<Vec<Event>>,
+    /// The `<select>` the user opened, waiting for byob's answer ([`Request::Select`]).
+    /// Dropping it answers "unchanged", so a newer one replacing it closes the old one.
+    select: RefCell<Option<servo::SelectElement>>,
 }
 
 impl Page {
@@ -158,13 +161,45 @@ impl WebViewDelegate for Page {
         req.deny();
     }
     fn show_embedder_control(&self, _: WebView, control: EmbedderControl) {
-        if let EmbedderControl::SimpleDialog(d) = control {
-            d.dismiss();
+        match control {
+            EmbedderControl::SimpleDialog(d) => d.dismiss(),
+            // byob draws the list; its pick comes back as `Request::Select`.
+            EmbedderControl::SelectElement(select) => {
+                self.push(Event::Select(select_prompt(&select)));
+                *self.select.borrow_mut() = Some(select);
+            }
+            // Colour and file pickers, context menus, input methods: not offered (dropping
+            // the control answers it unchanged).
+            _ => {}
         }
     }
     fn notify_crashed(&self, _: WebView, reason: String, _: Option<String>) {
         self.push(Event::Error { message: format!("The app crashed: {reason}"), line: 0 });
     }
+}
+
+/// What byob needs to show a `<select>`'s list: its options (groups flattened, each option
+/// naming its group), what is selected, and where the element is.
+fn select_prompt(select: &servo::SelectElement) -> wire::SelectPrompt {
+    let mut options = Vec::new();
+    let mut add = |o: &servo::SelectElementOption, group: &str| {
+        if options.len() < wire::MAX_OPTIONS
+            && let Ok(id) = u32::try_from(o.id)
+        {
+            options.push(wire::SelectOption { id, label: wire::cut_label(&o.label), group: wire::cut_label(group), disabled: o.is_disabled });
+        }
+    };
+    for item in select.options() {
+        match item {
+            servo::SelectElementOptionOrOptgroup::Option(o) => add(o, ""),
+            servo::SelectElementOptionOrOptgroup::Optgroup { label, options } => options.iter().for_each(|o| add(o, label)),
+        }
+    }
+    let selected = select.selected_options().into_iter().filter_map(|i| u32::try_from(i).ok()).take(wire::MAX_OPTIONS).collect();
+    let r = select.position();
+    #[allow(clippy::cast_precision_loss)] // on-screen pixel coordinates
+    let (x, y, width, height) = (r.min.x as f32, r.min.y as f32, r.width() as f32, r.height() as f32);
+    wire::SelectPrompt { options, selected, multiple: select.allow_select_multiple(), x, y, width, height }
 }
 
 /// A message the page posted (the JSON text after [`MESSAGE_MARK`]); `None` over the cap.
@@ -390,6 +425,14 @@ impl Host {
                 if let Some(v) = &self.view {
                     v.webview.evaluate_javascript(deliver_js(&msg), |_| {});
                 }
+            }
+            Request::Select(ids) => {
+                let pending = self.page.select.borrow_mut().take();
+                if let (Some(mut select), Some(ids)) = (pending, ids) {
+                    select.select(ids.into_iter().filter_map(|i| usize::try_from(i).ok()).collect());
+                    select.submit();
+                }
+                // `None` (dismissed): dropping it leaves the selection as it was.
             }
         }
     }
