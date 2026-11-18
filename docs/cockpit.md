@@ -8,6 +8,8 @@ without switching UI frameworks, in three steps, each usable on its own:
 2. **Free arrangement**: the window's parts as modules placed anywhere, in bezels.
 3. **Lit controls**: button styles, and a scene that sees (and can light) the control under
    the pointer, with an optional overlay drawn over the whole interface.
+4. **Frosted glass** (the compositor): byob drawn into a texture and composited over the
+   scene, blurred behind the panels and sharp between them.
 
 All of it is reachable three ways: by asking the model (the `ui_look` tool, through the
 bundled Appearance plugin), in Settings → Appearance → Cockpit, and from the command line.
@@ -89,13 +91,29 @@ example) and the current custom shader's source.
   bench tool's interpretation came back empty. Worth fixing on main: at least say "the
   model hit its output limit", maybe continue once.
 
-## What egui can't do here (and Rune could)
+## The compositor (`cockpit/compositor.rs`)
 
-- **Frosted glass** (blurring what's behind a panel) needs the frame rendered to a texture
-  first; eframe draws egui straight to the window. Possible by taking over eframe's render
-  loop, or with a custom egui-wgpu integration.
-- **Relighting the finished UI** (text included) as one image, Rune-light style: same
-  reason. The overlay pass gets close for glows and scanlines but can't sample what's below.
+eframe draws egui straight to the window, so the finished frame can't be blurred or relit.
+Rather than replace eframe's loop, byob runs in a second egui context of its own when a
+backdrop is on at startup (`BYOB_COMPOSITOR=1` always, `=0` never; the choice is made once,
+since textures and fonts belong to a context). eframe's context passes the frame's raw input
+through and draws a single paint callback, in which egui-wgpu's renderer draws byob's frame
+into a texture; the scene is drawn and blurred at a quarter size; the composite is
+`ui + (1 − ui.a) · mix(scene, blurred, frost · covered)`, then the overlay.
+
+eframe keeps what it's good at: the window and surface, saved state, input, IME, clipboard,
+drag and drop. byob's platform output (cursor, copied text, IME, its accessibility tree),
+viewport commands (screenshots, close) and repaint requests go back through eframe's context;
+its own discarded layout passes don't (eframe would otherwise draw every frame twice); zoom is
+mirrored so input arrives in byob's points; texture changes wait for a frame that's painted.
+The Servo view loads its pictures into byob's context. Without a backdrop at startup nothing of
+this runs: the window is drawn exactly as before.
+
+## What egui still can't do here (and Rune could)
+
+- **Relighting the finished UI** (text included) with the scene's lights: the compositor
+  now has the UI as a texture, so this is within reach (the overlay could sample it); not
+  done yet.
 - **Per-widget shaders**: egui widgets paint with its own tessellated shapes. The scene sees
   the hovered control's rect, which covers most "lit button" effects.
 
@@ -111,7 +129,9 @@ example) and the current custom shader's source.
 5. Animated transitions between arrangements (spring the module rects).
 6. Module bezels as shaders too (`fn bezel(p, rect, kind)`), for fully drawn instrument
    panels.
-7. Frosted glass via render-to-texture (see above), if the look is worth the plumbing.
+7. Relighting and bloom over the composited UI (the overlay sampling the UI texture).
 
-Not done: testing in the browser (the wasm build compiles and the code paths are the same,
-but no live run), integrated-GPU performance, and light themes (the bundled scenes are dark).
+Tested in the browser with headless Chromium (software WebGL): composited and frosted, with
+`#backdrop=aurora` in the URL. Not done: integrated-GPU performance, HTML apps (the Servo view)
+inside a composited window, and light themes (the bundled scenes are dark; light glass over
+them turns grey).
