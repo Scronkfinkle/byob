@@ -202,28 +202,32 @@ impl ByobApp {
     }
 
     pub(crate) fn header(&mut self, ui: &mut egui::Ui) {
-        let t = self.tokens;
         let layout = Layout::for_width(ui.available_width()).shaped(ui.ctx());
         let frame = crate::cockpit::framed(ui.ctx(), egui::Frame::side_top_panel(ui.style()));
-        let shown = egui::Panel::top("header").frame(frame).show_separator_line(crate::cockpit::gap(ui.ctx()) <= 0.0).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                // The row's full height up front: items line up on its centre whatever order
-                // they are drawn in.
-                let mut height = icons::button_height(ui);
-                if layout.wordmark {
-                    height = height.max(ui.ctx().fonts_mut(|f| f.row_height(&egui::FontId::proportional(t.text_size(18.0)))));
-                }
-                ui.set_min_height(height);
-                // The actions first, right to left, so a long title or URL can never push
-                // them off screen; the rest shares what is left.
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    self.header_actions(ui, &t, layout);
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| self.header_left(ui, &t, layout));
-                });
-            });
-        });
+        let shown =
+            egui::Panel::top("header").frame(frame).show_separator_line(crate::cockpit::gap(ui.ctx()) <= 0.0).show(ui, |ui| self.header_row(ui, layout));
         crate::layout::set_header_rect(ui.ctx(), shown.response.rect);
         crate::cockpit::mark(ui.ctx(), shown.response.rect);
+    }
+
+    /// The header's row (in its panel, or in a free arrangement's module).
+    pub(crate) fn header_row(&mut self, ui: &mut egui::Ui, layout: Layout) {
+        let t = self.tokens;
+        ui.horizontal(|ui| {
+            // The row's full height up front: items line up on its centre whatever order
+            // they are drawn in.
+            let mut height = icons::button_height(ui);
+            if layout.wordmark {
+                height = height.max(ui.ctx().fonts_mut(|f| f.row_height(&egui::FontId::proportional(t.text_size(18.0)))));
+            }
+            ui.set_min_height(height);
+            // The actions first, right to left, so a long title or URL can never push
+            // them off screen; the rest shares what is left.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.header_actions(ui, &t, layout);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| self.header_left(ui, &t, layout));
+            });
+        });
     }
 
     /// Right to left: the "⋯" menu (App settings is in it and in the sidebar), the plugins
@@ -346,6 +350,20 @@ impl ByobApp {
             self.artifacts.menu_items(ui);
         }
         ui.separator();
+        if self.prefs.cockpit.arrangement.free {
+            if ui.button("Arrange panels…").on_hover_text("Move, resize and hide the window's parts").clicked() {
+                self.arranging.on = true;
+                ui.close();
+            }
+            if ui.button("Dock panels").on_hover_text("Back to byob's usual panels").clicked() {
+                self.dock();
+                ui.close();
+            }
+        } else if ui.button("Arrange panels…").on_hover_text("Place the window's parts anywhere: floating, as cockpit instruments, or just the chat").clicked()
+        {
+            self.start_arranging();
+            ui.close();
+        }
         // Zoom, where people look for it in an app menu.
         ui.horizontal(|ui| {
             ui.label("Zoom");

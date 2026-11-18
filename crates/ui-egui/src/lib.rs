@@ -136,6 +136,8 @@ pub struct ByobApp {
     math: bool,
     /// The cockpit's backdrop: whether this window can draw one, and the one drawn ([`cockpit`]).
     stage: cockpit::Stage,
+    /// Placing the free arrangement's modules by hand.
+    arranging: cockpit::free::Arranging,
 }
 
 /// Changing one of your messages to start the chat over from it (`ClientMsg::Rewind`).
@@ -206,6 +208,7 @@ impl ByobApp {
             editing: Editing::default(),
             math: false,
             stage: cockpit::Stage::default(),
+            arranging: cockpit::free::Arranging::default(),
         }
     }
 
@@ -464,6 +467,11 @@ impl ByobApp {
     pub fn enable_backdrops(&mut self, rs: &egui_wgpu::RenderState) {
         self.stage.install(rs);
         self.prefs_gen = self.prefs_gen.wrapping_add(1);
+    }
+
+    /// Show the free arrangement's handles (from byob's floating one if there's none yet).
+    pub fn arrange_by_hand(&mut self) {
+        self.start_arranging();
     }
 
     /// The preferences saved last time: like [`Self::set_prefs`], except that a backdrop
@@ -825,6 +833,12 @@ impl ByobApp {
         self.artifacts.begin_frame(ui.ctx(), &self.tokens, narrow);
         let list_open = self.sidebar.is_open(narrow);
         self.header_shortcuts(ui.ctx());
+        if self.free_now(narrow) {
+            // A free arrangement: the header is one of its modules.
+            self.free_frame(ui);
+            self.end_frame(ui.ctx());
+            return;
+        }
         self.header(ui);
         upload::drop_overlay(ui.ctx(), &self.tokens);
         let t = self.tokens;

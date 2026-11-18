@@ -34,6 +34,35 @@ fn round2(v: f32) -> Value {
     json!((f64::from(v) * 100.0).round() / 100.0)
 }
 
+/// The free arrangement's settings: which, and each module's place, bezel and label.
+fn arrangement_fields(a: &cockpit::arrange::Arrangement, fields: &mut Vec<LookField>) {
+    use cockpit::arrange::{Bezel, Module};
+    let presets: Vec<String> = cockpit::arrange::Arrangement::PRESETS.iter().map(|(n, d)| format!("{n} ({d})")).collect();
+    fields.push(field(
+        "arrangement",
+        json!(if a.free { "free" } else { "docked" }),
+        &format!(
+            "docked (byob's usual panels), free (each part where its place.* says, with open space between for a backdrop), or one of: {}",
+            presets.join(", ")
+        ),
+    ));
+    let bezels: Vec<&str> = Bezel::ALL.iter().map(|b| b.name()).collect();
+    for m in Module::ALL {
+        let id = m.id();
+        fields.push(field(
+            &format!("place.{id}"),
+            json!(a.spot(m).to_string()),
+            &format!("where {} is when free: left top width height in % of the window (\"22 36 56 48\"), or hidden", m.describe()),
+        ));
+        fields.push(field(
+            &format!("bezel.{id}"),
+            json!(a.bezel(m).name()),
+            &format!("its frame when free: {} (instrument: a cockpit instrument's plate with screws, label and a lit screen)", bezels.join(", ")),
+        ));
+        fields.push(field(&format!("label.{id}"), json!(a.label(m)), "text stamped on its bezel when free (\"COMMS\"), up to 24 characters, \"\" for none"));
+    }
+}
+
 /// What `backdrop` is now, for the model: off, a bundled scene's name, or the model's own.
 fn backdrop_value(source: &str) -> String {
     if source.is_empty() {
@@ -91,6 +120,7 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef], backdrop
             notes.insert("backdrop_source".to_owned(), c.backdrop.clone());
         }
     }
+    arrangement_fields(&prefs.cockpit.arrangement, &mut fields);
     for r in ROLES {
         if let Some(c) = tokens.get(r.name) {
             let overridden = prefs.overrides.get(prefs.theme_id(tokens.dark)).is_some_and(|o| o.contains_key(r.name));
@@ -189,6 +219,55 @@ fn backdrop(c: &mut cockpit::Cockpit, v: &Value, backdrops: bool) -> Result<(), 
     cockpit::wgsl::check(text).map_err(|e| format!("backdrop: {e}"))?;
     c.set_backdrop(text);
     Ok(())
+}
+
+/// `place.<module>`, `bezel.<module>` or `label.<module>`. Placing or framing a module makes
+/// the arrangement free (from byob's floating one, if it was docked with none).
+fn module_setting(a: &mut cockpit::arrange::Arrangement, key: &str, v: &Value) -> Result<(), String> {
+    use cockpit::arrange::{Arrangement, Bezel, MAX_LABEL, Module, Spot};
+    let (kind, id) = key.split_once('.').unwrap_or_default();
+    let Some(m) = Module::parse(id) else {
+        let ids: Vec<&str> = Module::ALL.iter().map(|m| m.id()).collect();
+        return Err(format!("{key}: there's no part {id:?} (they are {})", ids.join(", ")));
+    };
+    let text_value = v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string());
+    // Set as it is, nothing changes (docked stays docked); a change makes it free.
+    let go_free = |a: &mut Arrangement| {
+        if !a.free {
+            if a.places.is_empty()
+                && let Some(p) = Arrangement::preset("floating")
+            {
+                *a = p;
+            }
+            a.free = true;
+        }
+    };
+    match kind {
+        "place" => Spot::parse(&text_value).map(|s| {
+            if s != a.spot(m) {
+                go_free(a);
+                a.places.insert(m.id().to_owned(), s);
+            }
+        }),
+        "bezel" => Bezel::parse(&text_value)
+            .map(|b| {
+                if b != a.bezel(m) {
+                    go_free(a);
+                    a.bezels.insert(m.id().to_owned(), b);
+                }
+            })
+            .ok_or_else(|| format!("{key}: glass, instrument or bare, not {v}")),
+        _ => {
+            let label: String = text_value.trim().chars().filter(|c| !c.is_control()).take(MAX_LABEL).collect();
+            if label.is_empty() {
+                a.labels.remove(m.id());
+            } else {
+                a.labels.insert(m.id().to_owned(), label);
+            }
+            Ok(())
+        }
+    }
+    .map_err(|e| if e.starts_with(key) { e } else { format!("{key}: {e}") })
 }
 
 /// Apply `changes` to `prefs` (`dark`: the window draws dark; `user_themes`: theme files;
@@ -298,6 +377,26 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
             },
             "high_contrast" => boolean(v, key).map(|b| k.high_contrast = b),
             "backdrop" => backdrop(&mut prefs.cockpit, v, backdrops),
+            "arrangement" => {
+                let a = &mut prefs.cockpit.arrangement;
+                match text(v).as_str() {
+                    "docked" | "dock" | "normal" | "default" => {
+                        a.free = false;
+                        Ok(())
+                    }
+                    "free" if !a.places.is_empty() => {
+                        a.free = true;
+                        Ok(())
+                    }
+                    name => match cockpit::arrange::Arrangement::preset(name) {
+                        Some(p) => {
+                            *a = p;
+                            Ok(())
+                        }
+                        None => Err(format!("arrangement: docked, free, floating, cockpit or focus, not {v}")),
+                    },
+                }
+            }
             "glass" => number(v, cockpit::Cockpit::GLASS_RANGE, key).map(|n| prefs.cockpit.glass = n),
             "panel_gap" => number(v, cockpit::Cockpit::GAP_RANGE, key).map(|n| prefs.cockpit.gap = n.round()),
             "reduce_motion" => boolean(v, key).map(|b| k.reduce_motion = b),
@@ -312,6 +411,9 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
                 }
                 _ => Err(format!("chart_colours: theme or accessible, not {v}")),
             },
+            other if other.starts_with("place.") || other.starts_with("bezel.") || other.starts_with("label.") => {
+                module_setting(&mut prefs.cockpit.arrangement, other, v)
+            }
             other => match other.strip_prefix("colour.").filter(|r| ROLES.iter().any(|x| x.name == *r)) {
                 Some(role) => {
                     let id = prefs.theme_id(dark).to_owned();
@@ -414,6 +516,44 @@ mod tests {
         let no_gpu = apply(&mut p, &changes(json!({"backdrop": "aurora"})), true, &[], false);
         assert!(no_gpu[0].contains("can't draw shaders"), "{no_gpu:?}");
         assert!(report(&p, &Tokens::dark(), &[], false).get("backdrop").is_none());
+    }
+
+    /// Arrangements: a preset by name, then a part moved, framed and labelled on top; a
+    /// place given while docked makes it free; mistakes are named.
+    #[test]
+    fn the_model_arranges_the_window() {
+        use crate::cockpit::arrange::{Bezel, Module, Spot};
+        let mut p = Prefs::default();
+        let r = report(&p, &Tokens::dark(), &[], false);
+        assert_eq!(r.get("arrangement"), Some(&json!("docked")));
+        assert!(r.fields.len() <= byob_protocol::look::MAX_FIELDS, "{}", r.fields.len());
+        let problems = apply(
+            &mut p,
+            &changes(json!({"arrangement": "cockpit", "place.chat": "25 30 50 55", "bezel.chat": "bare", "label.composer": "Say it"})),
+            true,
+            &[],
+            false,
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+        let a = &p.cockpit.arrangement;
+        assert!(a.free);
+        assert_eq!((a.spot(Module::Chat), a.bezel(Module::Chat)), (Spot::At([25.0, 30.0, 50.0, 55.0]), Bezel::Bare));
+        assert_eq!(
+            (a.label(Module::Composer), a.label(Module::Chats), a.bezel(Module::Chats)),
+            ("Say it", "NAV", Bezel::Instrument),
+            "the rest from the cockpit"
+        );
+        let bad =
+            apply(&mut p, &changes(json!({"place.warp": "1 2 3 4", "place.chat": "1 2", "bezel.pane": "chrome", "arrangement": "zen"})), true, &[], false);
+        assert_eq!(bad.len(), 4, "{bad:?}");
+        assert!(bad.iter().any(|e| e.contains("there's no part \"warp\"")), "{bad:?}");
+        assert!(apply(&mut p, &changes(json!({"arrangement": "docked"})), true, &[], false).is_empty());
+        assert!(!p.cockpit.arrangement.free && p.cockpit.arrangement.label(Module::Chats) == "NAV", "docked, the free places kept");
+        let mut q = Prefs::default();
+        assert!(apply(&mut q, &changes(json!({"place.chats": "hidden"})), true, &[], false).is_empty());
+        assert!(
+            q.cockpit.arrangement.free && q.cockpit.arrangement.spot(Module::Chats) == Spot::Hidden && q.cockpit.arrangement.spot(Module::Chat) != Spot::Hidden
+        );
     }
 
     /// Bubble padding and line spacing: asked for in a stress test, now settings.

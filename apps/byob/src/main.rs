@@ -27,6 +27,9 @@
 //!     --backdrop SCENE        a shader behind glass panels (experimental): cockpit, aurora,
 //!                             a .wgsl file with fn scene (see byob_ui_egui::cockpit), or off
 //!                             (overrides the saved preference; BYOB_NO_BACKDROP=1 disables them)
+//!     --arrangement NAME      where the window's parts are (experimental): docked, floating,
+//!                             cockpit or focus (overrides the saved preference)
+//!     --arranging             start with the free arrangement's handles showing (testing)
 //!
 //! Testing (see scripts/headless.sh):
 //!     --send TEXT             send a message on startup (repeatable)
@@ -97,6 +100,8 @@ struct Args {
     plugins: Vec<PathBuf>,
     theme: Option<String>,
     backdrop: Option<String>,
+    arrangement: Option<String>,
+    arranging: bool,
     open_settings: bool,
     settings_section: Option<String>,
     settings_search: Option<String>,
@@ -146,6 +151,8 @@ fn parse_args() -> Result<Args, String> {
         plugins: Vec::new(),
         theme: None,
         backdrop: None,
+        arrangement: None,
+        arranging: false,
         open_settings: false,
         settings_section: None,
         settings_search: None,
@@ -191,6 +198,14 @@ fn parse_args() -> Result<Args, String> {
                 let name = it.next().ok_or("--backdrop needs a scene (cockpit, aurora), a .wgsl file or off")?;
                 args.backdrop = Some(backdrop_source(&name)?);
             }
+            "--arrangement" => {
+                let name = it.next().ok_or("--arrangement needs a name (docked, floating, cockpit, focus)")?;
+                if name != "docked" && byob_ui_egui::cockpit::arrange::Arrangement::preset(&name).is_none() {
+                    return Err(format!("--arrangement {name}: docked, floating, cockpit or focus"));
+                }
+                args.arrangement = Some(name);
+            }
+            "--arranging" => args.arranging = true,
             "--open-settings" => args.open_settings = true,
             "--settings-section" => {
                 args.settings_section =
@@ -588,6 +603,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
     let script = testing::Runner::new(args.script);
     let (theme_arg, open_settings, section, search) = (args.theme, args.open_settings, args.settings_section, args.settings_search);
     let backdrop_arg = args.backdrop;
+    let (arrangement_arg, arranging) = (args.arrangement, args.arranging);
     let result = eframe::run_native(
         "byob",
         options,
@@ -617,7 +633,16 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
                 }
                 prefs.cockpit.trial = false;
             }
+            if let Some(name) = &arrangement_arg {
+                match byob_ui_egui::cockpit::arrange::Arrangement::preset(name) {
+                    Some(a) => prefs.cockpit.arrangement = a,
+                    None => prefs.cockpit.arrangement.free = false,
+                }
+            }
             ui.restore_prefs(prefs);
+            if arranging {
+                ui.arrange_by_hand();
+            }
             if let Some(rs) = &cc.wgpu_render_state
                 && std::env::var_os("BYOB_NO_BACKDROP").is_none()
             {

@@ -3,13 +3,18 @@
 //! - **Backdrop** ([`wgsl`], [`backdrop`]): a WGSL shader, usually written by the model
 //!   through `ui_look`, drawn behind everything; the panels turn to glass over it. It sees
 //!   where the panels are, so it can light them, glow around them and cast their shadows.
+//! - **Free arrangement** ([`arrange`]): the header, chat list, chat, message box and panes
+//!   as modules placed anywhere (by % of the window), each in a bezel (glass, a cockpit
+//!   instrument, or bare), dragged into place while arranging, or placed by the model.
 //!
 //! Safety: a scene is checked with naga before a GPU sees it, and wgpu's errors are logged
 //! instead of ending the process. A scene that compiles can still be too slow or hang the
 //! GPU, so a new one is on [`Cockpit::trial`] until it has been drawn for a few seconds: one
 //! still on trial at the next start is dropped ([`Cockpit::restored`]).
 
+pub mod arrange;
 pub mod backdrop;
+pub mod free;
 pub mod wgsl;
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -29,11 +34,13 @@ pub struct Cockpit {
     pub gap: f32,
     /// The backdrop hasn't been drawn for [`TRIAL_SECONDS`] yet.
     pub trial: bool,
+    /// Where the window's parts are: docked as usual, or free.
+    pub arrangement: arrange::Arrangement,
 }
 
 impl Default for Cockpit {
     fn default() -> Self {
-        Self { backdrop: String::new(), glass: 0.82, gap: 8.0, trial: false }
+        Self { backdrop: String::new(), glass: 0.82, gap: 8.0, trial: false, arrangement: arrange::Arrangement::default() }
     }
 }
 
@@ -70,6 +77,7 @@ impl Cockpit {
         if self.backdrop.len() > wgsl::MAX_SOURCE {
             self.backdrop.clear();
         }
+        self.arrangement = self.arrangement.sanitized();
         self.gap = if self.gap.is_finite() { self.gap.clamp(*Self::GAP_RANGE.start(), *Self::GAP_RANGE.end()) } else { Self::default().gap };
         self.glass = if self.glass.is_finite() { self.glass.clamp(*Self::GLASS_RANGE.start(), *Self::GLASS_RANGE.end()) } else { Self::default().glass };
         self
@@ -135,7 +143,11 @@ pub fn framed(ctx: &egui::Context, frame: egui::Frame) -> egui::Frame {
 /// Tell the scene a panel is at `rect` this frame (its whole space; the part drawn, inside
 /// the gap, is what the scene sees).
 pub fn mark(ctx: &egui::Context, rect: egui::Rect) {
-    let rect = rect.shrink(gap(ctx) / 2.0);
+    mark_exact(ctx, rect.shrink(gap(ctx) / 2.0));
+}
+
+/// Tell the scene a panel is exactly at `rect` (a free module).
+pub fn mark_exact(ctx: &egui::Context, rect: egui::Rect) {
     if rect.is_positive() {
         ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<egui::Rect>>(panels_key()).push(rect));
     }
@@ -300,7 +312,7 @@ mod tests {
 
     #[test]
     fn stored_values_are_clamped() {
-        let c = Cockpit { backdrop: "x".repeat(wgsl::MAX_SOURCE + 1), glass: f32::NAN, gap: 99.0, trial: true }.sanitized();
+        let c = Cockpit { backdrop: "x".repeat(wgsl::MAX_SOURCE + 1), glass: f32::NAN, gap: 99.0, trial: true, ..Default::default() }.sanitized();
         assert!(c.backdrop.is_empty());
         assert_eq!((c.glass, c.gap), (Cockpit::default().glass, 32.0));
         assert_eq!(Cockpit { glass: 0.0, ..Default::default() }.sanitized().glass, 0.2);
