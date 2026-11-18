@@ -25,7 +25,7 @@ keys! {
     ModelList, VisionRole, SubagentRole, UtilityRole,
     Instructions, Approvals, ToolCalls, Subagents, Compaction, ModelImages, ToolCalling, WorkspaceSettings,
     PluginList,
-    Mode, ThemePair, Gallery, Accent, Radius, ChartColours, MessageLayout, UserBubble, ReplyBubble, BubblePadding, LineSpacing, ShownPreset, ShownList, Controls, Backdrop, Glass, PanelGap, Arrangement, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
+    Mode, ThemePair, Gallery, Accent, Radius, ChartColours, MessageLayout, UserBubble, ReplyBubble, BubblePadding, LineSpacing, ShownPreset, ShownList, Controls, Backdrop, Glass, Frost, PanelGap, Arrangement, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
     Zoom, TextSize, CodeSize, Font, CodeFont, Density, ColumnWidth, ChatListWidth, ArtifactPane, HighContrast, ReduceMotion, ResetText,
     ColourRoles,
 }
@@ -340,6 +340,7 @@ pub static SETTINGS: &[Setting] = &[
         Row,
     ),
     s(Key::Glass, "glass", &COCKPIT, "Glass", "How much the panels hide the backdrop.", "transparency opacity translucent see-through panels", Row),
+    s(Key::Frost, "frost", &COCKPIT, "Frosted glass", "Blur the backdrop behind the panels.", "blur frosted glass acrylic mica", Row),
     s(Key::PanelGap, "panel-gap", &COCKPIT, "Space between panels", "Where the backdrop shows around docked panels.", "gap margin spacing panels", Row),
     s(
         Key::Arrangement,

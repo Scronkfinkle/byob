@@ -29,8 +29,21 @@ fn main() {
                     if let Some(prefs) = cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::theme::Prefs>(s, byob_ui_egui::theme::Prefs::STORAGE_KEY)) {
                         ui.restore_prefs(prefs);
                     }
+                    // `#backdrop=NAME`: one of byob's scenes from the start (as `--backdrop`).
+                    if let Some(scene) = hash_value("backdrop").and_then(|n| byob_ui_egui::cockpit::scene(&n)) {
+                        let mut prefs = ui.prefs().clone();
+                        prefs.cockpit.set_scene(scene);
+                        prefs.cockpit.trial = false;
+                        ui.set_prefs(prefs);
+                    }
+                    let mut compositor = None;
                     if let Some(rs) = &cc.wgpu_render_state {
                         ui.enable_backdrops(rs);
+                        // With a backdrop, byob runs in a context of its own, composited
+                        // onto the canvas (frosted glass).
+                        if byob_ui_egui::cockpit::compositor::wanted(&ui.prefs().cockpit) {
+                            compositor = Some(byob_ui_egui::cockpit::compositor::Compositor::new(rs, &cc.egui_ctx));
+                        }
                     }
                     // So is the artifact pane: width, collapsed, open tabs per chat.
                     if let Some(pane) =
@@ -44,7 +57,7 @@ fn main() {
                     {
                         ui.set_sidebar_prefs(&list);
                     }
-                    Ok(Box::new(App { ui, link, panel: panel_from_hash(), redraws: 0 }))
+                    Ok(Box::new(App { ui, link, panel: panel_from_hash(), redraws: 0, compositor }))
                 }),
             )
             .await;
@@ -77,12 +90,18 @@ fn ws_url() -> String {
     format!("{}://{host}/ws", if secure { "wss" } else { "ws" })
 }
 
+/// `VALUE` of `KEY=VALUE` in the URL hash (`#panel=new-workspace&backdrop=aurora`).
+#[cfg(target_arch = "wasm32")]
+fn hash_value(key: &str) -> Option<String> {
+    let hash = web_sys::window()?.location().hash().ok()?;
+    hash.trim_start_matches('#').split('&').find_map(|kv| kv.strip_prefix(key)?.strip_prefix('=')).map(str::to_owned)
+}
+
 /// The `NAME` of a `#panel=NAME` URL hash, if it names a known view.
 #[cfg(target_arch = "wasm32")]
 fn panel_from_hash() -> Option<String> {
-    let hash = web_sys::window()?.location().hash().ok()?;
-    let name = hash.strip_prefix("#panel=")?;
-    byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == name).then(|| name.to_owned())
+    let name = hash_value("panel")?;
+    byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == name).then_some(name)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -93,11 +112,33 @@ struct App {
     /// `ByobApp::open_panel`), e.g. `#panel=new-workspace`.
     panel: Option<String>,
     redraws: u32,
+    /// byob in a context of its own, composited onto the canvas (with a backdrop).
+    compositor: Option<byob_ui_egui::cockpit::compositor::Compositor>,
 }
 
 #[cfg(target_arch = "wasm32")]
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        match self.compositor.take() {
+            Some(mut c) => {
+                c.run(ui, |ui| self.frame(ui));
+                self.compositor = Some(c);
+            }
+            None => self.frame(ui),
+        }
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, byob_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
+        eframe::set_value(storage, byob_ui_egui::pane::PanePrefs::STORAGE_KEY, &self.ui.pane_prefs());
+        eframe::set_value(storage, byob_ui_egui::sidebar::SidebarPrefs::STORAGE_KEY, &self.ui.sidebar_prefs());
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl App {
+    /// byob's frame, and the page's own bits (the link banner, `#panel=`).
+    fn frame(&mut self, ui: &mut egui::Ui) {
         self.ui.ui(ui);
         if let Some(p) = &self.panel {
             // Once connected (the workspace views need the engine's lists).
@@ -124,12 +165,6 @@ impl eframe::App for App {
                     });
                 });
         }
-    }
-
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, byob_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
-        eframe::set_value(storage, byob_ui_egui::pane::PanePrefs::STORAGE_KEY, &self.ui.pane_prefs());
-        eframe::set_value(storage, byob_ui_egui::sidebar::SidebarPrefs::STORAGE_KEY, &self.ui.sidebar_prefs());
     }
 }
 

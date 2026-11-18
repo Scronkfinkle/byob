@@ -320,13 +320,22 @@ fn parse_args() -> Result<Args, String> {
 struct App {
     ui: byob_ui_egui::ByobApp,
     script: testing::Runner,
+    /// byob in a context of its own, composited onto the window (with a backdrop).
+    compositor: Option<byob_ui_egui::cockpit::compositor::Compositor>,
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.ui.ui(ui);
-        let ctx = ui.ctx().clone();
-        self.script.frame(&mut self.ui, &ctx);
+        let (app, script) = (&mut self.ui, &mut self.script);
+        let mut frame = |ui: &mut egui::Ui| {
+            app.ui(ui);
+            let ctx = ui.ctx().clone();
+            script.frame(app, &ctx);
+        };
+        match &mut self.compositor {
+            Some(c) => c.run(ui, frame),
+            None => frame(ui),
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -621,10 +630,6 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
             let conn = engine.connect(Arc::new(move || ctx.request_repaint()));
             let mut ui = byob_ui_egui::ByobApp::new(Box::new(conn), "desktop");
             ui.set_link_base(link_base(engine.clone(), serving));
-            // HTML apps inline, if the Servo helper is installed; else the summary + Open.
-            if let Some(view) = apphost::ServoView::new(&cc.egui_ctx) {
-                ui.set_app_view(Box::new(view));
-            }
             if let Some(dir) = themes_dir {
                 ui.set_themes_dir(dir);
             }
@@ -660,10 +665,23 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
             if arranging {
                 ui.arrange_by_hand();
             }
+            let mut compositor = None;
             if let Some(rs) = &cc.wgpu_render_state
                 && std::env::var_os("BYOB_NO_BACKDROP").is_none()
             {
                 ui.enable_backdrops(rs);
+                // With a backdrop, byob runs in a context of its own, composited onto the
+                // window (frosted glass).
+                if byob_ui_egui::cockpit::compositor::wanted(&ui.prefs().cockpit) {
+                    log::info!("compositing the window (frosted glass)");
+                    compositor = Some(byob_ui_egui::cockpit::compositor::Compositor::new(rs, &cc.egui_ctx));
+                }
+            }
+            // HTML apps inline, if the Servo helper is installed; else the summary + Open.
+            // Their pictures belong to the context byob draws in.
+            let byob_ctx = compositor.as_ref().map_or(&cc.egui_ctx, |c| c.context());
+            if let Some(view) = apphost::ServoView::new(byob_ctx) {
+                ui.set_app_view(Box::new(view));
             }
             if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::pane::PanePrefs>(s, byob_ui_egui::pane::PanePrefs::STORAGE_KEY)) {
                 ui.artifacts_mut().set_pane_prefs(pane);
@@ -682,7 +700,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
             if let Some(text) = &search {
                 ui.set_settings_search(text);
             }
-            Ok(Box::new(App { ui, script }))
+            Ok(Box::new(App { ui, script, compositor }))
         }),
     )
     .map_err(|e| e.to_string());

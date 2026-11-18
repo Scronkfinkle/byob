@@ -119,6 +119,7 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef], backdrop
             &format!("a scene drawn behind the panels, which turn to glass over it: off, one of byob's ({}; sets glass and panel_gap to suit), or your own WGSL shader code (see the note backdrop_guide)", names.join(", ")),
         ));
         fields.push(field("glass", round2(c.glass), "how opaque the panels are over a backdrop, 0.2 (mostly see-through) to 1 (opaque)"));
+        fields.push(field("frost", round2(c.frost), "how frosted the glass is over a backdrop, 0 (clear) to 1 (blurs what's behind the panels); only where the window can (a backdrop on when byob started)"));
         fields.push(field("panel_gap", round2(c.gap), "space between the panels over a backdrop, where it shows, 0 to 32 points"));
         notes.insert("backdrop_guide".to_owned(), cockpit::wgsl::GUIDE.to_owned());
         if !c.backdrop.is_empty() && !cockpit::SCENES.iter().any(|s| s.source == c.backdrop) {
@@ -408,6 +409,7 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
                 }
             }
             "glass" => number(v, cockpit::Cockpit::GLASS_RANGE, key).map(|n| prefs.cockpit.glass = n),
+            "frost" => number(v, 0.0..=1.0, key).map(|n| prefs.cockpit.frost = n),
             "panel_gap" => number(v, cockpit::Cockpit::GAP_RANGE, key).map(|n| prefs.cockpit.gap = n.round()),
             "reduce_motion" => boolean(v, key).map(|b| k.reduce_motion = b),
             "chart_colours" => match text(v).as_str() {

@@ -14,6 +14,7 @@
 
 pub mod arrange;
 pub mod backdrop;
+pub mod compositor;
 pub mod free;
 pub mod wgsl;
 
@@ -29,6 +30,9 @@ pub struct Cockpit {
     pub backdrop: String,
     /// How opaque the panels are over a backdrop ([`Cockpit::GLASS_RANGE`]; 1 opaque).
     pub glass: f32,
+    /// How frosted the glass is over the backdrop, 0 (clear) to 1, where the window is
+    /// composited ([`compositor`]).
+    pub frost: f32,
     /// Space between the panels over a backdrop, in points ([`Cockpit::GAP_RANGE`]): the
     /// scene shows there, around rounded panels.
     pub gap: f32,
@@ -40,7 +44,7 @@ pub struct Cockpit {
 
 impl Default for Cockpit {
     fn default() -> Self {
-        Self { backdrop: String::new(), glass: 0.82, gap: 8.0, trial: false, arrangement: arrange::Arrangement::default() }
+        Self { backdrop: String::new(), glass: 0.82, frost: 0.7, gap: 8.0, trial: false, arrangement: arrange::Arrangement::default() }
     }
 }
 
@@ -78,6 +82,7 @@ impl Cockpit {
             self.backdrop.clear();
         }
         self.arrangement = self.arrangement.sanitized();
+        self.frost = if self.frost.is_finite() { self.frost.clamp(0.0, 1.0) } else { Self::default().frost };
         self.gap = if self.gap.is_finite() { self.gap.clamp(*Self::GAP_RANGE.start(), *Self::GAP_RANGE.end()) } else { Self::default().gap };
         self.glass = if self.glass.is_finite() { self.glass.clamp(*Self::GLASS_RANGE.start(), *Self::GLASS_RANGE.end()) } else { Self::default().glass };
         self
@@ -185,12 +190,19 @@ pub struct Stage {
     source: Option<(u64, Arc<str>)>,
     /// The control under the pointer, and since when (egui time).
     hot: Option<(egui::Id, f64)>,
+    /// Last frame was drawn by a compositor.
+    composited: bool,
 }
 
 impl Stage {
     /// Draw backdrops with eframe's wgpu (desktop and browser).
     pub fn install(&mut self, rs: &egui_wgpu::RenderState) {
         self.errors = Some(backdrop::install(rs));
+    }
+
+    /// Whether this window is composited (frosted glass works).
+    pub fn composited(&self) -> bool {
+        self.composited
     }
 
     /// Whether this window can draw backdrops at all.
@@ -220,8 +232,11 @@ impl Stage {
     /// At the frame's start, before anything else is drawn: the backdrop under it all.
     pub fn begin(&mut self, ui: &egui::Ui, c: &Cockpit) {
         ui.ctx().data_mut(|d| d.remove::<Vec<egui::Rect>>(panels_key()));
+        let compositing = compositor::compositing(ui.ctx());
+        self.composited = compositing;
         if !self.active(c) {
             ui.ctx().data_mut(|d| d.remove::<f32>(gap_key()));
+            compositor::leave_scene(ui.ctx(), None);
             self.since = None;
             return;
         }
@@ -236,6 +251,12 @@ impl Stage {
         let now = ui.input(|i| i.time);
         if self.since.is_none_or(|(s, _)| s != id) {
             self.since = Some((id, now));
+        }
+        if compositing {
+            // The compositor draws it (and frosts the glass over it).
+            let frame = compositor::SceneFrame { id, source: Arc::clone(source), inputs: Arc::clone(&self.inputs), frost: c.frost };
+            compositor::leave_scene(ui.ctx(), Some(frame));
+            return;
         }
         let rect = ui.ctx().content_rect();
         let paint = |pass| backdrop::Paint { pass, id, source: Arc::clone(source), inputs: Arc::clone(&self.inputs) };

@@ -157,6 +157,14 @@ impl ByobApp {
                 let c = &mut d.prefs.cockpit;
                 ui.add_enabled(!c.backdrop.is_empty(), egui::Slider::new(&mut c.glass, crate::cockpit::Cockpit::GLASS_RANGE).step_by(0.02).fixed_decimals(2));
             }
+            Key::Frost => {
+                let composited = self.stage.composited();
+                let c = &mut d.prefs.cockpit;
+                let r = ui.add_enabled(composited && !c.backdrop.is_empty(), egui::Slider::new(&mut c.frost, 0.0..=1.0).step_by(0.05).fixed_decimals(2));
+                if !composited {
+                    r.on_disabled_hover_text("Restart byob with a backdrop on to frost the glass");
+                }
+            }
             Key::PanelGap => {
                 let c = &mut d.prefs.cockpit;
                 ui.add_enabled(!c.backdrop.is_empty(), egui::Slider::new(&mut c.gap, crate::cockpit::Cockpit::GAP_RANGE).step_by(1.0).suffix(" pt"));

@@ -70,8 +70,9 @@ impl Errors {
     }
 }
 
-/// What lives in egui-wgpu's callback resources.
-struct Gpu {
+/// A scene's GPU side: its pipelines and inputs (in egui-wgpu's callback resources, or the
+/// compositor's).
+pub(crate) struct Gpu {
     format: wgpu::TextureFormat,
     pipeline_layout: wgpu::PipelineLayout,
     buffer: wgpu::Buffer,
@@ -99,34 +100,7 @@ pub fn install(rs: &egui_wgpu::RenderState) -> Errors {
         log::error!("wgpu: {e}");
         sink.push(e.to_string());
     }));
-    let device = &rs.device;
-    let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("byob_backdrop_bind_layout"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-            count: None,
-        }],
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("byob_backdrop_layout"),
-        bind_group_layouts: &[Some(&bind_layout)],
-        immediate_size: 0,
-    });
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("byob_backdrop_uniforms"),
-        size: UNIFORM_SIZE as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("byob_backdrop_bind_group"),
-        layout: &bind_layout,
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
-    });
-    let gpu = Gpu { format: rs.target_format, pipeline_layout, buffer, bind_group, pipeline: None };
-    rs.renderer.write().callback_resources.insert(gpu);
+    rs.renderer.write().callback_resources.insert(Gpu::new(&rs.device, rs.target_format));
     errors
 }
 
@@ -139,6 +113,64 @@ pub fn scene_id(source: &str) -> u64 {
 }
 
 impl Gpu {
+    pub(crate) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("byob_backdrop_bind_layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("byob_backdrop_layout"),
+            bind_group_layouts: &[Some(&bind_layout)],
+            immediate_size: 0,
+        });
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("byob_backdrop_uniforms"),
+            size: UNIFORM_SIZE as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("byob_backdrop_bind_group"),
+            layout: &bind_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+        });
+        Self { format, pipeline_layout, buffer, bind_group, pipeline: None }
+    }
+
+    /// Build the pipelines for scene `id` unless they are.
+    pub(crate) fn ensure(&mut self, device: &wgpu::Device, id: u64, source: &str) {
+        if self.pipeline.as_ref().is_none_or(|(built, _, _)| *built != id) {
+            self.build(device, id, source);
+        }
+    }
+
+    pub(crate) fn write(&self, queue: &wgpu::Queue, inputs: &Inputs) {
+        queue.write_buffer(&self.buffer, 0, &inputs.bytes());
+    }
+
+    /// Draw scene `id`'s pass `which` (a full-window triangle) into `pass`.
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, which: Pass, id: u64) {
+        let Some((built, scene, overlay)) = &self.pipeline else {
+            return;
+        };
+        let pipeline = match which {
+            Pass::Scene => scene,
+            Pass::Overlay => overlay,
+        };
+        if let Some(pipeline) = pipeline
+            && *built == id
+        {
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
     fn build(&mut self, device: &wgpu::Device, id: u64, source: &str) {
         let text = wgsl::module(source, self.format.is_srgb());
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("byob_backdrop"), source: wgpu::ShaderSource::Wgsl(text.into()) });
@@ -193,33 +225,16 @@ impl egui_wgpu::CallbackTrait for Paint {
         let Some(gpu) = resources.get_mut::<Gpu>() else {
             return Vec::new();
         };
-        if gpu.pipeline.as_ref().is_none_or(|(id, _, _)| *id != self.id) {
-            gpu.build(device, self.id, &self.source);
-        }
+        gpu.ensure(device, self.id, &self.source);
         if self.pass == Pass::Scene {
-            let bytes = self.inputs.lock().unwrap_or_else(PoisonError::into_inner).bytes();
-            queue.write_buffer(&gpu.buffer, 0, &bytes);
+            gpu.write(queue, &self.inputs.lock().unwrap_or_else(PoisonError::into_inner));
         }
         Vec::new()
     }
 
     fn paint(&self, _info: egui::PaintCallbackInfo, pass: &mut wgpu::RenderPass<'static>, resources: &egui_wgpu::CallbackResources) {
-        let Some(gpu) = resources.get::<Gpu>() else {
-            return;
-        };
-        let Some((id, scene, overlay)) = &gpu.pipeline else {
-            return;
-        };
-        let pipeline = match self.pass {
-            Pass::Scene => scene,
-            Pass::Overlay => overlay,
-        };
-        if let Some(pipeline) = pipeline
-            && *id == self.id
-        {
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &gpu.bind_group, &[]);
-            pass.draw(0..3, 0..1);
+        if let Some(gpu) = resources.get::<Gpu>() {
+            gpu.draw(pass, self.pass, self.id);
         }
     }
 }
