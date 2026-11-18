@@ -1061,8 +1061,8 @@ impl BackendTool {
 /// "_tool_card", "view", "key", "tree"}`): the engine caches it as a live view.
 pub const CARD_MSG: &str = "_tool_card";
 
-/// Most artifact versions one tool result saves.
-const MAX_SAVED: usize = 4;
+/// Most artifact versions one tool result saves (a sheet and the charts drawn from it).
+const MAX_SAVED: usize = 12;
 
 /// A tool reply's `artifact` (or `artifacts`, a list): `{"id"?, "title"?, "filename"?,
 /// "file", "note"?}` — `file` is a path (absolute, or in the workspace) whose bytes become a

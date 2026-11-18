@@ -309,6 +309,47 @@ fn the_sheets_plugin_is_native_and_on_by_default() {
     }
 }
 
+/// Charts drawn from a sheet stay in step with it: chart_sheet links a chart to the sheet's
+/// columns (formula results included), and every later save of the sheet draws it again,
+/// within the same request (one version) and in the next (a new one).
+#[test]
+fn a_chart_drawn_from_a_sheet_follows_it() {
+    let script = vec![
+        call("create_sheet", r#"{"title": "Profit"}"#),
+        call("write_cells", r#"{"sheet": "profit.xlsx", "rows": [["Month", "Sales", "Costs", "Profit"], ["Jan", 10, 4, "=B2-C2"], ["Feb", 12, 5, "=B3-C3"]]}"#),
+        call("chart_sheet", r#"{"sheet": "profit.xlsx", "type": "bar", "x": "Month", "series": ["Profit"], "title": "Profit by month"}"#),
+        call("write_cells", r#"{"sheet": "profit.xlsx", "cells": {"B2": 20}}"#),
+        Reply::Text("done"),
+        call("write_cells", r#"{"sheet": "profit.xlsx", "cells": {"B3": 30}}"#),
+        Reply::Text("again"),
+    ];
+    let h = harness(script, bundled_plugins(), sheets_natives());
+    let mut c = connect(&h);
+    wait_ext(&mut c, |e| !e.plugins.is_empty());
+    let (entry, _) = turn(&mut c, "chart my profit", |_, _| {});
+    let charted = step(&entry, "chart_sheet");
+    assert_eq!(charted.status, StepStatus::Done, "{}", charted.detail);
+    assert!(charted.detail.contains("linked"), "{}", charted.detail);
+    let chart = charted.artifacts[0].id.clone();
+    let profit = |ws: &Path| {
+        let meta = byob_tools::artifact::load(ws, &chart).unwrap();
+        let latest = meta.artifact.latest().unwrap().clone();
+        let spec: serde_json::Value = serde_json::from_slice(&std::fs::read(ws.join(&latest.path)).unwrap()).unwrap();
+        let rows: Vec<(String, f64)> =
+            spec["data"].as_array().unwrap().iter().map(|r| (r["Month"].as_str().unwrap().to_owned(), r["Profit"].as_f64().unwrap())).collect();
+        (meta.artifact.versions.len(), rows, spec["source"]["x"].clone())
+    };
+    let (versions, rows, x) = profit(h._ws.path());
+    assert_eq!(rows, [("Jan".to_owned(), 16.0), ("Feb".to_owned(), 7.0)], "the later edit in the same request is in it");
+    assert_eq!((versions, x), (1, serde_json::json!("A")), "one version for the request");
+    assert!(step(&entry, "write_cells").detail.contains("Redrew the linked chart") || entry.steps.iter().any(|s| s.detail.contains("Redrew the linked chart")));
+    // The next request edits the sheet: the chart follows, as a new version.
+    let (entry, _) = turn(&mut c, "raise February", |_, _| {});
+    assert!(step(&entry, "write_cells").detail.contains("Redrew the linked chart \"Profit by month\""), "{}", step(&entry, "write_cells").detail);
+    let (versions, rows, _) = profit(h._ws.path());
+    assert_eq!((versions, rows[1].clone()), (2, ("Feb".to_owned(), 25.0)));
+}
+
 /// The bundled memory, plan and ask-user plugins, on by default: remember writes the global
 /// memory.md, the next turn's system prompt holds it, the pane shows it; update_plan's plan
 /// is restated after later tool calls of the turn.

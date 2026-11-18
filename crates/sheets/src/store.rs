@@ -77,7 +77,7 @@ fn or_text(v: &Value, k: &str, fallback: &str) -> String {
 }
 
 /// (n, absolute path) of the newest version whose file exists.
-fn latest(ws: &str, meta: &Value) -> (Option<i64>, Option<PathBuf>) {
+pub(crate) fn latest(ws: &str, meta: &Value) -> (Option<i64>, Option<PathBuf>) {
     let mut vs: Vec<&Value> = meta.get("versions").and_then(Value::as_array).into_iter().flatten().filter(|v| v.is_object()).collect();
     let key = |v: &Value| v.get("n").and_then(Value::as_i64).filter(|_| v.get("n").is_some_and(Value::is_i64)).unwrap_or(-1);
     vs.sort_by_key(|v| std::cmp::Reverse(key(v)));

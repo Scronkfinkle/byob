@@ -208,6 +208,41 @@ fn view_frozen_strips_and_window() {
     assert_eq!(grid_of(&tree).unwrap()["blocks"][0]["row"], 150);
 }
 
+/// A chart drawn from a sheet follows the user's edits in the grid (as a draft, like the
+/// sheet's), and the model's writes; a chart of another sheet is left alone.
+#[test]
+fn charts_drawn_from_a_sheet_follow_its_edits() {
+    let mut b = Byob::new();
+    let (aid, _) = b.new_sheet("Profit");
+    b.tool("write_cells", json!({"sheet": aid, "rows": [["Month", "Profit"], ["Jan", 5], ["Feb", "=B2*2"]]}));
+    let out = b.tool("chart_sheet", json!({"sheet": aid, "type": "line", "x": "Month", "series": ["Profit"]}));
+    assert!(out.contains("linked") && out.contains("2 rows"), "{out}");
+    let chart = b.last_id.clone();
+    let (other, _) = b.new_sheet("Other");
+    b.tool("write_cells", json!({"sheet": other, "rows": [["k", "v"], ["a", 1]]}));
+    b.tool("chart_sheet", json!({"sheet": other, "type": "bar", "x": "k", "series": ["v"]}));
+    let other_chart = b.last_id.clone();
+    let rows = |b: &Byob, id: &str| -> Vec<Value> {
+        let meta = b.meta(id);
+        let v = meta["versions"].as_array().unwrap().last().unwrap().clone();
+        let spec: Value = serde_json::from_slice(&std::fs::read(b.ws.path().join(v["path"].as_str().unwrap())).unwrap()).unwrap();
+        spec["data"].as_array().unwrap().iter().map(|r| r["Profit"].clone()).collect()
+    };
+    assert_eq!(rows(&b, &chart), [json!(5.0), json!(10.0)], "formula results");
+    // The user edits Jan in the grid: the sheet's draft and the chart's.
+    let msgs = b.event(&aid, "edit", json!({"row": 1, "col": 1, "value": "7"}));
+    let arts: Vec<&Value> = msgs.iter().filter(|m| m["type"] == "artifact").collect();
+    assert_eq!(arts.iter().map(|m| m["id"].as_str().unwrap()).collect::<Vec<_>>(), [aid.as_str(), chart.as_str()]);
+    assert!(arts.iter().all(|m| m["draft"] == true));
+    assert_eq!(rows(&b, &chart), [json!(7.0), json!(14.0)]);
+    let other_versions = b.latest(&other_chart);
+    // The model adds a month: the chart grows a row; the other chart is untouched.
+    let out = b.tool("write_cells", json!({"sheet": aid, "cells": {"A4": "Mar", "B4": 3}}));
+    assert!(out.contains("Redrew the linked chart"), "{out}");
+    assert_eq!(rows(&b, &chart), [json!(7.0), json!(14.0), json!(3.0)]);
+    assert_eq!(b.latest(&other_chart), other_versions);
+}
+
 #[test]
 fn grid_edits_save_drafts_and_are_reported() {
     let mut b = Byob::new();

@@ -36,7 +36,7 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn ws(&self) -> R<&str> {
+    pub fn ws(&self) -> R<&str> {
         if self.workspace.is_empty() {
             return msg("No workspace is open, so there are no spreadsheets to work on.");
         }
@@ -612,6 +612,12 @@ fn write_op(store: &mut Store, cx: &Ctx<'_>, sheet: Option<&Value>, note: &str, 
     lines.extend(lint_iferror(book, &written));
     lines.extend(lint_hardcoded(book, &written));
     let data = book.to_xlsx()?;
+    // Charts drawn from this sheet, drawn again from what it holds now.
+    let redrawn = if src.artifact { crate::charts::refresh(ws, cx.chat, &src.aid, book) } else { Vec::new() };
+    let redrawn = crate::charts::files(store, redrawn);
+    for (r, _) in &redrawn {
+        lines.push(format!("Redrew the linked chart \"{}\" ({}).", r.title, r.id));
+    }
     lines.extend(user_edit_lines(entry.as_ref()));
     let mut art = Map::new();
     art.insert("note".into(), json!(note));
@@ -641,7 +647,12 @@ fn write_op(store: &mut Store, cx: &Ctx<'_>, sheet: Option<&Value>, note: &str, 
             src.rel
         ));
     }
-    Ok(json!({"text": lines.join("\n"), "artifact": Value::Object(art)}))
+    if redrawn.is_empty() {
+        return Ok(json!({"text": lines.join("\n"), "artifact": Value::Object(art)}));
+    }
+    let mut all = vec![Value::Object(art)];
+    all.extend(redrawn.into_iter().map(|(r, file)| json!({"id": r.id, "file": file, "note": "Drawn again from the sheet"})));
+    Ok(json!({"text": lines.join("\n"), "artifacts": all}))
 }
 
 fn parse_json_arg(v: Option<&Value>, what: &str) -> R<Option<Value>> {

@@ -132,7 +132,8 @@ impl Byob {
             .extension()
             .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
             .unwrap_or_default();
-        meta["content_type"] = json!(content_type(&suffix));
+        let chart = meta["filename"].as_str().is_some_and(|f| f.ends_with(".chart.json"));
+        meta["content_type"] = json!(if chart { byob_sheets::charts::CHART_TYPE } else { content_type(&suffix) });
         let dir = self.ws.path().join(".byob/artifacts").join(&aid);
         std::fs::create_dir_all(&dir).unwrap();
         let vs = meta["versions"].as_array_mut().unwrap();
@@ -177,6 +178,18 @@ impl Byob {
                 let (aid, n) = self.store(&r["artifact"], false);
                 self.last_id = aid.clone();
                 format!("{}\nSaved: artifact {aid}, version {n}.", r["text"].as_str().unwrap_or_default())
+            }
+            // A sheet and the charts drawn from it.
+            Ok(r) if r["artifacts"].is_array() => {
+                let mut text = r["text"].as_str().unwrap_or_default().to_owned();
+                for (i, a) in r["artifacts"].as_array().unwrap().clone().iter().enumerate() {
+                    let (aid, n) = self.store(a, false);
+                    if i == 0 {
+                        self.last_id = aid.clone();
+                    }
+                    text.push_str(&format!("\nSaved: artifact {aid}, version {n}."));
+                }
+                text
             }
             Ok(Value::String(s)) => s,
             Ok(other) => other.to_string(),

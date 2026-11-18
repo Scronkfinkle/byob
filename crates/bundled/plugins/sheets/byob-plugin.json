@@ -5,7 +5,7 @@
   "description": "Spreadsheets with formulas (IronCalc): .xlsx artifacts, .csv/.tsv tables, an editable grid, and tools to describe, read, write, fill, restructure and format sheets.",
   "icon": "sheet",
   "provides": "spreadsheets",
-  "prompt": "Spreadsheets: for a .csv, .tsv or .xlsx file in the workspace (or a spreadsheet artifact), use the sheet tools with its path or id as `sheet`: describe_sheet to look, write_cells/fill to add columns or formulas (the file is opened as a spreadsheet beside the chat; the original stays as it is). Prefer them over editing such files with code.",
+  "prompt": "Spreadsheets: for a .csv, .tsv or .xlsx file in the workspace (or a spreadsheet artifact), use the sheet tools with its path or id as `sheet`: describe_sheet to look, write_cells/fill to add columns or formulas (the file is opened as a spreadsheet beside the chat; the original stays as it is). Prefer them over editing such files with code. To chart a spreadsheet, use chart_sheet (linked: it redraws when the sheet changes), not make_chart with copied numbers.",
   "backend": { "native": "sheets" },
   "artifact_types": [
     {
@@ -146,6 +146,27 @@
           "sheet_name": { "type": "string", "description": "Sheet (tab) name; default the first sheet." }
         },
         "required": ["sheet", "range"]
+      }
+    },
+    {
+      "name": "chart_sheet",
+      "title": "Chart a sheet",
+      "description": "Draw a chart from a spreadsheet artifact's columns (computed values, formulas included). The chart stays linked: whenever the sheet changes it is drawn again, so never copy a sheet's numbers into make_chart. x and series are column headers (or letters); rows run from under the header to the last row with an x.",
+      "run": "backend",
+      "params": {
+        "type": "object",
+        "properties": {
+          "sheet": { "type": "string", "description": "The spreadsheet artifact's id." },
+          "type": { "type": "string", "enum": ["bar", "line", "area", "pie", "scatter"] },
+          "x": { "type": "string", "description": "Column along the bottom (pie: the slice names), by header or letter, e.g. \"Month\"." },
+          "series": { "type": "array", "items": { "type": "string" }, "description": "Column(s) with the numbers, by header or letter, e.g. [\"Profit\"]." },
+          "title": { "type": "string" },
+          "tab": { "type": "string", "description": "The sheet (tab) to read; default the first." },
+          "header_row": { "type": "integer", "description": "The row with the column names; default the first row with anything in it." },
+          "unit": { "type": "string", "description": "e.g. \"$\" or \"kg\"" },
+          "stacked": { "type": "boolean" }
+        },
+        "required": ["sheet", "type", "x", "series"]
       }
     }
   ],

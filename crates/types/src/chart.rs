@@ -73,6 +73,41 @@ pub struct ChartSpec {
     /// Bars or areas on top of each other.
     #[serde(default, skip_serializing_if = "is_false")]
     pub stacked: bool,
+    /// Where the rows come from when the chart is drawn from a spreadsheet: it is drawn again
+    /// from there whenever the sheet changes (the sheets plugin's `chart_sheet`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Box<ChartSource>>,
+}
+
+/// A chart's spreadsheet: artifact `sheet`, tab `tab`, the row with the column names
+/// (`header_row`, 1-based) and the columns (letters) of `x` and each series; the rows run from
+/// under the header to the last one with an `x`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChartSource {
+    pub sheet: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tab: String,
+    pub header_row: u32,
+    pub x: String,
+    pub series: Vec<String>,
+}
+
+/// Longest artifact id or tab name kept in a [`ChartSource`].
+const MAX_SOURCE_NAME: usize = 128;
+
+impl ChartSource {
+    /// From untrusted JSON: `None` unless it names a sheet and plain column letters.
+    fn from_value(v: &Value) -> Option<Self> {
+        let o = v.as_object()?;
+        let text = |k: &str| o.get(k).and_then(Value::as_str).map(str::trim).filter(|t| t.chars().count() <= MAX_SOURCE_NAME).map(str::to_owned);
+        let column = |c: &str| (1..=3).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_uppercase());
+        let sheet = text("sheet").filter(|s| !s.is_empty())?;
+        let x = text("x").filter(|x| column(x))?;
+        let series: Vec<String> =
+            o.get("series")?.as_array()?.iter().filter_map(Value::as_str).filter(|c| column(c)).take(MAX_SERIES).map(str::to_owned).collect();
+        let header_row = o.get("header_row").and_then(Value::as_u64).filter(|r| (1..=1_048_576).contains(r)).and_then(|r| u32::try_from(r).ok())?;
+        (!series.is_empty()).then(|| Self { sheet, tab: text("tab").unwrap_or_default(), header_row, x, series })
+    }
 }
 
 fn is_false(b: &bool) -> bool {
@@ -397,7 +432,8 @@ pub fn validate(input: &Value) -> Result<ChartSpec, String> {
     }
     let unit = o.get("unit").and_then(Value::as_str).map(str::trim).filter(|u| !u.is_empty()).map(|u| u.chars().take(MAX_UNIT_CHARS).collect());
     let stacked = o.get("stacked") == Some(&Value::Bool(true));
-    Ok(ChartSpec { version: 1, kind, title, x, series, data: out, unit, stacked })
+    let source = o.get("source").and_then(ChartSource::from_value).map(Box::new);
+    Ok(ChartSpec { version: 1, kind, title, x, series, data: out, unit, stacked, source })
 }
 
 fn num(n: Option<f64>) -> Value {

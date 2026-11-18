@@ -327,6 +327,9 @@ impl Views {
         book.evaluate();
         let data = book.to_xlsx()?;
         let aid = aid.clone();
+        // Charts drawn from this sheet follow the edit.
+        let chat_of = s(a, "chat").filter(|c| !c.is_empty()).or_else(|| s(ev, "chat")).map(str::to_owned);
+        let redrawn = s(a, "workspace").map(|ws| crate::charts::refresh(ws, chat_of.as_deref(), &aid, book)).unwrap_or_default();
         let filename = s(a, "filename").unwrap_or_default().to_owned();
         let fmt = sheet_format(s(a, "content_type"), if filename.is_empty() { s(a, "path").unwrap_or_default() } else { &filename });
         let new_name = (fmt != Some("xlsx")).then(|| xlsx_name(&filename, s(a, "id").filter(|i| !i.is_empty()).unwrap_or("sheet")));
@@ -343,6 +346,9 @@ impl Views {
             m["filename"] = json!(n);
         }
         out.send(m);
+        for (r, file) in crate::charts::files(store, redrawn) {
+            out.send(json!({"type": "artifact", "chat": chat, "file": file, "note": "Drawn again from the sheet", "draft": true, "id": r.id}));
+        }
         Ok(())
     }
 }

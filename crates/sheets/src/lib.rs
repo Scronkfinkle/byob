@@ -9,6 +9,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod book;
+pub mod charts;
 pub mod refs;
 pub mod store;
 pub mod text;
@@ -53,7 +54,7 @@ impl SheetError {
 }
 
 /// The tools it serves, in the manifest's order.
-pub const TOOLS: [&str; 7] = ["create_sheet", "describe_sheet", "read_cells", "write_cells", "fill", "edit_sheet", "format_cells"];
+pub const TOOLS: [&str; 8] = ["create_sheet", "describe_sheet", "read_cells", "write_cells", "fill", "edit_sheet", "format_cells", "chart_sheet"];
 
 /// The sheets backend's state: workbooks, views, and the artifacts its views show.
 #[derive(Default)]
@@ -84,6 +85,7 @@ impl Sheets {
             "fill" => tools::fill(st, &cx, args),
             "edit_sheet" => tools::edit_sheet(st, &cx, args),
             "format_cells" => tools::format_cells(st, &cx, args),
+            "chart_sheet" => charts::chart_sheet(st, &cx, args),
             other => return Err(format!("this backend has no tool {} (known: {})", repr_str(other), TOOLS.join(", "))),
         };
         r.map_err(|e| e.text())
