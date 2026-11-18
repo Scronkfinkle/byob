@@ -27,6 +27,8 @@ pub enum ServerKind {
     OpenAi,
     /// Anthropic's Messages API.
     Anthropic,
+    /// A signed-in agent CLI (`cli://…`, see [`crate::agents`]).
+    AgentCli,
     #[default]
     Unknown,
 }
@@ -173,9 +175,26 @@ impl Client {
 }
 
 impl Prober<'_> {
+    /// An agent CLI: what it lists, and the facts every CLI shares. byob's tools reach it
+    /// through the tool prompt (no CLI hands its tool calls back), and images aren't passed.
+    fn agent_cli(&mut self, id: &str) {
+        self.caps.server = ServerKind::AgentCli;
+        self.caps.tools = ToolSupport::InContent;
+        self.caps.vision = Some(false);
+        self.caps.context_length = Some(crate::agents::CONTEXT_TOKENS);
+        match crate::agents::list_models(id) {
+            Ok(models) => self.caps.models = models,
+            Err(e) => self.caps.notes.push(format!("agent {id}: {e}")),
+        }
+    }
+
     fn run(&mut self) {
         if self.client.api() == ApiKind::Anthropic {
             self.anthropic();
+            return;
+        }
+        if let Some(id) = self.client.cli_agent() {
+            self.agent_cli(id);
             return;
         }
         self.models();

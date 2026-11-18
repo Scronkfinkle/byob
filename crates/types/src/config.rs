@@ -388,9 +388,9 @@ impl Layer {
             return Err("the URL is too long".into());
         }
         if let Some(u) = &self.base_url
-            && !(u.starts_with("http://") || u.starts_with("https://"))
+            && !crate::endpoint_url_ok(u)
         {
-            return Err(format!("{u:?} isn't an http:// or https:// URL"));
+            return Err(format!("{u:?} isn't an http://, https:// or cli:// URL"));
         }
         if self.model.as_ref().is_some_and(|m| m.chars().count() > MAX_MODEL_CHARS) {
             return Err("the model name is too long".into());

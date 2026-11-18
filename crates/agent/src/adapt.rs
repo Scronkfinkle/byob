@@ -195,15 +195,24 @@ impl Endpoints {
         let key = key(config);
         let caps = self.cache.get(&key);
         let anthropic = config.api_kind() == byob_types::ApiKind::Anthropic;
+        let cli = config.api_kind() == byob_types::ApiKind::Cli;
         // Until the probe says, Claude gets the smallest window of its models, not a local
         // server's guess.
-        let unknown = if anthropic { ANTHROPIC_CONTEXT_TOKENS } else { budget::DEFAULT_CONTEXT_TOKENS };
+        let unknown = if anthropic {
+            ANTHROPIC_CONTEXT_TOKENS
+        } else if cli {
+            usize::try_from(byob_llm::agents::CONTEXT_TOKENS).unwrap_or(budget::DEFAULT_CONTEXT_TOKENS)
+        } else {
+            budget::DEFAULT_CONTEXT_TOKENS
+        };
         let probed = caps.filter(|c| c.context_length.is_some_and(|n| n > 0)).map_or(unknown, Capabilities::effective_context);
         // A profile's own context window beats the probe.
         let context = config.context.filter(|n| *n > 0).and_then(|n| usize::try_from(n).ok()).unwrap_or(probed);
         let reserve = budget::default_reply_reserve(context);
         let mode = if self.opts.tool_mode == ToolMode::Auto { mode } else { self.opts.tool_mode };
         let (prompt_tools, fallback) = match mode {
+            // No agent CLI returns tool calls: byob's tools always go through the prompt.
+            _ if cli => (true, false),
             ToolMode::Native => (false, false),
             ToolMode::Prompt => (true, false),
             // Claude calls tools natively; a 400 that mentions tools is about the request,
@@ -266,6 +275,7 @@ pub(crate) fn server_name(k: ServerKind) -> &'static str {
         ServerKind::LmStudio => "LM Studio",
         ServerKind::OpenAi => "OpenAI",
         ServerKind::Anthropic => "Anthropic",
+        ServerKind::AgentCli => "Agent CLI",
         ServerKind::Unknown => "",
     }
 }

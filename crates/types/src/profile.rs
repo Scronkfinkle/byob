@@ -253,8 +253,8 @@ impl Profile {
         if self.base_url.chars().count() > MAX_URL_CHARS {
             return Err("the URL is too long".into());
         }
-        if !(self.base_url.starts_with("http://") || self.base_url.starts_with("https://")) {
-            return Err(format!("{:?} isn't an http:// or https:// URL", self.base_url));
+        if !crate::endpoint_url_ok(&self.base_url) {
+            return Err(format!("{:?} isn't an http://, https:// or cli:// URL", self.base_url));
         }
         if self.model.is_empty() {
             return Err("a model needs a model id (as the server names it)".into());

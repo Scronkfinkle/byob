@@ -36,6 +36,25 @@ pub enum ApiKind {
     OpenAi,
     /// Anthropic's Messages API (`POST {base}/messages`), for Claude.
     Anthropic,
+    /// A signed-in agent CLI run as a subprocess (`cli://claude`, `cli://codex`): the
+    /// user's own subscription answers, with the CLI's own tools turned off. See
+    /// `byob_llm::agents`.
+    Cli,
+}
+
+/// The URL scheme of an agent CLI endpoint: `cli://<agent>`.
+pub const CLI_SCHEME: &str = "cli://";
+
+/// The agent id of a `cli://<agent>` URL (`"claude"`), or `None` for any other URL.
+pub fn cli_agent(url: &str) -> Option<&str> {
+    let rest = url.trim().get(..CLI_SCHEME.len()).filter(|s| s.eq_ignore_ascii_case(CLI_SCHEME)).and_then(|_| url.trim().get(CLI_SCHEME.len()..))?;
+    let id = rest.trim_end_matches('/');
+    (!id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')).then_some(id)
+}
+
+/// An endpoint URL byob can use: `http(s)://…` or `cli://<agent>`.
+pub fn endpoint_url_ok(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://") || cli_agent(url).is_some()
 }
 
 /// Where and how to reach the model. Replaces hob's local llama.cpp setup.
@@ -76,9 +95,22 @@ impl Default for InferenceConfig {
 }
 
 impl InferenceConfig {
-    /// The API to speak: the configured one, else Anthropic for `api.anthropic.com`, else OpenAI.
+    /// The API to speak: an agent CLI for `cli://` URLs (always), else the configured one,
+    /// else Anthropic for `api.anthropic.com`, else OpenAI.
     pub fn api_kind(&self) -> ApiKind {
-        self.api.unwrap_or_else(|| if url_host(&self.base_url).eq_ignore_ascii_case("api.anthropic.com") { ApiKind::Anthropic } else { ApiKind::OpenAi })
+        if cli_agent(&self.base_url).is_some() {
+            return ApiKind::Cli;
+        }
+        match self.api {
+            Some(ApiKind::Cli) | None => {
+                if url_host(&self.base_url).eq_ignore_ascii_case("api.anthropic.com") {
+                    ApiKind::Anthropic
+                } else {
+                    ApiKind::OpenAi
+                }
+            }
+            Some(kind) => kind,
+        }
     }
 
     /// The same endpoint (URL, model, key, API), whatever the request options.
@@ -123,5 +155,22 @@ mod tests {
         assert_eq!(serde_json::to_string(&old).unwrap(), r#"{"base_url":"http://h/v1","model":"m"}"#);
         assert_eq!(serde_json::to_string(&ApiKind::OpenAi).unwrap(), r#""openai""#);
         assert_eq!(serde_json::from_str::<ApiKind>(r#""anthropic""#).unwrap(), ApiKind::Anthropic);
+    }
+
+    #[test]
+    fn cli_urls_name_an_agent() {
+        assert_eq!(cli_agent("cli://claude"), Some("claude"));
+        assert_eq!(cli_agent(" CLI://codex/ "), Some("codex"));
+        assert_eq!(cli_agent("cli://"), None);
+        assert_eq!(cli_agent("cli://../etc"), None);
+        assert_eq!(cli_agent("cli://Claude"), None);
+        assert_eq!(cli_agent("http://claude"), None);
+        assert!(endpoint_url_ok("cli://claude") && endpoint_url_ok("http://h/v1") && !endpoint_url_ok("ftp://x"));
+        let at = |url: &str, api| InferenceConfig { base_url: url.into(), api, ..Default::default() }.api_kind();
+        assert_eq!(at("cli://claude", None), ApiKind::Cli);
+        assert_eq!(at("cli://claude", Some(ApiKind::OpenAi)), ApiKind::Cli);
+        // `api: cli` on an http URL can't run anything: it reads as the URL says.
+        assert_eq!(at("http://127.0.0.1:8080/v1", Some(ApiKind::Cli)), ApiKind::OpenAi);
+        assert_eq!(serde_json::to_string(&ApiKind::Cli).unwrap(), r#""cli""#);
     }
 }
