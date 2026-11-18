@@ -2236,6 +2236,42 @@ mod app_tests {
         assert_eq!((ev.action.as_str(), ev.values.get("on")), ("flip", Some(&serde_json::json!(true))));
     }
 
+    /// YOLO on: a badge in the header that opens the Approvals setting; off: none.
+    #[test]
+    fn yolo_shows_a_badge_that_opens_approvals() {
+        let fake = Fake::default();
+        let mut app = ByobApp::new(Box::new(fake.clone()), "test");
+        let text = |ctx: &egui::Context, app: &mut ByobApp, events: Vec<egui::Event>| {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0));
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| app.ui(ui));
+            out.textures_delta.clear();
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Text(t) => out.push((t.galley.text().to_owned(), t.pos + t.galley.rect.center().to_vec2())),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    _ => {}
+                }
+            }
+            out.shapes.iter().for_each(|c| walk(&c.shape, &mut found));
+            found
+        };
+        fake.inbox.lock().unwrap().extend([ServerMsg::Welcome(Welcome::current()), ServerMsg::State(state(Link::Ok, true))]);
+        let ctx = egui::Context::default();
+        text(&ctx, &mut app, vec![]);
+        assert!(!text(&ctx, &mut app, vec![]).iter().any(|(t, _)| t == "YOLO"));
+        fake.inbox.lock().unwrap().push(ServerMsg::State(EngineState { yolo: true, ..state(Link::Ok, true) }));
+        text(&ctx, &mut app, vec![]);
+        let found = text(&ctx, &mut app, vec![]);
+        let at = found.iter().find(|(t, _)| t == "YOLO").map(|(_, p)| *p).expect("the badge");
+        assert!(at.y < 40.0, "in the header");
+        text(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        text(&ctx, &mut app, vec![press(true)]);
+        text(&ctx, &mut app, vec![press(false)]);
+        assert!(app.show_settings, "the badge opens the settings at Approvals");
+    }
+
     /// A newer engine's messages are skipped, not fatal; plugin messages go out only when the
     /// engine takes them.
     #[test]

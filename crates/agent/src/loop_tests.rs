@@ -393,6 +393,30 @@ fn a_reply_records_the_context_it_ended_with() {
     assert_eq!((s.model_calls, s.prompt_tokens, s.completion_tokens, s.context_tokens), (3, 10, 5, 15));
 }
 
+/// The window hears when YOLO is on (its badge), and not otherwise.
+#[test]
+fn the_state_says_when_yolo_is_on() {
+    let state_of = |policy| {
+        let (url, _) = fake_llm(vec![Reply::Text("hi")], "final answer");
+        let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+        config.workspace = PathBuf::from("/ws");
+        config.auto_title = false;
+        config.detect_local = false;
+        config.policy = policy;
+        let engine = EngineHandle::spawn_with(config).unwrap();
+        let mut c = engine.connect(Arc::new(|| {}));
+        c.send(ClientMsg::hello("test"));
+        loop {
+            if let ServerMsg::State(s) = recv(&mut c) {
+                return s.yolo;
+            }
+        }
+    };
+    assert!(state_of(Some(Policy::YOLO)));
+    assert!(!state_of(Some(Policy::ALLOW_ALL)));
+    assert!(!state_of(None));
+}
+
 #[test]
 fn images_from_tools_reach_the_model_and_only_the_latest_stay() {
     // Ten looks, one per round (the last one again), then the answer.
@@ -1063,7 +1087,7 @@ fn a_tool_can_ask_and_grants_never_answer_for_the_user() {
 
 #[test]
 fn auto_approve_answers_questions_but_not_must_confirm_calls() {
-    let all = Policy { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow };
+    let all = Policy { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow, yolo: false };
     let script = vec![call("load", "{}"), call("brew", r#"{"n":1}"#), call("brew", r#"{"n":2}"#), Reply::Text("done")];
     let (engine, requests) = question_engine(script, all);
     let mut c = hello(&engine);
@@ -1091,7 +1115,7 @@ fn auto_approve_answers_questions_but_not_must_confirm_calls() {
 /// own text is the tool's result, Skip says so, and only question cards take answers.
 #[test]
 fn ask_user_waits_for_the_users_answer() {
-    let all = Policy { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow };
+    let all = Policy { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow, yolo: false };
     let script = vec![
         call("ask_user", r#"{"question":"Which units?","options":["Metric","Imperial"]}"#),
         call("ask_user", r#"{"question":"Anything else?"}"#),
@@ -1241,7 +1265,7 @@ fn the_model_changes_the_layout_and_every_window_follows() {
     let home = tempfile::tempdir().unwrap();
     let paths = byob_store::Paths::at(home.path());
     paths.ensure().unwrap();
-    let ask = Policy { read: Rule::Allow, write: Rule::Ask, network: Rule::Ask, execute: Rule::Ask };
+    let ask = Policy { read: Rule::Allow, write: Rule::Ask, network: Rule::Ask, execute: Rule::Ask, yolo: false };
     let script = vec![
         call("ui_layout", "{}"),
         call("ui_layout", r#"{"show": {"reply.tokens": "hidden", "reply.speed": "hover"}, "order": {"reply": ["reply.time"]}}"#),
@@ -1373,7 +1397,7 @@ fn the_model_undoes_its_layout_change() {
     let home = tempfile::tempdir().unwrap();
     let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
     config.workspace = home.path().join("ws");
-    config.policy = Some(Policy { read: Rule::Allow, write: Rule::Ask, network: Rule::Ask, execute: Rule::Ask });
+    config.policy = Some(Policy { read: Rule::Allow, write: Rule::Ask, network: Rule::Ask, execute: Rule::Ask, yolo: false });
     config.auto_title = false;
     config.detect_local = false;
     config.plugins = Some(crate::extensions::PluginsConfig::default());

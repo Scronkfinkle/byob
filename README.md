@@ -32,7 +32,9 @@ that draws its own interface on the GPU, with no Electron.
 - **Math, typeset.** LaTeX in replies and documents (`$…$` inline, `$$…$$` on its own line)
   is drawn like KaTeX, in the desktop app and the browser (the bundled Math plugin).
 - **Hands, with a leash.** File tools, `run_command` (PowerShell on Windows) and `run_python` (sandboxed on Linux); approval
-  cards with diffs; undo per turn. Edit any message you sent to start over from there.
+  cards with diffs; undo per turn. Edit any message you sent to start over from there. Or
+  let it off the leash: YOLO (Settings → Approvals, or `--yolo`) runs everything without
+  asking, and the header says so while it's on.
 - **Reads, searches and remembers.** PDF, Word and PowerPoint files; images, for models that can see;
   web search and page reading (Exa by default, or your own SearXNG, Brave or Tavily); notes kept
   across chats in plain Markdown; a step plan for long tasks.

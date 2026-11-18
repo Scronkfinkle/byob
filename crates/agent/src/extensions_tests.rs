@@ -467,6 +467,19 @@ fn keeping_a_plugin_asks_and_everywhere_needs_a_person() {
     assert_eq!(e.plugins.iter().find(|p| p.id == "loud").unwrap().origin, PluginOrigin::Agent);
 }
 
+/// YOLO: keeping a plugin everywhere, which only a person may allow even under allow-all,
+/// runs without a card.
+#[test]
+fn yolo_keeps_a_plugin_everywhere_without_asking() {
+    let make = json!({"name": "shout", "code": "def run(text: str) -> str:\n    return text.upper()\n"}).to_string();
+    let keep = json!({"plugin": "scratch", "scope": "global", "new_id": "loud"}).to_string();
+    let h = harness(vec![call("make_tool", &make), call("keep_plugin", &keep), Reply::Text("ok")], Some(Policy::YOLO), |_, _| {});
+    let (mut c, _) = hello(&h);
+    let (r, _) = turn(&mut c, "keep everywhere", |s, _| panic!("YOLO asked: {}", s.title));
+    assert_eq!(step(&r, "keep_plugin").status, StepStatus::Done);
+    assert!(h.home.path().join("plugins/loud/tools/shout.py").is_file());
+}
+
 #[test]
 fn plugins_switch_off_per_level() {
     let h = harness(vec![Reply::Text("a"), Reply::Text("b")], Some(Policy::ALLOW_ALL), |home, _| {

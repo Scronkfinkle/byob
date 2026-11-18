@@ -1047,6 +1047,10 @@ impl Engine {
 
     fn state_with(&self, chat: Option<&str>, effective: Option<workspaces::ChatSettings>) -> EngineState {
         let tool_mode = effective.as_ref().map_or(ToolMode::Auto, |e| e.effective.tool_mode.value);
+        let yolo = match &effective {
+            Some(e) => self.policy_for(&e.effective).yolo,
+            None => self.forced_policy.is_some_and(|p| p.yolo),
+        };
         let chat_endpoint = effective.filter(|e| e.inference != self.config).map(|e| {
             let key = adapt::key(&e.inference);
             byob_protocol::ChatEndpoint {
@@ -1071,6 +1075,7 @@ impl Engine {
             onboarded: self.onboarded,
             detected: self.detected.clone(),
             detecting: self.detecting,
+            yolo,
             chat_endpoint,
         }
     }

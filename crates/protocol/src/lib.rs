@@ -871,6 +871,9 @@ pub struct EngineState {
     /// The engine is looking for them.
     #[serde(default)]
     pub detecting: bool,
+    /// YOLO is on for the chat in view: nothing asks before a tool call runs (13.13).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub yolo: bool,
     /// The chat in view uses another endpoint than the one above (its workspace's or its
     /// own); `None`: it uses the global one.
     #[serde(default, skip_serializing_if = "Option::is_none")]

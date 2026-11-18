@@ -13,6 +13,8 @@
 //!     --plugin DIR            load the plugin in DIR (repeatable; also <config>/plugins)
 //!     --auto-approve          allow every tool call without asking (testing); loads workspace
 //!                             environments for this run only; system-wide installs still ask
+//!     --yolo                  never ask, for this run: like --auto-approve, and what a person is
+//!                             normally asked to confirm runs too (system-wide installs included)
 //!     --dev-tools             offer trivial test tools (get_time, set_reminder)
 //!     --storage KIND          sqlite | folder: chat storage for this run (default: settings.json `storage`)
 //!     --chats-folder DIR      root of the folder storage (default: settings.json `chats_folder`,
@@ -88,6 +90,7 @@ struct Args {
     dev_tools: bool,
     /// Allow every tool call without asking (scripted test runs).
     auto_approve: bool,
+    yolo: bool,
     plugins: Vec<PathBuf>,
     theme: Option<String>,
     open_settings: bool,
@@ -135,6 +138,7 @@ fn parse_args() -> Result<Args, String> {
         workspace: None,
         dev_tools: false,
         auto_approve: false,
+        yolo: false,
         plugins: Vec::new(),
         theme: None,
         open_settings: false,
@@ -172,6 +176,7 @@ fn parse_args() -> Result<Args, String> {
             "--export-chats-to" => args.export_to = Some(storage_kind("--export-chats-to", it.next())?),
             "--dev-tools" => args.dev_tools = true,
             "--auto-approve" => args.auto_approve = true,
+            "--yolo" => args.yolo = true,
             "--plugin" => args.plugins.push(it.next().ok_or("--plugin needs a folder")?.into()),
             "--theme" => {
                 // Checked once the themes folder is loaded (user themes count too).
@@ -269,7 +274,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "-h" | "--help" => {
                 return Err(
-                    "usage: byob [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--storage sqlite|folder] [--chats-folder DIR] [--export-chats-to sqlite|folder] [--plugin DIR]... [--dev-tools] [--theme system|dark|light|THEME]"
+                    "usage: byob [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--storage sqlite|folder] [--chats-folder DIR] [--export-chats-to sqlite|folder] [--plugin DIR]... [--auto-approve | --yolo] [--dev-tools] [--theme system|dark|light|THEME]"
                         .into(),
                 );
             }
@@ -474,6 +479,10 @@ fn run() -> Result<(), String> {
     if args.auto_approve {
         log::warn!("--auto-approve: every tool call runs without asking");
         config.policy = Some(byob_agent::Policy::ALLOW_ALL);
+    }
+    if args.yolo {
+        log::warn!("--yolo: nothing asks; every tool call runs, also what a person is normally asked to confirm");
+        config.policy = Some(byob_agent::Policy::YOLO);
     }
     if let Some(dir) = workspace(&args, &saved.settings)? {
         config.workspace = dir;

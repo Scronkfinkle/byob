@@ -21,17 +21,21 @@ pub struct Policy {
     pub write: Rule,
     pub network: Rule,
     pub execute: Rule,
+    /// YOLO: also run calls a person is normally asked to confirm.
+    pub yolo: bool,
 }
 
 impl Default for Policy {
     fn default() -> Self {
-        Self { read: Rule::Allow, write: Rule::Ask, network: Rule::Ask, execute: Rule::Ask }
+        Self { read: Rule::Allow, write: Rule::Ask, network: Rule::Ask, execute: Rule::Ask, yolo: false }
     }
 }
 
 impl Policy {
     /// Every call runs without asking (`--auto-approve`); must-confirm calls still ask.
-    pub const ALLOW_ALL: Self = Self { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow };
+    pub const ALLOW_ALL: Self = Self { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow, yolo: false };
+    /// Nothing asks, not even must-confirm calls (`--yolo`, the YOLO approvals setting).
+    pub const YOLO: Self = Self { yolo: true, ..Self::ALLOW_ALL };
 
     /// The rules an approvals setting stands for.
     pub fn for_approvals(a: byob_types::config::Approvals) -> Self {
@@ -40,7 +44,8 @@ impl Policy {
             Approvals::Ask => Self::default(),
             Approvals::AllowEdits => Self { write: Rule::Allow, ..Self::default() },
             Approvals::AllowAll => Self::ALLOW_ALL,
-            Approvals::ReadOnly => Self { read: Rule::Allow, write: Rule::Deny, network: Rule::Deny, execute: Rule::Deny },
+            Approvals::Yolo => Self::YOLO,
+            Approvals::ReadOnly => Self { read: Rule::Allow, write: Rule::Deny, network: Rule::Deny, execute: Rule::Deny, yolo: false },
         }
     }
 
@@ -76,13 +81,14 @@ pub fn decide(policy: &Policy, granted: bool, access: ToolAccess) -> Gate {
 /// only a person may allow it, see `Step::ask`). A question a tool asks while running is
 /// never answered by a grant (the tool remembers the answer itself); a must-confirm call
 /// is always asked, whatever the policy (`--auto-approve` included) — unless its level
-/// is turned off.
+/// is turned off, or the policy is YOLO.
 pub fn decide_ask(policy: &Policy, granted: bool, access: ToolAccess, ask: Option<bool>) -> Gate {
     match ask {
         None => decide(policy, granted, access),
         Some(false) => decide(policy, false, access),
         Some(true) => match policy.rule(access) {
             Rule::Deny => Gate::Deny(format!("{} tools are turned off", access.label())),
+            Rule::Allow if policy.yolo => Gate::Allow,
             Rule::Allow | Rule::Ask => Gate::Ask,
         },
     }
@@ -94,7 +100,7 @@ mod tests {
 
     #[test]
     fn questions_skip_grants_and_must_confirm_calls_always_ask() {
-        let all = Policy { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow };
+        let all = Policy { read: Rule::Allow, write: Rule::Allow, network: Rule::Allow, execute: Rule::Allow, yolo: false };
         // --auto-approve answers ordinary questions, never must-confirm ones.
         assert_eq!(decide_ask(&all, false, ToolAccess::Execute, Some(false)), Gate::Allow);
         assert_eq!(decide_ask(&all, true, ToolAccess::Execute, Some(true)), Gate::Ask);
@@ -105,6 +111,20 @@ mod tests {
         assert_eq!(decide_ask(&p, true, ToolAccess::Execute, Some(true)), Gate::Ask);
         let off = Policy { execute: Rule::Deny, ..Policy::default() };
         assert!(matches!(decide_ask(&off, true, ToolAccess::Execute, Some(true)), Gate::Deny(_)));
+    }
+
+    /// YOLO: nothing asks, must-confirm calls included; read only still refuses.
+    #[test]
+    fn yolo_never_asks() {
+        let y = Policy::for_approvals(byob_types::config::Approvals::Yolo);
+        assert_eq!(y, Policy::YOLO);
+        for access in [ToolAccess::Read, ToolAccess::Write, ToolAccess::Network, ToolAccess::Execute] {
+            for ask in [None, Some(false), Some(true)] {
+                assert_eq!(decide_ask(&y, false, access, ask), Gate::Allow, "{access:?} {ask:?}");
+            }
+        }
+        let ro = Policy::for_approvals(byob_types::config::Approvals::ReadOnly);
+        assert!(!ro.yolo && matches!(decide_ask(&ro, false, ToolAccess::Write, Some(true)), Gate::Deny(_)));
     }
 
     #[test]

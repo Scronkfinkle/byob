@@ -251,6 +251,17 @@ impl ByobApp {
                 view => self.plugins.sites.status_item(ui, t, view),
             }
         }
+        // YOLO is on: say so where it can't be missed (nothing asks before a call runs).
+        if self.state.as_ref().is_some_and(|s| s.yolo) {
+            let badge = egui::Button::new(egui::RichText::new("YOLO").small().strong().color(t.on_accent)).fill(t.danger).corner_radius(t.round(10.0));
+            if ui
+                .add(badge)
+                .on_hover_text("YOLO: nothing asks before a tool call runs, not even what a person is normally asked to confirm. Click to change it.")
+                .clicked()
+            {
+                self.jump_to(crate::settings::registry::Key::Approvals);
+            }
+        }
     }
 
     /// The profile the chat in view uses: its own or its workspace's, else the default one

@@ -126,10 +126,13 @@ pub enum Approvals {
     AllowAll,
     /// Only reads: writes, network and commands are refused.
     ReadOnly,
+    /// Never asks: every call runs, also those a person is normally asked to confirm
+    /// (questions the model asks you still come to you).
+    Yolo,
 }
 
 impl Approvals {
-    pub const ALL: [Self; 4] = [Self::Ask, Self::AllowEdits, Self::AllowAll, Self::ReadOnly];
+    pub const ALL: [Self; 5] = [Self::Ask, Self::AllowEdits, Self::AllowAll, Self::Yolo, Self::ReadOnly];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -137,6 +140,7 @@ impl Approvals {
             Self::AllowEdits => "Allow file edits",
             Self::AllowAll => "Allow everything",
             Self::ReadOnly => "Read only",
+            Self::Yolo => "YOLO: never ask",
         }
     }
 }
