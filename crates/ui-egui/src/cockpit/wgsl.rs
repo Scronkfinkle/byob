@@ -166,7 +166,23 @@ Helpers (don't redefine them): hash21(p) -> f32 in 0..1; noise2(p), fbm2(p): smo
 
 Optionally also define fn overlay(p: vec2<f32>) -> vec4<f32>, drawn over the whole interface, text included: its rgb is added (glows, light catching a control: use hot_sdf) and its alpha (at most 0.6) darkens what's below (scanlines, a vignette). Keep it faint: the text has to stay readable. Return vec4<f32>(0.0) where it should do nothing.
 
-Keep it cheap: loops with a small fixed bound (a few dozen steps), no loops over pixels. The panels are see-through over the backdrop (the look's glass setting, 1 opaque); text sits on them, so keep it calm where panel_sdf(p) < 0 or dim the scene there. A backdrop that fails to compile is refused with the line and the reason.";
+Keep it cheap: loops with a small fixed bound (a few dozen steps), no loops over pixels. The panels are see-through over the backdrop (the look's glass setting, 1 opaque); text sits on them, so keep it calm where panel_sdf(p) < 0 or dim the scene there. A backdrop that fails to compile is refused with the line and the reason.
+
+A small example to start from (a sky over a glowing horizon, the panels casting shadows from the pointer, the hovered control lit):
+
+    const GLOW = vec3<f32>(1.0, 0.55, 0.2);
+    fn scene(p: vec2<f32>) -> vec4<f32> {
+        let uv = p / u.size;
+        var col = mix(vec3<f32>(0.02, 0.03, 0.07), GLOW * 0.35, smoothstep(0.4, 1.0, uv.y));
+        col += vec3<f32>(step(0.996, hash21(floor(p)))) * (1.0 - uv.y);
+        col *= 0.5 + 0.5 * soft_shadow(p, vec3<f32>(u.mouse, 300.0), 16.0);
+        col += GLOW * panel_glow(p, 12.0) * (0.15 + 0.3 * u.busy);
+        return vec4<f32>(col, 1.0);
+    }
+    fn overlay(p: vec2<f32>) -> vec4<f32> {
+        let lit = exp(-max(hot_sdf(p), 0.0) / 6.0) * min(u.hot_state.x, 1.0);
+        return vec4<f32>(GLOW * lit * 0.25, 0.0);
+    }";
 
 /// The whole module for `source` (the model's code), `linear` when the window's surface
 /// takes linear colour (the scene's sRGB colour is converted).
@@ -224,6 +240,15 @@ mod tests {
         for s in super::super::SCENES {
             assert_eq!(check(s.source), Ok(()), "{}", s.name);
         }
+    }
+
+    /// The example in the guide is code that works.
+    #[test]
+    fn the_guides_example_compiles() {
+        let start = GUIDE.find("    const GLOW").unwrap();
+        let example: String = GUIDE[start..].lines().map(|l| l.strip_prefix("    ").unwrap_or(l)).collect::<Vec<_>>().join("\n");
+        assert!(has_overlay(&example));
+        assert_eq!(check(&example), Ok(()));
     }
 
     #[test]
