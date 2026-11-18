@@ -11,7 +11,8 @@
   First run finds local servers on their usual ports; tool calling falls back to prompt-based
   calls when the server has none.
 - **Artifacts beside the chat.** Spreadsheets (xlsx/csv), charts, Markdown documents,
-  images and HTML apps, each with its version history.
+  images and HTML apps, each with its version history. Charts drawn from a spreadsheet stay
+  linked to it and redraw when it changes; select cells and press Chart selection to make one.
 - **Math, typeset.** LaTeX in replies and documents (`$…$` inline, `$$…$$` on its own line)
   is drawn like KaTeX, in the desktop app and the browser (the bundled Math plugin).
 - **Hands, with a leash.** File tools, `run_command` (PowerShell on Windows) and `run_python` (sandboxed on Linux); approval
