@@ -414,7 +414,14 @@ impl Artifacts {
                 self.pane.show(&id, self.narrow);
             }
             Action::Close => self.pane.collapse(self.narrow),
-            Action::Expand => self.pane.expand(self.narrow),
+            Action::Expand => {
+                // Nothing open on this device yet (the artifacts were made while another
+                // window was looking): show the newest instead of an empty pane.
+                match self.list.last().map(|a| a.id.clone()).filter(|_| self.pane.tabs().is_empty()) {
+                    Some(newest) => self.pane.show(&newest, self.narrow),
+                    None => self.pane.expand(self.narrow),
+                }
+            }
             Action::Toggle => {
                 let newest = self.list.last().map(|a| a.id.clone());
                 self.pane.toggle(self.narrow, newest.as_deref());
@@ -615,12 +622,13 @@ impl Artifacts {
         });
     }
 
-    /// Phones, pane closed: a floating button with the number of open tabs.
+    /// Phones, pane closed: a floating button with the number of open tabs (or of the
+    /// chat's artifacts, when none was opened on this device yet).
     pub fn floating_button(&mut self, ctx: &egui::Context, t: &Tokens) {
-        if self.pane.shown(true) != PaneShown::Rail {
+        if self.list.is_empty() || self.pane.shown(true) == PaneShown::Open {
             return;
         }
-        let n = self.pane.tabs().len();
+        let n = if self.pane.tabs().is_empty() { self.list.len() } else { self.pane.tabs().len() };
         egui::Area::new(egui::Id::unique("artifact-fab")).anchor(egui::Align2::RIGHT_BOTTOM, vec2(-14.0, -96.0)).order(egui::Order::Foreground).show(
             ctx,
             |ui| {
@@ -1421,6 +1429,37 @@ mod tests {
     /// Maximize: the pane takes the window (drawn the way `ByobApp::ui` does), the same app
     /// keeps running at the new size; Esc restores unless a widget had focus (Esc leaves that
     /// first); collapsing restores too; phones ignore it.
+    #[test]
+    /// Regression: on a phone that wasn't looking when the artifacts were made (no tabs on
+    /// this device), "Show artifacts" did nothing and there was no floating button: it now
+    /// shows the newest, and the button is there.
+    #[test]
+    fn show_artifacts_on_a_new_device_opens_the_newest() {
+        let mut s = Artifacts::default();
+        s.apply(&ServerMsg::Artifacts {
+            chat: Some("c".into()),
+            artifacts: vec![artifact("old", ArtifactKind::Html, "old.html", &[1]), artifact("deck", ArtifactKind::Html, "deck.html", &[1, 2])],
+        });
+        let ctx = egui::Context::default();
+        let t = Tokens::dark();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            s.begin_frame(ui.ctx(), &t, true);
+            s.floating_button(ui.ctx(), &t);
+        });
+        out.textures_delta.clear();
+        assert!(ctx.memory(|m| m.areas().visible_layer_ids().iter().any(|l| l.id == egui::Id::unique("artifact-fab"))), "the floating button shows");
+        assert!(!s.is_open());
+        s.handle(&ctx, Action::Expand);
+        assert!(s.is_open(), "the pane opened");
+        assert_eq!(s.selected_artifact().map(|a| a.0.id.clone()), Some("deck".to_owned()), "on the newest");
+        // With tabs already open here, it reopens them as they were.
+        s.handle(&ctx, Action::Select { id: "old".into(), version: None });
+        s.handle(&ctx, Action::Close);
+        assert!(!s.is_open());
+        s.handle(&ctx, Action::Expand);
+        assert_eq!(s.selected_artifact().map(|a| a.0.id.clone()), Some("old".to_owned()));
+    }
+
     #[test]
     fn maximize_toggles_with_the_shortcut_and_esc_restores() {
         let mut s = Artifacts::default();
