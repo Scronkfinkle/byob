@@ -116,6 +116,9 @@ fn describe(r: &LookReport) -> String {
             let _ = writeln!(out, "- {}: {} ({})", t.id, t.name, if t.dark { "dark" } else { "light" });
         }
     }
+    for (name, text) in &r.notes {
+        let _ = write!(out, "\nNote {name}:\n{text}\n");
+    }
     out
 }
 
@@ -319,7 +322,7 @@ impl Tool for UiLook {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL.into(),
-            description: "Read or change how the byob window showing this chat looks: dark or light, theme, accent colour, corner roundness, text size, zoom, density, message bubbles, fonts, any single colour. Without arguments: every setting with its value and what it may be. Only this device's window(s) change.".into(),
+            description: "Read or change how the byob window showing this chat looks: dark or light, theme, accent colour, corner roundness, text size, zoom, density, message bubbles, fonts, any single colour, and (where the window can) a backdrop: a shader scene behind glass panels, which you can write. Without arguments: every setting with its value and what it may be. Only this device's window(s) change.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {

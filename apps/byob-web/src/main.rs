@@ -27,7 +27,10 @@ fn main() {
                     let mut ui = byob_ui_egui::ByobApp::new(Box::new(conn), "browser");
                     // Appearance is per device: kept in this browser's localStorage.
                     if let Some(prefs) = cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::theme::Prefs>(s, byob_ui_egui::theme::Prefs::STORAGE_KEY)) {
-                        ui.set_prefs(prefs);
+                        ui.restore_prefs(prefs);
+                    }
+                    if let Some(rs) = &cc.wgpu_render_state {
+                        ui.enable_backdrops(rs);
                     }
                     // So is the artifact pane: width, collapsed, open tabs per chat.
                     if let Some(pane) =

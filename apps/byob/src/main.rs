@@ -24,6 +24,9 @@
 //!     --theme NAME            system | dark | light, or a theme: a preset id (catppuccin-mocha,
 //!                             gruvbox-dark, nord, …) or the name of a file in <config>/themes
 //!                             (overrides the saved preference)
+//!     --backdrop SCENE        a shader behind glass panels (experimental): cockpit, aurora,
+//!                             a .wgsl file with fn scene (see byob_ui_egui::cockpit), or off
+//!                             (overrides the saved preference; BYOB_NO_BACKDROP=1 disables them)
 //!
 //! Testing (see scripts/headless.sh):
 //!     --send TEXT             send a message on startup (repeatable)
@@ -93,6 +96,7 @@ struct Args {
     yolo: bool,
     plugins: Vec<PathBuf>,
     theme: Option<String>,
+    backdrop: Option<String>,
     open_settings: bool,
     settings_section: Option<String>,
     settings_search: Option<String>,
@@ -141,6 +145,7 @@ fn parse_args() -> Result<Args, String> {
         yolo: false,
         plugins: Vec::new(),
         theme: None,
+        backdrop: None,
         open_settings: false,
         settings_section: None,
         settings_search: None,
@@ -181,6 +186,10 @@ fn parse_args() -> Result<Args, String> {
             "--theme" => {
                 // Checked once the themes folder is loaded (user themes count too).
                 args.theme = Some(it.next().ok_or("--theme needs a name")?);
+            }
+            "--backdrop" => {
+                let name = it.next().ok_or("--backdrop needs a scene (cockpit, aurora), a .wgsl file or off")?;
+                args.backdrop = Some(backdrop_source(&name)?);
             }
             "--open-settings" => args.open_settings = true,
             "--settings-section" => {
@@ -578,6 +587,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
     }
     let script = testing::Runner::new(args.script);
     let (theme_arg, open_settings, section, search) = (args.theme, args.open_settings, args.settings_section, args.settings_search);
+    let backdrop_arg = args.backdrop;
     let result = eframe::run_native(
         "byob",
         options,
@@ -599,7 +609,20 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
             if let Some(name) = &theme_arg {
                 theme::file::select(&mut prefs, name, ui.user_themes());
             }
-            ui.set_prefs(prefs);
+            if let Some(arg) = &backdrop_arg {
+                // Asked for by name: trusted, not on trial.
+                match byob_ui_egui::cockpit::scene(arg) {
+                    Some(scene) => prefs.cockpit.set_scene(scene),
+                    None => prefs.cockpit.backdrop.clone_from(arg),
+                }
+                prefs.cockpit.trial = false;
+            }
+            ui.restore_prefs(prefs);
+            if let Some(rs) = &cc.wgpu_render_state
+                && std::env::var_os("BYOB_NO_BACKDROP").is_none()
+            {
+                ui.enable_backdrops(rs);
+            }
             if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::pane::PanePrefs>(s, byob_ui_egui::pane::PanePrefs::STORAGE_KEY)) {
                 ui.artifacts_mut().set_pane_prefs(pane);
             }
@@ -625,6 +648,21 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
         let _ = std::fs::remove_file(path);
     }
     result
+}
+
+/// `--backdrop`: a bundled scene, a WGSL file (checked now), or off (`""`).
+fn backdrop_source(name: &str) -> Result<String, String> {
+    use byob_ui_egui::cockpit;
+    if name.eq_ignore_ascii_case("off") {
+        return Ok(String::new());
+    }
+    if let Some(scene) = cockpit::scene(name) {
+        return Ok(scene.name.to_owned());
+    }
+    let names: Vec<&str> = cockpit::SCENES.iter().map(|s| s.name).collect();
+    let source = std::fs::read_to_string(name).map_err(|e| format!("--backdrop {name}: not a scene ({}) or a file I can read: {e}", names.join(", ")))?;
+    cockpit::wgsl::check(&source).map_err(|e| format!("--backdrop {name}: {e}"))?;
+    Ok(source)
 }
 
 /// Where the window's saved state (size, appearance, pane) goes: under `BYOB_HOME` when it

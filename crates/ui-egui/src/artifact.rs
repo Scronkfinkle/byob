@@ -551,10 +551,13 @@ impl Artifacts {
                 let max = (width * 0.75).max(320.0);
                 let stored = self.pane.width();
                 let r = egui::Panel::right("artifact-pane")
+                    .frame(crate::cockpit::framed(ui.ctx(), egui::Frame::side_top_panel(ui.style())))
+                    .show_separator_line(crate::cockpit::gap(ui.ctx()) <= 0.0)
                     .resizable(true)
                     .default_size(stored.unwrap_or((width * t.knobs.pane_share).max(320.0)).min(max))
                     .size_range(crate::pane::MIN_WIDTH..=max)
                     .show(ui, |ui| self.pane(ui, t, false));
+                crate::cockpit::mark(ui.ctx(), r.response.rect);
                 // Remember what the user dragged it to (not what a smaller window squeezed it to).
                 let w = r.response.rect.width();
                 if ui.input(|i| i.pointer.any_down()) && stored.is_none_or(|s| (s - w).abs() > 0.5) {
@@ -562,7 +565,12 @@ impl Artifacts {
                 }
             }
             PaneShown::Rail if self.selected_artifact().is_some() => {
-                egui::Panel::right("artifact-rail").resizable(false).exact_size(RAIL_WIDTH).show(ui, |ui| self.rail(ui, t));
+                let r = egui::Panel::right("artifact-rail")
+                    .frame(crate::cockpit::framed(ui.ctx(), egui::Frame::side_top_panel(ui.style())))
+                    .resizable(false)
+                    .exact_size(RAIL_WIDTH)
+                    .show(ui, |ui| self.rail(ui, t));
+                crate::cockpit::mark(ui.ctx(), r.response.rect);
             }
             _ => {}
         }

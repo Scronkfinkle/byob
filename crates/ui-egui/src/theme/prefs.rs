@@ -342,6 +342,8 @@ pub struct Prefs {
     /// Zoom of the whole interface (text, icons, spacing), 1 = 100 %; see [`Prefs::ZOOM_RANGE`].
     /// Per device and not part of themes: it's about the screen and the eyes in front of it.
     pub zoom: f32,
+    /// The cockpit (experimental): a backdrop scene behind glass panels.
+    pub cockpit: crate::cockpit::Cockpit,
     /// Version 0's text size; moved into `knobs` by [`Prefs::sanitized`].
     #[serde(skip_serializing, deserialize_with = "present")]
     pub font_scale: Option<f32>,
@@ -367,6 +369,7 @@ impl Default for Prefs {
             overrides: BTreeMap::new(),
             imported: Vec::new(),
             zoom: 1.0,
+            cockpit: crate::cockpit::Cockpit::default(),
             font_scale: None,
             high_contrast: None,
         }
@@ -410,6 +413,7 @@ impl Prefs {
             self.version = Self::VERSION;
         }
         self.knobs = self.knobs.sanitized();
+        self.cockpit = self.cockpit.sanitized();
         for id in [&mut self.dark_theme, &mut self.light_theme] {
             if id.is_empty() || id.len() > 120 {
                 id.clear();

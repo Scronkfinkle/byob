@@ -552,7 +552,9 @@ impl Tokens {
         v.warn_fg_color = self.warning;
         v.error_fg_color = self.danger;
         v.panel_fill = self.panel_bg;
-        v.window_fill = self.panel_bg;
+        // Opaque even when the panels are glass over a backdrop (`cockpit::glaze`): menus
+        // and popups sit over text.
+        v.window_fill = self.panel_bg.to_opaque();
         v.window_stroke = Stroke::new(1.0, self.border);
         v.window_corner_radius = cr(8.0);
         v.menu_corner_radius = cr(6.0);

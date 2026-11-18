@@ -23,6 +23,9 @@ pub const MAX_KEY: usize = 64;
 pub const MAX_DESCRIBE: usize = 400;
 pub const MAX_THEMES: usize = 200;
 pub const MAX_PROBLEMS: usize = 32;
+/// Most notes in a report, and the longest note.
+pub const MAX_NOTES: usize = 8;
+pub const MAX_NOTE: usize = 20 * 1024;
 
 /// One setting of a window's look.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,6 +58,10 @@ pub struct LookReport {
     /// What of that request couldn't be applied, and why.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub problems: Vec<String>,
+    /// Longer texts for the model, by name: how to write a setting's value (a backdrop
+    /// shader's guide), or a value too long for a field (the backdrop's source).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub notes: BTreeMap<String, String>,
 }
 
 impl LookReport {
@@ -86,6 +93,14 @@ impl LookReport {
         self.problems.truncate(MAX_PROBLEMS);
         for p in &mut self.problems {
             cut(p, MAX_DESCRIBE);
+        }
+        let keys: Vec<String> = self.notes.keys().skip(MAX_NOTES).cloned().collect();
+        for k in keys {
+            self.notes.remove(&k);
+        }
+        self.notes.retain(|k, _| !k.is_empty() && k.len() <= MAX_KEY);
+        for n in self.notes.values_mut() {
+            cut(n, MAX_NOTE);
         }
         self
     }
@@ -124,9 +139,12 @@ mod tests {
             LookReport { fields: vec![field("accent", json!("theme")), field("corners", json!(8)), field("bad", json!({"a": 1}))], ..Default::default() };
         r.fields.push(LookField { key: "x".repeat(MAX_KEY + 1), value: json!(1), describe: String::new() });
         r.problems = vec!["é".repeat(MAX_DESCRIBE)];
+        r.notes = (0..MAX_NOTES + 2).map(|i| (format!("n{i:02}"), "w".repeat(MAX_NOTE + 1))).collect();
         let r = r.sanitized();
         assert_eq!(r.fields.len(), 2);
         assert!(r.problems[0].len() <= MAX_DESCRIBE);
+        assert_eq!(r.notes.len(), MAX_NOTES);
+        assert!(r.notes.values().all(|n| n.len() == MAX_NOTE));
         let mut now = r.clone();
         now.fields[1].value = json!(12);
         assert_eq!(now.changes_since(&r), [("corners".to_owned(), json!(8), json!(12))]);

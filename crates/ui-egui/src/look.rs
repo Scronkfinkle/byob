@@ -5,6 +5,7 @@
 use byob_protocol::look::{LookChanges, LookField, LookReport, ThemeChoice};
 use serde_json::{Value, json};
 
+use crate::cockpit;
 use crate::theme::file::{self, ThemeDef};
 use crate::theme::{self, Accent, Align, BubbleStyle, ChartPalette, Density, Knobs, MonoFont, Prefs, ROLES, ThemeKind, Tokens, UiFont};
 
@@ -33,8 +34,20 @@ fn round2(v: f32) -> Value {
     json!((f64::from(v) * 100.0).round() / 100.0)
 }
 
-/// The look as `prefs` sets it, drawn with `tokens`, with `themes` to choose from.
-pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef]) -> LookReport {
+/// What `backdrop` is now, for the model: off, a bundled scene's name, or the model's own.
+fn backdrop_value(source: &str) -> String {
+    if source.is_empty() {
+        return "off".into();
+    }
+    match cockpit::SCENES.iter().find(|s| s.source == source) {
+        Some(s) => s.name.into(),
+        None => format!("custom ({} lines, in the note backdrop_source)", source.lines().count()),
+    }
+}
+
+/// The look as `prefs` sets it, drawn with `tokens`, with `themes` to choose from
+/// (`backdrops`: this window can draw backdrop shaders).
+pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef], backdrops: bool) -> LookReport {
     let k = &prefs.knobs;
     let mut fields = vec![
         field("mode", json!(lower(prefs.theme.label())), "dark, light, or system (follow the computer)"),
@@ -62,6 +75,22 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef]) -> LookR
         field("reduce_motion", json!(k.reduce_motion), "no animations: true or false"),
         field("chart_colours", json!(if k.chart == ChartPalette::Accessible { "accessible" } else { "theme" }), "theme, or accessible (colour-blind safe)"),
     ];
+    let mut notes = std::collections::BTreeMap::new();
+    if backdrops {
+        let c = &prefs.cockpit;
+        let names: Vec<&str> = cockpit::SCENES.iter().map(|s| s.name).collect();
+        fields.push(field(
+            "backdrop",
+            json!(backdrop_value(&c.backdrop)),
+            &format!("a scene drawn behind the panels, which turn to glass over it: off, one of byob's ({}; sets glass and panel_gap to suit), or your own WGSL shader code (see the note backdrop_guide)", names.join(", ")),
+        ));
+        fields.push(field("glass", round2(c.glass), "how opaque the panels are over a backdrop, 0.2 (mostly see-through) to 1 (opaque)"));
+        fields.push(field("panel_gap", round2(c.gap), "space between the panels over a backdrop, where it shows, 0 to 32 points"));
+        notes.insert("backdrop_guide".to_owned(), cockpit::wgsl::GUIDE.to_owned());
+        if !c.backdrop.is_empty() && !cockpit::SCENES.iter().any(|s| s.source == c.backdrop) {
+            notes.insert("backdrop_source".to_owned(), c.backdrop.clone());
+        }
+    }
     for r in ROLES {
         if let Some(c) = tokens.get(r.name) {
             let overridden = prefs.overrides.get(prefs.theme_id(tokens.dark)).is_some_and(|o| o.contains_key(r.name));
@@ -70,7 +99,7 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef]) -> LookR
         }
     }
     let themes = file::all(user_themes).into_iter().map(|d| ThemeChoice { id: d.id, name: d.name, dark: d.dark }).collect();
-    LookReport { fields, themes, answered: None, problems: Vec::new() }.sanitized()
+    LookReport { fields, themes, answered: None, problems: Vec::new(), notes }.sanitized()
 }
 
 fn number(v: &Value, range: std::ops::RangeInclusive<f32>, key: &str) -> Result<f32, String> {
@@ -106,7 +135,7 @@ pub const HISTORY: usize = 20;
 /// the look before the last change (`history`, newest last); `{"reset": true}` goes back to
 /// the theme's own colours and byob's defaults (keeping the themes, mode and zoom). Anything
 /// else is [`apply`]'d. What couldn't be done, and why.
-pub fn change(prefs: &mut Prefs, history: &mut Vec<Prefs>, changes: &LookChanges, dark: bool, user_themes: &[ThemeDef]) -> Vec<String> {
+pub fn change(prefs: &mut Prefs, history: &mut Vec<Prefs>, changes: &LookChanges, dark: bool, user_themes: &[ThemeDef], backdrops: bool) -> Vec<String> {
     let flag = |k: &str| changes.get(k).is_some_and(|v| v.as_bool().unwrap_or(true));
     if flag("undo") {
         return match history.pop() {
@@ -130,7 +159,7 @@ pub fn change(prefs: &mut Prefs, history: &mut Vec<Prefs>, changes: &LookChanges
         };
     }
     let rest: LookChanges = changes.iter().filter(|(k, _)| *k != "reset" && *k != "undo").map(|(k, v)| (k.clone(), v.clone())).collect();
-    problems.extend(apply(prefs, &rest, dark, user_themes));
+    problems.extend(apply(prefs, &rest, dark, user_themes, backdrops));
     if *prefs != before {
         history.push(before);
         if history.len() > HISTORY {
@@ -140,9 +169,31 @@ pub fn change(prefs: &mut Prefs, history: &mut Vec<Prefs>, changes: &LookChanges
     problems
 }
 
-/// Apply `changes` to `prefs` (`dark`: the window draws dark; `user_themes`: theme files).
-/// What couldn't be applied, and why.
-pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: &[ThemeDef]) -> Vec<String> {
+/// A new backdrop: off, a bundled scene by name, or WGSL that has to compile.
+fn backdrop(c: &mut cockpit::Cockpit, v: &Value, backdrops: bool) -> Result<(), String> {
+    let Some(text) = v.as_str() else {
+        return Err(format!("backdrop: off, a scene's name or WGSL code, not {v}"));
+    };
+    let name = text.trim().to_ascii_lowercase();
+    if matches!(name.as_str(), "" | "off" | "none" | "no") {
+        c.set_backdrop("");
+        return Ok(());
+    }
+    if !backdrops {
+        return Err("backdrop: this window can't draw shaders (it isn't drawing with wgpu)".into());
+    }
+    if let Some(scene) = cockpit::scene(&name) {
+        c.set_scene(scene);
+        return Ok(());
+    }
+    cockpit::wgsl::check(text).map_err(|e| format!("backdrop: {e}"))?;
+    c.set_backdrop(text);
+    Ok(())
+}
+
+/// Apply `changes` to `prefs` (`dark`: the window draws dark; `user_themes`: theme files;
+/// `backdrops`: it can draw backdrop shaders). What couldn't be applied, and why.
+pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: &[ThemeDef], backdrops: bool) -> Vec<String> {
     let mut problems = Vec::new();
     let themes = file::all(user_themes);
     // Colours last, into the theme the window draws with after the rest: "dark mode, and
@@ -246,6 +297,9 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
                 _ => Err(format!("code_font: hack or jetbrains_mono, not {v}")),
             },
             "high_contrast" => boolean(v, key).map(|b| k.high_contrast = b),
+            "backdrop" => backdrop(&mut prefs.cockpit, v, backdrops),
+            "glass" => number(v, cockpit::Cockpit::GLASS_RANGE, key).map(|n| prefs.cockpit.glass = n),
+            "panel_gap" => number(v, cockpit::Cockpit::GAP_RANGE, key).map(|n| prefs.cockpit.gap = n.round()),
             "reduce_motion" => boolean(v, key).map(|b| k.reduce_motion = b),
             "chart_colours" => match text(v).as_str() {
                 "theme" => {
@@ -300,12 +354,12 @@ mod tests {
     fn every_setting_reported_can_be_set_to_what_it_is() {
         let prefs = Prefs::default();
         let tokens = Tokens::dark();
-        let r = report(&prefs, &tokens, &[]);
+        let r = report(&prefs, &tokens, &[], true);
         assert!(r.fields.len() > 20 && r.fields.len() <= byob_protocol::look::MAX_FIELDS, "{}", r.fields.len());
         assert!(r.themes.iter().any(|t| t.id == prefs.dark_theme));
         let all: LookChanges = r.fields.iter().filter(|f| !f.key.starts_with("colour.")).map(|f| (f.key.clone(), f.value.clone())).collect();
         let mut p = prefs.clone();
-        assert_eq!(apply(&mut p, &all, true, &[]), Vec::<String>::new());
+        assert_eq!(apply(&mut p, &all, true, &[], true), Vec::<String>::new());
         assert_eq!(p, prefs, "setting each to what it is changes nothing");
     }
 
@@ -319,6 +373,7 @@ mod tests {
             ),
             true,
             &[],
+            true,
         );
         assert_eq!(p.accent, Accent::Orange);
         assert_eq!((p.knobs.radius, p.theme, p.knobs.assistant_bubble), (12.0, ThemeKind::Light, BubbleStyle::Outlined));
@@ -328,20 +383,48 @@ mod tests {
         assert!(problems.iter().any(|e| e.starts_with("text_size:")), "120% isn't a scale: {problems:?}");
         assert!(problems.iter().any(|e| e.contains("is a dark theme")), "{problems:?}");
         // A custom accent, and a colour back to the theme's.
-        assert!(apply(&mut p, &changes(json!({"accent": "#ff8800", "colour.app_bg": ""})), true, &[]).is_empty());
+        assert!(apply(&mut p, &changes(json!({"accent": "#ff8800", "colour.app_bg": ""})), true, &[], true).is_empty());
         assert_eq!(p.accent, Accent::Custom("#ff8800".into()));
         assert!(p.overrides[p.theme_id(false)].is_empty());
+    }
+
+    /// A backdrop: a scene by name, WGSL that compiles (on trial, its source in a note), or
+    /// off; WGSL that doesn't is refused with its line, and a window without wgpu says so.
+    #[test]
+    fn backdrops_are_checked_before_they_are_kept() {
+        let mut p = Prefs::default();
+        assert!(apply(&mut p, &changes(json!({"backdrop": "Cockpit", "glass": 0.5})), true, &[], true).is_empty());
+        let scene = crate::cockpit::scene("cockpit").unwrap();
+        assert_eq!(p.cockpit.backdrop, scene.source);
+        assert!(p.cockpit.trial);
+        assert_eq!((p.cockpit.glass, p.cockpit.gap), (0.5, scene.gap), "the scene's gap; the glass asked for with it");
+        let r = report(&p, &Tokens::dark(), &[], true);
+        assert_eq!(r.get("backdrop"), Some(&json!("cockpit")));
+        assert!(r.notes.contains_key("backdrop_guide") && !r.notes.contains_key("backdrop_source"));
+        let own = "fn scene(p: vec2<f32>) -> vec4<f32> {\n    return vec4<f32>(u.accent.rgb * 0.2, 1.0);\n}\n";
+        assert!(apply(&mut p, &changes(json!({"backdrop": own})), true, &[], true).is_empty());
+        let r = report(&p, &Tokens::dark(), &[], true);
+        assert_eq!(r.notes.get("backdrop_source").map(String::as_str), Some(own));
+        assert!(r.get("backdrop").unwrap().as_str().unwrap().starts_with("custom (3 lines"));
+        let bad = apply(&mut p, &changes(json!({"backdrop": "fn scene(p: vec2<f32>) -> vec4<f32> {\n  return oops;\n}"})), true, &[], true);
+        assert!(bad.len() == 1 && bad[0].starts_with("backdrop: line 2:"), "{bad:?}");
+        assert_eq!(p.cockpit.backdrop, own, "kept the one that worked");
+        assert!(apply(&mut p, &changes(json!({"backdrop": "off"})), true, &[], true).is_empty());
+        assert!(p.cockpit.backdrop.is_empty() && !p.cockpit.trial);
+        let no_gpu = apply(&mut p, &changes(json!({"backdrop": "aurora"})), true, &[], false);
+        assert!(no_gpu[0].contains("can't draw shaders"), "{no_gpu:?}");
+        assert!(report(&p, &Tokens::dark(), &[], false).get("backdrop").is_none());
     }
 
     /// Bubble padding and line spacing: asked for in a stress test, now settings.
     #[test]
     fn bubble_padding_and_line_spacing_are_settings() {
         let mut p = Prefs::default();
-        let problems = apply(&mut p, &changes(json!({"bubble_padding": 18, "line_spacing": 1.3})), true, &[]);
+        let problems = apply(&mut p, &changes(json!({"bubble_padding": 18, "line_spacing": 1.3})), true, &[], true);
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!((p.knobs.bubble_padding, p.knobs.line_spacing), (18.0, 1.3));
-        assert!(!apply(&mut p, &changes(json!({"line_spacing": 9})), true, &[]).is_empty());
-        let r = report(&p, &crate::theme::Tokens::dark(), &[]);
+        assert!(!apply(&mut p, &changes(json!({"line_spacing": 9})), true, &[], true).is_empty());
+        let r = report(&p, &crate::theme::Tokens::dark(), &[], true);
         assert_eq!(r.get("bubble_padding"), Some(&json!(18.0)));
     }
 
@@ -352,18 +435,18 @@ mod tests {
         let start = Prefs::default();
         let mut p = start.clone();
         let mut history = Vec::new();
-        assert!(change(&mut p, &mut history, &changes(json!({"mode": "dark", "colour.app_bg": "#191724", "corners": 16})), false, &[]).is_empty());
+        assert!(change(&mut p, &mut history, &changes(json!({"mode": "dark", "colour.app_bg": "#191724", "corners": 16})), false, &[], true).is_empty());
         assert_eq!(p.overrides[&p.dark_theme]["app_bg"], "#191724", "the colour went to the dark theme, the one now in use");
         assert!(!p.overrides.contains_key(&p.light_theme));
-        assert!(change(&mut p, &mut history, &changes(json!({"accent": "pink"})), true, &[]).is_empty());
-        assert!(change(&mut p, &mut history, &changes(json!({"undo": true})), true, &[]).is_empty());
+        assert!(change(&mut p, &mut history, &changes(json!({"accent": "pink"})), true, &[], true).is_empty());
+        assert!(change(&mut p, &mut history, &changes(json!({"undo": true})), true, &[], true).is_empty());
         assert_eq!((p.knobs.radius, p.accent.clone()), (16.0, Accent::Theme), "one step back");
-        change(&mut p, &mut history, &changes(json!({"undo": true})), true, &[]);
+        change(&mut p, &mut history, &changes(json!({"undo": true})), true, &[], true);
         assert_eq!(p, start, "back to the start");
-        assert!(change(&mut p, &mut history, &changes(json!({"undo": true})), true, &[])[0].contains("no earlier look"));
+        assert!(change(&mut p, &mut history, &changes(json!({"undo": true})), true, &[], true)[0].contains("no earlier look"));
         // Reset keeps the themes and mode, drops the rest.
-        change(&mut p, &mut history, &changes(json!({"mode": "dark", "colour.text": "#ff0000", "corners": 3})), false, &[]);
-        change(&mut p, &mut history, &changes(json!({"reset": true})), true, &[]);
+        change(&mut p, &mut history, &changes(json!({"mode": "dark", "colour.text": "#ff0000", "corners": 3})), false, &[], true);
+        change(&mut p, &mut history, &changes(json!({"reset": true})), true, &[], true);
         assert_eq!((p.theme, p.knobs.radius), (ThemeKind::Dark, Knobs::default().radius));
         assert!(p.overrides.values().all(std::collections::BTreeMap::is_empty), "{:?}", p.overrides);
     }

@@ -341,7 +341,14 @@ impl Sites {
             return;
         }
         let max = (ui.available_width() * 0.6).max(280.0);
-        egui::Panel::right("plugin-pane").resizable(true).default_size(PANE_WIDTH.min(max)).size_range(240.0..=max).show(ui, |ui| self.pane(ui, t, false, web));
+        let r = egui::Panel::right("plugin-pane")
+            .frame(crate::cockpit::framed(ui.ctx(), egui::Frame::side_top_panel(ui.style())))
+            .show_separator_line(crate::cockpit::gap(ui.ctx()) <= 0.0)
+            .resizable(true)
+            .default_size(PANE_WIDTH.min(max))
+            .size_range(240.0..=max)
+            .show(ui, |ui| self.pane(ui, t, false, web));
+        crate::cockpit::mark(ui.ctx(), r.response.rect);
     }
 
     /// The pane's contents: its views as tabs, the one in front, × to close. Web views

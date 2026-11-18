@@ -5,6 +5,7 @@
 pub mod appview;
 pub mod artifact;
 pub mod chart;
+pub mod cockpit;
 pub mod compose_md;
 pub mod composer;
 pub mod connect;
@@ -133,6 +134,8 @@ pub struct ByobApp {
     editing: Editing,
     /// Math in messages is typeset (a plugin names `native:math`, [`math`]).
     math: bool,
+    /// The cockpit's backdrop: whether this window can draw one, and the one drawn ([`cockpit`]).
+    stage: cockpit::Stage,
 }
 
 /// Changing one of your messages to start the chat over from it (`ClientMsg::Rewind`).
@@ -202,6 +205,7 @@ impl ByobApp {
             look_history: Vec::new(),
             editing: Editing::default(),
             math: false,
+            stage: cockpit::Stage::default(),
         }
     }
 
@@ -410,7 +414,7 @@ impl ByobApp {
                 ServerMsg::Layout(l) => self.layout = std::sync::Arc::new(l.sanitized()),
                 ServerMsg::SetLook { request, changes } => {
                     let mut prefs = self.prefs.clone();
-                    let problems = look::change(&mut prefs, &mut self.look_history, &changes, self.tokens.dark, &self.user_themes);
+                    let problems = look::change(&mut prefs, &mut self.look_history, &changes, self.tokens.dark, &self.user_themes, self.stage.available());
                     self.set_prefs(prefs);
                     // Answered once the new look is drawn (its colours are what the theme makes).
                     self.look_answer = Some((request, problems));
@@ -448,12 +452,29 @@ impl ByobApp {
             return;
         }
         self.look_reported = Some(now);
-        let mut report = look::report(&self.prefs, &self.tokens, &self.user_themes);
+        let mut report = look::report(&self.prefs, &self.tokens, &self.user_themes, self.stage.available());
         if let Some((request, problems)) = self.look_answer.take() {
             report.answered = Some(request);
             report.problems = problems;
         }
         self.conn.send(ClientMsg::ReportLook(report));
+    }
+
+    /// Draw backdrops ([`cockpit`]) with eframe's wgpu render state.
+    pub fn enable_backdrops(&mut self, rs: &egui_wgpu::RenderState) {
+        self.stage.install(rs);
+        self.prefs_gen = self.prefs_gen.wrapping_add(1);
+    }
+
+    /// The preferences saved last time: like [`Self::set_prefs`], except that a backdrop
+    /// that hadn't run long enough to be trusted is dropped, with a note.
+    pub fn restore_prefs(&mut self, mut prefs: theme::Prefs) {
+        let (cockpit, note) = std::mem::take(&mut prefs.cockpit).restored();
+        prefs.cockpit = cockpit;
+        if let Some(note) = note {
+            self.notice(NoticeLevel::Info, note);
+        }
+        self.set_prefs(prefs);
     }
 
     /// Restore (or change) appearance preferences; applied on the next frame.
@@ -516,6 +537,9 @@ impl ByobApp {
         }
         if self.applied != Some(key) {
             self.tokens = theme::Tokens::for_prefs(&self.prefs, key.1, &self.user_themes);
+            if self.stage.active(&self.prefs.cockpit) {
+                cockpit::glaze(&mut self.tokens, self.prefs.cockpit.glass);
+            }
             self.tokens.apply(ctx);
             self.applied = Some(key);
         }
@@ -794,6 +818,7 @@ impl ByobApp {
         self.poll_appearance();
         self.apply_theme(ui.ctx());
         layout::store(ui.ctx(), &self.layout);
+        self.stage.begin(ui, &self.prefs.cockpit);
         math::set_enabled(ui.ctx(), self.math);
         self.report_look();
         let narrow = ui.available_width() < sidebar::NARROW;
@@ -856,13 +881,15 @@ impl ByobApp {
         }
         // The chat and its composer sit on the window background (app_bg); the header, chat
         // list and panes on the panel colour.
-        let composer_frame = egui::Frame::side_top_panel(ui.style()).fill(t.app_bg);
-        let chat_frame = egui::Frame::central_panel(ui.style()).fill(t.app_bg);
-        egui::Panel::bottom("composer").show_separator_line(false).frame(composer_frame).show(ui, |ui| self.composer(ui));
-        egui::CentralPanel::default().frame(chat_frame).show(ui, |ui| {
+        let composer_frame = cockpit::framed(ui.ctx(), egui::Frame::side_top_panel(ui.style()).fill(t.app_bg));
+        let chat_frame = cockpit::framed(ui.ctx(), egui::Frame::central_panel(ui.style()).fill(t.app_bg));
+        let composer = egui::Panel::bottom("composer").show_separator_line(false).frame(composer_frame).show(ui, |ui| self.composer(ui));
+        cockpit::mark(ui.ctx(), composer.response.rect);
+        let chat = egui::CentralPanel::default().frame(chat_frame).show(ui, |ui| {
             self.plugins.trust_card(ui, &t, &self.entries);
             self.transcript(ui);
         });
+        cockpit::mark(ui.ctx(), chat.response.rect);
         if narrow {
             self.artifacts.floating_button(ui.ctx(), &t);
         }
@@ -874,14 +901,15 @@ impl ByobApp {
         // The id carries the width knob so changing it resizes the panel (egui remembers dragged sizes per id).
         let w = t.knobs.sidebar_width;
         #[allow(clippy::cast_possible_truncation)] // a few hundred points
-        let sent = egui::Panel::left(("sidebar", w as i32))
+        let shown = egui::Panel::left(("sidebar", w as i32))
             .resizable(true)
             .default_size(w)
             .size_range(180.0..=420.0)
-            .frame(egui::Frame::side_top_panel(ui.style()).fill(t.sidebar_bg))
-            .show(ui, |ui| self.sidebar.show(ui, t, false))
-            .inner;
-        self.send_all(sent);
+            .frame(cockpit::framed(ui.ctx(), egui::Frame::side_top_panel(ui.style()).fill(t.sidebar_bg)))
+            .show_separator_line(cockpit::gap(ui.ctx()) <= 0.0)
+            .show(ui, |ui| self.sidebar.show(ui, t, false));
+        cockpit::mark(ui.ctx(), shown.response.rect);
+        self.send_all(shown.inner);
     }
 
     /// A folder dropped on the window (desktop) opens the New workspace form on it; files
@@ -902,6 +930,7 @@ impl ByobApp {
 
     /// After drawing: artifact actions and overlays, and what they want sent or shown.
     fn end_frame(&mut self, ctx: &egui::Context) {
+        self.end_backdrop(ctx);
         for r in self.sidebar.take_requests() {
             match r {
                 sidebar::Request::NewWorkspace => self.workspaces.open_new(byob_protocol::workspace::EnvKind::Auto),
@@ -930,6 +959,21 @@ impl ByobApp {
         }
         for (level, text) in notices {
             self.notice(level, text);
+        }
+    }
+
+    /// The backdrop's inputs for this frame; trust it after its trial, or switch it off when
+    /// the GPU refused it.
+    fn end_backdrop(&mut self, ctx: &egui::Context) {
+        let busy = self.busy();
+        let out = self.stage.end(ctx, &self.prefs.cockpit, &self.tokens, busy);
+        if out.trusted {
+            self.prefs.cockpit.trial = false;
+        }
+        if let Some(first) = out.failed.first() {
+            self.notice(NoticeLevel::Error, format!("The backdrop was switched off: the GPU refused it ({first})."));
+            self.prefs.cockpit.set_backdrop("");
+            self.prefs_gen = self.prefs_gen.wrapping_add(1);
         }
     }
 

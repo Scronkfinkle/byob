@@ -1,0 +1,221 @@
+//! Backdrop shaders as WGSL: what the model writes (a `scene` function), what byob puts
+//! around it ([`PRELUDE`]: the inputs, helpers and the entry points), and the check that
+//! runs before a GPU ever sees it ([`check`]).
+//!
+//! The model's code comes first in the module, so a line number in an error is a line of
+//! its own code. (WGSL declarations can be used before they're written.)
+
+/// Panels the shader can see (`u.panels`), at most.
+pub const MAX_PANELS: usize = 16;
+
+/// The longest backdrop source kept.
+pub const MAX_SOURCE: usize = 16 * 1024;
+
+/// What byob adds after the model's code. `u` holds the frame's inputs; the helpers are
+/// documented for the model in [`GUIDE`].
+pub const PRELUDE: &str = r"
+// ---- byob ----
+struct Byob {
+    size: vec2<f32>,
+    mouse: vec2<f32>,
+    time: f32,
+    busy: f32,
+    panel_count: u32,
+    scale: f32,
+    accent: vec4<f32>,
+    background: vec4<f32>,
+    text: vec4<f32>,
+    panels: array<vec4<f32>, 16>,
+}
+
+@group(0) @binding(0) var<uniform> u: Byob;
+
+fn hash21(p: vec2<f32>) -> f32 {
+    var q = fract(p * vec2<f32>(123.34, 456.21));
+    q += dot(q, q + 45.32);
+    return fract(q.x * q.y);
+}
+
+fn noise2(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let w = f * f * (3.0 - 2.0 * f);
+    let a = hash21(i);
+    let b = hash21(i + vec2<f32>(1.0, 0.0));
+    let c = hash21(i + vec2<f32>(0.0, 1.0));
+    let d = hash21(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
+
+fn fbm2(p: vec2<f32>) -> f32 {
+    var v = 0.0;
+    var a = 0.5;
+    var q = p;
+    for (var i = 0; i < 5; i++) {
+        v += a * noise2(q);
+        q = q * 2.03 + vec2<f32>(17.0, 9.0);
+        a *= 0.5;
+    }
+    return v;
+}
+
+fn sd_box(p: vec2<f32>, center: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
+    let d = abs(p - center) - half_size + vec2<f32>(radius);
+    return length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0) - radius;
+}
+
+fn panel_sdf(p: vec2<f32>) -> f32 {
+    var d = 1e6;
+    let n = min(u.panel_count, 16u);
+    for (var i = 0u; i < n; i++) {
+        let r = u.panels[i];
+        d = min(d, sd_box(p, (r.xy + r.zw) * 0.5, (r.zw - r.xy) * 0.5, 8.0));
+    }
+    return d;
+}
+
+fn panel_glow(p: vec2<f32>, radius: f32) -> f32 {
+    return exp(-max(panel_sdf(p), 0.0) / max(radius, 0.001));
+}
+
+fn soft_shadow(p: vec2<f32>, light: vec3<f32>, height: f32) -> f32 {
+    let to = light.xy - p;
+    let dist = length(to);
+    if (dist < 0.001) {
+        return 1.0;
+    }
+    let dir = to / dist;
+    var res = 1.0;
+    var t = 1.0;
+    for (var i = 0; i < 32; i++) {
+        if (t >= dist || light.z * t / dist > height) {
+            break;
+        }
+        let d = panel_sdf(p + dir * t);
+        res = min(res, 6.0 * d / t);
+        if (res <= 0.0) {
+            return 0.0;
+        }
+        t += max(d, 2.0);
+    }
+    return clamp(res, 0.0, 1.0);
+}
+
+@vertex
+fn byob_vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let x = f32(i / 2u) * 4.0 - 1.0;
+    let y = f32(i % 2u) * 4.0 - 1.0;
+    return vec4<f32>(x, y, 0.0, 1.0);
+}
+
+@fragment
+fn byob_fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = scene(pos.xy / u.scale);
+    var rgb = clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    if (BYOB_LINEAR_TARGET) {
+        rgb = pow(rgb, vec3<f32>(2.2));
+    }
+    return vec4<f32>(rgb, 1.0);
+}
+";
+
+/// For the model: what a backdrop is and what it can use (sent with the window's look).
+pub const GUIDE: &str = "A backdrop is a WGSL shader drawn behind byob's panels, for every pixel, up to 30 times a second. Write module-scope WGSL that defines
+
+    fn scene(p: vec2<f32>) -> vec4<f32>
+
+p is the pixel's position from the window's top left in points (y grows downwards). Return its colour: rgb from 0 to 1 as on a web page (sRGB); alpha is ignored. Your code may also define consts and other functions.
+
+It can read, from the uniform u:
+- u.size: the window's size in points; u.mouse: the pointer (-1, -1 when it's outside); u.time: seconds; u.scale: pixels per point
+- u.busy: 0, easing to 1 while the model is working on a reply (make the scene come alive while it thinks)
+- u.accent, u.background, u.text: the theme's colours (vec4<f32>, use .rgb)
+- u.panel_count and u.panels[i] (x0, y0, x1, y1 in points): where byob's panels are (the header, chat list, chat, message box, panes)
+
+Helpers (don't redefine them): hash21(p) -> f32 in 0..1; noise2(p), fbm2(p): smooth noise in 0..1; sd_box(p, center, half_size, radius): a rounded box's signed distance; panel_sdf(p): distance to the nearest panel, negative inside one; panel_glow(p, radius): 1 at a panel's edge fading to 0 over about radius points; soft_shadow(p, light: vec3<f32>, height): 0 in the shadow the panels cast from a light at light.xy, light.z points above the window, as if the panels stood height points tall, else 1 (soft at the edges).
+
+Keep it cheap: loops with a small fixed bound (a few dozen steps), no loops over pixels. The panels are see-through over the backdrop (the look's glass setting, 1 opaque); text sits on them, so keep it calm where panel_sdf(p) < 0 or dim the scene there. A backdrop that fails to compile is refused with the line and the reason.";
+
+/// The whole module for `source` (the model's code), `linear` when the window's surface
+/// takes linear colour (the scene's sRGB colour is converted).
+pub fn module(source: &str, linear: bool) -> String {
+    format!("{source}\n{}", PRELUDE.replace("BYOB_LINEAR_TARGET", if linear { "true" } else { "false" }))
+}
+
+/// The line count of `source` as [`module`] places it, for errors past its end.
+fn lines(source: &str) -> usize {
+    source.lines().count()
+}
+
+/// Check `source` as WGSL with byob's prelude, as wgpu would. Errors are short, with the
+/// line and column in `source` when the problem is there ("line 12:5: …").
+pub fn check(source: &str) -> Result<(), String> {
+    if source.len() > MAX_SOURCE {
+        return Err(format!("it's {} bytes; a backdrop can be at most {MAX_SOURCE}", source.len()));
+    }
+    if !source.contains("fn scene") {
+        return Err("it needs fn scene(p: vec2<f32>) -> vec4<f32>".into());
+    }
+    let full = module(source, false);
+    let at = |loc: Option<naga::SourceLocation>| match loc {
+        Some(l) if (l.line_number as usize) <= lines(source) => format!("line {}:{}: ", l.line_number, l.line_position),
+        Some(_) => "in its use of byob's helpers: ".into(),
+        None => String::new(),
+    };
+    let module = naga::front::wgsl::parse_str(&full).map_err(|e| format!("{}{}", at(e.location(&full)), e.message()))?;
+    let mut validator = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty());
+    validator.validate(&module).map_err(|e| {
+        let mut text = e.as_inner().to_string();
+        let mut source: Option<&dyn std::error::Error> = std::error::Error::source(e.as_inner());
+        while let Some(s) = source {
+            text = format!("{text}: {s}");
+            source = s.source();
+        }
+        format!("{}{text}", at(e.location(&full)))
+    })?;
+    Ok(())
+}
+
+/// Whether the scene moves by itself (reads `u.time` or `u.busy`): only then is the window
+/// redrawn for it.
+pub fn animated(source: &str) -> bool {
+    source.contains("u.time") || source.contains("u.busy")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_scenes_byob_ships_compile() {
+        for s in super::super::SCENES {
+            assert_eq!(check(s.source), Ok(()), "{}", s.name);
+        }
+    }
+
+    #[test]
+    fn a_simple_scene_compiles_and_uses_the_helpers() {
+        let src = "fn scene(p: vec2<f32>) -> vec4<f32> {\n    let s = soft_shadow(p, vec3<f32>(u.mouse, 200.0), 12.0);\n    return vec4<f32>(u.accent.rgb * (0.2 + 0.8 * s) * fbm2(p * 0.01), 1.0);\n}\n";
+        assert_eq!(check(src), Ok(()));
+        assert!(!animated(src));
+        assert!(animated("fn scene(p: vec2<f32>) -> vec4<f32> { return vec4<f32>(sin(u.time)); }"));
+    }
+
+    #[test]
+    fn mistakes_name_the_line_in_the_models_code() {
+        let e = check("fn scene(p: vec2<f32>) -> vec4<f32> {\n    let a = 1.0;\n    return vec4<f32>(a, nope, 0.0, 1.0);\n}\n").unwrap_err();
+        assert!(e.starts_with("line 3:"), "{e}");
+        assert!(e.contains("nope"), "{e}");
+        // A type mistake is found by validation, not parsing.
+        let e = check("fn scene(p: vec2<f32>) -> vec4<f32> {\n    return p;\n}\n").unwrap_err();
+        assert!(e.contains("line 2") || e.contains("scene"), "{e}");
+        assert!(check("fn other() {}").unwrap_err().contains("fn scene"));
+        assert!(check(&"x".repeat(MAX_SOURCE + 1)).unwrap_err().contains("at most"));
+    }
+
+    #[test]
+    fn redefining_a_helper_is_refused() {
+        let e = check("fn hash21(p: vec2<f32>) -> f32 { return 0.0; }\nfn scene(p: vec2<f32>) -> vec4<f32> { return vec4<f32>(0.0); }\n").unwrap_err();
+        assert!(e.contains("hash21"), "{e}");
+    }
+}

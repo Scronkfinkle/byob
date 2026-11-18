@@ -204,7 +204,8 @@ impl ByobApp {
     pub(crate) fn header(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
         let layout = Layout::for_width(ui.available_width()).shaped(ui.ctx());
-        let shown = egui::Panel::top("header").show(ui, |ui| {
+        let frame = crate::cockpit::framed(ui.ctx(), egui::Frame::side_top_panel(ui.style()));
+        let shown = egui::Panel::top("header").frame(frame).show_separator_line(crate::cockpit::gap(ui.ctx()) <= 0.0).show(ui, |ui| {
             ui.horizontal(|ui| {
                 // The row's full height up front: items line up on its centre whatever order
                 // they are drawn in.
@@ -222,6 +223,7 @@ impl ByobApp {
             });
         });
         crate::layout::set_header_rect(ui.ctx(), shown.response.rect);
+        crate::cockpit::mark(ui.ctx(), shown.response.rect);
     }
 
     /// Right to left: the "⋯" menu (App settings is in it and in the sidebar), the plugins
