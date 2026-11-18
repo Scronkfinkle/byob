@@ -123,10 +123,12 @@ fn a_sweep_runs_each_batch_at_its_concurrency_and_times_it() {
     for b in &batches {
         assert!(b.samples.iter().all(|s| s.error.is_none() && s.completion_tokens == 10 && s.ttft.is_some()), "{b:?}");
         let (agg, per) = (b.aggregate_tps().unwrap(), b.decode_tps().unwrap());
-        // About 200 tok/s per request (5 ms a token); several at once add up.
-        assert!((50.0..400.0).contains(&per), "{per}");
+        // About 200 tok/s per request (5 ms a token) at best; a loaded runner's sleeps run
+        // long (macOS CI measured 26), so only the order of magnitude is checked. Several at
+        // once add up.
+        assert!((5.0..400.0).contains(&per), "{per}");
         if b.concurrency == 3 {
-            assert!(agg > per * 1.5, "{agg} vs {per}");
+            assert!(agg > per * 1.2, "{agg} vs {per}");
         }
         assert!(b.prefill_tps().is_some() && b.ttft_ms().unwrap() >= 15.0);
     }
