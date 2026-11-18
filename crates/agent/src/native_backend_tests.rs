@@ -368,7 +368,7 @@ fn each_request_is_one_version_of_a_sheet_and_its_chart() {
     wait_ext(&mut c, |e| !e.plugins.is_empty());
     let (first, _) = turn(&mut c, "chart it", |_, _| {});
     let (sheet, chart) = (step(&first, "write_cells").artifacts[0].id.clone(), step(&first, "chart_sheet").artifacts[0].id.clone());
-    turn(&mut c, "change it", |_, _| {});
+    let (changed, _) = turn(&mut c, "change it", |_, _| {});
     let version = |id: &str, n: u32| -> String {
         let meta = byob_tools::artifact::load(h._ws.path(), id).unwrap();
         String::from_utf8_lossy(&std::fs::read(h._ws.path().join(&meta.artifact.version(n).unwrap().path)).unwrap()).into_owned()
@@ -379,6 +379,21 @@ fn each_request_is_one_version_of_a_sheet_and_its_chart() {
     let (v1, v2) = (version(&chart, 1), version(&chart, 2));
     assert!(v1.contains(":5") && v1.contains(":7") && !v1.contains(":50"), "{v1}");
     assert!(v2.contains(":50") && v2.contains(":70"), "both edits of the second request: {v2}");
+    // Undoing the second request removes the versions it saved, sheet and chart alike.
+    let second = changed.id;
+    c.send(ClientMsg::Undo { entry: second });
+    loop {
+        match recv(&mut c) {
+            ServerMsg::EntryUndo { id, undone: true, .. } if id == second => break,
+            ServerMsg::Notice { level: byob_protocol::NoticeLevel::Error, text } => panic!("undo refused: {text}"),
+            _ => {}
+        }
+    }
+    for id in [&sheet, &chart] {
+        let meta = byob_tools::artifact::load(h._ws.path(), id).unwrap();
+        let on_disk: Vec<u32> = meta.artifact.versions.iter().filter(|v| h._ws.path().join(&v.path).is_file()).map(|v| v.n).collect();
+        assert_eq!(on_disk, [1], "{id}: back to the first request's version");
+    }
 }
 
 /// The bundled memory, plan and ask-user plugins, on by default: remember writes the global

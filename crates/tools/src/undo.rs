@@ -269,11 +269,27 @@ impl Sim<'_> {
     }
 }
 
+/// `ops` with each file's creation once: a file created and then written over in the same
+/// turn (an artifact version saved twice) has one `Created` per save, and only the newest
+/// knows what the file holds now. Undoing it deletes it once.
+fn compact(ops: &[UndoOp]) -> Vec<UndoOp> {
+    let mut out: Vec<UndoOp> = Vec::with_capacity(ops.len());
+    for (i, op) in ops.iter().enumerate() {
+        if let UndoOp::Created { path, .. } = op
+            && ops.get(i + 1..).unwrap_or_default().iter().any(|later| matches!(later, UndoOp::Created { path: p, .. } if p == path))
+        {
+            continue;
+        }
+        out.push(op.clone());
+    }
+    out
+}
+
 /// Check that `ops` (oldest first) can be reversed in `workspace` right now.
 pub fn check(ops: &[UndoOp], workspace: &Path) -> Result<(), String> {
     let root = sandbox::root(workspace)?;
     let mut sim = Sim { ws: &root, slots: BTreeMap::new() };
-    ops.iter().rev().try_for_each(|op| sim.step(op))
+    compact(ops).iter().rev().try_for_each(|op| sim.step(op))
 }
 
 fn make_parent(p: &Path) -> Result<(), String> {
@@ -290,6 +306,7 @@ pub fn undo(ops: &[UndoOp], workspace: &Path) -> Result<UndoReport, String> {
     let root = sandbox::root(workspace)?;
     let workspace = root.as_path();
     check(ops, workspace)?;
+    let ops = compact(ops);
     let mut done = Vec::new();
     for op in ops.iter().rev() {
         // re-check each op against the real disk just before applying it
@@ -342,6 +359,27 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().canonicalize().unwrap();
         (d, root)
+    }
+
+    /// Regression: an artifact version saved twice in one turn (one version per request)
+    /// recorded two creations of one file; undo deleted it for the newer one and then refused
+    /// ("already gone"). It deletes it once, checking what it holds now.
+    #[test]
+    fn a_file_created_twice_in_a_turn_is_deleted_once() {
+        let (_d, root) = ws();
+        let p = root.join(".byob/artifacts/c/v2.chart.json");
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, b"first").unwrap();
+        let first = UndoOp::Created { path: p.clone(), fingerprint: Some(Fingerprint::of_bytes(b"first")) };
+        fs::write(&p, b"second").unwrap();
+        let second = UndoOp::Created { path: p.clone(), fingerprint: Some(Fingerprint::of_bytes(b"second")) };
+        let ops = [first, second];
+        check(&ops, &root).unwrap();
+        undo(&ops, &root).unwrap();
+        assert!(!p.exists());
+        // Changed by someone else since: still refused.
+        fs::write(&p, b"theirs").unwrap();
+        assert!(check(&ops, &root).unwrap_err().contains("changed since"));
     }
 
     #[test]
