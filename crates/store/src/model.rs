@@ -62,6 +62,9 @@ pub struct MessageStats {
     /// Model requests the reply took (tool rounds and compactions included); 0 in rows
     /// written before this was recorded.
     pub model_calls: u64,
+    /// How full the context was at the end (the last request's prompt and completion); 0 in
+    /// rows written before this was recorded.
+    pub context_tokens: u64,
 }
 
 /// What to insert. Assistant replies usually start empty with `done: false` and are then

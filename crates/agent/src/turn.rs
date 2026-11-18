@@ -295,8 +295,13 @@ pub fn spawn(setup: Setup) -> std::io::Result<()> {
         // Free the slot before the chat can start its next turn (which wants it back).
         drop(turn.s.slot.take());
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let stats =
-            TurnStats { prompt_tokens: turn.usage.prompt_tokens, completion_tokens: turn.usage.completion_tokens, elapsed_ms, model_calls: turn.model_calls };
+        let stats = TurnStats {
+            prompt_tokens: turn.usage.prompt_tokens,
+            completion_tokens: turn.usage.completion_tokens,
+            elapsed_ms,
+            model_calls: turn.model_calls,
+            context_tokens: turn.context_tokens,
+        };
         let stopped = matches!(result, Ok(Err(End::Stopped)));
         let (error, stats) = match result {
             Ok(Ok(())) => (None, Some(stats)),
@@ -356,6 +361,8 @@ struct Turn {
     turn_id: Arc<str>,
     /// Model requests made (compactions included).
     model_calls: u64,
+    /// How full the context was after the latest request.
+    context_tokens: u64,
     /// Native hooks' per-turn state, by hook id.
     hook_state: BTreeMap<String, Box<dyn Any + Send>>,
     /// The final answer (text of the round that made no tool calls).
@@ -437,6 +444,7 @@ impl Turn {
             journal,
             turn_id: turn_id.into(),
             model_calls: 0,
+            context_tokens: 0,
             hook_state: BTreeMap::new(),
             answer: String::new(),
             content: String::new(),
@@ -695,6 +703,7 @@ impl Turn {
             }
         };
         self.add_usage(prompt_tokens, completion);
+        self.context_tokens = context;
         self.emit(TurnEvent::Usage { id, prompt: prompt_tokens, completion, context, estimated });
         Ok(out)
     }

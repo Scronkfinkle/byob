@@ -824,6 +824,15 @@ pub struct TurnStats {
     /// Model requests the reply took (tool rounds and compactions included).
     #[serde(default)]
     pub model_calls: u64,
+    /// How full the context was at the end: the last request's prompt and completion (what
+    /// the header's meter shows). `prompt_tokens` adds up every request's prompt, which
+    /// rereads the conversation each tool round. 0 from engines before 13.13.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub context_tokens: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

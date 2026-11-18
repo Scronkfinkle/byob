@@ -49,7 +49,7 @@ fn populate(s: &dyn ChatStore) {
     s.finish_step(a, run, &StepResult { output: "error[E0425]".into(), failed: true, changes: vec![], card: None, title: None }).unwrap();
     s.add_step(a, &NewStep { tool: "fetch".into(), title: "Fetch docs".into(), access: StepAccess::Network, args: json!({}) }).unwrap();
     s.append_message_text(a, "\n\nFixed: a missing `use`.", "").unwrap();
-    s.finish_message(a, None, Some(&MessageStats { prompt_tokens: 1200, completion_tokens: 87, elapsed_ms: 4321, model_calls: 3 })).unwrap();
+    s.finish_message(a, None, Some(&MessageStats { prompt_tokens: 1200, completion_tokens: 87, elapsed_ms: 4321, model_calls: 3, context_tokens: 0 })).unwrap();
 
     // An automatic compaction mid-chat (through the first reply) with model_calls in the
     // reply's stats, and a manual one with a focus.

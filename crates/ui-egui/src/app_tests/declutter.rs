@@ -40,7 +40,7 @@ fn entry(id: u64, role: byob_protocol::EntryRole, content: &str, stats: Option<b
 }
 
 fn pears(fake: &Fake) {
-    let stats = byob_protocol::TurnStats { prompt_tokens: 1234, completion_tokens: 56, elapsed_ms: 2500, model_calls: 1 };
+    let stats = byob_protocol::TurnStats { prompt_tokens: 1234, completion_tokens: 56, elapsed_ms: 2500, model_calls: 1, context_tokens: 0 };
     fake.inbox.lock().unwrap().push(ServerMsg::Transcript {
         entries: vec![
             entry(1, byob_protocol::EntryRole::User, "How many pears?", None),
@@ -169,7 +169,7 @@ fn a_busy_replys_details_can_each_be_hidden() {
         views: vec![],
     };
     let busy = || {
-        let stats = byob_protocol::TurnStats { prompt_tokens: 10, completion_tokens: 5, elapsed_ms: 1000, model_calls: 1 };
+        let stats = byob_protocol::TurnStats { prompt_tokens: 10, completion_tokens: 5, elapsed_ms: 1000, model_calls: 1, context_tokens: 0 };
         let mut e = entry(2, byob_protocol::EntryRole::Assistant, "Done.\n\n```rust\nfn main() {}\n```\n", Some(stats));
         e.steps = vec![step(1, "Wrote a.txt", StepStatus::Done), step(2, "Wrote b.txt", StepStatus::Failed)];
         e.undoable = true;
@@ -198,4 +198,20 @@ fn a_busy_replys_details_can_each_be_hidden() {
         assert!(!text.contains(gone), "{gone:?} drew: {text}");
     }
     assert!(!text.contains("Wrote b.txt") && text.contains("fn main"), "failed steps go too, the code stays: {text}");
+}
+
+/// A reply's tokens say how full the context was at its end (as the meter counts) and what
+/// several requests read together; replies saved before that say what they always said.
+#[test]
+fn a_replys_tokens_are_its_context_not_every_request_added_up() {
+    let s = |calls, prompt, out, context| byob_protocol::TurnStats {
+        prompt_tokens: prompt,
+        completion_tokens: out,
+        elapsed_ms: 1000,
+        model_calls: calls,
+        context_tokens: context,
+    };
+    assert_eq!(tokens_detail(&s(11, 134_400, 2_008, 12_400)), "12k context · 2k out · 11 calls read 134k");
+    assert_eq!(tokens_detail(&s(1, 9_000, 300, 9_300)), "9.3k context · 300 out");
+    assert_eq!(tokens_detail(&s(3, 1234, 56, 0)), "1234 in · 56 out tokens", "saved before the context was recorded");
 }

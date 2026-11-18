@@ -705,7 +705,7 @@ mod tests {
             created_at: 0,
             steps: vec![],
         };
-        let stats = byob_store::MessageStats { prompt_tokens: 100, completion_tokens: 10, elapsed_ms: 1000, model_calls: 3 };
+        let stats = byob_store::MessageStats { prompt_tokens: 100, completion_tokens: 10, elapsed_ms: 1000, model_calls: 3, context_tokens: 0 };
         let old = byob_store::MessageStats { model_calls: 0, ..stats };
         let comp = |manual| byob_store::Compaction {
             id: 1,

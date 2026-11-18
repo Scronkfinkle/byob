@@ -59,7 +59,13 @@ pub fn message_id(entry: u64) -> byob_store::MessageId {
 }
 
 pub fn to_stats(s: &TurnStats) -> MessageStats {
-    MessageStats { prompt_tokens: s.prompt_tokens, completion_tokens: s.completion_tokens, elapsed_ms: s.elapsed_ms, model_calls: s.model_calls }
+    MessageStats {
+        prompt_tokens: s.prompt_tokens,
+        completion_tokens: s.completion_tokens,
+        elapsed_ms: s.elapsed_ms,
+        model_calls: s.model_calls,
+        context_tokens: s.context_tokens,
+    }
 }
 
 /// A stored compaction for clients.
@@ -88,6 +94,7 @@ pub fn entry(m: StoredMessage, step_ids: &AtomicU64) -> Option<Entry> {
         completion_tokens: s.completion_tokens,
         elapsed_ms: s.elapsed_ms,
         model_calls: s.model_calls,
+        context_tokens: s.context_tokens,
     });
     let steps = m.steps.into_iter().map(|s| step(s, step_ids)).collect();
     Some(Entry {

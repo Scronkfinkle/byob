@@ -1291,7 +1291,7 @@ fn reply_details(layout: &byob_protocol::layout::Layout, s: &byob_protocol::Turn
     let (mut shown, mut hover) = (Vec::new(), Vec::new());
     for id in layout.arrange(REPLY, &[]) {
         let text = match id.as_str() {
-            "reply.tokens" => format!("{} in · {} out tokens", s.prompt_tokens, s.completion_tokens),
+            "reply.tokens" => tokens_detail(s),
             "reply.time" => format!("{secs:.1} s"),
             #[allow(clippy::cast_precision_loss)] // display only
             "reply.speed" if secs > 0.05 && s.completion_tokens > 0 => format!("{:.0} tokens/s", s.completion_tokens as f64 / secs),
@@ -1304,6 +1304,22 @@ fn reply_details(layout: &byob_protocol::layout::Layout, s: &byob_protocol::Turn
         }
     }
     (shown, hover)
+}
+
+/// A reply's tokens: how full the context was at its end (as the header's meter counts) and
+/// what the model wrote; with several requests, what they read together (each tool round
+/// reads the whole conversation again, so that adds up fast). Replies saved before the
+/// context was recorded say what they always said.
+fn tokens_detail(s: &byob_protocol::TurnStats) -> String {
+    use byob_protocol::usage::short_tokens;
+    if s.context_tokens == 0 {
+        return format!("{} in · {} out tokens", s.prompt_tokens, s.completion_tokens);
+    }
+    let mut out = format!("{} context · {} out", short_tokens(s.context_tokens), short_tokens(s.completion_tokens));
+    if s.model_calls > 1 {
+        out.push_str(&format!(" · {} calls read {}", s.model_calls, short_tokens(s.prompt_tokens)));
+    }
+    out
 }
 
 /// The transcript in a centred column no wider than the user's readable width.

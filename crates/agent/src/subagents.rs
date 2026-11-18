@@ -155,6 +155,7 @@ impl Engine {
             completion_tokens: d.completion_tokens,
             elapsed_ms: u64::try_from(child.started.elapsed().as_millis()).unwrap_or(u64::MAX),
             model_calls: child.model_calls,
+            context_tokens: 0,
         };
         let Some(id) = child.run.clone() else { return };
         if let Err(e) = self.store.append_agent_text(&chat, &id, &content, &reasoning) {

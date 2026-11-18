@@ -370,6 +370,29 @@ fn each_rounds_thinking_is_its_own_paragraph() {
     assert_eq!(view.reply().reasoning, "Let me check the dates.\n\nGood, 1817 it is.");
 }
 
+/// Regression: a reply's "in" added up every request's prompt (each tool round reads the
+/// conversation again), so it looked far bigger than the context. The context at the end
+/// is recorded too: the last request's prompt and completion.
+#[test]
+fn a_reply_records_the_context_it_ended_with() {
+    let h = harness(vec![call("echo", r#"{"text":"a"}"#), call("echo", r#"{"text":"b"}"#), Reply::Text("done")], "echo", Access::Read);
+    let (mut c, _) = client(&h);
+    let mut view = View::default();
+    c.send(ClientMsg::SendMessage { text: "go".into(), attachments: vec![] });
+    let mut stats = None;
+    while stats.is_none() {
+        let m = recv(&mut c);
+        if let ServerMsg::EntryFinished { stats: s, .. } = &m {
+            stats = Some(*s);
+        }
+        view.apply(m);
+    }
+    let s = stats.flatten().expect("stats");
+    let _ = view;
+    // Three requests ran; the fake server reports usage (10 in, 5 out) on its last one only.
+    assert_eq!((s.model_calls, s.prompt_tokens, s.completion_tokens, s.context_tokens), (3, 10, 5, 15));
+}
+
 #[test]
 fn images_from_tools_reach_the_model_and_only_the_latest_stay() {
     // Ten looks, one per round (the last one again), then the answer.

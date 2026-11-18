@@ -133,7 +133,14 @@ pub const ELEMENTS: &[Element] = &[
     el("message.subagent_details", "Subagent details", "the model and tokens on a subagent's row", None, Show::Shown, false),
     el("message.edit", "Edit button", "\"Edit\" on your messages: change one and start the chat over from there", None, Show::Hover, true),
     el("message.undo", "Undo button", "\"Undo changes\" under a reply that changed files", None, Show::Shown, true),
-    el("reply.tokens", "Tokens", "tokens in and out, under each reply", Some(REPLY), Show::Shown, true),
+    el(
+        "reply.tokens",
+        "Tokens",
+        "tokens under each reply: how full the context was at its end, what the model wrote, and what several requests read together",
+        Some(REPLY),
+        Show::Shown,
+        true,
+    ),
     el("reply.time", "Time", "how long the reply took, under each reply", Some(REPLY), Show::Shown, true),
     el("reply.speed", "Speed", "tokens per second the model wrote, under each reply", Some(REPLY), Show::Hidden, true),
     // Artifacts and code in replies.
