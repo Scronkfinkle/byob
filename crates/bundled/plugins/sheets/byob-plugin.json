@@ -151,7 +151,7 @@
     {
       "name": "chart_sheet",
       "title": "Chart a sheet",
-      "description": "Draw a chart from a spreadsheet artifact's columns (computed values, formulas included): give sheet, type, x and series. The chart stays linked: whenever the sheet changes it is drawn again, so never copy a sheet's numbers into make_chart. x and series are column headers (or letters); rows run from under the header to the last row with an x. To change a linked chart, give `chart` (its id) and only what changes.",
+      "description": "Draw a chart from a spreadsheet artifact's columns (computed values, formulas included): give sheet, type, x and series. The chart stays linked: whenever the sheet changes it is drawn again, so never copy a sheet's numbers into make_chart. x and series are column headers (or letters); rows run from under the header down to the first row with an empty x (so leave totals a blank row below). To change a linked chart, give `chart` (its id) and only what changes.",
       "run": "backend",
       "params": {
         "type": "object",

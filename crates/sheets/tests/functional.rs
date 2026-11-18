@@ -313,6 +313,19 @@ fn linked_charts_can_be_changed_and_are_described() {
     assert!(b.tool("chart_sheet", json!({"sheet": aid, "type": "bar"})).contains("Give `x`"));
 }
 
+/// A sheet longer than a chart holds: the chart takes the first rows and the model is told
+/// to chart a summary instead.
+#[test]
+fn a_chart_of_a_long_sheet_says_it_was_cut() {
+    let mut b = Byob::new();
+    let (aid, _) = b.new_sheet("Long");
+    let mut rows = vec![json!(["n", "v"])];
+    rows.extend((1..=2050).map(|i| json!([format!("r{i}"), i])));
+    b.tool("write_cells", json!({"sheet": aid, "rows": rows}));
+    let out = b.tool("chart_sheet", json!({"sheet": aid, "type": "line", "x": "n", "series": ["v"]}));
+    assert!(out.contains("2000 rows") && out.contains("Only the first 2000 rows fit"), "{out}");
+}
+
 /// Every node of `tree` (depth first).
 fn nodes(tree: &Value) -> Vec<&Value> {
     let mut out = vec![tree];

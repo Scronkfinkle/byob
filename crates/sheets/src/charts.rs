@@ -94,10 +94,7 @@ fn rows(book: &mut Book, src: &ChartSource, kind: chart::ChartType) -> R<(String
     let mut out = Vec::new();
     for r in hr + 1..=last {
         let xv = cell(book, sh, r, xc, kind != chart::ChartType::Scatter);
-        if xv.is_null() {
-            break;
-        }
-        if out.len() >= chart::MAX_ROWS {
+        if xv.is_null() || out.len() >= chart::MAX_ROWS {
             break;
         }
         let mut row = Map::new();
@@ -207,12 +204,17 @@ pub fn chart_sheet(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value> {
     let spec = spec(book, &source, &base)?;
     let title = s(&spec, "title").unwrap_or("Chart").to_owned();
     let rows = spec.get("data").and_then(Value::as_array).map_or(0, Vec::len);
+    let cut = if rows >= chart::MAX_ROWS {
+        format!(" Only the first {} rows fit in a chart; group or sum the sheet into a summary table and chart that instead.", chart::MAX_ROWS)
+    } else {
+        String::new()
+    };
     if let Some((id, _)) = &existing {
         let filename =
             crate::store::read_meta(ws, id).and_then(|m| s(&m, "filename").map(str::to_owned)).unwrap_or_else(|| format!("{}.chart.json", slug(&title)));
         let path = store.save_tmp(spec.to_string().as_bytes(), &filename)?;
         let text = format!(
-            "Changed the chart \"{title}\" ({id}): {} chart of {rows} rows, x = column {}, series = {}, from {}. Still linked to the sheet.",
+            "Changed the chart \"{title}\" ({id}): {} chart of {rows} rows, x = column {}, series = {}, from {}. Still linked to the sheet.{cut}",
             s(&spec, "type").unwrap_or("bar"),
             source.x,
             source.series.join(", "),
@@ -223,7 +225,7 @@ pub fn chart_sheet(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value> {
     let filename = format!("{}.chart.json", slug(&title));
     let path = store.save_tmp(spec.to_string().as_bytes(), &filename)?;
     let text = format!(
-        "Made the chart \"{title}\" from {} ({rows} rows, x = column {}, series = {}). It is linked to the sheet: whenever the sheet changes (your edits or the user's), the chart is drawn again, so don't remake it; to change its type, title or columns, call chart_sheet with `chart` set to its id. It shows in the chat; give the main takeaway, not the numbers.",
+        "Made the chart \"{title}\" from {} ({rows} rows, x = column {}, series = {}). It is linked to the sheet: whenever the sheet changes (your edits or the user's), the chart is drawn again, so don't remake it; to change its type, title or columns, call chart_sheet with `chart` set to its id. It shows in the chat; give the main takeaway, not the numbers.{cut}",
         src.label(),
         source.x,
         source.series.join(", ")
