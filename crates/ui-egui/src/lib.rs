@@ -41,7 +41,7 @@ pub mod ws;
 use byob_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, NoticeLevel, ServerMsg, StepStatus, Welcome};
 
 /// Tallest an expanded thinking block gets before it scrolls.
-const THINKING_MAX_HEIGHT: f32 = 240.0;
+const THINKING_MAX_HEIGHT: f32 = 320.0;
 
 /// "840 chars", "12.4k chars".
 fn size_label(chars: usize) -> String {
@@ -950,7 +950,7 @@ impl ByobApp {
         self.editing.allowed = can_rewind;
         if self.markdown.len() > self.entries.len() {
             let entries = &self.entries;
-            self.markdown.retain(|id| entries.iter().any(|e| e.id == id));
+            self.markdown.retain(|id| entries.iter().any(|e| e.id == markdown::entry_of(id)));
         }
         let markdown = &mut self.markdown;
         let media = &mut self.media;
@@ -1192,15 +1192,21 @@ fn entry_view(
                         .id_salt(("thinking", entry.id))
                         .show(ui, |ui| {
                             // Reasoning can run to many thousands of words: keep it in its own scroll box,
-                            // following the newest text while the model is still thinking.
-                            egui::ScrollArea::vertical()
-                                .id_salt(("thinking-scroll", entry.id))
-                                .max_height(THINKING_MAX_HEIGHT)
-                                .auto_shrink([false, true])
-                                .stick_to_bottom(thinking)
-                                .show(ui, |ui| {
-                                    ui.add(egui::Label::new(egui::RichText::new(&entry.reasoning).color(t.text_dim).small()).selectable(true).wrap());
-                                });
+                            // following the newest text while the model is still thinking. It's
+                            // Markdown like the reply (paragraphs, lists, math), set off by a bar.
+                            let shown = egui::Frame::new().inner_margin(egui::Margin { left: 12, right: 0, top: 2, bottom: 2 }).show(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_salt(("thinking-scroll", entry.id))
+                                    .max_height(THINKING_MAX_HEIGHT)
+                                    .auto_shrink([false, true])
+                                    .stick_to_bottom(thinking)
+                                    .show(ui, |ui| {
+                                        let doc = markdown.part(markdown::thinking_key(entry.id), 0, &entry.reasoning, !thinking);
+                                        markdown::show_in(ui, t, doc, egui::Id::unique(("thinking-md", entry.id)), t.text_dim);
+                                    });
+                            });
+                            let r = shown.response.rect;
+                            ui.painter().rect_filled(egui::Rect::from_min_max(r.min, egui::pos2(r.min.x + 3.0, r.max.y)), 1.5, t.quote_bar);
                         })
                         .header_response
                         .on_hover_text(format!("{size} of reasoning"));

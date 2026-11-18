@@ -25,6 +25,8 @@ pub(crate) enum Reply {
     Http(u16, &'static str),
     /// An error frame in the stream.
     StreamError(&'static str),
+    /// Reasoning, then the reply.
+    Reasoned(&'static str, Box<Reply>),
 }
 
 pub(crate) fn call(name: &str, args: &str) -> Reply {
@@ -58,6 +60,7 @@ pub(crate) fn sse(reply: &Reply) -> String {
             out += &frame(json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"m0","type":"function","function":{"name":name,"arguments":args}}]}}]}));
         }
         Reply::Http(_, m) | Reply::StreamError(m) => out += &frame(json!({"error":{"message": m}})),
+        Reply::Reasoned(thought, then) => return frame(json!({"choices":[{"delta":{"reasoning_content": thought}}]})) + &sse(then),
     }
     out + "data: [DONE]\n\n"
 }
@@ -351,6 +354,20 @@ fn a_blank_reply_gets_one_nudge() {
     let view = run_turn(&mut c, "hi", |_, _| {});
     assert_eq!(view.error, Some(None));
     assert_eq!(h.requests.lock().unwrap().len(), 2);
+}
+
+/// Regression: each round's reasoning ran straight on from the last ("…key dates.Let me
+/// read…"). A later round's thinking starts a new paragraph.
+#[test]
+fn each_rounds_thinking_is_its_own_paragraph() {
+    let script = vec![
+        Reply::Reasoned("Let me check the dates.", Box::new(call("echo", r#"{"text":"1817"}"#))),
+        Reply::Reasoned("Good, 1817 it is.", Box::new(Reply::Text("Done."))),
+    ];
+    let h = harness(script, "echo", Access::Read);
+    let (mut c, _) = client(&h);
+    let view = run_turn(&mut c, "when?", |_, _| panic!("reads must not ask"));
+    assert_eq!(view.reply().reasoning, "Let me check the dates.\n\nGood, 1817 it is.");
 }
 
 #[test]

@@ -521,8 +521,23 @@ pub fn is_safe_url(url: &str) -> bool {
 
 /// Draw a document. `id` must be unique per message (it seeds code-block and table ids).
 pub fn show(ui: &mut egui::Ui, t: &Tokens, doc: &Doc, id: egui::Id) {
+    show_in(ui, t, doc, id, t.text);
+}
+
+/// [`show`] with body text in `color` (a model's thinking, dimmer than its reply).
+pub fn show_in(ui: &mut egui::Ui, t: &Tokens, doc: &Doc, id: egui::Id, color: Color32) {
     let blocks: Vec<&Block> = doc.blocks().collect();
-    show_blocks(ui, t, &blocks, id, t.text, 0);
+    show_blocks(ui, t, &blocks, id, color, 0);
+}
+
+/// Cache key of an entry's thinking (entry ids and step ids stay below these bits).
+pub fn thinking_key(entry: u64) -> u64 {
+    entry | (1 << 62)
+}
+
+/// The entry a cache key belongs to (its text, its thinking, or a subagent's under it).
+pub fn entry_of(key: u64) -> u64 {
+    key & !(3 << 62)
 }
 
 fn body_font(ui: &egui::Ui) -> FontId {

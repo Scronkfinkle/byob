@@ -339,6 +339,8 @@ struct Turn {
     content_len: usize,
     /// Newlines the visible content ends with.
     tail_newlines: usize,
+    /// Some reasoning was streamed this turn (a later round's starts a new paragraph).
+    reasoned: bool,
     /// Tool calls attempted this turn (including refused ones).
     calls: usize,
     /// Bytes of tool output given to the model this turn.
@@ -423,6 +425,7 @@ impl Turn {
             rounds_done: false,
             content_len: 0,
             tail_newlines: 0,
+            reasoned: false,
             calls: 0,
             output_used: 0,
             seen: BTreeMap::new(),
@@ -651,6 +654,7 @@ impl Turn {
         // Text of a later round starts a new paragraph.
         let mut shown = Shown::new(self.content_len);
         shown.tail_newlines = self.tail_newlines;
+        shown.think_separate = self.reasoned;
         let mut filter = (prompt && !specs.is_empty()).then(ToolCallFilter::default);
         let child = self.s.child;
         let streamed = &mut self.content;
@@ -674,6 +678,7 @@ impl Turn {
         }
         self.content_len = shown.len;
         self.tail_newlines = shown.tail_newlines;
+        self.reasoned |= shown.reasoned;
         let out = result?;
         self.rounds_done = true;
         self.model_calls = self.model_calls.saturating_add(1);
@@ -1297,16 +1302,28 @@ struct Shown {
     separate: bool,
     /// Newlines the text sent so far ends with (counts towards the paragraph break).
     tail_newlines: usize,
+    /// The next reasoning starts a new paragraph (an earlier round's came before it:
+    /// otherwise "…key dates.Let me read…" runs together).
+    think_separate: bool,
+    /// Reasoning was sent.
+    reasoned: bool,
 }
 
 impl Shown {
     fn new(len: usize) -> Self {
-        Self { len, separate: len > 0, tail_newlines: 0 }
+        Self { len, separate: len > 0, tail_newlines: 0, think_separate: false, reasoned: false }
     }
 
-    fn send(&mut self, inbox: &Sender<Input>, child: Option<u64>, id: u64, mut content: String, reasoning: String) {
+    fn send(&mut self, inbox: &Sender<Input>, child: Option<u64>, id: u64, mut content: String, mut reasoning: String) {
         if content.is_empty() && reasoning.is_empty() {
             return;
+        }
+        if !reasoning.is_empty() {
+            if self.think_separate {
+                self.think_separate = false;
+                reasoning.insert_str(0, "\n\n");
+            }
+            self.reasoned = true;
         }
         if !content.is_empty() && self.separate {
             self.separate = false;
