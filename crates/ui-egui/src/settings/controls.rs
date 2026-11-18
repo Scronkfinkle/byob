@@ -12,6 +12,28 @@ use crate::form;
 use crate::theme::file::{self, ThemeDef};
 use crate::theme::{self, Accent, Align, BubbleStyle, ChartPalette, Density, Knobs, MonoFont, Prefs, ROLES, ThemeKind, Tokens, UiFont, contrast, hex};
 
+impl ByobApp {
+    /// Off, byob's scenes, or the one the model wrote (kept while it's chosen).
+    fn backdrop_picker(&mut self, ui: &mut egui::Ui, t: &Tokens, c: &mut crate::cockpit::Cockpit) {
+        if !self.stage.available() {
+            ui.label(RichText::new("This window can't draw shaders").color(t.text_faint));
+            return;
+        }
+        if ui.selectable_label(c.backdrop.is_empty(), "Off").clicked() {
+            c.set_backdrop("");
+        }
+        for s in crate::cockpit::SCENES {
+            let label = format!("{}{}", s.name[..1].to_uppercase(), &s.name[1..]);
+            if ui.selectable_label(c.backdrop == s.source, label).clicked() && c.backdrop != s.source {
+                c.set_scene(s);
+            }
+        }
+        if !c.backdrop.is_empty() && !crate::cockpit::SCENES.iter().any(|s| s.source == c.backdrop) {
+            let _ = ui.selectable_label(true, "Custom").on_hover_text(format!("Written by the model ({} lines)", c.backdrop.lines().count()));
+        }
+    }
+}
+
 /// What the settings drawn in one frame share: the appearance being edited (applied once at
 /// the end), the current theme and every theme, and a theme to remove.
 pub(crate) struct Draw {
@@ -125,6 +147,38 @@ impl ByobApp {
             }
             Key::ShownPreset => self.layout_presets(ui, t),
             Key::ShownList => self.layout_list(ui, t),
+            Key::Controls => {
+                for c in theme::Controls::ALL {
+                    ui.selectable_value(&mut k.controls, c, c.label());
+                }
+            }
+            Key::Backdrop => self.backdrop_picker(ui, t, &mut d.prefs.cockpit),
+            Key::Glass => {
+                let c = &mut d.prefs.cockpit;
+                ui.add_enabled(!c.backdrop.is_empty(), egui::Slider::new(&mut c.glass, crate::cockpit::Cockpit::GLASS_RANGE).step_by(0.02).fixed_decimals(2));
+            }
+            Key::PanelGap => {
+                let c = &mut d.prefs.cockpit;
+                ui.add_enabled(!c.backdrop.is_empty(), egui::Slider::new(&mut c.gap, crate::cockpit::Cockpit::GAP_RANGE).step_by(1.0).suffix(" pt"));
+            }
+            Key::Arrangement => {
+                let a = &mut d.prefs.cockpit.arrangement;
+                if ui.selectable_label(!a.free, "Docked").on_hover_text("byob's usual panels").clicked() {
+                    a.free = false;
+                }
+                for (name, describe) in crate::cockpit::arrange::Arrangement::PRESETS {
+                    let label = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
+                    if ui.button(label).on_hover_text(describe).clicked()
+                        && let Some(p) = crate::cockpit::arrange::Arrangement::preset(name)
+                    {
+                        *a = p;
+                    }
+                }
+                if a.free && ui.button("Arrange…").on_hover_text("Drag the parts where you want them").clicked() {
+                    self.arranging.on = true;
+                    self.close_settings();
+                }
+            }
             Key::ImportTheme => self.import_buttons(ui),
             Key::ExportTheme => self.export_controls(ui, t, d),
             Key::ResetLook => {
