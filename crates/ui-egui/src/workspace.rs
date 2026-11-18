@@ -82,6 +82,22 @@ fn short_url(url: &str) -> String {
 
 /// One level's settings, edited in place: each change is sent at once (text fields when
 /// they lose focus), and the engine answers with the new [`ConfigView`].
+/// The instructions field's id at `level` (tests find its rect by it).
+fn instructions_id(level: Level) -> egui::Id {
+    egui::Id::unique(("instructions-edit", format!("{level:?}")))
+}
+
+/// Text's first non-empty line without Markdown heading or list marks, at most `max` chars.
+fn headline(text: &str, max: usize) -> String {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+    let line = line.trim_start_matches(['#', '-', '*', '>', ' ']);
+    let mut out: String = line.chars().take(max).collect();
+    if line.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
 pub struct LayerEditor {
     pub scope: ConfigScope,
     view: Option<ConfigView>,
@@ -164,7 +180,7 @@ impl LayerEditor {
         let grid = if avail < 420.0 { grid.min_col_width(70.0) } else { grid };
         grid.show(ui, |ui| {
             for &f in fields {
-                if f == Field::Image && view.effective.env.value != EnvKind::Container {
+                if f == Field::Image && view.effective.env.value != EnvKind::Container || f == Field::Instructions {
                     continue;
                 }
                 ui.label(RichText::new(f.label()).color(t.text));
@@ -176,6 +192,15 @@ impl LayerEditor {
                 ui.end_row();
             }
         });
+        // Instructions are long text: under the rows, the form's whole width.
+        if fields.contains(&Field::Instructions) {
+            ui.add_space(t.pad(10.0));
+            ui.label(RichText::new(Field::Instructions.label()).color(t.text));
+            ui.add_space(t.pad(4.0));
+            if let Some(m) = self.field(ui, t, &view, level, Field::Instructions) {
+                out = Some(m);
+            }
+        }
         out
     }
 
@@ -230,6 +255,9 @@ impl LayerEditor {
         let e = &view.effective;
         // The global level inherits only the built-in defaults.
         let inh = if level == Level::Global { "Default" } else { "Inherit" };
+        if f == Field::Instructions {
+            return self.instructions(ui, t, view, level);
+        }
         let mut out = None;
         ui.horizontal_wrapped(|ui| {
             match f {
@@ -356,30 +384,8 @@ impl LayerEditor {
                         out = Some(self.send(None));
                     }
                 }
-                Field::Instructions => {
-                    ui.vertical(|ui| {
-                        for (from, text) in e.instructions.iter().filter(|(l, _)| *l != level) {
-                            let first: String = text.chars().take(120).collect();
-                            let more = if text.chars().count() > 120 { "…" } else { "" };
-                            ui.label(RichText::new(format!("{} adds: {first}{more}", from.label())).small().color(t.text_faint)).on_hover_text(text);
-                        }
-                        // The settings screen gives the global level a wide field of its own.
-                        let (rows, max_w) = if level == Level::Global { (3, 720.0) } else { (2, 420.0) };
-                        let hint = match level {
-                            Level::Global => "Added to the system prompt of every chat",
-                            Level::Workspace => "Added to the system prompt of this workspace's chats",
-                            _ => "Added to the system prompt of this chat",
-                        };
-                        let r = ui.add(
-                            egui::TextEdit::multiline(&mut self.instructions).desired_rows(rows).desired_width(ui.available_width().min(max_w)).hint_text(hint),
-                        );
-                        let text = Some(self.instructions.trim().to_owned()).filter(|s| !s.is_empty());
-                        if r.lost_focus() && text != self.draft.instructions {
-                            self.draft.instructions = text;
-                            out = Some(self.send(None));
-                        }
-                    });
-                }
+                // Drawn by `instructions` (a block, not a row of controls).
+                Field::Instructions => {}
                 Field::Env => {
                     let chat = level == Level::Chat;
                     let mut v = self.draft.env;
@@ -429,6 +435,74 @@ impl LayerEditor {
             }
             // Where it comes from (or Reset), right of the control.
             if let Some(m) = self.source(ui, t, view, level, f) {
+                out = Some(m);
+            }
+        });
+        out
+    }
+
+    /// The instructions: what the levels above add (folded, to read in full), then this
+    /// level's own text in a field as wide as there is room for, which grows with its text
+    /// (and then scrolls), and Reset under it.
+    fn instructions(&mut self, ui: &mut egui::Ui, t: &Tokens, view: &ConfigView, level: Level) -> Option<ClientMsg> {
+        let mut out = None;
+        // Clear of a scroll bar on the right.
+        let w = (ui.available_width() - t.pad(10.0)).max(120.0);
+        ui.vertical(|ui| {
+            ui.set_width(w);
+            for (from, text) in view.effective.instructions.iter().filter(|(l, _)| *l != level) {
+                let lines = text.lines().filter(|l| !l.trim().is_empty()).count();
+                let more = if lines > 1 { format!(" (+{} more lines)", lines - 1) } else { String::new() };
+                let title = format!("From {}: {}{more}", from.label(), headline(text, 60));
+                egui::CollapsingHeader::new(RichText::new(title).small().color(t.text_dim))
+                    .id_salt(("inherited-instructions", format!("{level:?}{from:?}")))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        egui::Frame::new()
+                            .fill(t.code_bg)
+                            .stroke(egui::Stroke::new(1.0, t.code_border))
+                            .corner_radius(t.round(4.0))
+                            .inner_margin(t.pad(8.0))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                egui::ScrollArea::vertical().id_salt(("inherited-instructions-text", format!("{level:?}{from:?}"))).max_height(220.0).show(
+                                    ui,
+                                    |ui| {
+                                        ui.add(egui::Label::new(RichText::new(text.as_str()).small().color(t.text_dim)).wrap());
+                                    },
+                                );
+                            });
+                    });
+            }
+            let hint = match level {
+                Level::Global => "Added to the system prompt of every chat",
+                Level::Workspace => "Added to the system prompt of this workspace's chats",
+                _ => "Added to the system prompt of this chat",
+            };
+            // Tall enough for its lines (wrapped ones scroll), 4 to 18 of them.
+            let row_h = ui.text_style_height(&egui::TextStyle::Body);
+            #[allow(clippy::cast_precision_loss)] // a line count
+            let rows = (self.instructions.lines().count() + 1).clamp(4, 18) as f32;
+            let r = egui::ScrollArea::vertical()
+                .id_salt(("instructions", format!("{level:?}")))
+                .min_scrolled_height(row_h * rows + t.pad(8.0))
+                .max_height(row_h * 18.0 + t.pad(8.0))
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.instructions)
+                            .id(instructions_id(level))
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY)
+                            .hint_text(hint),
+                    )
+                })
+                .inner;
+            let text = Some(self.instructions.trim().to_owned()).filter(|s| !s.is_empty());
+            if r.lost_focus() && text != self.draft.instructions {
+                self.draft.instructions = text;
+                out = Some(self.send(None));
+            }
+            if let Some(m) = self.source(ui, t, view, level, Field::Instructions) {
                 out = Some(m);
             }
         });
@@ -1519,6 +1593,39 @@ pub(crate) mod tests {
         let mut sent = Some(ClientMsg::Cancel);
         render(|ui| sent = e.show(ui, &Tokens::light(), CHAT_FIELDS));
         assert_eq!(sent, None, "drawing sends nothing by itself");
+    }
+
+    #[test]
+    fn instructions_fit_the_form_and_inherited_ones_fold_to_a_headline() {
+        assert_eq!(headline("\n# House rules\n\n- one", 60), "House rules");
+        assert_eq!(headline("- a list item first", 6), "a list…");
+        assert_eq!(headline("", 10), "");
+        let global = "# House rules\n\nYou are careful.\n\n- Short paragraphs.\n- Metric units.";
+        let own = Layer { instructions: Some(format!("# Workspace rules\n\n{}", "A long line that has to wrap. ".repeat(20))), ..Layer::default() };
+        let id = ConfigScope::Workspace { id: "w".into() };
+        let mut v = view(id.clone(), own, None);
+        v.effective.instructions.insert(0, (Level::Global, global.to_owned()));
+        for width in [520.0, 720.0] {
+            let mut e = LayerEditor::new(id.clone());
+            e.asked = true;
+            assert!(e.received(&v));
+            let ctx = egui::Context::default();
+            let mut used = egui::Rect::NOTHING;
+            for _ in 0..2 {
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    let r = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(width, 2000.0));
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
+                    assert_eq!(e.show(&mut child, &Tokens::dark(), WORKSPACE_FIELDS), None);
+                    used = child.min_rect();
+                });
+                out.textures_delta.clear();
+            }
+            let field = ctx.read_response(instructions_id(Level::Workspace)).map(|r| r.rect).unwrap();
+            // Under the rows, the form's whole width (clear of a scroll bar), no more: it used to
+            // sit in the rows' control column, at most 420 pt wide whatever the room.
+            assert!(field.left() < 1.0 && field.right() > width - 20.0 && field.right() <= width, "{width}: {field:?}");
+            assert!(used.width() <= width + 0.5, "{width}: {used:?}");
+        }
     }
 
     #[test]
