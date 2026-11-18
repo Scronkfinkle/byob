@@ -27,11 +27,15 @@ pub enum EmptyView {
     Ready,
 }
 
+/// A chat on its own endpoint (its workspace's or its own model) goes by that endpoint, not
+/// the global one; the trouble screen is about the global one, so a chat whose own endpoint
+/// fails gets the reply's error card instead.
 pub fn empty_view(state: Option<&EngineState>) -> EmptyView {
+    let link = |s: &EngineState| s.chat_endpoint.as_ref().map_or(&s.link, |e| &e.link).clone();
     match state {
         None => EmptyView::Waiting,
-        Some(s) if !s.onboarded && !s.link.is_ok() => EmptyView::Welcome,
-        Some(s) if matches!(s.link, Link::Failed { .. }) => EmptyView::Trouble,
+        Some(s) if !s.onboarded && !link(s).is_ok() => EmptyView::Welcome,
+        Some(s) if s.chat_endpoint.is_none() && matches!(s.link, Link::Failed { .. }) => EmptyView::Trouble,
         Some(_) => EmptyView::Ready,
     }
 }
@@ -647,6 +651,31 @@ mod tests {
         // Working right now counts even before the engine has saved it.
         s.onboarded = false;
         s.link = Link::Ok;
+        assert_eq!(empty_view(Some(&s)), EmptyView::Ready);
+    }
+
+    #[test]
+    fn a_chat_on_its_own_endpoint_ignores_the_global_one_failing() {
+        let mut s = state("http://global/v1", "local");
+        s.onboarded = true;
+        s.link = Link::failed("could not reach global: refused");
+        assert_eq!(empty_view(Some(&s)), EmptyView::Trouble);
+        let own = |link| byob_protocol::ChatEndpoint {
+            base_url: "cli://claude".into(),
+            model: "opus".into(),
+            from: Default::default(),
+            has_api_key: false,
+            profile: None,
+            link,
+            info: None,
+        };
+        for link in [Link::Ok, Link::Unknown, Link::Checking] {
+            s.chat_endpoint = Some(own(link));
+            assert_eq!(empty_view(Some(&s)), EmptyView::Ready);
+        }
+        // Not onboarded, but the chat's endpoint works: no welcome either.
+        s.onboarded = false;
+        s.chat_endpoint = Some(own(Link::Ok));
         assert_eq!(empty_view(Some(&s)), EmptyView::Ready);
     }
 
