@@ -16,8 +16,8 @@ use crate::tools::{Ctx, sheet_index};
 
 /// The chart artifact type (the bundled charts plugin's).
 pub const CHART_TYPE: &str = "application/vnd.byob.chart+json";
-/// Most charts kept in step with one sheet per save.
-pub const MAX_LINKED: usize = 8;
+/// Most charts kept in step with one sheet per save, and listed for it.
+pub const MAX_LINKED: usize = 24;
 
 type R<T> = Result<T, SheetError>;
 
@@ -49,8 +49,12 @@ fn column(book: &Book, sh: u32, row: i64, name: &str) -> R<i64> {
             }
         }
     }
+    // A column letter, if it is one the sheet uses ("Net" isn't column NET).
     if (1..=3).contains(&want.len()) && want.bytes().all(|b| b.is_ascii_alphabetic()) {
-        return Ok(col_num(&want.to_ascii_uppercase()));
+        let c = col_num(&want.to_ascii_uppercase());
+        if book.used(sh).is_some_and(|(_, _, c1, c2)| (c1..=c2).contains(&c)) {
+            return Ok(c);
+        }
     }
     let headers: Vec<String> = book.used(sh).map(|(_, _, c1, c2)| (c1..=c2).map(|c| header(book, sh, row, c)).collect()).unwrap_or_default();
     msg(format!("There's no column \"{want}\" in row {row}. Columns: {}.", headers.join(", ")))
@@ -90,7 +94,8 @@ fn rows(book: &mut Book, src: &ChartSource, kind: chart::ChartType) -> R<(String
         series.push(json!({"key": key, "label": key}));
         keys.push((key, c));
     }
-    let last = book.used(sh).map_or(hr, |(_, r2, _, _)| r2);
+    let used_last = book.used(sh).map_or(hr, |(_, r2, _, _)| r2);
+    let last = src.last_row.map_or(used_last, |r| i64::from(r).min(used_last));
     let mut out = Vec::new();
     for r in hr + 1..=last {
         let xv = cell(book, sh, r, xc, kind != chart::ChartType::Scatter);
@@ -164,6 +169,10 @@ pub fn chart_sheet(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value> {
     if !src.artifact {
         return msg("chart_sheet charts a spreadsheet artifact: make one from the file with create_sheet (`from`) first, then chart that.");
     }
+    // A chart follows only its own chat's sheets.
+    if cx.chat.is_some() && s(&src.meta, "chat").is_some_and(|c| Some(c) != cx.chat) {
+        return msg(format!("{} belongs to another chat; chart a spreadsheet of this chat (import the file with create_sheet `from`).", src.aid));
+    }
     let old = existing.as_ref().map(|(_, (spec, src))| (spec, src)).filter(|(_, o)| o.sheet == src.aid);
     let book = store.read_book(&src)?;
     let tab = given("tab").and_then(Value::as_str).map(str::trim).or(old.map(|(_, o)| o.tab.as_str())).filter(|t| !t.is_empty());
@@ -192,7 +201,8 @@ pub fn chart_sheet(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value> {
         }
         out
     };
-    let source = ChartSource { sheet: src.aid.clone(), tab, header_row: u32::try_from(hr).unwrap_or(1), x, series };
+    let last_row = old.and_then(|(_, o)| o.last_row);
+    let source = ChartSource { sheet: src.aid.clone(), tab, header_row: u32::try_from(hr).unwrap_or(1), x, series, last_row };
     let mut base = Map::new();
     let old_spec = old.map(|(spec, _)| spec);
     for k in ["type", "title", "unit", "stacked"] {
@@ -292,6 +302,14 @@ fn adjust(src: &mut ChartSource, first: &str, moves: &[Move]) -> Result<(), Stri
             Move::Rows { tab, at, delta } if *tab == src.tab => {
                 let r = shift(i64::from(src.header_row), *at, *delta).ok_or("its header row was deleted")?;
                 src.header_row = u32::try_from(r).map_err(|_| "its header row moved off the sheet")?;
+                // A selection's bottom: deleted, it becomes the row above what went.
+                if let Some(last) = src.last_row {
+                    let l = shift(i64::from(last), *at, *delta).unwrap_or(*at - 1);
+                    if l <= r {
+                        return Err("all its rows were deleted".into());
+                    }
+                    src.last_row = u32::try_from(l).ok();
+                }
             }
             Move::Cols { tab, at, delta } if *tab == src.tab => {
                 let x = shift(col_num(&src.x), *at, *delta).ok_or_else(|| format!("its column {} (along the bottom) was deleted", src.x))?;
@@ -325,15 +343,19 @@ pub fn refresh(ws: &str, chat: Option<&str>, sheet: &str, book: &mut Book, moves
     let mut lost = Vec::new();
     let first = book.sheet_names().first().cloned().unwrap_or_default();
     for m in metas(ws) {
-        if out.len() >= MAX_LINKED {
-            break;
-        }
         if s(&m, "content_type") != Some(CHART_TYPE) || (chat.is_some() && s(&m, "chat") != chat) {
             continue;
         }
         let Some(path) = crate::store::latest(ws, &m).1 else { continue };
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let Ok(old) = serde_json::from_str::<Value>(&text) else { continue };
+        if out.len() >= MAX_LINKED {
+            if old.get("source").and_then(|v| v.get("sheet")).and_then(Value::as_str) == Some(sheet) {
+                lost.push(format!("More than {MAX_LINKED} charts are drawn from this sheet; the others weren't redrawn this time."));
+                break;
+            }
+            continue;
+        }
         let Some(mut src) = old.get("source").and_then(|v| serde_json::from_value::<ChartSource>(v.clone()).ok()).filter(|src| src.sheet == sheet) else {
             continue;
         };
@@ -369,8 +391,8 @@ pub fn files(store: &mut Store, redrawn: Vec<Redrawn>) -> Vec<(Redrawn, String)>
     redrawn.into_iter().filter_map(|r| store.save_tmp(r.spec.to_string().as_bytes(), &r.filename).ok().map(|f| (r, f))).collect()
 }
 
-/// The charts of chat `chat` drawn from sheet artifact `sheet`: (id, latest spec), oldest
-/// first, at most [`MAX_LINKED`].
+/// The charts of chat `chat` drawn from sheet artifact `sheet`: (id, latest spec), by id,
+/// at most [`MAX_LINKED`].
 pub fn linked(ws: &str, chat: Option<&str>, sheet: &str) -> Vec<(String, Value)> {
     let mut out = Vec::new();
     for m in metas(ws) {
@@ -401,7 +423,14 @@ pub fn from_selection(book: &mut Book, sheet: &str, sh: u32, (r1, c1, r2, c2): (
     }
     let tab = book.sheet_names().get(sh as usize).cloned().unwrap_or_default();
     let series: Vec<String> = (c1 + 2..=c2 + 1).take(chart::MAX_SERIES).map(col_name).collect();
-    let source = ChartSource { sheet: sheet.to_owned(), tab, header_row: u32::try_from(r1 + 1).unwrap_or(1), x: col_name(c1 + 1), series };
+    let source = ChartSource {
+        sheet: sheet.to_owned(),
+        tab,
+        header_row: u32::try_from(r1 + 1).unwrap_or(1),
+        x: col_name(c1 + 1),
+        series,
+        last_row: u32::try_from(r2 + 1).ok(),
+    };
     let x = header(book, sh, r1 + 1, c1 + 1);
     let labels: Vec<String> = (c1 + 2..=c2 + 1).take(3).map(|c| header(book, sh, r1 + 1, c)).collect();
     let title = format!("{} by {x}", labels.join(", "));
@@ -418,7 +447,14 @@ mod tests {
     use super::*;
 
     fn src(x: &str, series: &[&str]) -> ChartSource {
-        ChartSource { sheet: "s".into(), tab: "Data".into(), header_row: 3, x: x.into(), series: series.iter().map(|s| (*s).to_owned()).collect() }
+        ChartSource {
+            sheet: "s".into(),
+            tab: "Data".into(),
+            header_row: 3,
+            x: x.into(),
+            series: series.iter().map(|s| (*s).to_owned()).collect(),
+            last_row: None,
+        }
     }
     fn cols(tab: &str, at: i64, delta: i64) -> Move {
         Move::Cols { tab: tab.into(), at, delta }

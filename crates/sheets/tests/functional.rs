@@ -326,6 +326,38 @@ fn a_chart_of_a_long_sheet_says_it_was_cut() {
     assert!(out.contains("2000 rows") && out.contains("Only the first 2000 rows fit"), "{out}");
 }
 
+/// The review's cases: a short name that isn't a header isn't a column letter; a chart of a
+/// selection stops at its bottom; another chat's sheet can't be charted; a grid edit that
+/// breaks a chart says so.
+#[test]
+fn charts_refuse_what_they_cant_follow() {
+    let mut b = Byob::new();
+    let (aid, _) = b.new_sheet("Ledger");
+    b.tool("write_cells", json!({"sheet": aid, "rows": [["Month", "Net Profit"], ["Jan", 5], ["Feb", 7], ["Total", 12]]}));
+    let out = b.tool("chart_sheet", json!({"sheet": aid, "type": "bar", "x": "Month", "series": ["Net"]}));
+    assert!(out.contains("There's no column \"Net\"") && out.contains("Net Profit"), "{out}");
+    assert!(!b.tool("chart_sheet", json!({"sheet": aid, "type": "bar", "x": "a", "series": ["b"]})).contains("Error"), "letters the sheet uses still work");
+    // A1:B3 selected: Jan and Feb, not the Total under them.
+    b.event(&aid, "select", json!({"row": 0, "col": 0, "to_row": 2, "to_col": 1}));
+    let msgs = b.event_at(&aid, "", None, Some("chart_selection"), false, json!({}));
+    assert!(msgs.iter().any(|m| m["type"] == "artifact" && m["id"].is_null()), "{msgs:?}");
+    let tree = {
+        b.event_at(&aid, "", None, Some("show_charts"), false, json!({}));
+        b.view(&aid)
+    };
+    let selected =
+        nodes(&tree).into_iter().find(|n| n["type"] == "chart" && n["spec"]["source"]["last_row"] == json!(3)).cloned().expect("the selection's chart");
+    assert_eq!(selected["spec"]["data"].as_array().unwrap().len(), 2, "Total left out");
+    b.event_at(&aid, "", None, Some("show_grid"), false, json!({}));
+    // Typed text where the chart needs numbers: the chart keeps its numbers and the user hears it.
+    let msgs = b.event(&aid, "edit", json!({"row": 1, "col": 1, "value": "n/a"}));
+    assert!(msgs.iter().any(|m| m["type"] == "notice" && m["text"].as_str().unwrap_or_default().contains("couldn't be drawn again")), "{msgs:?}");
+    // Another chat can't chart this chat's sheet.
+    b.chat = "chat-2".into();
+    let out = b.tool("chart_sheet", json!({"sheet": aid, "type": "bar", "x": "Month", "series": ["Net Profit"]}));
+    assert!(out.contains("belongs to another chat"), "{out}");
+}
+
 /// Every node of `tree` (depth first).
 fn nodes(tree: &Value) -> Vec<&Value> {
     let mut out = vec![tree];

@@ -269,14 +269,24 @@ impl Sim<'_> {
     }
 }
 
-/// `ops` with each file's creation once: a file created and then written over in the same
-/// turn (an artifact version saved twice) has one `Created` per save, and only the newest
-/// knows what the file holds now. Undoing it deletes it once.
+/// Whether `op` touches `path`.
+fn touches(op: &UndoOp, path: &Path) -> bool {
+    match op {
+        UndoOp::Created { path: p, .. } | UndoOp::Replaced { path: p, .. } | UndoOp::Deleted { path: p, .. } => p == path,
+        UndoOp::Moved { from, to } => from == path || to == path,
+    }
+}
+
+/// `ops` with a file's creation once where it was written over straight after: a file
+/// created and saved again in the same turn (an artifact version saved twice) has a
+/// `Created` per save, and only the newest knows what it holds now, so undo deletes it once.
+/// A creation followed by anything else for that path (a delete, a move) stays as it is.
 fn compact(ops: &[UndoOp]) -> Vec<UndoOp> {
     let mut out: Vec<UndoOp> = Vec::with_capacity(ops.len());
     for (i, op) in ops.iter().enumerate() {
         if let UndoOp::Created { path, .. } = op
-            && ops.get(i + 1..).unwrap_or_default().iter().any(|later| matches!(later, UndoOp::Created { path: p, .. } if p == path))
+            && let Some(next) = ops.get(i + 1..).unwrap_or_default().iter().find(|later| touches(later, path))
+            && matches!(next, UndoOp::Created { .. })
         {
             continue;
         }
@@ -359,6 +369,26 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().canonicalize().unwrap();
         (d, root)
+    }
+
+    /// A file created, deleted and created again in one turn: undo leaves no file (the
+    /// creations aren't merged across the delete; the reviewer's case).
+    #[test]
+    fn created_deleted_created_leaves_nothing() {
+        let (_d, root) = ws();
+        let p = root.join("foo.txt");
+        let trash = root.join(".byob/undo/t/0-foo.txt");
+        fs::create_dir_all(trash.parent().unwrap()).unwrap();
+        fs::write(&trash, b"one").unwrap();
+        fs::write(&p, b"two").unwrap();
+        let ops = [
+            UndoOp::Created { path: p.clone(), fingerprint: Some(Fingerprint::of_bytes(b"one")) },
+            UndoOp::Deleted { path: p.clone(), backup: Some(trash) },
+            UndoOp::Created { path: p.clone(), fingerprint: Some(Fingerprint::of_bytes(b"two")) },
+        ];
+        assert_eq!(compact(&ops).len(), 3);
+        undo(&ops, &root).unwrap();
+        assert!(!p.exists(), "it didn't exist before the turn");
     }
 
     /// Regression: an artifact version saved twice in one turn (one version per request)

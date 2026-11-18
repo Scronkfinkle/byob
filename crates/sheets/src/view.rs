@@ -364,7 +364,11 @@ impl Views {
         let aid = aid.clone();
         // Charts drawn from this sheet follow the edit.
         let chat_of = s(a, "chat").filter(|c| !c.is_empty()).or_else(|| s(ev, "chat")).map(str::to_owned);
-        let redrawn = s(a, "workspace").map(|ws| crate::charts::refresh(ws, chat_of.as_deref(), &aid, book, &[]).0).unwrap_or_default();
+        let redrawn = s(a, "workspace").map(|ws| crate::charts::refresh(ws, chat_of.as_deref(), &aid, book, &[])).unwrap_or_default();
+        let (redrawn, lost) = redrawn;
+        for line in lost {
+            out.notice(&line, "info");
+        }
         let filename = s(a, "filename").unwrap_or_default().to_owned();
         let fmt = sheet_format(s(a, "content_type"), if filename.is_empty() { s(a, "path").unwrap_or_default() } else { &filename });
         let new_name = (fmt != Some("xlsx")).then(|| xlsx_name(&filename, s(a, "id").filter(|i| !i.is_empty()).unwrap_or("sheet")));

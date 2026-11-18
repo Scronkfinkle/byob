@@ -90,6 +90,10 @@ pub struct ChartSource {
     pub header_row: u32,
     pub x: String,
     pub series: Vec<String>,
+    /// The last row charted (a selection's bottom); without it, down to the first row with an
+    /// empty `x`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_row: Option<u32>,
 }
 
 /// Longest artifact id or tab name kept in a [`ChartSource`].
@@ -106,7 +110,8 @@ impl ChartSource {
         let series: Vec<String> =
             o.get("series")?.as_array()?.iter().filter_map(Value::as_str).filter(|c| column(c)).take(MAX_SERIES).map(str::to_owned).collect();
         let header_row = o.get("header_row").and_then(Value::as_u64).filter(|r| (1..=1_048_576).contains(r)).and_then(|r| u32::try_from(r).ok())?;
-        (!series.is_empty()).then(|| Self { sheet, tab: text("tab").unwrap_or_default(), header_row, x, series })
+        let last_row = o.get("last_row").and_then(Value::as_u64).and_then(|r| u32::try_from(r).ok()).filter(|r| *r > header_row);
+        (!series.is_empty()).then(|| Self { sheet, tab: text("tab").unwrap_or_default(), header_row, x, series, last_row })
     }
 }
 

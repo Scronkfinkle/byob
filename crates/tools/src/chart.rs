@@ -90,6 +90,8 @@ fn clip(s: &str, max: usize) -> String {
 
 fn make(args: &Value, workspace: &Path) -> Result<ToolOutput, String> {
     let mut input = args.as_object().cloned().unwrap_or_default();
+    // Only the sheets plugin links a chart to a sheet; a `source` here would be a claim.
+    input.remove("source");
     let file = ["file", "data_file"].iter().find_map(|k| input.get(*k).and_then(Value::as_str).map(str::to_owned)).filter(|f| !f.trim().is_empty());
     let mut note = String::new();
     let has_data = input.get("data").is_some_and(|d| !d.is_null());
@@ -471,6 +473,17 @@ mod tests {
         let out = run(&MakeChart, d.path(), json!({"type": "bar", "title": "x", "x": "nope", "series": ["sales"], "data": rows()}));
         assert!(out.failed && out.text.contains("\"nope\""));
         assert!(!d.path().join("charts").exists() || fs::read_dir(d.path().join("charts")).unwrap().count() == 0);
+    }
+
+    /// Only the sheets plugin links charts to sheets: a `source` given here is dropped.
+    #[test]
+    fn a_source_from_the_model_is_dropped() {
+        let d = tempfile::tempdir().unwrap();
+        let src = json!({"sheet": "s", "tab": "T", "header_row": 1, "x": "A", "series": ["B"]});
+        let out = run(&MakeChart, d.path(), json!({"type": "bar", "title": "x", "x": "month", "series": ["sales"], "data": rows(), "source": src}));
+        assert!(!out.failed, "{}", out.text);
+        let saved = fs::read_to_string(d.path().join("charts/x.chart.json")).unwrap();
+        assert!(!saved.contains("source"), "{saved}");
     }
 
     /// A spreadsheet file goes to chart_sheet (make_chart would read it as CSV text).

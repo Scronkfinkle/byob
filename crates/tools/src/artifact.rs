@@ -450,7 +450,11 @@ pub fn save_bytes(types: &ArtifactTypes, workspace: &Path, s: &SaveBytes<'_>) ->
     let top = all.artifact.versions.iter().map(|v| v.n).max().unwrap_or(0);
     meta.artifact.versions = all.artifact.versions;
     // Saved before in this same request: that version again, with both notes.
-    let same_turn = (!turn.is_empty()).then(|| meta.artifact.versions.iter().find(|v| v.n == top && Some(top) == latest && v.turn == turn)).flatten();
+    // (Only when it can be written over in place: a file renamed to another type in the turn
+    // gets a version of its own, with its own note.)
+    let same_turn = (!turn.is_empty())
+        .then(|| meta.artifact.versions.iter().find(|v| v.n == top && Some(top) == latest && v.turn == turn && v.path.ends_with(&format!("/v{top}.{ext}"))))
+        .flatten();
     if let Some(v) = same_turn {
         note = if note.is_empty() || v.note.ends_with(&note) {
             v.note.clone()
