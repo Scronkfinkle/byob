@@ -443,8 +443,12 @@ impl Store {
     /// Write the bytes for byob to copy (it copies them right after our reply).
     pub fn save_tmp(&mut self, data: &[u8], filename: &str) -> Result<String, SheetError> {
         if self.tmp.as_ref().is_none_or(|d| !d.is_dir()) {
+            // Unique per store in this process too: two stores made in the same instant
+            // (macOS clocks tick in microseconds) shared a folder and overwrote each other's files.
+            static STORES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = STORES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-            let dir = std::env::temp_dir().join(format!("byob-sheets-{}-{nanos:x}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("byob-sheets-{}-{nanos:x}-{n}", std::process::id()));
             std::fs::create_dir_all(&dir).map_err(|e| SheetError::Io(e.to_string()))?;
             self.tmp = Some(dir);
         }
@@ -484,6 +488,19 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stores_never_share_a_temporary_folder() {
+        // Regression: the folder was named by process and time alone, and two stores made in
+        // the same microsecond (parallel tests on macOS) wrote each other's files.
+        let (mut a, mut b) = (Store::default(), Store::default());
+        let pa = a.save_tmp(b"a", "Budget.xlsx").unwrap();
+        let pb = b.save_tmp(b"b", "Budget.xlsx").unwrap();
+        assert_ne!(Path::new(&pa).parent(), Path::new(&pb).parent());
+        assert_eq!((std::fs::read(&pa).unwrap(), std::fs::read(&pb).unwrap()), (b"a".to_vec(), b"b".to_vec()));
+        a.cleanup();
+        b.cleanup();
+    }
 
     #[test]
     fn relpath_uses_forward_slashes_everywhere() {
