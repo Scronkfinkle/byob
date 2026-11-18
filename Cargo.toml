@@ -99,6 +99,13 @@ pollster = "1"
 ron = "0.12"
 # Markdown for assistant messages. No default features: skips the HTML renderer and getopts.
 pulldown-cmark = { version = "0.13", default-features = false }
+# LaTeX math in messages: RaTeX (KaTeX's layout in Rust, MIT) without mhchem chemistry, its
+# KaTeX fonts (OFL), and lyon to fill the outlines egui can't (concave radicals, delimiters).
+ratex-parser = { version = "0.1.16", default-features = false }
+ratex-layout = { version = "0.1.16", default-features = false }
+ratex-types = "0.1.16"
+ratex-katex-fonts = "0.1.16"
+lyon_tessellation = "1.0"
 
 # Charts, images and uploads. `image` decodes PNG/JPEG only (also in the browser);
 # base64 carries upload chunks and images inside the JSON protocol.

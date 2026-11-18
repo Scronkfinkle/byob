@@ -27,6 +27,8 @@ that draws its own interface on the GPU, with no Electron.
   calls when the server has none.
 - **Artifacts beside the chat.** Spreadsheets (xlsx/csv), charts, Markdown documents,
   images and HTML apps, each with its version history.
+- **Math, typeset.** LaTeX in replies and documents (`$…$` inline, `$$…$$` on its own line)
+  is drawn like KaTeX, in the desktop app and the browser (the bundled Math plugin).
 - **Hands, with a leash.** File tools, `run_command` (PowerShell on Windows) and `run_python` (sandboxed on Linux); approval
   cards with diffs; undo per turn. Edit any message you sent to start over from there.
 - **Reads, searches and remembers.** PDF, Word and PowerPoint files; images, for models that can see;

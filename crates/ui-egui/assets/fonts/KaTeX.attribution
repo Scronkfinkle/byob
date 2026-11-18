@@ -1,0 +1,9 @@
+asset:        KaTeX_*.ttf (20 math faces)
+title:        KaTeX math fonts (formulas in messages)
+author:       The KaTeX authors (Khan Academy and contributors)
+source:       https://github.com/KaTeX/KaTeX, embedded through the ratex-katex-fonts crate (https://github.com/erweixin/RaTeX)
+license:      OFL-1.1
+license-file: crates/ui-egui/assets/fonts/OFL-KaTeX.txt
+notes:        Unmodified font files, not copied into this repository: ratex_katex_fonts::ttf_bytes
+              supplies them to crates/ui-egui/src/math.rs. KaTeX's MIT license covers its software,
+              not the fonts.

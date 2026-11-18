@@ -1,0 +1,14 @@
+{
+  "id": "math",
+  "name": "Math",
+  "version": "1.0.0",
+  "description": "LaTeX math, typeset: $…$ inside a sentence and $$…$$ on a line of its own, in replies and markdown documents, plus formula artifacts (.tex). Switched off, math shows as its LaTeX source.",
+  "icon": "sigma",
+  "prompt": "Math: write formulas in LaTeX (KaTeX syntax), not as code: $…$ inside a sentence and $$…$$ on a line of its own for a displayed equation. They are typeset in the chat and in markdown documents. Write a dollar sign that isn't math as \\$.",
+  "artifact_types": [
+    { "type": "text/x-tex", "suffixes": [".tex"], "label": "formula", "pick": "formulas to keep → .tex (one display formula per paragraph, no $$ needed)" }
+  ],
+  "renderers": [
+    { "type": "text/x-tex", "renderer": "native:math" }
+  ]
+}

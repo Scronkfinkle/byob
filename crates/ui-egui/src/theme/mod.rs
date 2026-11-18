@@ -63,6 +63,7 @@ fn font_definitions(ui_font: UiFont, mono_font: MonoFont, color_emoji: Option<Ar
         fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jetbrains-mono".into());
     }
     fonts.families.insert(bold_family(), std::iter::once("inter-semibold".to_owned()).chain(fallbacks).collect());
+    crate::math::install_fonts(&mut fonts);
     fonts
 }
 

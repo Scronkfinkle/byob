@@ -19,6 +19,11 @@ web-time.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pulldown-cmark.workspace = true
+ratex-parser.workspace = true
+ratex-layout.workspace = true
+ratex-types.workspace = true
+ratex-katex-fonts.workspace = true
+lyon_tessellation.workspace = true
 byob-types.workspace = true
 image.workspace = true
 

@@ -17,6 +17,7 @@ mod icons;
 pub mod layout;
 pub mod look;
 pub mod markdown;
+pub mod math;
 pub mod media;
 pub mod models;
 pub mod pane;
@@ -130,6 +131,8 @@ pub struct ByobApp {
     look_history: Vec<theme::Prefs>,
     /// One of your messages being changed, to start over from it.
     editing: Editing,
+    /// Math in messages is typeset (a plugin names `native:math`, [`math`]).
+    math: bool,
 }
 
 /// Changing one of your messages to start the chat over from it (`ClientMsg::Rewind`).
@@ -198,6 +201,7 @@ impl ByobApp {
             look_answer: None,
             look_history: Vec::new(),
             editing: Editing::default(),
+            math: false,
         }
     }
 
@@ -328,6 +332,8 @@ impl ByobApp {
             // Which plugins draw which artifact types follows the chat in view.
             if let ServerMsg::Extensions(e) = &msg {
                 self.artifacts.renderers_mut().apply_plugins(&e.plugins);
+                // Math in messages follows the plugin that names `native:math`.
+                self.math = self.artifacts.renderers_mut().native_in_use(renderers::math::NATIVE);
             }
             if let ServerMsg::Profiles(l) = &msg {
                 self.workspaces.set_profiles(l);
@@ -788,6 +794,7 @@ impl ByobApp {
         self.poll_appearance();
         self.apply_theme(ui.ctx());
         layout::store(ui.ctx(), &self.layout);
+        math::set_enabled(ui.ctx(), self.math);
         self.report_look();
         let narrow = ui.available_width() < sidebar::NARROW;
         self.artifacts.begin_frame(ui.ctx(), &self.tokens, narrow);

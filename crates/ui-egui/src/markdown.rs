@@ -31,6 +31,16 @@ pub struct Style {
     pub emphasis: bool,
     pub strike: bool,
     pub code: bool,
+    /// LaTeX source of a formula (`$…$`, or `$$…$$` when display), drawn by [`crate::math`].
+    pub math: Math,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Math {
+    #[default]
+    None,
+    Inline,
+    Display,
 }
 
 /// A run of uniformly styled text ending at byte `end` of [`Inline::text`].
@@ -60,7 +70,8 @@ impl Inline {
         self.text.push_str(s);
         let end = self.text.len();
         match self.runs.last_mut() {
-            Some(r) if r.style == style && r.link == link => r.end = end,
+            // Each formula is a run of its own.
+            Some(r) if r.style == style && r.link == link && style.math == Math::None => r.end = end,
             _ => self.runs.push(Run { end, style, link }),
         }
     }
@@ -84,12 +95,87 @@ pub enum Block {
 }
 
 fn options() -> Options {
-    Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS
+    Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_MATH
+}
+
+/// `\(…\)` as `$…$` and `\[…\]` as `$$…$$`: the other way models write math (Markdown
+/// would read `\(` as an escaped bracket). Code fences, inline code and `\\(` are left alone.
+pub fn tex_delimiters(src: &str) -> std::borrow::Cow<'_, str> {
+    if !src.contains("\\(") && !src.contains("\\[") {
+        return std::borrow::Cow::Borrowed(src);
+    }
+    let mut out = String::with_capacity(src.len());
+    let mut fence: Option<(u8, usize)> = None;
+    let mut display = false;
+    for line in src.split_inclusive('\n') {
+        let after = next_fence(fence, line);
+        if fence.is_some() || after.is_some() {
+            fence = after;
+            out.push_str(line);
+            continue;
+        }
+        let b = line.as_bytes();
+        let mut i = 0;
+        let mut code: Option<usize> = None;
+        while i < b.len() {
+            let c = b[i];
+            if c == b'`' {
+                let run = b[i..].iter().take_while(|&&x| x == b'`').count();
+                match code {
+                    None => code = Some(run),
+                    Some(open) if open == run => code = None,
+                    _ => {}
+                }
+                out.push_str(line.get(i..i + run).unwrap_or_default());
+                i += run;
+                continue;
+            }
+            if c == b'\\' && code.is_none() {
+                match b.get(i + 1) {
+                    Some(b'\\') => {
+                        out.push_str("\\\\");
+                        i += 2;
+                        continue;
+                    }
+                    Some(b'[') if !display => {
+                        out.push_str("$$");
+                        display = true;
+                        i += 2;
+                        continue;
+                    }
+                    Some(b']') if display => {
+                        out.push_str("$$");
+                        display = false;
+                        i += 2;
+                        continue;
+                    }
+                    Some(b'(') if !display => {
+                        // Inline: only with its `\)` on the same line.
+                        if let Some(end) = line.get(i + 2..).and_then(|r| r.find("\\)")) {
+                            let inner = line.get(i + 2..i + 2 + end).unwrap_or_default().trim();
+                            out.push('$');
+                            out.push_str(inner);
+                            out.push('$');
+                            i += 2 + end + 2;
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Copy the char whole (multi-byte text stays intact).
+            let ch_len = line.get(i..).and_then(|r| r.chars().next()).map_or(1, char::len_utf8);
+            out.push_str(line.get(i..i + ch_len).unwrap_or_default());
+            i += ch_len;
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Parse markdown into blocks.
 pub fn parse(src: &str) -> Vec<Block> {
-    let mut it = Parser::new_ext(src, options()).peekable();
+    let src = tex_delimiters(src);
+    let mut it = Parser::new_ext(&src, options()).peekable();
     let mut out = Vec::new();
     // The root has no End event: `blocks` returns at EOF; loop in case of a stray End.
     while it.peek().is_some() {
@@ -266,7 +352,7 @@ fn inline(it: &mut Events<'_>, explicit: bool) -> Inline {
             break;
         }
         let Some(ev) = it.next() else { break };
-        let style = Style { strong: strong > 0, emphasis: emphasis > 0, strike: strike > 0, code: false };
+        let style = Style { strong: strong > 0, emphasis: emphasis > 0, strike: strike > 0, ..Style::default() };
         let link = links.last().copied();
         match ev {
             Event::Start(Tag::Strong) => strong += 1,
@@ -283,7 +369,9 @@ fn inline(it: &mut Events<'_>, explicit: bool) -> Inline {
                 links.pop();
             }
             Event::Text(t) | Event::InlineHtml(t) => out.push(&t, style, link),
-            Event::Code(t) | Event::InlineMath(t) | Event::DisplayMath(t) => out.push(&t, Style { code: true, ..style }, link),
+            Event::Code(t) => out.push(&t, Style { code: true, ..style }, link),
+            Event::InlineMath(t) => out.push(&t, Style { math: Math::Inline, ..style }, link),
+            Event::DisplayMath(t) => out.push(&t, Style { math: Math::Display, ..style }, link),
             Event::FootnoteReference(name) => out.push(&format!("[{name}]"), style, link),
             Event::SoftBreak => out.push(" ", style, link),
             Event::HardBreak => out.push("\n", style, link),
@@ -454,7 +542,11 @@ fn show_block(ui: &mut egui::Ui, t: &Tokens, block: &Block, id: egui::Id, color:
     let body = body_font(ui);
     match block {
         Block::Paragraph(inline) => {
-            inline_label(ui, t, inline, &body, color, ui.available_width());
+            if let Some(f) = lone_display_math(ui.ctx(), inline) {
+                crate::math::block(ui, &f, body.size * crate::math::SCALE, color, id.with("math"));
+            } else {
+                inline_label(ui, t, inline, &body, color, ui.available_width());
+            }
         }
         Block::Heading { level, text } => {
             let scale = match level {
@@ -606,22 +698,78 @@ fn table_view(ui: &mut egui::Ui, t: &Tokens, head: &[Inline], rows: &[Vec<Inline
     });
 }
 
-/// Build the layout job for inline text. Returns the job and the char ranges of links
-/// (indices into `inline.links`).
-pub fn layout_job(t: &Tokens, inline: &Inline, font: &FontId, bold: &FontFamily, color: Color32, wrap_width: f32) -> (LayoutJob, Vec<(Range<usize>, usize)>) {
+/// A formula placed in a line of text: the first of the two placeholder chars standing in
+/// for it, and the formula drawn from there.
+pub struct Placed {
+    pub char_index: usize,
+    pub formula: Arc<crate::math::Formula>,
+    pub size: f32,
+}
+
+/// Stands in for a formula in the text layout, twice: not whitespace (lines don't break at
+/// it or between the two), invisible, and harmless when copied. The formula's width is the
+/// second one's letter spacing, which egui puts between the two wherever the pair lands
+/// (spacing on a lone char vanishes at the start of a line).
+pub const PLACEHOLDER: char = '\u{2060}';
+
+/// The layout job for inline text, the char ranges of links (indices into `inline.links`)
+/// and where formulas go. `math`: typeset formulas, with the width [`PLACEHOLDER`] takes in
+/// `font` (`None`: show their `$…$` source).
+pub fn layout_job(
+    t: &Tokens,
+    inline: &Inline,
+    font: &FontId,
+    bold: &FontFamily,
+    color: Color32,
+    wrap_width: f32,
+    math: Option<f32>,
+) -> (LayoutJob, Vec<(Range<usize>, usize)>, Vec<Placed>) {
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap_width;
     let mut chars = 0usize;
     let mut links = Vec::new();
+    let mut placed = Vec::new();
     let mut start = 0usize;
     // Inline code follows the code size knob relative to the UI text size.
     let mono = FontId::new(font.size * 0.92 * (t.knobs.code_scale / t.knobs.font_scale.max(0.1)), FontFamily::Monospace);
+    let line_height = crate::theme::line_height(t, font.size);
+    let math_size = font.size * crate::math::SCALE;
     for run in &inline.runs {
         let Some(text) = inline.text.get(start..run.end) else { break };
         start = run.end;
         let s = run.style;
-        let line_height = crate::theme::line_height(t, font.size);
         let mut fmt = TextFormat { font_id: font.clone(), color, italics: s.emphasis, line_height, ..TextFormat::default() };
+        if s.math != Math::None {
+            let display = s.math == Math::Display;
+            if let Some((space, f)) = math.zip(crate::math::typeset(text, display)) {
+                // An invisible stand-in as wide as the formula, its line tall enough for it
+                // (centred, so there is room below the baseline too).
+                let w = f.width() * math_size;
+                let reach = f.height().max(f.depth()) * math_size;
+                fmt.color = Color32::TRANSPARENT;
+                fmt.line_height = Some((2.0 * reach + font.size * 0.5).max(line_height.unwrap_or(0.0)));
+                fmt.valign = egui::Align::Center;
+                placed.push(Placed { char_index: chars, formula: f, size: math_size });
+                if let Some(link) = run.link {
+                    links.push((chars..chars + 2, link));
+                }
+                chars += 2;
+                job.append(&PLACEHOLDER.to_string(), 0.0, fmt.clone());
+                job.append(&PLACEHOLDER.to_string(), 0.0, TextFormat { extra_letter_spacing: (w - space).max(0.0), ..fmt });
+                continue;
+            }
+            // Not typeset: its source, as written.
+            let fence = if display { "$$" } else { "$" };
+            let source = format!("{fence}{text}{fence}");
+            let n = source.chars().count();
+            if let Some(link) = run.link {
+                fmt.color = t.link;
+                links.push((chars..chars + n, link));
+            }
+            chars += n;
+            job.append(&source, 0.0, fmt);
+            continue;
+        }
         if s.strong {
             fmt.font_id.family = bold.clone();
             fmt.color = t.text_strong;
@@ -643,14 +791,63 @@ pub fn layout_job(t: &Tokens, inline: &Inline, font: &FontId, bold: &FontFamily,
         chars += n;
         job.append(text, 0.0, fmt);
     }
-    (job, links)
+    // Text beside a formula sits mid-line with it.
+    if !placed.is_empty() {
+        for section in &mut job.sections {
+            section.format.valign = egui::Align::Center;
+        }
+    }
+    (job, links, placed)
+}
+
+/// A paragraph that is one display formula (`$$…$$` on its own), typeset, while math is on.
+fn lone_display_math(ctx: &egui::Context, inline: &Inline) -> Option<Arc<crate::math::Formula>> {
+    if !crate::math::enabled(ctx) {
+        return None;
+    }
+    let mut start = 0;
+    let mut formula = None;
+    for run in &inline.runs {
+        let text = inline.text.get(start..run.end)?;
+        start = run.end;
+        match run.style.math {
+            Math::Display if formula.is_none() => formula = Some(text),
+            Math::None if text.trim().is_empty() => {}
+            _ => return None,
+        }
+    }
+    crate::math::typeset(formula?, true)
+}
+
+/// Where each formula's baseline starts in `galley` (relative to its top left).
+fn baselines(galley: &egui::Galley, placed: &[Placed]) -> Vec<egui::Pos2> {
+    let mut out = Vec::with_capacity(placed.len());
+    let mut index = 0usize;
+    let mut want = placed.iter().map(|p| p.char_index).peekable();
+    for row in &galley.rows {
+        for g in &row.glyphs {
+            if want.peek() == Some(&index) {
+                want.next();
+                out.push(row.pos + g.pos.to_vec2());
+            }
+            index += 1;
+        }
+        if row.ends_with_newline {
+            index += 1;
+        }
+    }
+    out
 }
 
 fn inline_label(ui: &mut egui::Ui, t: &Tokens, inline: &Inline, font: &FontId, color: Color32, wrap_width: f32) {
     let bold = crate::theme::bold_or_regular(ui.ctx());
-    let (job, links) = layout_job(t, inline, font, &bold, color, wrap_width.max(20.0));
+    let math = crate::math::enabled(ui.ctx()).then(|| ui.fonts_mut(|f| f.glyph_width(font, PLACEHOLDER)));
+    let (job, links, placed) = layout_job(t, inline, font, &bold, color, wrap_width.max(20.0), math);
     let galley = ui.fonts_mut(|f| f.layout_job(job));
     let resp = ui.add(egui::Label::new(Arc::clone(&galley)).selectable(true));
+    for (p, at) in placed.iter().zip(baselines(&galley, &placed)) {
+        crate::math::paint(ui.painter(), &p.formula, resp.rect.min + at.to_vec2(), p.size, color);
+    }
     if links.is_empty() {
         return;
     }
@@ -844,7 +1041,7 @@ mod tests {
         let blocks = parse("- [ ] é [here](https://x.y) z");
         let Some(Block::List { items, .. }) = blocks.first() else { panic!("{blocks:?}") };
         let Block::Paragraph(inline) = &items[0][0] else { panic!("{items:?}") };
-        let (job, links) = layout_job(&Tokens::dark(), inline, &FontId::proportional(14.0), &FontFamily::Proportional, Color32::WHITE, 500.0);
+        let (job, links, _) = layout_job(&Tokens::dark(), inline, &FontId::proportional(14.0), &FontFamily::Proportional, Color32::WHITE, 500.0, None);
         assert_eq!(links.len(), 1);
         let chars: Vec<char> = job.text.chars().collect();
         let linked: String = chars[links[0].0.clone()].iter().collect();
@@ -858,7 +1055,7 @@ mod tests {
             Some(Block::Paragraph(i)) => i.clone(),
             other => panic!("{other:?}"),
         };
-        let (job, links) = layout_job(&Tokens::dark(), &inline, &FontId::proportional(14.0), &FontFamily::Proportional, Color32::WHITE, 500.0);
+        let (job, links, _) = layout_job(&Tokens::dark(), &inline, &FontId::proportional(14.0), &FontFamily::Proportional, Color32::WHITE, 500.0, None);
         let mut galley = None;
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| galley = Some(ui.fonts_mut(|f| f.layout_job(job.clone()))));
         out.textures_delta.clear();
@@ -871,5 +1068,85 @@ mod tests {
         assert!(link_at(&galley, inside, &links).is_some());
         assert!(link_at(&galley, before, &links).is_none());
         assert!(link_at(&galley, egui::vec2(at(1), y + 100.0), &links).is_none());
+    }
+}
+
+#[cfg(test)]
+mod math_tests {
+    use super::*;
+
+    fn runs(src: &str) -> Vec<(String, Math)> {
+        let blocks = parse(src);
+        let Some(Block::Paragraph(p)) = blocks.first() else { panic!("{blocks:?}") };
+        let mut start = 0;
+        p.runs
+            .iter()
+            .map(|r| {
+                let s = p.text[start..r.end].to_owned();
+                start = r.end;
+                (s, r.style.math)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn math_is_its_own_runs_and_prices_stay_text() {
+        assert_eq!(runs("Area is $\\pi r^2$, done."), [("Area is ".into(), Math::None), ("\\pi r^2".into(), Math::Inline), (", done.".into(), Math::None)]);
+        assert_eq!(runs("$$\\int_0^1 x\\,dx$$"), [("\\int_0^1 x\\,dx".into(), Math::Display)]);
+        assert_eq!(runs("$a$$b$")[..2], [("a".into(), Math::Inline), ("b".into(), Math::Inline)], "two formulas side by side stay two");
+        assert!(runs("It costs $5 and $10.").iter().all(|(_, m)| *m == Math::None), "prices aren't math");
+    }
+
+    #[test]
+    fn formulas_become_placeholders_when_on_and_source_when_off() {
+        let blocks = parse("Euler: $e^{i\\pi} + 1 = 0$!");
+        let Some(Block::Paragraph(p)) = blocks.first() else { panic!() };
+        let font = FontId::proportional(14.0);
+        let (job, _, placed) = layout_job(&Tokens::dark(), p, &font, &FontFamily::Proportional, Color32::WHITE, 500.0, Some(4.0));
+        assert_eq!(job.text, format!("Euler: {PLACEHOLDER}{PLACEHOLDER}!"));
+        assert_eq!(placed.len(), 1);
+        assert_eq!(placed[0].char_index, 7);
+        assert!(placed[0].formula.width() > 2.0);
+        let (job, _, placed) = layout_job(&Tokens::dark(), p, &font, &FontFamily::Proportional, Color32::WHITE, 500.0, None);
+        assert_eq!(job.text, "Euler: $e^{i\\pi} + 1 = 0$!");
+        assert!(placed.is_empty());
+    }
+
+    /// Regression: the space for an inline formula came before its stand-in mid-line and
+    /// vanished at the start of a line, so formulas were drawn over the next words. Wherever
+    /// the formula lands, its slot is its width and the text after it starts past it.
+    #[test]
+    fn an_inline_formula_gets_its_width_wherever_it_lands() {
+        let ctx = egui::Context::default();
+        for (src, wrap) in [("$x^2 + y^2$ first", 500.0), ("see $x^2 + y^2$ here", 500.0), ("aaaa bbbb cccc $x^2 + y^2$ wrapped", 90.0)] {
+            let blocks = parse(src);
+            let Some(Block::Paragraph(p)) = blocks.first() else { panic!() };
+            let font = FontId::proportional(14.0);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let space = ui.fonts_mut(|f| f.glyph_width(&font, PLACEHOLDER));
+                let (job, _, placed) = layout_job(&Tokens::dark(), p, &font, &FontFamily::Proportional, Color32::WHITE, wrap, Some(space));
+                let g = ui.fonts_mut(|f| f.layout_job(job));
+                let w = placed[0].formula.width() * placed[0].size;
+                let row = g.rows.iter().find(|r| r.glyphs.iter().any(|gl| gl.chr == PLACEHOLDER)).unwrap();
+                let xs: Vec<f32> = row.glyphs.iter().filter(|gl| gl.chr == PLACEHOLDER).map(|gl| gl.pos.x).collect();
+                assert!((xs[1] - xs[0] - w).abs() < 1.0, "{src}: slot {} for width {w}", xs[1] - xs[0]);
+                let at = baselines(&g, &placed)[0];
+                assert!((at.x - (row.pos.x + xs[0])).abs() < 0.01, "{src}: drawn from the first stand-in");
+            });
+            out.textures_delta.clear();
+        }
+    }
+
+    /// Regression: deepseek wrote `\\(…\\)` and `\\[…\\]` (as most models do), and Markdown
+    /// read `\\(` as an escaped bracket. They're math too; code is left alone.
+    #[test]
+    fn backslash_delimiters_are_math() {
+        assert_eq!(tex_delimiters("For \\(ax^2\\), divide:\n\\[ x = \\frac{1}{2} \\]\n"), "For $ax^2$, divide:\n$$ x = \\frac{1}{2} $$\n");
+        assert_eq!(tex_delimiters("\\[\na+b\n\\]"), "$$\na+b\n$$", "across lines");
+        let code = "`\\(x\\)` and\n```\n\\[y\\]\n```\n";
+        assert_eq!(tex_delimiters(code), code, "code stays as written");
+        assert_eq!(tex_delimiters("a \\\\(b) \\(c"), "a \\\\(b) \\(c", "an escaped backslash, and \\( without its \\)");
+        assert_eq!(tex_delimiters("naïve \\(é\\)"), "naïve $é$");
+        assert_eq!(runs("For \\(ax^2+bx+c=0\\), go")[1], ("ax^2+bx+c=0".into(), Math::Inline));
     }
 }

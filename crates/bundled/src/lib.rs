@@ -61,6 +61,7 @@ mod tests {
                 "images",
                 "mail",
                 "markdown",
+                "math",
                 "memory",
                 "plan",
                 "prompt",

@@ -34,11 +34,11 @@ fn natives() -> Natives {
 }
 
 /// The bundled plugins byob had before spreadsheets (P5): with them the prompt and tools must
-/// be what they were. `sheets`, `web`, `memory`, `plan`, `ask-user`, `help` and `appearance` add their own (tested in
+/// be what they were. `sheets`, `web`, `memory`, `plan`, `ask-user`, `help`, `appearance` and `math` add their own (tested in
 /// `bundled_plugins_load_with_no_files_on_disk`, `native_backend_tests` and below).
 fn config(home: &Path, bundled: bool) -> PluginsConfig {
     let mut c = config_all(home, bundled);
-    c.bundled.retain(|e| !matches!(e.id.as_str(), "sheets" | "web" | "memory" | "plan" | "ask-user" | "help" | "appearance"));
+    c.bundled.retain(|e| !matches!(e.id.as_str(), "sheets" | "web" | "memory" | "plan" | "ask-user" | "help" | "appearance" | "math"));
     c
 }
 
@@ -97,6 +97,7 @@ fn bundled_plugins_load_with_no_files_on_disk() {
             "images",
             "mail",
             "markdown",
+            "math",
             "memory",
             "plan",
             "prompt",
@@ -250,6 +251,21 @@ fn core_plugins_stay_on_and_the_others_switch_off() {
     // HTML apps off: its guidance goes with it.
     let c = compose(&mut ext, ws.path(), &[("html-apps", false)]);
     assert!(!c.sections.contains("HTML apps:") && c.sections.contains("make_chart"));
+}
+
+/// The Math plugin: the prompt says to write LaTeX, `.tex` files are formula artifacts, and
+/// the window draws them (and math in messages) with its `native:math` renderer.
+#[test]
+fn the_math_plugin_adds_latex() {
+    let home = tempfile::tempdir().unwrap();
+    let ws = tempfile::tempdir().unwrap();
+    let c = compose(&mut Ext::new(config_all(home.path(), true)), ws.path(), &[]);
+    assert!(c.prompt.contains("Math: write formulas in LaTeX"), "{}", c.prompt);
+    assert!(c.sections.contains("formulas to keep → .tex"), "{}", c.sections);
+    assert_eq!(c.artifact_types.for_filename("euler.tex").label, "formula");
+    let math = c.infos.iter().find(|p| p.id == "math").unwrap();
+    assert!(math.problems.is_empty(), "{:?}", math.problems);
+    assert_eq!(math.renderers.iter().map(|r| (r.content_type.as_str(), r.renderer.as_str())).collect::<Vec<_>>(), [("text/x-tex", "native:math")]);
 }
 
 #[test]

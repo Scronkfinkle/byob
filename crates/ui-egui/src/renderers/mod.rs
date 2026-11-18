@@ -29,6 +29,7 @@ pub mod chart;
 pub mod html_app;
 pub mod image;
 pub mod markdown;
+pub mod math;
 pub mod text;
 pub mod view;
 
@@ -96,6 +97,7 @@ impl Default for ArtifactRenderers {
     fn default() -> Self {
         let mut r = Self::empty();
         markdown::register(&mut r);
+        math::register(&mut r);
         chart::register(&mut r);
         image::register(&mut r);
         html_app::register(&mut r);
@@ -114,6 +116,13 @@ impl ArtifactRenderers {
     /// Make `renderer` available to plugin manifests as `native:<id>`.
     pub fn native(&mut self, id: &str, renderer: Rc<dyn ArtifactRenderer>) {
         self.natives.insert(id.to_owned(), renderer);
+    }
+
+    /// A switched-on plugin's declaration uses native renderer `id` (the Math plugin's
+    /// `native:math` is also what turns on math in messages).
+    pub fn native_in_use(&self, id: &str) -> bool {
+        let Some(native) = self.natives.get(id) else { return false };
+        self.from_plugins.values().flatten().any(|r| Rc::ptr_eq(r, native))
     }
 
     /// The ids manifests can name.
@@ -438,6 +447,20 @@ mod tests {
         p.enabled = enabled;
         p.renderers = decls.iter().map(|(t, r)| byob_protocol::RendererDecl { content_type: (*t).into(), renderer: (*r).into() }).collect();
         p
+    }
+
+    /// Math in messages is on while a switched-on plugin names `native:math` (the bundled
+    /// Math plugin), off when it's off or no plugin names it.
+    #[test]
+    fn math_follows_the_plugin_that_names_it() {
+        let mut r = ArtifactRenderers::default();
+        assert!(!r.native_in_use(math::NATIVE), "nothing declared yet");
+        r.apply_plugins(&[plugin("math", true, &[(math::TYPE_TEX, "native:math")])]);
+        assert!(r.native_in_use(math::NATIVE));
+        assert_eq!(r.get(math::TYPE_TEX).caps().label, "formula");
+        r.apply_plugins(&[plugin("math", false, &[(math::TYPE_TEX, "native:math")])]);
+        assert!(!r.native_in_use(math::NATIVE));
+        assert_eq!(r.get(math::TYPE_TEX).caps().label, "file", "switched off, a .tex is its source");
     }
 
     #[test]
