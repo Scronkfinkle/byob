@@ -352,6 +352,8 @@ struct Turn {
     nudged: bool,
     /// Undo journal for the file changes of this turn.
     journal: Journal,
+    /// This turn, for tools ([`ToolContext::turn`]): `<entry>-<started>[-a<child>]`.
+    turn_id: Arc<str>,
     /// Model requests made (compactions included).
     model_calls: u64,
     /// Native hooks' per-turn state, by hook id.
@@ -414,7 +416,8 @@ impl Turn {
         let messages = s.history.clone();
         let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let tag = s.child.map(|c| format!("-a{c}")).unwrap_or_default();
-        let journal = Journal::new(s.workspace.as_path(), &format!("{}-{started}{tag}", s.entry));
+        let turn_id = format!("{}-{started}{tag}", s.entry);
+        let journal = Journal::new(s.workspace.as_path(), &turn_id);
         let tools = s.tools.snapshot();
         Self {
             s,
@@ -432,6 +435,7 @@ impl Turn {
             repeats: 0,
             nudged: false,
             journal,
+            turn_id: turn_id.into(),
             model_calls: 0,
             hook_state: BTreeMap::new(),
             answer: String::new(),
@@ -760,6 +764,7 @@ impl Turn {
         let images = Mutex::new(Vec::new());
         let ctx = ToolContext::new(self.s.workspace.as_path(), &self.s.cancel)
             .with_journal(&self.journal)
+            .with_turn(&self.turn_id)
             .with_chat(&self.s.chat)
             .with_asker(&asker)
             .with_env(&self.s.env)
@@ -780,6 +785,7 @@ impl Turn {
         let asker = self.asker(&opened.step);
         let (tool, args) = (Arc::clone(&opened.tool), opened.args.clone());
         let (workspace, cancel, chat, env) = (Arc::clone(&self.s.workspace), Arc::clone(&self.s.cancel), self.s.chat.clone(), Arc::clone(&self.s.env));
+        let turn_id = Arc::clone(&self.turn_id);
         let tag = format!("{}-c{}", self.s.entry, opened.step.id);
         let (tx, rx) = channel();
         let spawned = thread::Builder::new().name("byob-tool".into()).spawn(move || {
@@ -788,6 +794,7 @@ impl Turn {
             let images = Mutex::new(Vec::new());
             let ctx = ToolContext::new(workspace.as_path(), &cancel)
                 .with_journal(&journal)
+                .with_turn(&turn_id)
                 .with_chat(&chat)
                 .with_asker(&asker)
                 .with_env(&env)

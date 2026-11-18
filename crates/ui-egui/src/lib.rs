@@ -1419,7 +1419,14 @@ mod app_tests {
             content_type: byob_protocol::artifact::TYPE_MARKDOWN.into(),
             title: "Notes".into(),
             filename: "notes.md".into(),
-            versions: vec![byob_protocol::artifact::ArtifactVersion { n: 1, path: "a/v1.md".into(), created_at: 1, note: String::new(), size: 1 }],
+            versions: vec![byob_protocol::artifact::ArtifactVersion {
+                n: 1,
+                path: "a/v1.md".into(),
+                created_at: 1,
+                note: String::new(),
+                size: 1,
+                turn: String::new(),
+            }],
         };
         fake.inbox.lock().unwrap().extend([
             ServerMsg::State(s),

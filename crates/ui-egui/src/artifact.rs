@@ -1071,7 +1071,14 @@ mod tests {
     fn artifact(id: &str, kind: ArtifactKind, filename: &str, versions: &[u32]) -> Artifact {
         let versions = versions
             .iter()
-            .map(|n| ArtifactVersion { n: *n, path: format!(".byob/artifacts/{id}/v{n}"), created_at: 0, note: format!("note {n}"), size: 3 })
+            .map(|n| ArtifactVersion {
+                n: *n,
+                path: format!(".byob/artifacts/{id}/v{n}"),
+                created_at: 0,
+                note: format!("note {n}"),
+                size: 3,
+                turn: String::new(),
+            })
             .collect();
         Artifact { id: id.into(), kind, content_type: kind.content_type(filename).into(), title: id.to_uppercase(), filename: filename.into(), versions }
     }

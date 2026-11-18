@@ -268,10 +268,10 @@ fn the_sheets_plugin_is_native_and_on_by_default() {
     assert_eq!(tools.iter().filter(|t| t.contains("create_sheet")).count(), 1, "{tools:?}");
     let id = wrote.artifacts[0].id.clone();
     let meta = byob_tools::artifact::load(h._ws.path(), &id).unwrap();
-    assert_eq!(meta.artifact.versions.len(), 2);
+    assert_eq!(meta.artifact.versions.len(), 1, "made and written in one request: one version");
 
     // Its grid draws the artifact.
-    let v = ViewRef::new("sheets", "sheet", artifact_key(&id, 2));
+    let v = ViewRef::new("sheets", "sheet", artifact_key(&id, 1));
     c.send(ClientMsg::OpenView { view: v.clone() });
     loop {
         if let ServerMsg::LiveView(lv) = recv(&mut c)

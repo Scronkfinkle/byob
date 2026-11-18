@@ -1094,6 +1094,8 @@ fn save_artifacts(v: &Value, types: &byob_tools::ArtifactTypes, ctx: &ToolContex
                 bytes: &bytes,
                 note: s("note").unwrap_or_default(),
                 replace: None,
+                // One request's saves of an artifact make one version.
+                turn: ctx.turn(),
             };
             byob_tools::artifact::save_bytes(types, ctx.workspace, &save)
         })();

@@ -1253,7 +1253,7 @@ mod tests {
 
     #[test]
     fn artifact_messages_round_trip() {
-        let v = ArtifactVersion { n: 2, path: ".byob/artifacts/calc/v2.html".into(), created_at: 1, note: "blue button".into(), size: 10 };
+        let v = ArtifactVersion { n: 2, path: ".byob/artifacts/calc/v2.html".into(), created_at: 1, note: "blue button".into(), size: 10, turn: String::new() };
         let a = Artifact {
             id: "calc".into(),
             kind: ArtifactKind::Html,

@@ -322,6 +322,8 @@ impl Engine {
             bytes: &bytes,
             note: s("note").unwrap_or_default(),
             replace,
+            // Not a model request: drafts (`replace`) keep the user's edits to one version.
+            turn: None,
         };
         match byob_tools::artifact::save_bytes(&types, &workspace, &save) {
             Ok(saved) => {

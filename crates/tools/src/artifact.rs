@@ -323,7 +323,7 @@ fn adopt(workspace: &Path, chat: &str, media: &[MediaRef]) -> Vec<ArtifactRef> {
         let title = name.strip_suffix(".chart.json").or_else(|| name.rsplit_once('.').map(|(s, _)| s)).unwrap_or(&name).to_owned();
         let size = version_file(workspace, &m.path).and_then(|p| std::fs::metadata(p).ok()).map_or(m.size, |md| md.len());
         let result = new_artifact_dir(workspace, &title).and_then(|(id, dir)| {
-            let version = ArtifactVersion { n: 1, path: m.path.clone(), created_at: now_ms(), note: String::new(), size };
+            let version = ArtifactVersion { n: 1, path: m.path.clone(), created_at: now_ms(), note: String::new(), size, turn: String::new() };
             let artifact = Artifact {
                 id: id.clone(),
                 kind,
@@ -373,6 +373,9 @@ pub struct SaveBytes<'a> {
     /// Overwrite version `n` instead of adding one, if it is still the latest (a draft the
     /// user keeps editing). Ignored otherwise.
     pub replace: Option<u32>,
+    /// The request (turn) saving it: when the latest version came from the same one, it is
+    /// overwritten (notes joined), so one request makes one version however many saves.
+    pub turn: Option<&'a str>,
 }
 
 /// What [`save_bytes`] did.
@@ -401,7 +404,8 @@ pub fn save_bytes(types: &ArtifactTypes, workspace: &Path, s: &SaveBytes<'_>) ->
     if s.bytes.is_empty() {
         return Err("the file is empty".into());
     }
-    let note = clip(s.note, MAX_NOTE_CHARS);
+    let mut note = clip(s.note, MAX_NOTE_CHARS);
+    let turn = s.turn.map(str::trim).unwrap_or_default().to_owned();
     let root = sandbox::root(workspace)?;
     let Some(id) = s.id.map(str::trim).filter(|i| !i.is_empty()) else {
         let title = clip(s.title.unwrap_or_default(), MAX_TITLE_CHARS);
@@ -413,7 +417,8 @@ pub fn save_bytes(types: &ArtifactTypes, workspace: &Path, s: &SaveBytes<'_>) ->
         let (id, dir) = new_artifact_dir(workspace, &title)?;
         let result = (|| {
             let file = write_version_bytes(&dir, 1, &ext, s.bytes)?;
-            let version = ArtifactVersion { n: 1, path: rel(&root, &file), created_at: now_ms(), note: note.clone(), size: s.bytes.len() as u64 };
+            let version =
+                ArtifactVersion { n: 1, path: rel(&root, &file), created_at: now_ms(), note: note.clone(), size: s.bytes.len() as u64, turn: turn.clone() };
             let artifact =
                 Artifact { id: id.clone(), kind: ty.kind, content_type: ty.content_type.clone(), title: title.clone(), filename, versions: vec![version] };
             save(&dir, &Meta { chat: s.chat.to_owned(), artifact: artifact.clone() })?;
@@ -444,7 +449,19 @@ pub fn save_bytes(types: &ArtifactTypes, workspace: &Path, s: &SaveBytes<'_>) ->
     let latest = meta.artifact.latest().map(|v| v.n);
     let top = all.artifact.versions.iter().map(|v| v.n).max().unwrap_or(0);
     meta.artifact.versions = all.artifact.versions;
-    if let Some(n) = s.replace.filter(|n| Some(*n) == latest && *n == top)
+    // Saved before in this same request: that version again, with both notes.
+    let same_turn = (!turn.is_empty()).then(|| meta.artifact.versions.iter().find(|v| v.n == top && Some(top) == latest && v.turn == turn)).flatten();
+    if let Some(v) = same_turn {
+        note = if note.is_empty() || v.note.ends_with(&note) {
+            v.note.clone()
+        } else if v.note.is_empty() {
+            note
+        } else {
+            clip(&format!("{}; {note}", v.note), MAX_NOTE_CHARS)
+        };
+    }
+    let replace = s.replace.or_else(|| same_turn.map(|v| v.n));
+    if let Some(n) = replace.filter(|n| Some(*n) == latest && *n == top)
         && let Some(v) = meta.artifact.versions.iter_mut().find(|v| v.n == n)
         && v.path.ends_with(&format!("/v{n}.{ext}"))
     {
@@ -468,7 +485,7 @@ pub fn save_bytes(types: &ArtifactTypes, workspace: &Path, s: &SaveBytes<'_>) ->
     }
     let n = top.saturating_add(1);
     let file = write_version_bytes(&dir, n, &ext, s.bytes)?;
-    meta.artifact.versions.push(ArtifactVersion { n, path: rel(&root, &file), created_at: now_ms(), note, size: s.bytes.len() as u64 });
+    meta.artifact.versions.push(ArtifactVersion { n, path: rel(&root, &file), created_at: now_ms(), note, size: s.bytes.len() as u64, turn });
     if let Err(e) = save(&dir, &meta) {
         let _ = std::fs::remove_file(&file);
         return Err(e);
@@ -602,7 +619,14 @@ fn create(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
     let result = (|| {
         let file = write_version(&dir, 1, &ext, &content)?;
         let root = sandbox::root(ctx.workspace)?;
-        let version = ArtifactVersion { n: 1, path: rel(&root, &file), created_at: now_ms(), note: clip(&a.note, MAX_NOTE_CHARS), size: content.len() as u64 };
+        let version = ArtifactVersion {
+            n: 1,
+            path: rel(&root, &file),
+            created_at: now_ms(),
+            note: clip(&a.note, MAX_NOTE_CHARS),
+            size: content.len() as u64,
+            turn: String::new(),
+        };
         let artifact = Artifact {
             id: id.clone(),
             kind: ty.kind,
@@ -718,7 +742,14 @@ fn update(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
     let file = write_version(&dir, n, &ext, &content)?;
     let note = clip(&a.note, MAX_NOTE_CHARS);
     meta.artifact.versions = all.artifact.versions;
-    meta.artifact.versions.push(ArtifactVersion { n, path: rel(&root, &file), created_at: now_ms(), note: note.clone(), size: content.len() as u64 });
+    meta.artifact.versions.push(ArtifactVersion {
+        n,
+        path: rel(&root, &file),
+        created_at: now_ms(),
+        note: note.clone(),
+        size: content.len() as u64,
+        turn: String::new(),
+    });
     if let Err(e) = save(&dir, &meta) {
         let _ = std::fs::remove_file(&file);
         return Err(e);
@@ -1065,6 +1096,34 @@ mod tests {
         let p = prompt_list(&ArtifactTypes::builtin(), &list(d.path(), "c"));
         assert!(p.contains(&format!("{id}: \"Calc\" (app, v1, calc.html)")), "{p}");
         assert_eq!(prompt_list(&ArtifactTypes::builtin(), &[]), "");
+    }
+
+    /// Regression: one request that wrote a sheet in eight tool calls made eight versions.
+    /// Saves within one request make one version (the notes joined); the next request, or
+    /// a save after another one's, starts a new version.
+    #[test]
+    fn one_request_makes_one_version() {
+        let d = tempfile::tempdir().unwrap();
+        let types = ArtifactTypes::builtin();
+        types.register(ArtifactType::new("text/csv", "table", ArtifactKind::Text).suffixes(&[".csv"]));
+        let save = |s: SaveBytes<'_>| save_bytes(&types, d.path(), &s);
+        let a =
+            save(SaveBytes { chat: "c", title: Some("Sales"), filename: Some("s.csv"), bytes: b"a\n", note: "new", turn: Some("t1"), ..Default::default() })
+                .unwrap();
+        let id = a.artifact.id.clone();
+        for (bytes, note) in [(&b"a,b\n"[..], "wrote B"), (b"a,b,c\n", "filled C"), (b"a,b,c,d\n", "filled C")] {
+            let s = save(SaveBytes { chat: "c", id: Some(&id), bytes, note, turn: Some("t1"), ..Default::default() }).unwrap();
+            assert_eq!((s.version, s.replaced), (1, true));
+        }
+        let v1 = load(d.path(), &id).unwrap().artifact.version(1).unwrap().clone();
+        assert_eq!((v1.note.as_str(), v1.turn.as_str()), ("new; wrote B; filled C", "t1"), "notes joined, not repeated");
+        assert_eq!(std::fs::read(d.path().join(&v1.path)).unwrap(), b"a,b,c,d\n");
+        // The next request: a version of its own, and again one however many saves.
+        assert_eq!(save(SaveBytes { chat: "c", id: Some(&id), bytes: b"x\n", turn: Some("t2"), ..Default::default() }).unwrap().version, 2);
+        assert_eq!(save(SaveBytes { chat: "c", id: Some(&id), bytes: b"y\n", turn: Some("t2"), ..Default::default() }).unwrap().version, 2);
+        // Without a request (the user's draft in between), and after it: new versions.
+        assert_eq!(save(SaveBytes { chat: "c", id: Some(&id), bytes: b"z\n", ..Default::default() }).unwrap().version, 3);
+        assert_eq!(save(SaveBytes { chat: "c", id: Some(&id), bytes: b"w\n", turn: Some("t2"), ..Default::default() }).unwrap().version, 4);
     }
 
     #[test]

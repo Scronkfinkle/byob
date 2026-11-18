@@ -69,6 +69,9 @@ pub struct ToolContext<'a> {
     host: Option<&'a (dyn std::any::Any + Sync)>,
     views: Option<&'a std::sync::Mutex<Vec<byob_protocol::View>>>,
     images: Option<&'a std::sync::Mutex<Vec<String>>>,
+    /// The request (turn) this call is part of: saves of one artifact within it make one
+    /// version ([`crate::artifact::SaveBytes::turn`]).
+    turn: Option<&'a str>,
 }
 
 /// Where a chat's commands run, as its workspace and chat settings decide (the engine
@@ -118,7 +121,7 @@ pub struct CommandEnv {
 
 impl<'a> ToolContext<'a> {
     pub fn new(workspace: &'a Path, cancel: &'a AtomicBool) -> Self {
-        Self { workspace, cancel, journal: None, chat: None, asker: None, env: None, host: None, views: None, images: None }
+        Self { workspace, cancel, journal: None, chat: None, asker: None, env: None, host: None, views: None, images: None, turn: None }
     }
 
     /// Where [`ToolContext::attach_view`] puts views (the engine's turn: on the call's step).
@@ -213,6 +216,17 @@ impl<'a> ToolContext<'a> {
 
     pub fn chat(&self) -> Option<&'a str> {
         self.chat
+    }
+
+    /// Part of request (turn) `turn`.
+    #[must_use]
+    pub fn with_turn(mut self, turn: &'a str) -> Self {
+        self.turn = Some(turn);
+        self
+    }
+
+    pub fn turn(&self) -> Option<&'a str> {
+        self.turn
     }
 
     /// Record undo information for this call's file changes in `journal`.

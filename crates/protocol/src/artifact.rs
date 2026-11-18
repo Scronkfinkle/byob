@@ -101,6 +101,10 @@ pub struct ArtifactVersion {
     pub note: String,
     #[serde(default)]
     pub size: u64,
+    /// The request (turn) that saved it: later saves in the same request overwrite it
+    /// instead of adding versions (13.13; empty for older versions and saves without one).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub turn: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,7 +229,7 @@ mod tests {
 
     #[test]
     fn latest_and_lookup() {
-        let v = |n| ArtifactVersion { n, path: format!("v{n}"), created_at: 0, note: String::new(), size: 1 };
+        let v = |n| ArtifactVersion { n, path: format!("v{n}"), created_at: 0, note: String::new(), size: 1, turn: String::new() };
         let a = Artifact {
             id: "a".into(),
             kind: ArtifactKind::Html,
