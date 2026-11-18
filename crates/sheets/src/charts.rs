@@ -126,49 +126,104 @@ fn spec(book: &mut Book, src: &ChartSource, base: &Map<String, Value>) -> R<Valu
     serde_json::to_value(&checked).map_err(|e| SheetError::Msg(e.to_string()))
 }
 
-/// `chart_sheet`: a chart artifact drawn from a sheet, kept in step with it.
-pub fn chart_sheet(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value> {
-    let ws = cx.ws()?;
-    let src = resolve(ws, cx.chat, args.get("sheet"), true)?;
-    if !src.artifact {
-        return msg("chart_sheet charts a spreadsheet artifact: make one from the file with create_sheet (`from`) first, then chart that.");
-    }
-    let book = store.read_book(&src)?;
-    let tab = args.get("tab").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
-    let sh = sheet_index(book, tab, false, None)?;
-    let tab = book.sheet_names().get(sh as usize).cloned().unwrap_or_default();
-    let hr = match args.get("header_row").and_then(Value::as_i64) {
-        Some(r) if r >= 1 => r,
-        _ => header_row(book, sh),
+/// A linked chart of this chat: its latest spec and source.
+fn linked_chart(ws: &str, chat: Option<&str>, id: &str) -> R<(Value, ChartSource)> {
+    let meta = crate::store::read_meta(ws, id).filter(|m| chat.is_none() || s(m, "chat") == chat);
+    let Some(meta) = meta.filter(|m| s(m, "content_type") == Some(CHART_TYPE)) else {
+        return msg(format!("There's no chart {id} in this chat."));
     };
-    let x = column(book, sh, hr, args.get("x").and_then(Value::as_str).unwrap_or_default())?;
-    let names: Vec<String> = match args.get("series") {
+    let spec = crate::store::latest(ws, &meta).1.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let Some(spec) = spec else { return msg(format!("Chart {id} couldn't be read.")) };
+    let Some(src) = spec.get("source").and_then(|v| serde_json::from_value::<ChartSource>(v.clone()).ok()) else {
+        return msg(format!("Chart {id} isn't drawn from a sheet; make a new one with chart_sheet."));
+    };
+    Ok((spec, src))
+}
+
+/// Column names the model gave (`series`: a list, or text with commas).
+fn names(v: Option<&Value>) -> Vec<String> {
+    match v {
         Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(str::to_owned).collect(),
         Some(Value::String(t)) => t.split(',').map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned).collect(),
         _ => Vec::new(),
+    }
+}
+
+/// `chart_sheet`: a chart artifact drawn from a sheet, kept in step with it; with `chart`, a
+/// change to that linked chart (type, title, columns; what isn't given stays).
+pub fn chart_sheet(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value> {
+    let ws = cx.ws()?;
+    let given = |k: &str| args.get(k).filter(|v| !v.is_null() && v.as_str() != Some(""));
+    let existing = match given("chart").and_then(Value::as_str) {
+        Some(id) => Some((id.to_owned(), linked_chart(ws, cx.chat, id)?)),
+        None => None,
     };
-    if names.is_empty() {
-        return msg("Give `series`: the column(s) with the numbers, by header or letter.");
+    let sheet_arg = match (given("sheet"), &existing) {
+        (Some(v), _) => Some(v.clone()),
+        (None, Some((_, (_, old)))) => Some(json!(old.sheet)),
+        (None, None) => None,
+    };
+    let src = resolve(ws, cx.chat, sheet_arg.as_ref(), true)?;
+    if !src.artifact {
+        return msg("chart_sheet charts a spreadsheet artifact: make one from the file with create_sheet (`from`) first, then chart that.");
     }
-    let mut series = Vec::new();
-    for n in names.iter().take(chart::MAX_SERIES) {
-        series.push(col_name(column(book, sh, hr, n)?));
-    }
-    let source = ChartSource { sheet: src.aid.clone(), tab, header_row: u32::try_from(hr).unwrap_or(1), x: col_name(x), series };
+    let old = existing.as_ref().map(|(_, (spec, src))| (spec, src)).filter(|(_, o)| o.sheet == src.aid);
+    let book = store.read_book(&src)?;
+    let tab = given("tab").and_then(Value::as_str).map(str::trim).or(old.map(|(_, o)| o.tab.as_str())).filter(|t| !t.is_empty());
+    let sh = sheet_index(book, tab, false, None)?;
+    let tab = book.sheet_names().get(sh as usize).cloned().unwrap_or_default();
+    let hr = match (given("header_row").and_then(Value::as_i64), old) {
+        (Some(r), _) if r >= 1 => r,
+        (_, Some((_, o))) => i64::from(o.header_row),
+        _ => header_row(book, sh),
+    };
+    let x = match (given("x").and_then(Value::as_str), old) {
+        (Some(x), _) => col_name(column(book, sh, hr, x)?),
+        (None, Some((_, o))) => o.x.clone(),
+        (None, None) => return msg("Give `x`: the column along the bottom, by header or letter."),
+    };
+    let wanted = names(given("series"));
+    let series = if wanted.is_empty() {
+        match old {
+            Some((_, o)) => o.series.clone(),
+            None => return msg("Give `series`: the column(s) with the numbers, by header or letter."),
+        }
+    } else {
+        let mut out = Vec::new();
+        for n in wanted.iter().take(chart::MAX_SERIES) {
+            out.push(col_name(column(book, sh, hr, n)?));
+        }
+        out
+    };
+    let source = ChartSource { sheet: src.aid.clone(), tab, header_row: u32::try_from(hr).unwrap_or(1), x, series };
     let mut base = Map::new();
-    base.insert("type".into(), json!(args.get("type").and_then(Value::as_str).unwrap_or("bar")));
-    for k in ["title", "unit", "stacked"] {
-        if let Some(v) = args.get(k).filter(|v| !v.is_null()) {
+    let old_spec = old.map(|(spec, _)| spec);
+    for k in ["type", "title", "unit", "stacked"] {
+        if let Some(v) = given(k).or_else(|| old_spec.and_then(|o| o.get(k)).filter(|v| !v.is_null())) {
             base.insert(k.into(), v.clone());
         }
     }
+    base.entry("type").or_insert(json!("bar"));
     let spec = spec(book, &source, &base)?;
     let title = s(&spec, "title").unwrap_or("Chart").to_owned();
     let rows = spec.get("data").and_then(Value::as_array).map_or(0, Vec::len);
+    if let Some((id, _)) = &existing {
+        let filename =
+            crate::store::read_meta(ws, id).and_then(|m| s(&m, "filename").map(str::to_owned)).unwrap_or_else(|| format!("{}.chart.json", slug(&title)));
+        let path = store.save_tmp(spec.to_string().as_bytes(), &filename)?;
+        let text = format!(
+            "Changed the chart \"{title}\" ({id}): {} chart of {rows} rows, x = column {}, series = {}, from {}. Still linked to the sheet.",
+            s(&spec, "type").unwrap_or("bar"),
+            source.x,
+            source.series.join(", "),
+            src.label()
+        );
+        return Ok(json!({"text": text, "artifact": {"id": id, "title": title, "file": path, "note": "Changed"}}));
+    }
     let filename = format!("{}.chart.json", slug(&title));
     let path = store.save_tmp(spec.to_string().as_bytes(), &filename)?;
     let text = format!(
-        "Made the chart \"{title}\" from {} ({rows} rows, x = column {}, series = {}). It is linked to the sheet: whenever the sheet changes (your edits or the user's), the chart is drawn again, so don't remake it. It shows in the chat; give the main takeaway, not the numbers.",
+        "Made the chart \"{title}\" from {} ({rows} rows, x = column {}, series = {}). It is linked to the sheet: whenever the sheet changes (your edits or the user's), the chart is drawn again, so don't remake it; to change its type, title or columns, call chart_sheet with `chart` set to its id. It shows in the chat; give the main takeaway, not the numbers.",
         src.label(),
         source.x,
         source.series.join(", ")

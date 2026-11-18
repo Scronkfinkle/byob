@@ -767,6 +767,24 @@ pub fn describe_sheet(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value>
     let mut lines = describe(book, Some(&src));
     if src.artifact {
         lines.extend(user_edit_lines(store.entries.get(&src.aid)));
+        // Charts drawn from it: they redraw themselves, so the model shouldn't make them again.
+        let charts = crate::charts::linked(cx.ws()?, cx.chat, &src.aid);
+        if !charts.is_empty() {
+            let list: Vec<String> = charts
+                .iter()
+                .map(|(id, spec)| {
+                    let series: Vec<&str> = spec["series"].as_array().into_iter().flatten().filter_map(|s| s["label"].as_str()).collect();
+                    format!(
+                        "\"{}\" ({id}: {} of {} by {})",
+                        spec["title"].as_str().unwrap_or("chart"),
+                        spec["type"].as_str().unwrap_or("bar"),
+                        series.join(", "),
+                        spec["x"].as_str().unwrap_or("?")
+                    )
+                })
+                .collect();
+            lines.push(format!("Charts drawn from this sheet (they redraw whenever it changes; change one with chart_sheet `chart`): {}.", list.join("; ")));
+        }
     }
     Ok(Value::String(lines.join("\n")))
 }

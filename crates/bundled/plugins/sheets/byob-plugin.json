@@ -151,12 +151,13 @@
     {
       "name": "chart_sheet",
       "title": "Chart a sheet",
-      "description": "Draw a chart from a spreadsheet artifact's columns (computed values, formulas included). The chart stays linked: whenever the sheet changes it is drawn again, so never copy a sheet's numbers into make_chart. x and series are column headers (or letters); rows run from under the header to the last row with an x.",
+      "description": "Draw a chart from a spreadsheet artifact's columns (computed values, formulas included): give sheet, type, x and series. The chart stays linked: whenever the sheet changes it is drawn again, so never copy a sheet's numbers into make_chart. x and series are column headers (or letters); rows run from under the header to the last row with an x. To change a linked chart, give `chart` (its id) and only what changes.",
       "run": "backend",
       "params": {
         "type": "object",
         "properties": {
           "sheet": { "type": "string", "description": "The spreadsheet artifact's id." },
+          "chart": { "type": "string", "description": "To change a chart already drawn from a sheet (its type, title or columns) instead of making a new one: its id. What you don't give stays as it is." },
           "type": { "type": "string", "enum": ["bar", "line", "area", "pie", "scatter"] },
           "x": { "type": "string", "description": "Column along the bottom (pie: the slice names), by header or letter, e.g. \"Month\"." },
           "series": { "type": "array", "items": { "type": "string" }, "description": "Column(s) with the numbers, by header or letter, e.g. [\"Profit\"]." },
@@ -166,7 +167,7 @@
           "unit": { "type": "string", "description": "e.g. \"$\" or \"kg\"" },
           "stacked": { "type": "boolean" }
         },
-        "required": ["sheet", "type", "x", "series"]
+        "required": []
       }
     }
   ],

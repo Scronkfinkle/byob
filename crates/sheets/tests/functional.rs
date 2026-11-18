@@ -288,6 +288,31 @@ fn linked_charts_follow_inserted_and_deleted_columns() {
     assert_eq!(b.latest(&chart), before);
 }
 
+/// A linked chart can be changed (type, title, columns) without losing its link, as a new
+/// version of the same chart; describe_sheet lists the charts drawn from a sheet.
+#[test]
+fn linked_charts_can_be_changed_and_are_described() {
+    let mut b = Byob::new();
+    let (aid, _) = b.new_sheet("Profit");
+    b.tool("write_cells", json!({"sheet": aid, "rows": [["Month", "Sales", "Costs"], ["Jan", 10, 4], ["Feb", 12, 5]]}));
+    b.tool("chart_sheet", json!({"sheet": aid, "type": "bar", "x": "Month", "series": ["Sales"], "title": "Sales"}));
+    let chart = b.last_id.clone();
+    let d = b.tool("describe_sheet", json!({"sheet": aid}));
+    assert!(d.contains("Charts drawn from this sheet") && d.contains(&format!("\"Sales\" ({chart}: bar of Sales by Month)")), "{d}");
+    // Only the type and a series: everything else stays, the link too.
+    let out = b.tool("chart_sheet", json!({"chart": chart, "type": "line", "series": ["Sales", "Costs"]}));
+    assert!(out.contains("Changed the chart") && out.contains("Still linked"), "{out}");
+    assert_eq!(b.last_id, chart, "the same chart");
+    assert_eq!(b.latest(&chart), 2);
+    let meta = b.meta(&chart);
+    let v = meta["versions"].as_array().unwrap().last().unwrap().clone();
+    let spec: Value = serde_json::from_slice(&std::fs::read(b.ws.path().join(v["path"].as_str().unwrap())).unwrap()).unwrap();
+    assert_eq!((&spec["type"], &spec["title"], &spec["source"]["series"]), (&json!("line"), &json!("Sales"), &json!(["B", "C"])));
+    // A chart that isn't drawn from a sheet, or isn't there: said plainly.
+    assert!(b.tool("chart_sheet", json!({"chart": "nope", "type": "pie"})).contains("There's no chart nope"));
+    assert!(b.tool("chart_sheet", json!({"sheet": aid, "type": "bar"})).contains("Give `x`"));
+}
+
 /// Every node of `tree` (depth first).
 fn nodes(tree: &Value) -> Vec<&Value> {
     let mut out = vec![tree];
