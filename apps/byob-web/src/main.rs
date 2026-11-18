@@ -29,13 +29,6 @@ fn main() {
                     if let Some(prefs) = cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::theme::Prefs>(s, byob_ui_egui::theme::Prefs::STORAGE_KEY)) {
                         ui.restore_prefs(prefs);
                     }
-                    // `#backdrop=NAME`: one of byob's scenes from the start (as `--backdrop`).
-                    if let Some(scene) = hash_value("backdrop").and_then(|n| byob_ui_egui::cockpit::scene(&n)) {
-                        let mut prefs = ui.prefs().clone();
-                        prefs.cockpit.set_scene(scene);
-                        prefs.cockpit.trial = false;
-                        ui.set_prefs(prefs);
-                    }
                     let mut compositor = None;
                     if let Some(rs) = &cc.wgpu_render_state {
                         ui.enable_backdrops(rs);

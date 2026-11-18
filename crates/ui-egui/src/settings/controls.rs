@@ -13,23 +13,20 @@ use crate::theme::file::{self, ThemeDef};
 use crate::theme::{self, Accent, Align, BubbleStyle, ChartPalette, Density, Knobs, MonoFont, Prefs, ROLES, ThemeKind, Tokens, UiFont, contrast, hex};
 
 impl ByobApp {
-    /// Off, byob's scenes, or the one the model wrote (kept while it's chosen).
+    /// The backdrop is the model's (or a file's): on or off here, made by asking.
     fn backdrop_picker(&mut self, ui: &mut egui::Ui, t: &Tokens, c: &mut crate::cockpit::Cockpit) {
         if !self.stage.available() {
             ui.label(RichText::new("This window can't draw shaders").color(t.text_faint));
             return;
         }
-        if ui.selectable_label(c.backdrop.is_empty(), "Off").clicked() {
+        if c.backdrop.is_empty() {
+            ui.label(RichText::new("None: ask byob for one (\"make it a starship's bridge\")").color(t.text_dim));
+            return;
+        }
+        let lines = c.backdrop.lines().count();
+        ui.label(RichText::new(format!("On ({lines} lines)")).color(t.text_dim));
+        if ui.button("Remove").on_hover_text("Switch the backdrop off (byob can undo it: \"undo that\")").clicked() {
             c.set_backdrop("");
-        }
-        for s in crate::cockpit::SCENES {
-            let label = format!("{}{}", s.name[..1].to_uppercase(), &s.name[1..]);
-            if ui.selectable_label(c.backdrop == s.source, label).clicked() && c.backdrop != s.source {
-                c.set_scene(s);
-            }
-        }
-        if !c.backdrop.is_empty() && !crate::cockpit::SCENES.iter().any(|s| s.source == c.backdrop) {
-            let _ = ui.selectable_label(true, "Custom").on_hover_text(format!("Written by the model ({} lines)", c.backdrop.lines().count()));
         }
     }
 }

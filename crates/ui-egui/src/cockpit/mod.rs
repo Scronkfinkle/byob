@@ -51,26 +51,6 @@ impl Default for Cockpit {
 /// How long a new backdrop is drawn before it's trusted to come back at the next start.
 pub const TRIAL_SECONDS: f64 = 3.0;
 
-/// A backdrop byob comes with.
-pub struct Scene {
-    pub name: &'static str,
-    pub source: &'static str,
-    /// The glass and gap it looks right with (set with it; a change can say otherwise).
-    pub glass: f32,
-    pub gap: f32,
-}
-
-/// The backdrops byob comes with.
-pub const SCENES: &[Scene] = &[
-    Scene { name: "cockpit", source: include_str!("scenes/cockpit.wgsl"), glass: 0.6, gap: 14.0 },
-    Scene { name: "aurora", source: include_str!("scenes/aurora.wgsl"), glass: 0.72, gap: 10.0 },
-];
-
-/// A bundled scene by name.
-pub fn scene(name: &str) -> Option<&'static Scene> {
-    SCENES.iter().find(|s| s.name.eq_ignore_ascii_case(name.trim()))
-}
-
 impl Cockpit {
     pub const GLASS_RANGE: std::ops::RangeInclusive<f32> = 0.2..=1.0;
     pub const GAP_RANGE: std::ops::RangeInclusive<f32> = 0.0..=32.0;
@@ -99,13 +79,6 @@ impl Cockpit {
         }
         self.trial = false;
         (self, None)
-    }
-
-    /// Use a bundled scene, with its glass and gap.
-    pub fn set_scene(&mut self, scene: &Scene) {
-        self.set_backdrop(scene.source);
-        self.glass = scene.glass;
-        self.gap = scene.gap;
     }
 
     /// Set a new backdrop (`""` for none), on trial.
@@ -354,13 +327,16 @@ pub fn glaze(t: &mut crate::theme::Tokens, glass: f32) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A small scene for tests.
+    pub(crate) const SCENE: &str = "fn scene(p: vec2<f32>) -> vec4<f32> {\n    return vec4<f32>(u.accent.rgb * fbm2(p * 0.01), 1.0);\n}\n";
 
     #[test]
     fn a_backdrop_still_on_trial_is_dropped_at_the_next_start() {
         let mut c = Cockpit::default();
-        c.set_scene(scene("cockpit").unwrap());
+        c.set_backdrop(SCENE);
         assert!(c.trial);
         let (back, note) = c.clone().restored();
         assert!(back.backdrop.is_empty() && note.is_some());
@@ -381,7 +357,7 @@ mod tests {
     #[test]
     fn without_wgpu_there_is_no_backdrop() {
         let mut stage = Stage::default();
-        let c = Cockpit { backdrop: scene("aurora").unwrap().source.into(), ..Default::default() };
+        let c = Cockpit { backdrop: SCENE.into(), ..Default::default() };
         assert!(!stage.available() && !stage.active(&c));
     }
 }

@@ -1,8 +1,10 @@
-# The cockpit (experimental, branch `exp/cockpit`)
+# The cockpit (experimental)
 
 Some users want byob to look like anything they can describe ("a bounty hunter's gunship
-cockpit"), not just a recoloured chat app. This branch explores how far that goes on egui,
-without switching UI frameworks, in three steps, each usable on its own:
+cockpit"), not just a recoloured chat app. This explores how far that goes on egui,
+without switching UI frameworks, in four parts, each usable on its own. byob ships the
+capabilities and the guide agents re-theme with, not themes of its own: every scene is
+written by the model (or loaded from a file).
 
 1. **Backdrops**: a WGSL shader drawn behind byob, with the panels as glass over it.
 2. **Free arrangement**: the window's parts as modules placed anywhere, in bezels.
@@ -17,9 +19,8 @@ bundled Appearance plugin), in Settings → Appearance → Cockpit, and from the
 ## Trying it
 
 ```sh
-scripts/headless.sh --backdrop cockpit --arrangement cockpit --look controls=hud \
+scripts/headless.sh --backdrop my-scene.wgsl --arrangement floating --look controls=hud \
     --look accent=#e8a33d --screenshot /tmp/cockpit.png     # or plain `byob …` for a window
-byob --backdrop my-scene.wgsl          # your own scene (checked first)
 byob --arrangement focus --arranging   # the chat alone; handles to drag parts around
 BYOB_NO_BACKDROP=1 byob                # never draw backdrops (a scene that misbehaves)
 ```
@@ -51,7 +52,7 @@ example) and the current custom shader's source.
     scene changes; inputs are written each frame. `install` replaces wgpu's default error
     handler (which ends the process) with one that logs and reports.
   - `mod.rs`: the per-device settings (`Cockpit`: backdrop, glass, gap, trial,
-    arrangement), the bundled scenes, and `Stage` (draws the scene, eases `busy`, finds the
+    arrangement), and `Stage` (draws the scene, eases `busy`, finds the
     hovered control via `interaction_snapshot` + `read_response`, times the trial).
   - `arrange.rs`: modules, places (% of the window, so arrangements survive resizing),
     bezels (glass, instrument, bare), presets, least sizes (part + bezel).
@@ -82,7 +83,8 @@ example) and the current custom shader's source.
   read the look and layout, then wrote an ambitious scene of its own: a planet's limb in the
   canopy, star layers, rivet rows, rust and scorch from fbm, a cracked pane, a lock reticle
   that tightens while it works (`u.busy`). With only colours and a bundled scene it applied
-  an amber accent, the cockpit backdrop, glass and corners in one call.
+  an amber accent, a backdrop, glass and corners in one call (byob then still shipped two
+  scenes of its own; it doesn't any more).
 - **It never got to apply its own shader**: it thinks for 60–80k characters first. With the
   server's default output limit (~8k tokens) the reply ended mid-thought; with 30k it ended
   mid-tool-call (the call left as text). The guide now has a worked example to adapt.
@@ -132,6 +134,6 @@ this runs: the window is drawn exactly as before.
 7. Relighting and bloom over the composited UI (the overlay sampling the UI texture).
 
 Tested in the browser with headless Chromium (software WebGL): composited and frosted, with
-`#backdrop=aurora` in the URL. Not done: integrated-GPU performance, HTML apps (the Servo view)
-inside a composited window, and light themes (the bundled scenes are dark; light glass over
+a backdrop saved in the browser's settings. Not done: integrated-GPU performance, HTML apps (the Servo view)
+inside a composited window, and light themes (scenes tend to be dark; light glass over
 them turns grey).

@@ -156,15 +156,15 @@ settings). "Undo that" puts back the look or layout from before byob's last chan
 
 **Cockpit** (experimental; Settings → Appearance → Cockpit, or ask byob, e.g. "make it a
 starship's bridge"): a **backdrop**, a shader scene drawn behind the panels, which turn to glass
-over it (byob's own: cockpit, aurora; or one byob writes in WGSL, checked before it runs and
+over it (byob writes it in WGSL for the place or mood you describe, checked before it runs and
 refused with the line and reason when it doesn't compile); **frosted glass** (the scene blurred
 behind the panels, when a backdrop was on as byob started); the **arrangement**: docked as
 usual, or free, with the header, chat list, chat, message box and panes placed anywhere, each in
-a glass, instrument or bare frame (floating, cockpit and focus to start from; ⋯ → Arrange
+a glass, instrument or bare frame and labelled as you like (floating and focus to start from; ⋯ → Arrange
 panels… to drag, resize or hide them; Dock everything to go back); and **controls**: standard,
 HUD, plate or pill buttons. A new backdrop that byob closes on within a few seconds is switched
 off at the next start; `BYOB_NO_BACKDROP=1` starts without any. From a terminal: `--backdrop
-cockpit|aurora|FILE.wgsl|off`, `--arrangement NAME`, `--look KEY=VALUE`.
+FILE.wgsl|off`, `--arrangement NAME`, `--look KEY=VALUE`.
 
 ## Plugins
 

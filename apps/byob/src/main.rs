@@ -24,11 +24,11 @@
 //!     --theme NAME            system | dark | light, or a theme: a preset id (catppuccin-mocha,
 //!                             gruvbox-dark, nord, …) or the name of a file in <config>/themes
 //!                             (overrides the saved preference)
-//!     --backdrop SCENE        a shader behind glass panels (experimental): cockpit, aurora,
-//!                             a .wgsl file with fn scene (see byob_ui_egui::cockpit), or off
+//!     --backdrop FILE         a shader behind glass panels (experimental): a .wgsl file with
+//!                             fn scene (see byob_ui_egui::cockpit::wgsl::GUIDE), or off
 //!                             (overrides the saved preference; BYOB_NO_BACKDROP=1 disables them)
-//!     --arrangement NAME      where the window's parts are (experimental): docked, floating,
-//!                             cockpit or focus (overrides the saved preference)
+//!     --arrangement NAME      where the window's parts are (experimental): docked, floating
+//!                             or focus (overrides the saved preference)
 //!     --arranging             start with the free arrangement's handles showing (testing)
 //!     --look KEY=VALUE        change one appearance setting as the model's ui_look would
 //!                             (repeatable; e.g. --look controls=hud --look accent=orange)
@@ -199,13 +199,13 @@ fn parse_args() -> Result<Args, String> {
                 args.theme = Some(it.next().ok_or("--theme needs a name")?);
             }
             "--backdrop" => {
-                let name = it.next().ok_or("--backdrop needs a scene (cockpit, aurora), a .wgsl file or off")?;
+                let name = it.next().ok_or("--backdrop needs a .wgsl file or off")?;
                 args.backdrop = Some(backdrop_source(&name)?);
             }
             "--arrangement" => {
-                let name = it.next().ok_or("--arrangement needs a name (docked, floating, cockpit, focus)")?;
+                let name = it.next().ok_or("--arrangement needs a name (docked, floating, focus)")?;
                 if name != "docked" && byob_ui_egui::cockpit::arrange::Arrangement::preset(&name).is_none() {
-                    return Err(format!("--arrangement {name}: docked, floating, cockpit or focus"));
+                    return Err(format!("--arrangement {name}: docked, floating or focus"));
                 }
                 args.arrangement = Some(name);
             }
@@ -641,10 +641,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
             }
             if let Some(arg) = &backdrop_arg {
                 // Asked for by name: trusted, not on trial.
-                match byob_ui_egui::cockpit::scene(arg) {
-                    Some(scene) => prefs.cockpit.set_scene(scene),
-                    None => prefs.cockpit.backdrop.clone_from(arg),
-                }
+                prefs.cockpit.backdrop.clone_from(arg);
                 prefs.cockpit.trial = false;
             }
             if let Some(name) = &arrangement_arg {
@@ -710,18 +707,13 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
     result
 }
 
-/// `--backdrop`: a bundled scene, a WGSL file (checked now), or off (`""`).
+/// `--backdrop`: a WGSL file (checked now), or off (`""`).
 fn backdrop_source(name: &str) -> Result<String, String> {
-    use byob_ui_egui::cockpit;
     if name.eq_ignore_ascii_case("off") {
         return Ok(String::new());
     }
-    if let Some(scene) = cockpit::scene(name) {
-        return Ok(scene.name.to_owned());
-    }
-    let names: Vec<&str> = cockpit::SCENES.iter().map(|s| s.name).collect();
-    let source = std::fs::read_to_string(name).map_err(|e| format!("--backdrop {name}: not a scene ({}) or a file I can read: {e}", names.join(", ")))?;
-    cockpit::wgsl::check(&source).map_err(|e| format!("--backdrop {name}: {e}"))?;
+    let source = std::fs::read_to_string(name).map_err(|e| format!("--backdrop {name}: a .wgsl file I can read, or off: {e}"))?;
+    byob_ui_egui::cockpit::wgsl::check(&source).map_err(|e| format!("--backdrop {name}: {e}"))?;
     Ok(source)
 }
 

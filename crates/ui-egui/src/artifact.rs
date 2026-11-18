@@ -1426,10 +1426,6 @@ mod tests {
         assert!(!text.contains("Shown beside the chat") && text.contains("NOTES"), "{text}");
     }
 
-    /// Maximize: the pane takes the window (drawn the way `ByobApp::ui` does), the same app
-    /// keeps running at the new size; Esc restores unless a widget had focus (Esc leaves that
-    /// first); collapsing restores too; phones ignore it.
-    #[test]
     /// Regression: on a phone that wasn't looking when the artifacts were made (no tabs on
     /// this device), "Show artifacts" did nothing and there was no floating button: it now
     /// shows the newest, and the button is there.
@@ -1460,6 +1456,9 @@ mod tests {
         assert_eq!(s.selected_artifact().map(|a| a.0.id.clone()), Some("old".to_owned()));
     }
 
+    /// Maximize: the pane takes the window (drawn the way `ByobApp::ui` does), the same app
+    /// keeps running at the new size; Esc restores unless a widget had focus (Esc leaves that
+    /// first); collapsing restores too; phones ignore it.
     #[test]
     fn maximize_toggles_with_the_shortcut_and_esc_restores() {
         let mut s = Artifacts::default();

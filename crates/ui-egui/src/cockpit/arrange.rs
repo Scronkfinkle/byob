@@ -210,16 +210,6 @@ impl Arrangement {
         (Module::Plugins, Spot::At([66.0, 8.5, 33.0, 90.5]), Bezel::Glass, ""),
     ];
 
-    /// A cockpit: the top third left open as a canopy for the backdrop, consoles below.
-    const COCKPIT: Preset = [
-        (Module::Header, Spot::At([20.0, 1.5, 60.0, 6.5]), Bezel::Instrument, "FLIGHT DECK"),
-        (Module::Chats, Spot::At([1.5, 36.0, 19.0, 62.5]), Bezel::Instrument, "NAV"),
-        (Module::Chat, Spot::At([22.0, 36.0, 56.0, 48.0]), Bezel::Instrument, "COMMS"),
-        (Module::Composer, Spot::At([22.0, 85.5, 56.0, 13.0]), Bezel::Instrument, "TRANSMIT"),
-        (Module::Pane, Spot::At([79.5, 36.0, 19.0, 62.5]), Bezel::Instrument, "SYSTEMS"),
-        (Module::Plugins, Spot::At([79.5, 10.0, 19.0, 25.0]), Bezel::Instrument, "AUX"),
-    ];
-
     /// One column in the middle, nothing else but the header.
     const FOCUS: Preset = [
         (Module::Header, Spot::At([20.0, 2.0, 60.0, 6.0]), Bezel::Glass, ""),
@@ -230,17 +220,13 @@ impl Arrangement {
         (Module::Plugins, Spot::At([62.0, 10.0, 36.0, 87.0]), Bezel::Glass, ""),
     ];
 
-    pub const PRESETS: [(&'static str, &'static str); 3] = [
-        ("floating", "byob's usual layout with space between the parts"),
-        ("cockpit", "consoles under an open canopy at the top, as instruments"),
-        ("focus", "the chat alone in the middle"),
-    ];
+    pub const PRESETS: [(&'static str, &'static str); 2] =
+        [("floating", "byob's usual layout with space between the parts"), ("focus", "the chat alone in the middle")];
 
     /// A bundled arrangement by name (free).
     pub fn preset(name: &str) -> Option<Self> {
         let p = match name.trim().to_ascii_lowercase().as_str() {
             "floating" | "free" => Self::FLOATING,
-            "cockpit" => Self::COCKPIT,
             "focus" => Self::FOCUS,
             _ => return None,
         };
@@ -374,9 +360,12 @@ mod tests {
     #[test]
     fn modules_keep_their_least_size_and_stay_on_screen() {
         let screen = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 800.0));
-        let mut a = Arrangement::preset("cockpit").unwrap();
+        let mut a = Arrangement::preset("floating").unwrap();
+        a.places.insert("chat".into(), Spot::At([22.0, 36.0, 56.0, 48.0]));
         assert_eq!(a.rect(Module::Chat, screen), Some(Rect::from_min_size(pos2(220.0, 288.0), vec2(560.0, 384.0))));
         a.places.insert("header".into(), Spot::At([90.0, 95.0, 5.0, 3.0]));
+        a.bezels.insert("header".into(), Bezel::Instrument);
+        a.labels.insert("header".into(), "DECK".into());
         let h = a.rect(Module::Header, screen).unwrap();
         assert!(screen.contains_rect(h) && h.width() >= 360.0 + 32.0 && h.height() >= 40.0 + 34.0, "room for the header and its instrument bezel: {h:?}");
         assert_eq!(Arrangement::preset("focus").unwrap().rect(Module::Chats, screen), None);
@@ -393,7 +382,7 @@ mod tests {
 
     #[test]
     fn stored_arrangements_drop_unknown_modules_and_cut_labels() {
-        let mut a = Arrangement::preset("cockpit").unwrap();
+        let mut a = Arrangement::preset("floating").unwrap();
         a.places.insert("warp_drive".into(), Spot::Hidden);
         a.labels.insert("chat".into(), "x".repeat(100));
         a.labels.insert("composer".into(), "  ".into());

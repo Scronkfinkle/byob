@@ -63,14 +63,12 @@ fn arrangement_fields(a: &cockpit::arrange::Arrangement, fields: &mut Vec<LookFi
     }
 }
 
-/// What `backdrop` is now, for the model: off, a bundled scene's name, or the model's own.
+/// What `backdrop` is now, for the model: off, or a scene (its code is a note).
 fn backdrop_value(source: &str) -> String {
     if source.is_empty() {
-        return "off".into();
-    }
-    match cockpit::SCENES.iter().find(|s| s.source == source) {
-        Some(s) => s.name.into(),
-        None => format!("custom ({} lines, in the note backdrop_source: read ui_look with notes: true)", source.lines().count()),
+        "off".into()
+    } else {
+        format!("on ({} lines of WGSL, in the note backdrop_source: read ui_look with notes: true)", source.lines().count())
     }
 }
 
@@ -112,17 +110,16 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef], backdrop
     let mut notes = std::collections::BTreeMap::new();
     if backdrops {
         let c = &prefs.cockpit;
-        let names: Vec<&str> = cockpit::SCENES.iter().map(|s| s.name).collect();
         fields.push(field(
             "backdrop",
             json!(backdrop_value(&c.backdrop)),
-            &format!("a scene drawn behind the panels, which turn to glass over it: off, one of byob's ({}; sets glass and panel_gap to suit), or your own WGSL shader code (read ui_look with notes: true first, for how)", names.join(", ")),
+            "a scene drawn behind the panels, which turn to glass over it: off, or WGSL shader code you write (read ui_look with notes: true first: the guide says how, and how to re-theme the whole window around it)",
         ));
         fields.push(field("glass", round2(c.glass), "how opaque the panels are over a backdrop, 0.2 (mostly see-through) to 1 (opaque)"));
         fields.push(field("frost", round2(c.frost), "how frosted the glass is over a backdrop, 0 (clear) to 1 (blurs what's behind the panels); only where the window can (a backdrop on when byob started)"));
         fields.push(field("panel_gap", round2(c.gap), "space between the panels over a backdrop, where it shows, 0 to 32 points"));
         notes.insert("backdrop_guide".to_owned(), cockpit::wgsl::GUIDE.to_owned());
-        if !c.backdrop.is_empty() && !cockpit::SCENES.iter().any(|s| s.source == c.backdrop) {
+        if !c.backdrop.is_empty() {
             notes.insert("backdrop_source".to_owned(), c.backdrop.clone());
         }
     }
@@ -205,10 +202,10 @@ pub fn change(prefs: &mut Prefs, history: &mut Vec<Prefs>, changes: &LookChanges
     problems
 }
 
-/// A new backdrop: off, a bundled scene by name, or WGSL that has to compile.
+/// A new backdrop: off, or WGSL that has to compile.
 fn backdrop(c: &mut cockpit::Cockpit, v: &Value, backdrops: bool) -> Result<(), String> {
     let Some(text) = v.as_str() else {
-        return Err(format!("backdrop: off, a scene's name or WGSL code, not {v}"));
+        return Err(format!("backdrop: off, or WGSL code, not {v}"));
     };
     let name = text.trim().to_ascii_lowercase();
     if matches!(name.as_str(), "" | "off" | "none" | "no") {
@@ -217,10 +214,6 @@ fn backdrop(c: &mut cockpit::Cockpit, v: &Value, backdrops: bool) -> Result<(), 
     }
     if !backdrops {
         return Err("backdrop: this window can't draw shaders (it isn't drawing with wgpu)".into());
-    }
-    if let Some(scene) = cockpit::scene(&name) {
-        c.set_scene(scene);
-        return Ok(());
     }
     cockpit::wgsl::check(text).map_err(|e| format!("backdrop: {e}"))?;
     c.set_backdrop(text);
@@ -404,7 +397,7 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
                             *a = p;
                             Ok(())
                         }
-                        None => Err(format!("arrangement: docked, free, floating, cockpit or focus, not {v}")),
+                        None => Err(format!("arrangement: docked, free, floating or focus, not {v}")),
                     },
                 }
             }
@@ -507,25 +500,22 @@ mod tests {
     #[test]
     fn backdrops_are_checked_before_they_are_kept() {
         let mut p = Prefs::default();
-        assert!(apply(&mut p, &changes(json!({"backdrop": "Cockpit", "glass": 0.5})), true, &[], true).is_empty());
-        let scene = crate::cockpit::scene("cockpit").unwrap();
-        assert_eq!(p.cockpit.backdrop, scene.source);
-        assert!(p.cockpit.trial);
-        assert_eq!((p.cockpit.glass, p.cockpit.gap), (0.5, scene.gap), "the scene's gap; the glass asked for with it");
         let r = report(&p, &Tokens::dark(), &[], true);
-        assert_eq!(r.get("backdrop"), Some(&json!("cockpit")));
+        assert_eq!(r.get("backdrop"), Some(&json!("off")));
         assert!(r.notes.contains_key("backdrop_guide") && !r.notes.contains_key("backdrop_source"));
+        assert!(!apply(&mut p, &changes(json!({"backdrop": "cockpit"})), true, &[], true).is_empty(), "no scenes by name: only code");
         let own = "fn scene(p: vec2<f32>) -> vec4<f32> {\n    return vec4<f32>(u.accent.rgb * 0.2, 1.0);\n}\n";
-        assert!(apply(&mut p, &changes(json!({"backdrop": own})), true, &[], true).is_empty());
+        assert!(apply(&mut p, &changes(json!({"backdrop": own, "glass": 0.5})), true, &[], true).is_empty());
+        assert!(p.cockpit.trial && p.cockpit.glass == 0.5);
         let r = report(&p, &Tokens::dark(), &[], true);
         assert_eq!(r.notes.get("backdrop_source").map(String::as_str), Some(own));
-        assert!(r.get("backdrop").unwrap().as_str().unwrap().starts_with("custom (3 lines"));
+        assert!(r.get("backdrop").unwrap().as_str().unwrap().starts_with("on (3 lines"));
         let bad = apply(&mut p, &changes(json!({"backdrop": "fn scene(p: vec2<f32>) -> vec4<f32> {\n  return oops;\n}"})), true, &[], true);
         assert!(bad.len() == 1 && bad[0].starts_with("backdrop: line 2:"), "{bad:?}");
         assert_eq!(p.cockpit.backdrop, own, "kept the one that worked");
         assert!(apply(&mut p, &changes(json!({"backdrop": "off"})), true, &[], true).is_empty());
         assert!(p.cockpit.backdrop.is_empty() && !p.cockpit.trial);
-        let no_gpu = apply(&mut p, &changes(json!({"backdrop": "aurora"})), true, &[], false);
+        let no_gpu = apply(&mut p, &changes(json!({"backdrop": own})), true, &[], false);
         assert!(no_gpu[0].contains("can't draw shaders"), "{no_gpu:?}");
         assert!(report(&p, &Tokens::dark(), &[], false).get("backdrop").is_none());
     }
@@ -541,7 +531,9 @@ mod tests {
         assert!(r.fields.len() <= byob_protocol::look::MAX_FIELDS, "{}", r.fields.len());
         let problems = apply(
             &mut p,
-            &changes(json!({"arrangement": "cockpit", "place.chat": "25 30 50 55", "bezel.chat": "bare", "label.composer": "Say it"})),
+            &changes(
+                json!({"arrangement": "floating", "place.chat": "25 30 50 55", "bezel.chat": "bare", "bezel.chats": "instrument", "label.chats": "NAV", "label.composer": "Say it"}),
+            ),
             true,
             &[],
             false,
@@ -553,7 +545,7 @@ mod tests {
         assert_eq!(
             (a.label(Module::Composer), a.label(Module::Chats), a.bezel(Module::Chats)),
             ("Say it", "NAV", Bezel::Instrument),
-            "the rest from the cockpit"
+            "labels and bezels on top of the floating arrangement"
         );
         let bad =
             apply(&mut p, &changes(json!({"place.warp": "1 2 3 4", "place.chat": "1 2", "bezel.pane": "chrome", "arrangement": "zen"})), true, &[], false);

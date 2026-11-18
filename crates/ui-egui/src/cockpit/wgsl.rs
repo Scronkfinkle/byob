@@ -168,6 +168,14 @@ Optionally also define fn overlay(p: vec2<f32>) -> vec4<f32>, drawn over the who
 
 Keep it cheap: loops with a small fixed bound (a few dozen steps), no loops over pixels. The panels are see-through over the backdrop (the look's glass setting, 1 opaque); text sits on them, so keep it calm where panel_sdf(p) < 0 or dim the scene there. A backdrop that fails to compile is refused with the line and the reason.
 
+Re-theming the whole window as a place or mood (\"a starship's bridge\", \"a rainy neon city\", \"a cosy library\"), in one ui_look call when you can:
+1. Colours first: mode, accent and the colour.* roles (app_bg, panel_bg, sidebar_bg, text, borders) in the palette of the place.
+2. The backdrop: a scene of the place behind the panels (keep it dark or calm where text sits), alive with u.busy and the pointer.
+3. glass, frost and panel_gap: how much of the scene shows through and between the panels.
+4. The arrangement, when the place has a shape: arrangement free (or floating to start from), place.<part> for where each part goes (leave open space where the scene should show), bezel.<part> (instrument for consoles and dials, glass, bare) and label.<part> (short words stamped on a bezel, in the place's own vocabulary).
+5. controls (hud, plate, pill), corners and fonts to match.
+Evoke a look the user names from films, games or brands with original details of your own (colours, shapes, light, words); don't copy logos, insignia or text from them. Afterwards say what you changed and that \"undo that\" puts the last look back.
+
 A small example to start from (a sky over a glowing horizon, the panels casting shadows from the pointer, the hovered control lit):
 
     const GLOW = vec3<f32>(1.0, 0.55, 0.2);
@@ -235,14 +243,6 @@ pub fn animated(source: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_scenes_byob_ships_compile() {
-        for s in super::super::SCENES {
-            assert_eq!(check(s.source), Ok(()), "{}", s.name);
-        }
-    }
-
-    /// The example in the guide is code that works.
     #[test]
     fn the_guides_example_compiles() {
         let start = GUIDE.find("    const GLOW").unwrap();
