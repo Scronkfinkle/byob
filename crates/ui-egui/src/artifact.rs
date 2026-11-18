@@ -379,6 +379,7 @@ impl Artifacts {
             views: &mut self.views,
             requests: &mut self.requests,
             links: Links { chat: self.chat.as_deref(), base: self.link_base.as_ref(), theme: &self.theme },
+            others: &self.list,
         };
         f(&mut cx)
     }
@@ -478,6 +479,7 @@ impl Artifacts {
             self.actions.push(match r {
                 Request::Open { id, version } => Action::Open { id, version },
                 Request::Send(text) => Action::Send(text),
+                Request::Show(id) => Action::Select { id, version: None },
             });
         }
         for a in std::mem::take(&mut self.actions) {
@@ -1086,6 +1088,50 @@ mod tests {
     fn frame(ctx: &egui::Context, f: impl FnMut(&mut egui::Ui)) {
         let mut out = ctx.run_ui(egui::RawInput::default(), f);
         out.textures_delta.clear();
+    }
+
+    /// A chart drawn from a sheet says so under it, and Open sheet shows the sheet.
+    #[test]
+    fn a_linked_chart_names_its_sheet_and_opens_it() {
+        let mut s = Artifacts::default();
+        let mut sheet = artifact("ledger", ArtifactKind::Text, "ledger.xlsx", &[1]);
+        sheet.title = "Ledger 2025".into();
+        let chart = artifact("profit", ArtifactKind::Chart, "profit.chart.json", &[1]);
+        s.apply(&ServerMsg::Artifacts { chat: Some("c".into()), artifacts: vec![sheet, chart] });
+        let spec = r#"{"version":1,"type":"bar","title":"Profit","x":"Month","series":[{"key":"Profit","label":"Profit"}],
+            "data":[{"Month":"Jan","Profit":6}],"source":{"sheet":"ledger","tab":"Sheet1","header_row":1,"x":"A","series":["D"]}}"#;
+        let ctx = egui::Context::default();
+        let t = Tokens::dark();
+        let refs = [ArtifactRef { id: "profit".into(), version: 1 }];
+        let draw = |s: &mut Artifacts, events: Vec<egui::Event>| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(900.0, 700.0))), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                s.begin_frame(ui.ctx(), &t, false);
+                egui::CentralPanel::default().show(ui, |ui| s.cards(ui, &t, &refs));
+            });
+            out.textures_delta.clear();
+            s.end_frame(&ctx);
+            let mut found = Vec::new();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+                match shape {
+                    egui::Shape::Text(t) => out.push((t.galley.text().to_owned(), t.pos + t.galley.rect.center().to_vec2())),
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    _ => {}
+                }
+            }
+            out.shapes.iter().for_each(|c| walk(&c.shape, &mut found));
+            found
+        };
+        draw(&mut s, vec![]);
+        s.apply(&ServerMsg::ArtifactFile { id: "profit".into(), version: 1, data: Some(media::encode(spec.as_bytes())), error: None });
+        let text = draw(&mut s, vec![]);
+        assert!(text.iter().any(|(t, _)| t.contains("From the sheet \u{201c}Ledger 2025\u{201d}")), "{text:?}");
+        let at = text.iter().find(|(t, _)| t == "Open sheet").map(|(_, p)| *p).expect("the button");
+        draw(&mut s, vec![egui::Event::PointerMoved(at)]);
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        draw(&mut s, vec![press(true)]);
+        draw(&mut s, vec![press(false)]);
+        assert_eq!(s.pane.active(), Some("ledger"), "the sheet is shown");
     }
 
     #[test]

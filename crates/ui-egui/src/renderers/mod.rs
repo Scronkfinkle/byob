@@ -261,6 +261,8 @@ pub(crate) enum Request {
     Open { id: String, version: u32 },
     /// Send the model a message as if the user typed it.
     Send(String),
+    /// Show another artifact of the chat (its latest version) in the pane.
+    Show(String),
 }
 
 /// Where an app version is served: `[base]/artifact/<chat>/<id>/<version>#theme`.
@@ -299,6 +301,8 @@ pub struct ArtifactCx<'a> {
     pub(crate) views: &'a mut view::ArtifactViews,
     pub(crate) requests: &'a mut Vec<Request>,
     pub(crate) links: Links<'a>,
+    /// The chat's artifacts (to name and open the ones this one refers to).
+    pub(crate) others: &'a [Artifact],
 }
 
 impl ArtifactCx<'_> {

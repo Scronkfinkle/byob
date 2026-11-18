@@ -39,7 +39,7 @@ impl Tool for MakeChart {
             description: format!(
                 "Draw a clean, interactive chart in the chat. Types: {}. Give rows of data and which column goes along the bottom (x) and which hold the numbers (series). \
                  For a CSV or JSON file in the workspace, pass `file` instead of `data`: rows with the same x are summed (or use agg: mean/count), dates can be grouped with bucket: month, and split_by makes one series per value of a column. \
-                 Prefer this over adding numbers up yourself.",
+                 Prefer this over adding numbers up yourself. For a spreadsheet (.xlsx or a spreadsheet artifact), use chart_sheet instead: its chart stays in step with the sheet.",
                 types.join(", ")
             ),
             parameters: json!({
@@ -124,7 +124,17 @@ fn make(args: &Value, workspace: &Path) -> Result<ToolOutput, String> {
 }
 
 /// Rows from a CSV or JSON file inside the workspace.
+/// Spreadsheet files: charted by the sheets plugin's chart_sheet, which reads their computed
+/// values and keeps the chart in step.
+const SPREADSHEET_SUFFIXES: [&str; 4] = [".xlsx", ".xlsm", ".xls", ".ods"];
+
 fn rows_from_file(workspace: &Path, file: &str) -> Result<Vec<Map<String, Value>>, String> {
+    let lower = file.trim().to_ascii_lowercase();
+    if SPREADSHEET_SUFFIXES.iter().any(|s| lower.ends_with(s)) {
+        return Err(format!(
+            "{file} is a spreadsheet; make_chart reads CSV or JSON. Use chart_sheet instead: it reads the sheet's computed values and redraws the chart whenever the sheet changes (open the file as a spreadsheet with create_sheet `from` first if it isn't one yet)."
+        ));
+    }
     let r = sandbox::resolve_follow(workspace, file).map_err(|e| format!("Couldn't use {file}: {e}"))?;
     let name = r.show();
     let meta = std::fs::metadata(&r.abs).map_err(|e| format!("Couldn't read {name}: {e}"))?;
@@ -461,6 +471,15 @@ mod tests {
         let out = run(&MakeChart, d.path(), json!({"type": "bar", "title": "x", "x": "nope", "series": ["sales"], "data": rows()}));
         assert!(out.failed && out.text.contains("\"nope\""));
         assert!(!d.path().join("charts").exists() || fs::read_dir(d.path().join("charts")).unwrap().count() == 0);
+    }
+
+    /// A spreadsheet file goes to chart_sheet (make_chart would read it as CSV text).
+    #[test]
+    fn spreadsheets_are_sent_to_chart_sheet() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("ledger.xlsx"), b"PK\x03\x04 not text").unwrap();
+        let out = run(&MakeChart, d.path(), json!({"type": "bar", "x": "Month", "series": ["Profit"], "file": "ledger.XLSX"}));
+        assert!(out.failed && out.text.contains("chart_sheet"), "{}", out.text);
     }
 
     #[test]
