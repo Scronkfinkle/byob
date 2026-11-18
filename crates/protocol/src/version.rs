@@ -22,7 +22,7 @@ use serde_json::Value;
 /// Bumped on a change an older peer can't survive (see the module docs).
 pub const PROTOCOL_MAJOR: u32 = 13;
 /// Bumped on additive changes; peers with the same major but another minor still talk.
-pub const PROTOCOL_MINOR: u32 = 13;
+pub const PROTOCOL_MINOR: u32 = 14;
 // Minors: 1 — `Artifact::content_type` (open artifact types; `kind` stays for 13.0 clients);
 // 2 — `PluginInfo::backend` (plugin backend processes); 3 — render sites: `PluginInfo::views`,
 // `View::owner`, `OpenView`/`CloseView`/`ViewEvent`, `LiveView` (cap `view_sites`); 4 — bundled
@@ -43,9 +43,14 @@ pub const PROTOCOL_MINOR: u32 = 13;
 // 11 — the layout: `ClientMsg::SetLayout`, `ServerMsg::Layout` (cap `layout`).
 // 12 — looks: `ClientMsg::ReportLook`, `ServerMsg::SetLook` (cap `look`).
 // 13 — going back: `ClientMsg::Rewind` (cap `rewind`).
+// 14 — HTML apps on the internet: `Artifact::network`, `ClientMsg::SetArtifactNetwork` (cap
+// `artifact_network`); `LookReport::notes`.
 
 /// Cap: the engine takes [`crate::ClientMsg::Rewind`] (and the client offers it).
 pub const CAP_REWIND: &str = "rewind";
+
+/// Cap: the engine takes [`crate::ClientMsg::SetArtifactNetwork`] (and the client offers it).
+pub const CAP_ARTIFACT_NETWORK: &str = "artifact_network";
 
 /// Cap: the peer handles [`crate::ClientMsg::Plugin`] / [`crate::ServerMsg::Plugin`].
 pub const CAP_PLUGIN_CHANNEL: &str = "plugin_channel";
@@ -75,6 +80,7 @@ pub fn client_caps() -> Vec<String> {
         crate::layout::CAP_LAYOUT.to_owned(),
         crate::look::CAP_LOOK.to_owned(),
         CAP_REWIND.to_owned(),
+        CAP_ARTIFACT_NETWORK.to_owned(),
     ]
 }
 
@@ -90,6 +96,7 @@ pub fn engine_caps() -> Vec<String> {
         crate::layout::CAP_LAYOUT.to_owned(),
         crate::look::CAP_LOOK.to_owned(),
         CAP_REWIND.to_owned(),
+        CAP_ARTIFACT_NETWORK.to_owned(),
     ]
 }
 

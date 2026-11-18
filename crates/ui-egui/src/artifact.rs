@@ -1090,7 +1090,15 @@ mod tests {
                 turn: String::new(),
             })
             .collect();
-        Artifact { id: id.into(), kind, content_type: kind.content_type(filename).into(), title: id.to_uppercase(), filename: filename.into(), versions }
+        Artifact {
+            id: id.into(),
+            kind,
+            content_type: kind.content_type(filename).into(),
+            title: id.to_uppercase(),
+            filename: filename.into(),
+            versions,
+            network: false,
+        }
     }
 
     fn frame(ctx: &egui::Context, f: impl FnMut(&mut egui::Ui)) {

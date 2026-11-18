@@ -441,6 +441,7 @@ mod tests {
             title: "A".into(),
             filename: "a.chart.json".into(),
             versions: vec![],
+            network: false,
         };
         assert_eq!(r.of(&a).caps().label, "chart");
         assert_eq!(ArtifactRenderers::empty().get(TYPE_MARKDOWN).caps().label, "file");

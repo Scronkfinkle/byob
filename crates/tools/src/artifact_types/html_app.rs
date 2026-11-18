@@ -14,7 +14,8 @@ use byob_protocol::artifact::TYPE_HTML;
 use super::{ArtifactHooks, ArtifactType, ArtifactTypes};
 
 /// What the system prompt says about writing HTML apps.
-pub const GUIDANCE: &str = "HTML apps: one self-contained file with inline <style> and <script>; nothing from the network (no CDNs, web fonts, fetch or images by URL — all blocked); \
+pub const GUIDANCE: &str = "HTML apps: one self-contained file with inline <style> and <script>; nothing from the network (no CDNs, web fonts, fetch or images by URL — all blocked) \
+unless the app needs the web (live data, a public API, a library from a CDN): then pass network: true to create_artifact or update_artifact, which lets it use HTTPS URLs (not plain http, nor byob itself; the user can switch it in the app's pane too); \
 style with the theme's CSS variables var(--byob-bg), var(--byob-surface), var(--byob-fg), var(--byob-muted), var(--byob-accent), var(--byob-on-accent), var(--byob-border), var(--byob-danger), var(--byob-success), var(--byob-warning), var(--byob-link), var(--byob-code-bg), var(--byob-code-fg), var(--byob-radius) \
 and var(--byob-chart-a) … var(--byob-chart-h) for data series (give fallbacks); \
 fit any container width (fluid layout, no fixed page widths).";
@@ -23,9 +24,10 @@ pub fn register(types: &ArtifactTypes) {
     types.register(
         ArtifactType::new(TYPE_HTML, "app", ArtifactKind::Html)
             .suffixes(&[".html", ".htm"])
-            .describe(".html (interactive single-file app: HTML+CSS+JS in one file, no network)")
+            .describe(".html (interactive single-file app: HTML+CSS+JS in one file, offline unless given network: true)")
             .pick("interactive tool or app → a single-file .html app")
             .guidance(GUIDANCE)
+            .network(true)
             .hooks(Arc::new(HtmlApp)),
     );
 }
@@ -39,7 +41,7 @@ impl ArtifactHooks for HtmlApp {
             .iter()
             .any(|p| lower.contains(p));
         let note = if external {
-            " Warning: it seems to load things from the network (a URL, fetch or a CDN). That is blocked in artifacts; inline everything instead."
+            " Warning: it seems to load things from the network (a URL, fetch or a CDN). That is blocked while the app is offline: inline everything, or give it network: true if it needs the web."
         } else {
             ""
         };

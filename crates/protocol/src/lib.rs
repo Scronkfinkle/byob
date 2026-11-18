@@ -193,6 +193,13 @@ pub enum ClientMsg {
         id: String,
         version: u32,
     },
+    /// Let artifact `id`, an HTML app in the chat this client looks at, use the internet
+    /// (HTTPS), or not (cap [`version::CAP_ARTIFACT_NETWORK`]). Viewers get
+    /// [`ServerMsg::ArtifactUpdated`]; a refusal is a notice.
+    SetArtifactNetwork {
+        id: String,
+        on: bool,
+    },
     /// Summarise the conversation in view now, so later requests start from the summary
     /// (also typed as `/compact [focus]`). `focus` says what the summary must keep.
     Compact {
@@ -1273,6 +1280,7 @@ mod tests {
             title: "Calc".into(),
             filename: "calc.html".into(),
             versions: vec![v],
+            network: false,
         };
         let msgs = vec![
             ServerMsg::Artifacts { chat: Some("c1".into()), artifacts: vec![a.clone()] },

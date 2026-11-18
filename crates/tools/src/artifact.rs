@@ -331,6 +331,7 @@ fn adopt(workspace: &Path, chat: &str, media: &[MediaRef]) -> Vec<ArtifactRef> {
                 title: clip(&title, MAX_TITLE_CHARS),
                 filename: name.clone(),
                 versions: vec![version],
+                network: false,
             };
             save(&dir, &Meta { chat: chat.to_owned(), artifact }).map(|()| id)
         });
@@ -342,13 +343,41 @@ fn adopt(workspace: &Path, chat: &str, media: &[MediaRef]) -> Vec<ArtifactRef> {
     out
 }
 
+/// Let artifact `id` of `chat` use the internet, or not (HTML apps only). Its index file.
+pub fn set_network(types: &ArtifactTypes, workspace: &Path, chat: &str, id: &str, on: bool) -> Result<PathBuf, String> {
+    let meta = load_in_chat(workspace, chat, id)?;
+    if on && !types.of(&meta.artifact).network {
+        return Err(format!("only HTML apps can use the internet; {id} isn't one"));
+    }
+    let (_, dir) = artifact_dir(workspace, id)?;
+    // The index as saved (with versions an undo hid), only the switch changed.
+    let mut all = serde_json::from_slice::<Meta>(&read_capped(&dir.join(META_FILE), MAX_META_BYTES)?).map_err(|e| e.to_string())?;
+    all.artifact.network = on;
+    save(&dir, &all)?;
+    Ok(dir.join(META_FILE))
+}
+
+/// `…/.byob/artifacts/<id>/artifact.json` → `<id>`.
+fn meta_path_id(path: &Path) -> Option<String> {
+    let s = path.to_string_lossy().replace('\\', "/");
+    let rest = s.strip_suffix(&format!("/{META_FILE}"))?;
+    let (dir, id) = rest.rsplit_once('/')?;
+    (dir.ends_with(ARTIFACT_DIR) && valid_id(id)).then(|| id.to_owned())
+}
+
 /// The artifact versions a finished tool call made: versions written by the artifact tools
-/// (by path), else the charts and images it made, adopted.
+/// (by path), artifacts whose index changed (their latest version), else the charts and
+/// images it made, adopted.
 pub fn for_call(workspace: &Path, chat: &str, changes: &[FileChange], media: &[MediaRef]) -> Vec<ArtifactRef> {
     let made: Vec<ArtifactRef> = changes
         .iter()
         .filter_map(|c| match c {
             FileChange::Created(p) => parse_version_path(&p.to_string_lossy()),
+            FileChange::Modified(p) => {
+                let id = meta_path_id(p)?;
+                let latest = load_in_chat(workspace, chat, &id).ok()?.artifact.latest()?.n;
+                Some(ArtifactRef { id, version: latest })
+            }
             _ => None,
         })
         .collect();
@@ -419,8 +448,15 @@ pub fn save_bytes(types: &ArtifactTypes, workspace: &Path, s: &SaveBytes<'_>) ->
             let file = write_version_bytes(&dir, 1, &ext, s.bytes)?;
             let version =
                 ArtifactVersion { n: 1, path: rel(&root, &file), created_at: now_ms(), note: note.clone(), size: s.bytes.len() as u64, turn: turn.clone() };
-            let artifact =
-                Artifact { id: id.clone(), kind: ty.kind, content_type: ty.content_type.clone(), title: title.clone(), filename, versions: vec![version] };
+            let artifact = Artifact {
+                id: id.clone(),
+                kind: ty.kind,
+                content_type: ty.content_type.clone(),
+                title: title.clone(),
+                filename,
+                versions: vec![version],
+                network: false,
+            };
             save(&dir, &Meta { chat: s.chat.to_owned(), artifact: artifact.clone() })?;
             Ok::<_, String>(Saved { artifact, version: 1, file, created: true, replaced: false })
         })();
@@ -540,6 +576,8 @@ struct CreateArgs {
     content: String,
     #[serde(default)]
     note: String,
+    #[serde(default)]
+    network: bool,
 }
 
 #[derive(Deserialize)]
@@ -552,6 +590,9 @@ struct Edit {
 #[derive(Deserialize)]
 struct UpdateArgs {
     id: String,
+    /// Turn the app's internet access on or off (alone: no new version).
+    #[serde(default)]
+    network: Option<bool>,
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
@@ -582,7 +623,8 @@ impl Tool for CreateArtifact {
                     "title": {"type": "string", "description": "Short title, e.g. \"Loan calculator\""},
                     "filename": {"type": "string", "description": "File name with extension, e.g. loan-calculator.html, q3-summary.md, prices.csv"},
                     "content": {"type": "string", "description": "The whole file"},
-                    "note": {"type": "string", "description": "Optional: what this first version is"}
+                    "note": {"type": "string", "description": "Optional: what this first version is"},
+                    "network": {"type": "boolean", "description": "HTML apps only: let it use the internet (HTTPS: fetch, and scripts, styles, fonts and images by URL). Only when it needs live data or a web API; off, everything must be inline"}
                 },
                 "required": ["title", "filename", "content"]
             }),
@@ -618,7 +660,11 @@ fn create(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
     }
     let (filename, ext) = clean_filename(types, &a.filename, &title)?;
     let ty = types.for_filename(&filename);
+    if a.network && !ty.network {
+        return Err(format!("only HTML apps can use the internet; this is a {}", ty.label));
+    }
     let (content, warning) = check_content(&ty, &a.content)?;
+    let warning = if a.network { String::new() } else { warning };
     let (id, dir) = new_artifact_dir(ctx.workspace, &title)?;
     let result = (|| {
         let file = write_version(&dir, 1, &ext, &content)?;
@@ -638,6 +684,7 @@ fn create(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
             title: title.clone(),
             filename: filename.clone(),
             versions: vec![version],
+            network: a.network,
         };
         save(&dir, &Meta { chat: chat.to_owned(), artifact })?;
         Ok::<_, String>(file)
@@ -649,8 +696,9 @@ fn create(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
             return Err(e);
         }
     };
+    let online = if a.network { " It can use the internet (HTTPS)." } else { "" };
     let text = format!(
-        "Created the {} artifact \"{title}\" (id {id}, version 1, {filename}). It shows beside the chat. To change it later, call update_artifact with id {id}.{warning}",
+        "Created the {} artifact \"{title}\" (id {id}, version 1, {filename}). It shows beside the chat.{online} To change it later, call update_artifact with id {id}.{warning}",
         ty.label
     );
     Ok(ToolOutput { text, failed: false, changes: vec![FileChange::Created(file)], images: Vec::new() })
@@ -670,7 +718,8 @@ impl Tool for UpdateArtifact {
                     "id": {"type": "string", "description": "The artifact's id"},
                     "edits": {"type": "array", "items": {"type": "object", "properties": {"find": {"type": "string"}, "replace": {"type": "string"}}, "required": ["find", "replace"]}},
                     "content": {"type": "string", "description": "Or: the whole new file"},
-                    "note": {"type": "string", "description": "What changed, in a few words"}
+                    "note": {"type": "string", "description": "What changed, in a few words"},
+                    "network": {"type": "boolean", "description": "HTML apps only: turn its internet access on or off. Alone (no edits or content) it only switches that, without a new version"}
                 },
                 "required": ["id"]
             }),
@@ -718,9 +767,22 @@ fn update(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
         return Err(format!("{id} has too many versions; create a new artifact"));
     }
     let latest = meta.artifact.latest().cloned().ok_or_else(|| format!("artifact {id:?} has no versions"))?;
+    if a.network == Some(true) && !ty.network {
+        return Err(format!("only HTML apps can use the internet; {id} is a {}", ty.label));
+    }
+    let network = a.network.unwrap_or(meta.artifact.network);
+    if a.content.is_none()
+        && a.edits.is_none()
+        && let Some(on) = a.network
+    {
+        // Internet access alone: the same version, its index rewritten.
+        let meta_file = set_network(types, ctx.workspace, chat, &id, on)?;
+        let text = format!("\"{}\" (id {id}) {} use the internet now.", meta.artifact.title, if on { "can" } else { "can't" });
+        return Ok(ToolOutput { text, failed: false, changes: vec![FileChange::Modified(meta_file)], images: Vec::new() });
+    }
     let new_text = match (a.content, a.edits) {
         (Some(_), Some(_)) => return Err("give either content or edits, not both".into()),
-        (None, None) => return Err("give edits (find/replace pairs) or the whole new content".into()),
+        (None, None) => return Err("give edits (find/replace pairs) or the whole new content (or just network)".into()),
         (Some(content), None) => content,
         (None, Some(edits)) => {
             let file = version_file(ctx.workspace, &latest.path).ok_or_else(|| format!("the latest version of {id} is gone"))?;
@@ -735,6 +797,7 @@ fn update(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
         }
     };
     let (content, warning) = check_content(&ty, &new_text)?;
+    let warning = if network { String::new() } else { warning };
     let (root, dir) = artifact_dir(ctx.workspace, &id)?;
     // Version numbers are never reused, even if a version was undone.
     let ext = latest.path.rsplit_once("/v").and_then(|(_, f)| f.split_once('.')).map(|(_, e)| e.to_owned()).unwrap_or_else(|| {
@@ -746,6 +809,7 @@ fn update(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
     let file = write_version(&dir, n, &ext, &content)?;
     let note = clip(&a.note, MAX_NOTE_CHARS);
     meta.artifact.versions = all.artifact.versions;
+    meta.artifact.network = network;
     meta.artifact.versions.push(ArtifactVersion {
         n,
         path: rel(&root, &file),
@@ -905,6 +969,40 @@ mod tests {
         let out = run_in(&UpdateArtifact::default(), ws, "c1", json!({"id": id, "content": "<p>again</p>"}));
         assert!(!out.failed, "{}", out.text);
         assert_eq!(load(ws, &id).unwrap().artifact.versions.iter().map(|v| v.n).collect::<Vec<_>>(), vec![1, 2, 4]);
+    }
+
+    /// An HTML app can be given the internet when made, or switched on and off later on its
+    /// own (no new version; the step points at the latest one). Other types can't have it, and
+    /// an online app isn't warned about loading things from the web.
+    #[test]
+    fn html_apps_can_be_given_internet_access() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = d.path();
+        let page = "<script>fetch('https://api.example.com/rates')</script>";
+        let offline = run_in(&CreateArtifact::default(), ws, "c1", json!({"title": "Rates", "filename": "rates.html", "content": page}));
+        assert!(offline.text.contains("network: true"), "the warning says how to get it: {}", offline.text);
+        let out = run_in(&CreateArtifact::default(), ws, "c1", json!({"title": "Live rates", "filename": "live.html", "content": page, "network": true}));
+        assert!(!out.failed && !out.text.contains("Warning") && out.text.contains("internet"), "{}", out.text);
+        let id = id_of(&out);
+        assert!(load(ws, &id).unwrap().artifact.network);
+        // Off again, alone: no new version, and the change points at the index.
+        let off = run_in(&UpdateArtifact::default(), ws, "c1", json!({"id": id, "network": false}));
+        assert!(!off.failed, "{}", off.text);
+        let a = load(ws, &id).unwrap().artifact;
+        assert!(!a.network && a.versions.len() == 1, "{a:?}");
+        assert_eq!(for_call(ws, "c1", &off.changes, &[]), vec![ArtifactRef { id: id.clone(), version: 1 }]);
+        // An edit keeps the switch as it is; giving it with the edit changes it too.
+        let on = run_in(&UpdateArtifact::default(), ws, "c1", json!({"id": id, "content": page, "network": true}));
+        assert!(!on.failed, "{}", on.text);
+        let out = run_in(&UpdateArtifact::default(), ws, "c1", json!({"id": id, "content": "<p>v3</p>"}));
+        assert!(!out.failed);
+        assert!(load(ws, &id).unwrap().artifact.network);
+        // Not for documents, nor another chat's app.
+        let doc = run_in(&CreateArtifact::default(), ws, "c1", json!({"title": "Notes", "filename": "notes.md", "content": "# hi", "network": true}));
+        assert!(doc.failed && doc.text.contains("only HTML apps"), "{}", doc.text);
+        assert!(run_in(&UpdateArtifact::default(), ws, "c2", json!({"id": id, "network": false})).failed);
+        assert!(set_network(&ArtifactTypes::builtin(), ws, "c1", &id, false).is_ok());
+        assert!(!load(ws, &id).unwrap().artifact.network);
     }
 
     /// Deleting a chat deletes its artifacts for good (they were left orphaned before).

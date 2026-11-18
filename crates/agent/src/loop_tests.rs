@@ -956,6 +956,46 @@ fn artifacts_are_created_versioned_served_and_restored() {
     assert_eq!(byob_protocol::media::decode(&data).unwrap(), br#"<button style="color:blue">Go</button>"#);
 }
 
+/// The model makes an app that needs the web with network: true; the user switches it off
+/// and on from the pane (the viewers get the artifact again each time); a document can't
+/// have it, and asking says why.
+#[test]
+fn an_html_app_gets_internet_access_from_the_model_or_the_user() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = tempfile::tempdir().unwrap();
+    let paths = byob_store::Paths::at(dir.path());
+    let html = r#"{"title":"Rates","filename":"rates.html","content":"<script>fetch('https://api.example.com')</script>","network":true}"#;
+    let doc = r##"{"title":"Notes","filename":"notes.md","content":"# hi"}"##;
+    let (engine, _) = artifact_engine(
+        vec![Reply::Calls(vec![("create_artifact".into(), html.into()), ("create_artifact".into(), doc.into())]), Reply::Text("Made them")],
+        ws.path(),
+        paths,
+    );
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::hello("test"));
+    while !matches!(recv(&mut c), ServerMsg::Artifacts { .. }) {}
+    let (_, updated) = artifact_turn(&mut c, "live exchange rates, and a note");
+    let app = updated.iter().find(|a| a.filename == "rates.html").unwrap().clone();
+    let note = updated.iter().find(|a| a.filename == "notes.md").unwrap().clone();
+    assert!(app.network && !note.network);
+    let switched = |c: &mut LocalConnection| loop {
+        match recv(c) {
+            ServerMsg::ArtifactUpdated(a) => return Ok(a),
+            ServerMsg::Notice { text, .. } => return Err(text),
+            _ => {}
+        }
+    };
+    c.send(ClientMsg::SetArtifactNetwork { id: app.id.clone(), on: false });
+    let off = switched(&mut c).unwrap();
+    assert!(!off.network && off.versions == app.versions, "the same versions: {off:?}");
+    c.send(ClientMsg::SetArtifactNetwork { id: app.id.clone(), on: true });
+    assert!(switched(&mut c).unwrap().network);
+    c.send(ClientMsg::SetArtifactNetwork { id: note.id.clone(), on: true });
+    assert!(switched(&mut c).unwrap_err().contains("only HTML apps"));
+    c.send(ClientMsg::SetArtifactNetwork { id: "nope".into(), on: true });
+    assert!(switched(&mut c).is_err());
+}
+
 // The same tests on the folder backend.
 crate::test_store::folder_too!(
     tool_call_then_answer,

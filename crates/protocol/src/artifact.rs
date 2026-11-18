@@ -122,6 +122,10 @@ pub struct Artifact {
     pub filename: String,
     /// Oldest first; never empty.
     pub versions: Vec<ArtifactVersion>,
+    /// An HTML app may reach the web (HTTPS only: fetch, scripts, styles, fonts and images
+    /// by URL). Off unless the user or the model turned it on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub network: bool,
 }
 
 impl Artifact {
@@ -197,6 +201,7 @@ mod tests {
             title: "A".into(),
             filename: filename.into(),
             versions: vec![],
+            network: false,
         };
         // From a 13.1 engine: the type it sent, whatever the kind says.
         assert_eq!(a(ArtifactKind::Text, "application/vnd.acme.sheet+json", "x.sheet").content_type(), "application/vnd.acme.sheet+json");
@@ -237,6 +242,7 @@ mod tests {
             title: "A".into(),
             filename: "a.html".into(),
             versions: vec![v(1), v(3), v(2)],
+            network: false,
         };
         assert_eq!(a.latest().map(|v| v.n), Some(3));
         assert_eq!(a.version(2).map(|v| v.path.as_str()), Some("v2"));

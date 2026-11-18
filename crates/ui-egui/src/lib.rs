@@ -1501,6 +1501,7 @@ mod app_tests {
                 size: 1,
                 turn: String::new(),
             }],
+            network: false,
         };
         fake.inbox.lock().unwrap().extend([
             ServerMsg::State(s),

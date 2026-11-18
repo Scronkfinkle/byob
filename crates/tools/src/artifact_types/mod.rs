@@ -63,6 +63,8 @@ pub struct ArtifactType {
     pub kind: ArtifactKind,
     /// Its versions are text: `read_artifact` reads them and `update_artifact` edits them.
     pub text: bool,
+    /// Its artifacts may be given internet access (`Artifact::network`): HTML apps.
+    pub network: bool,
     /// How `create_artifact`'s description and its file-name error name it, e.g. ".md
     /// (document, report, summary)". Empty: not something the model writes.
     pub describe: String,
@@ -83,6 +85,7 @@ impl ArtifactType {
             label: label.to_owned(),
             kind,
             text: true,
+            network: false,
             describe: String::new(),
             pick: String::new(),
             guidance: String::new(),
@@ -97,6 +100,13 @@ impl ArtifactType {
 
     pub fn binary(mut self) -> Self {
         self.text = false;
+        self
+    }
+
+    /// Its artifacts may be given internet access.
+    #[must_use]
+    pub fn network(mut self, network: bool) -> Self {
+        self.network = network;
         self
     }
 
@@ -267,7 +277,8 @@ mod tests {
 make it an artifact with create_artifact rather than pasting it into the chat; it shows in a pane beside the conversation and can be exported. Pick the format that fits: \
 summary/report/notes → .md; interactive tool or app → a single-file .html app; data → .csv or .json; a chart of numbers → make_chart (or .html for a custom visualisation). \
 To change an artifact, call update_artifact with its id and small find/replace edits (read_artifact shows its current text) — never create a new one for a change. \
-HTML apps: one self-contained file with inline <style> and <script>; nothing from the network (no CDNs, web fonts, fetch or images by URL — all blocked); \
+HTML apps: one self-contained file with inline <style> and <script>; nothing from the network (no CDNs, web fonts, fetch or images by URL — all blocked) \
+unless the app needs the web (live data, a public API, a library from a CDN): then pass network: true to create_artifact or update_artifact, which lets it use HTTPS URLs (not plain http, nor byob itself; the user can switch it in the app's pane too); \
 style with the theme's CSS variables var(--byob-bg), var(--byob-surface), var(--byob-fg), var(--byob-muted), var(--byob-accent), var(--byob-on-accent), var(--byob-border), var(--byob-danger), var(--byob-success), var(--byob-warning), var(--byob-link), var(--byob-code-bg), var(--byob-code-fg), var(--byob-radius) \
 and var(--byob-chart-a) … var(--byob-chart-h) for data series (give fallbacks); \
 fit any container width (fluid layout, no fixed page widths). After making one, say in a sentence or two what it is; don't repeat its content.";
@@ -301,7 +312,7 @@ fit any container width (fluid layout, no fixed page widths). After making one, 
         assert_eq!(
             t.tool_description(),
             "Make an artifact: a file shown beside the chat that the user can open, keep and export, with versions. \
-             The file name's extension decides what it is: .md (document, report, summary), .html (interactive single-file app: HTML+CSS+JS in one file, no network), \
+             The file name's extension decides what it is: .md (document, report, summary), .html (interactive single-file app: HTML+CSS+JS in one file, offline unless given network: true), \
              .csv/.json/.py/… (data or code, shown as source), .chart.json (a chart spec). Returns the artifact's id for update_artifact."
         );
     }
@@ -343,6 +354,7 @@ fit any container width (fluid layout, no fixed page widths). After making one, 
             title: "A".into(),
             filename: "a".into(),
             versions: vec![],
+            network: false,
         };
         assert_eq!(t.of(&a).content_type, TYPE_TEXT);
         // Even with nothing registered.

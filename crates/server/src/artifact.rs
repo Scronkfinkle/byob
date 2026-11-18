@@ -13,7 +13,10 @@
 //! script errors to the host page (or, when it is the top-level page as in the desktop's
 //! Servo renderer, as a marked `console.error` that `byob-artifact-host` picks up), and
 //! removes WebRTC (which can reach the network around `connect-src`). The CSP is the same
-//! for every type. `?download` serves any version as saved, as an attachment.
+//! for every type, except an HTML app given internet access (`Artifact::network`), which
+//! gets [`NETWORK_CSP`]: HTTPS (and WSS) for fetches, scripts, styles, fonts and media, still
+//! sandboxed with an opaque origin, and never plain `http:` (so never byob's own server on
+//! the loopback). `?download` serves any version as saved, as an attachment.
 
 use std::io::{self, Write};
 
@@ -25,6 +28,15 @@ use crate::http::{self, Request};
 /// Every artifact response carries this.
 pub const CSP: &str = "sandbox allow-scripts allow-forms; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
     img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
+
+/// An HTML app with internet access: [`CSP`] with HTTPS sources.
+pub const NETWORK_CSP: &str = "sandbox allow-scripts allow-forms; default-src 'none'; script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; \
+    img-src data: blob: https:; font-src data: https:; media-src data: blob: https:; connect-src https: wss:; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
+
+/// The policy artifact `a` is served with.
+pub fn csp(a: &byob_protocol::Artifact) -> &'static str {
+    if a.network { NETWORK_CSP } else { CSP }
+}
 
 /// `/artifact/<chat>/<id>/<version>[?download]` → its parts, if well-formed.
 pub fn parse(path: &str) -> Option<(&str, &str, u32, bool)> {
@@ -64,7 +76,7 @@ pub fn serve(stream: &mut impl Write, engine: &EngineHandle, req: &Request) -> i
     let mime = byob_protocol::artifact::mime(a.content_type());
     let mime = mime.as_str();
     let mut extra =
-        vec![format!("Content-Security-Policy: {CSP}"), "Cache-Control: no-store".to_owned(), "Cross-Origin-Resource-Policy: same-origin".to_owned()];
+        vec![format!("Content-Security-Policy: {}", csp(&a)), "Cache-Control: no-store".to_owned(), "Cross-Origin-Resource-Policy: same-origin".to_owned()];
     if download {
         extra.push(format!("Content-Disposition: attachment; filename=\"{}\"", header_filename(&a.filename)));
         return http::respond_with(stream, 200, mime, &extra, &bytes);
@@ -76,6 +88,34 @@ pub fn serve(stream: &mut impl Write, engine: &EngineHandle, req: &Request) -> i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Offline apps keep the strict policy; one with internet access may use HTTPS and WSS
+    /// only, still sandboxed and framed by byob alone.
+    #[test]
+    fn apps_with_internet_access_get_https_only() {
+        let mut a = byob_protocol::Artifact {
+            id: "a".into(),
+            kind: byob_protocol::ArtifactKind::Html,
+            content_type: String::new(),
+            title: "A".into(),
+            filename: "a.html".into(),
+            versions: Vec::new(),
+            network: false,
+        };
+        assert_eq!(csp(&a), CSP);
+        a.network = true;
+        let p = csp(&a);
+        for part in [
+            "sandbox allow-scripts allow-forms;",
+            "connect-src https: wss:;",
+            "script-src 'unsafe-inline' https:;",
+            "frame-ancestors 'self'",
+            "form-action 'none'",
+        ] {
+            assert!(p.contains(part), "{part}: {p}");
+        }
+        assert!(!p.contains("http:") && !p.contains("allow-same-origin") && !p.contains('*'), "{p}");
+    }
 
     #[test]
     fn paths() {

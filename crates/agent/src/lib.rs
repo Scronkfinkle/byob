@@ -1204,6 +1204,7 @@ impl Engine {
             }
             ClientMsg::GetMedia { path } => self.serve_media(id, path),
             ClientMsg::GetArtifact { id: artifact, version } => self.serve_artifact(id, artifact, version),
+            ClientMsg::SetArtifactNetwork { id: artifact, on } => self.set_artifact_network(id, &artifact, on),
             ClientMsg::Compact { focus } => self.compact_chat(id, focus),
             ClientMsg::WorkspaceEnv { action, workspace } => self.workspace_env(id, action, workspace),
             ClientMsg::CreateWorkspace { name, folder, config } => self.create_workspace(id, &name, folder, config),
@@ -1365,6 +1366,23 @@ impl Engine {
         });
         if let Err(e) = spawned {
             log::error!("could not start an artifact thread: {e}");
+        }
+    }
+
+    /// The user let an HTML app use the internet, or stopped it: save it, tell the viewers.
+    fn set_artifact_network(&mut self, id: ClientId, artifact: &str, on: bool) {
+        let Some(chat) = self.client_chat(id) else {
+            self.notice(id, "open the chat the app is in first".into());
+            return;
+        };
+        let workspace = self.client_workspace(id);
+        match artifact::set_network(&self.artifact_types, &workspace, &chat, artifact, on) {
+            Ok(_) => {
+                log::info!("artifact {artifact} in {chat}: internet access {}", if on { "on" } else { "off" });
+                let version = artifact::load_in_chat(&workspace, &chat, artifact).ok().and_then(|m| m.artifact.latest().map(|v| v.n)).unwrap_or(0);
+                self.artifacts_changed(&chat, &[ArtifactRef { id: artifact.to_owned(), version }]);
+            }
+            Err(e) => self.notice(id, e),
         }
     }
 
