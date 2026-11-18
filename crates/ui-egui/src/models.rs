@@ -129,6 +129,21 @@ impl Editor {
     }
 }
 
+/// The efforts a profile's model takes, what unset is called, and the field's tooltip; `None`
+/// when it takes none (OpenAI-compatible servers). Codex has no "max" (byob would send xhigh).
+fn effort_levels(p: &Profile) -> Option<(&'static [Effort], &'static str, &'static str)> {
+    const CODEX: [Effort; 4] = [Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh];
+    match byob_types::cli_agent(&p.base_url) {
+        Some("claude") => Some((&Effort::ALL, "Claude Code's default", "How hard Claude thinks (claude --effort): lower is faster and uses less of your plan")),
+        Some("codex") => {
+            Some((&CODEX, "Codex's default", "How hard the model reasons (Codex model_reasoning_effort): lower is faster and uses less of your plan"))
+        }
+        Some(_) => None,
+        None if p.anthropic() => Some((&Effort::ALL, "API default", "How hard Claude thinks (output_config.effort): lower is faster and cheaper")),
+        None => None,
+    }
+}
+
 /// The "Extra request JSON" field as an object (empty: none), or what's wrong with it.
 fn extra_json(text: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     if text.trim().is_empty() {
@@ -515,19 +530,19 @@ impl ModelsUi {
                     let (hint, tip) =
                         if anthropic { ("64000", "Most tokens of one reply, thinking included") } else { ("server default", "Most tokens of one reply") };
                     field(ui, "Max tokens", &mut e.max_tokens, hint, tip);
-                    if anthropic {
+                    if let Some((levels, default, tip)) = effort_levels(&e.profile) {
                         ui.label("Effort");
-                        let shown = |v: Option<Effort>| v.map_or("API default", Effort::as_str);
+                        let shown = |v: Option<Effort>| v.map_or(default, Effort::as_str);
                         egui::ComboBox::from_id_salt(("profile-effort", &e.profile.id))
                             .selected_text(shown(e.profile.params.effort))
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut e.profile.params.effort, None, shown(None));
-                                for v in Effort::ALL {
+                                for &v in levels {
                                     ui.selectable_value(&mut e.profile.params.effort, Some(v), v.as_str());
                                 }
                             })
                             .response
-                            .on_hover_text("How hard Claude thinks (output_config.effort): lower is faster and cheaper");
+                            .on_hover_text(tip);
                         ui.end_row();
                     }
                     ui.label("Extra request JSON");
@@ -783,6 +798,16 @@ mod tests {
         assert!(claude.profile.anthropic());
         m.editor = Some(Editor::new(&claude));
         render(&mut m);
+        // Agent CLI profiles take an effort too; Codex has no "max".
+        let mut cli = view("cc", "opus");
+        cli.profile.base_url = "cli://claude".into();
+        assert_eq!(effort_levels(&cli.profile).map(|l| l.0.len()), Some(5));
+        m.editor = Some(Editor::new(&cli));
+        render(&mut m);
+        cli.profile.base_url = "cli://codex".into();
+        assert!(effort_levels(&cli.profile).is_some_and(|l| !l.0.contains(&Effort::Max)));
+        assert!(effort_levels(&claude.profile).is_some());
+        assert!(effort_levels(&view("q", "qwen").profile).is_none());
         // A listing answer fills the add form; a test answer the row.
         m.add = Some(AddForm { url: "http://s/v1".into(), listing: Some("http://s/v1".into()), ..AddForm::default() });
         m.tested(&InferenceTest { base_url: "http://s/v1".into(), models: vec!["one".into()], ok: true, ..InferenceTest::default() });
