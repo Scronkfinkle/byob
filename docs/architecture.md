@@ -458,11 +458,22 @@ backend (`"backend": {"native": "sheets"}`): `create_sheet`, `describe_sheet` (s
 range, header row, a profile per column, samples, error cells), `read_cells` (paged TSV,
 values or formulas), `write_cells` (`start` + rows or a cell map; `=` is a formula), `fill` (a
 first-row formula over a range with relative references), `edit_sheet` (sheets, rows/columns,
-sort, freeze) and `format_cells`. Every write recalculates, saves a new version (a tool
-result's `artifact`) and returns the written range's values, every error cell and lints
-(`IFERROR(…,"")`, typed numbers among formulas, cells the user changed since). A CSV becomes
-an `.xlsx` version on its first write. The grid's edits, pastes and clears go to the backend,
-which saves drafts.
+sort, freeze), `format_cells` and `chart_sheet`. Every write recalculates, saves a version (a
+tool result's `artifact`; saves within one request make one version, `SaveBytes::turn`) and
+returns the written range's values, every error cell and lints (`IFERROR(…,"")`, typed
+numbers among formulas, cells the user changed since). A CSV becomes an `.xlsx` version on
+its first write. The grid's edits, pastes and clears go to the backend, which saves drafts.
+
+Linked charts (`crates/sheets/src/charts.rs`): `chart_sheet` makes a chart artifact from a
+sheet's columns (computed values; error cells are gaps) whose spec carries a `source` (sheet
+id, tab, header row, column letters; `byob_types::chart::ChartSource`). Every save of the
+sheet, a tool's (the result then lists the sheet and the redrawn charts as `artifacts`) or a
+grid draft (more `artifact` messages), draws its charts again; `edit_sheet`'s structural
+changes move their columns, rows and tabs first, like formulas, and a chart whose columns
+are gone keeps its numbers and the model is told. `chart_sheet` with `chart` restyles one;
+`describe_sheet` lists them. The sheet view has Chart selection (a new linked chart of the
+selected cells) and Charts (n), which shows them in place of the grid; the chart renderer
+names the sheet with Open sheet.
 
 The backend is `crates/sheets` (`byob-sheets`, L4) on the `ironcalc` crate (pinned `=0.9.1`),
 registered by the app as native backend `sheets` (default feature `native-sheets`; not
