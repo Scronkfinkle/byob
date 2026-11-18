@@ -233,8 +233,27 @@ impl Views {
         if !note.is_empty() {
             status.push(note);
         }
-        children.push(json!({"type": "text", "key": "status", "style": "small", "tone": "dim", "text": status.join(" · ")}));
+        let status = json!({"type": "text", "key": "status", "style": "small", "tone": "dim", "text": status.join(" · ")});
+        if editable && matches!(which, Which::Live(_)) {
+            // Chart what is selected: a linked chart, drawn again as the sheet changes.
+            let chart = json!({"type": "button", "key": "chart-selection", "label": "Chart selection", "action": "chart_selection"});
+            children.push(json!({"type": "row", "key": "toolbar", "children": [status, chart]}));
+        } else {
+            children.push(status);
+        }
         children.push(grid(book, sh, state, editable));
+        // The charts drawn from this sheet, under it.
+        if let (Some(ws), Some(aid)) = (s(a, "workspace").filter(|w| !w.is_empty()), s(a, "id")) {
+            let charts = crate::charts::linked(ws, s(a, "chat"), aid);
+            if !charts.is_empty() {
+                children.push(
+                    json!({"type": "text", "key": "charts-head", "style": "small", "tone": "dim", "text": "Charts from this sheet (they follow its changes)"}),
+                );
+                for (id, spec) in charts {
+                    children.push(json!({"type": "chart", "key": format!("chart-{id}"), "spec": spec}));
+                }
+            }
+        }
         json!({"type": "column", "children": children})
     }
 
@@ -245,6 +264,9 @@ impl Views {
         if let Some(tab) = action.strip_prefix("tab:") {
             state.sheet = Some(tab.to_owned());
             return Ok(());
+        }
+        if action == "chart_selection" {
+            return chart_selection(store, &mut *state, a, ev, out);
         }
         let g = ev.get("grid").filter(|g| g.is_object()).cloned().unwrap_or_else(|| json!({}));
         let op = s(&g, "op").filter(|o| !o.is_empty()).map_or(action.clone(), str::to_owned);
@@ -351,6 +373,42 @@ impl Views {
         }
         Ok(())
     }
+}
+
+/// "Chart selection": a new chart of the selected cells, linked to the sheet.
+fn chart_selection(store: &mut Store, state: &mut ViewState, a: &Value, ev: &Value, out: &byob_plugins::native::Outbox) -> Result<(), SheetError> {
+    let (which, editable, _) = view_book(store, a)?;
+    let Which::Live(aid) = &which else {
+        out.notice("This version of the spreadsheet is read-only; open the latest one to chart it.", "info");
+        return Ok(());
+    };
+    let aid = aid.clone();
+    if !editable {
+        out.notice("This version of the spreadsheet is read-only; open the latest one to chart it.", "info");
+        return Ok(());
+    }
+    let book = book_of(store, &which)?;
+    let sh = current_sheet(book, state);
+    let name = book.sheet_names().get(sh as usize).cloned().unwrap_or_default();
+    let Some(sel) = state.sel.get(&name) else {
+        out.notice("Select the cells to chart first: the header row and the columns, the one along the bottom first.", "info");
+        return Ok(());
+    };
+    let at = |k: &str| sel.get(k).and_then(Value::as_i64).unwrap_or(0);
+    let (r1, r2) = (at("row").min(at("to_row")), at("row").max(at("to_row")));
+    let (c1, c2) = (at("col").min(at("to_col")), at("col").max(at("to_col")));
+    let (title, filename, spec) = match crate::charts::from_selection(book, &aid, sh, (r1, c1, r2, c2)) {
+        Ok(x) => x,
+        Err(e) => {
+            out.notice(&e.text(), "info");
+            return Ok(());
+        }
+    };
+    let file = store.save_tmp(spec.to_string().as_bytes(), &filename)?;
+    let chat = s(a, "chat").filter(|c| !c.is_empty()).or_else(|| s(ev, "chat"));
+    let sheet = s(a, "title").filter(|t| !t.is_empty()).unwrap_or(&aid).to_owned();
+    out.send(json!({"type": "artifact", "chat": chat, "file": file, "title": title, "filename": filename, "note": format!("From {sheet}")}));
+    Ok(())
 }
 
 #[allow(dead_code)]

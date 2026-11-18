@@ -243,6 +243,45 @@ fn charts_drawn_from_a_sheet_follow_its_edits() {
     assert_eq!(b.latest(&other_chart), other_versions);
 }
 
+/// Every node of `tree` (depth first).
+fn nodes(tree: &Value) -> Vec<&Value> {
+    let mut out = vec![tree];
+    for c in tree["children"].as_array().into_iter().flatten() {
+        out.extend(nodes(c));
+    }
+    out
+}
+
+/// The sheet view charts what is selected (a new chart, linked to the sheet) and shows the
+/// charts drawn from the sheet under its grid.
+#[test]
+fn the_sheet_view_charts_a_selection_and_shows_its_charts() {
+    let mut b = Byob::new();
+    let (aid, _) = b.new_sheet("Sales");
+    b.tool("write_cells", json!({"sheet": aid, "rows": [["Month", "Sales", "Costs"], ["Jan", 10, 4], ["Feb", 12, 5], ["Mar", 9, 6]]}));
+    let tree = b.view(&aid);
+    assert!(nodes(&tree).iter().any(|n| n["type"] == "button" && n["action"] == "chart_selection"), "{tree}");
+    assert!(!nodes(&tree).iter().any(|n| n["type"] == "chart"), "no charts yet");
+    // Nothing selected: it says what to do.
+    let msgs = b.event_at(&aid, "", None, Some("chart_selection"), false, json!({}));
+    assert!(msgs.iter().any(|m| m["type"] == "notice" && m["text"].as_str().unwrap_or_default().contains("Select")), "{msgs:?}");
+    // A1:C4 selected (dragged up from the corner): Month along the bottom, Sales and Costs.
+    b.event(&aid, "select", json!({"row": 3, "col": 2, "to_row": 0, "to_col": 0}));
+    let msgs = b.event_at(&aid, "", None, Some("chart_selection"), false, json!({}));
+    let made: Vec<&Value> = msgs.iter().filter(|m| m["type"] == "artifact").collect();
+    assert_eq!(made.len(), 1, "{msgs:?}");
+    assert_eq!((made[0]["title"].as_str(), made[0]["id"].is_null()), (Some("Sales, Costs by Month"), true));
+    // It shows under the grid, and follows the sheet.
+    let tree = b.view(&aid);
+    let chart = nodes(&tree).into_iter().find(|n| n["type"] == "chart").cloned().expect("the chart under the grid");
+    assert_eq!(chart["spec"]["data"].as_array().unwrap().len(), 3);
+    assert_eq!(chart["spec"]["source"]["series"], json!(["B", "C"]));
+    b.tool("write_cells", json!({"sheet": aid, "cells": {"B2": 99}}));
+    let tree = b.view(&aid);
+    let chart = nodes(&tree).into_iter().find(|n| n["type"] == "chart").cloned().unwrap();
+    assert_eq!(chart["spec"]["data"][0]["Sales"], json!(99.0));
+}
+
 #[test]
 fn grid_edits_save_drafts_and_are_reported() {
     let mut b = Byob::new();

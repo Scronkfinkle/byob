@@ -246,3 +246,48 @@ pub fn refresh(ws: &str, chat: Option<&str>, sheet: &str, book: &mut Book) -> Ve
 pub fn files(store: &mut Store, redrawn: Vec<Redrawn>) -> Vec<(Redrawn, String)> {
     redrawn.into_iter().filter_map(|r| store.save_tmp(r.spec.to_string().as_bytes(), &r.filename).ok().map(|f| (r, f))).collect()
 }
+
+/// The charts of chat `chat` drawn from sheet artifact `sheet`: (id, latest spec), oldest
+/// first, at most [`MAX_LINKED`].
+pub fn linked(ws: &str, chat: Option<&str>, sheet: &str) -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    for m in metas(ws) {
+        if out.len() >= MAX_LINKED {
+            break;
+        }
+        if s(&m, "content_type") != Some(CHART_TYPE) || (chat.is_some() && s(&m, "chat") != chat) {
+            continue;
+        }
+        let Some(path) = crate::store::latest(ws, &m).1 else { continue };
+        let Some(spec) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
+        if spec.get("source").and_then(|v| v.get("sheet")).and_then(Value::as_str) == Some(sheet) {
+            out.push((s(&m, "id").unwrap_or_default().to_owned(), spec));
+        }
+    }
+    out
+}
+
+/// A new chart of the selected cells (0-based, inclusive): the top row names the columns,
+/// the first column goes along the bottom and the others are series. (title, file name,
+/// spec).
+pub fn from_selection(book: &mut Book, sheet: &str, sh: u32, (r1, c1, r2, c2): (i64, i64, i64, i64)) -> R<(String, String, Value)> {
+    if c2 <= c1 {
+        return msg("Select at least two columns: the first goes along the bottom, the others are charted.");
+    }
+    if r2 <= r1 {
+        return msg("Select the header row and the rows under it.");
+    }
+    let names = book.sheet_names();
+    let tab = if names.len() > 1 { names.get(sh as usize).cloned().unwrap_or_default() } else { String::new() };
+    let series: Vec<String> = (c1 + 2..=c2 + 1).take(chart::MAX_SERIES).map(col_name).collect();
+    let source = ChartSource { sheet: sheet.to_owned(), tab, header_row: u32::try_from(r1 + 1).unwrap_or(1), x: col_name(c1 + 1), series };
+    let x = header(book, sh, r1 + 1, c1 + 1);
+    let labels: Vec<String> = (c1 + 2..=c2 + 1).take(3).map(|c| header(book, sh, r1 + 1, c)).collect();
+    let title = format!("{} by {x}", labels.join(", "));
+    let mut base = Map::new();
+    base.insert("type".into(), json!("bar"));
+    base.insert("title".into(), json!(title));
+    let spec = spec(book, &source, &base)?;
+    let title = s(&spec, "title").unwrap_or("Chart").to_owned();
+    Ok((title.clone(), format!("{}.chart.json", slug(&title)), spec))
+}
