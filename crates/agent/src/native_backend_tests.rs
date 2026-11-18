@@ -350,6 +350,37 @@ fn a_chart_drawn_from_a_sheet_follows_it() {
     assert_eq!((versions, rows[1].clone()), (2, ("Feb".to_owned(), 25.0)));
 }
 
+/// Each request leaves one version of a sheet and of each chart drawn from it, and the
+/// earlier ones stay as they were: the version history is how you go back.
+#[test]
+fn each_request_is_one_version_of_a_sheet_and_its_chart() {
+    let script = vec![
+        call("create_sheet", r#"{"title": "Profit"}"#),
+        call("write_cells", r#"{"sheet": "profit.xlsx", "rows": [["Month", "Profit"], ["Jan", 5], ["Feb", 7]]}"#),
+        call("chart_sheet", r#"{"sheet": "profit.xlsx", "type": "bar", "x": "Month", "series": ["Profit"]}"#),
+        Reply::Text("made"),
+        call("write_cells", r#"{"sheet": "profit.xlsx", "cells": {"B2": 50}}"#),
+        call("write_cells", r#"{"sheet": "profit.xlsx", "cells": {"B3": 70}}"#),
+        Reply::Text("changed"),
+    ];
+    let h = harness(script, bundled_plugins(), sheets_natives());
+    let mut c = connect(&h);
+    wait_ext(&mut c, |e| !e.plugins.is_empty());
+    let (first, _) = turn(&mut c, "chart it", |_, _| {});
+    let (sheet, chart) = (step(&first, "write_cells").artifacts[0].id.clone(), step(&first, "chart_sheet").artifacts[0].id.clone());
+    turn(&mut c, "change it", |_, _| {});
+    let version = |id: &str, n: u32| -> String {
+        let meta = byob_tools::artifact::load(h._ws.path(), id).unwrap();
+        String::from_utf8_lossy(&std::fs::read(h._ws.path().join(&meta.artifact.version(n).unwrap().path)).unwrap()).into_owned()
+    };
+    for id in [&sheet, &chart] {
+        assert_eq!(byob_tools::artifact::load(h._ws.path(), id).unwrap().artifact.versions.len(), 2, "{id}: one version per request");
+    }
+    let (v1, v2) = (version(&chart, 1), version(&chart, 2));
+    assert!(v1.contains(":5") && v1.contains(":7") && !v1.contains(":50"), "{v1}");
+    assert!(v2.contains(":50") && v2.contains(":70"), "both edits of the second request: {v2}");
+}
+
 /// The bundled memory, plan and ask-user plugins, on by default: remember writes the global
 /// memory.md, the next turn's system prompt holds it, the pane shows it; update_plan's plan
 /// is restated after later tool calls of the turn.

@@ -19,6 +19,8 @@ const MAX_BLOCK_CELLS: i64 = 40_000;
 #[derive(Default)]
 pub struct ViewState {
     sheet: Option<String>,
+    /// The charts drawn from the sheet are shown instead of the grid.
+    charts: bool,
     win: BTreeMap<String, (i64, i64, i64, i64)>,
     sel: BTreeMap<String, Value>,
 }
@@ -234,25 +236,32 @@ impl Views {
             status.push(note);
         }
         let status = json!({"type": "text", "key": "status", "style": "small", "tone": "dim", "text": status.join(" · ")});
-        if editable && matches!(which, Which::Live(_)) {
-            // Chart what is selected: a linked chart, drawn again as the sheet changes.
-            let chart = json!({"type": "button", "key": "chart-selection", "label": "Chart selection", "action": "chart_selection"});
-            children.push(json!({"type": "row", "key": "toolbar", "children": [status, chart]}));
+        // The charts drawn from this sheet: one button away (the grid fills the pane).
+        let charts = match (s(a, "workspace").filter(|w| !w.is_empty()), s(a, "id")) {
+            (Some(ws), Some(aid)) => crate::charts::linked(ws, s(a, "chat"), aid),
+            _ => Vec::new(),
+        };
+        let showing_charts = state.charts && !charts.is_empty();
+        let mut bar = vec![status];
+        if showing_charts {
+            bar.push(json!({"type": "button", "key": "show-grid", "label": "Grid", "action": "show_grid"}));
         } else {
-            children.push(status);
-        }
-        children.push(grid(book, sh, state, editable));
-        // The charts drawn from this sheet, under it.
-        if let (Some(ws), Some(aid)) = (s(a, "workspace").filter(|w| !w.is_empty()), s(a, "id")) {
-            let charts = crate::charts::linked(ws, s(a, "chat"), aid);
-            if !charts.is_empty() {
-                children.push(
-                    json!({"type": "text", "key": "charts-head", "style": "small", "tone": "dim", "text": "Charts from this sheet (they follow its changes)"}),
-                );
-                for (id, spec) in charts {
-                    children.push(json!({"type": "chart", "key": format!("chart-{id}"), "spec": spec}));
-                }
+            if editable && matches!(which, Which::Live(_)) {
+                // Chart what is selected: a linked chart, drawn again as the sheet changes.
+                bar.push(json!({"type": "button", "key": "chart-selection", "label": "Chart selection", "action": "chart_selection"}));
             }
+            if !charts.is_empty() {
+                bar.push(json!({"type": "button", "key": "show-charts", "label": format!("Charts ({})", charts.len()), "action": "show_charts"}));
+            }
+        }
+        children.push(if bar.len() > 1 { json!({"type": "row", "key": "toolbar", "children": bar}) } else { bar.remove(0) });
+        if showing_charts {
+            children.push(json!({"type": "text", "key": "charts-note", "style": "small", "tone": "dim", "text": "Drawn from this sheet: they redraw whenever it changes."}));
+            for (id, spec) in charts {
+                children.push(json!({"type": "chart", "key": format!("chart-{id}"), "spec": spec}));
+            }
+        } else {
+            children.push(grid(book, sh, state, editable));
         }
         json!({"type": "column", "children": children})
     }
@@ -267,6 +276,10 @@ impl Views {
         }
         if action == "chart_selection" {
             return chart_selection(store, &mut *state, a, ev, out);
+        }
+        if action == "show_charts" || action == "show_grid" {
+            state.charts = action == "show_charts";
+            return Ok(());
         }
         let g = ev.get("grid").filter(|g| g.is_object()).cloned().unwrap_or_else(|| json!({}));
         let op = s(&g, "op").filter(|o| !o.is_empty()).map_or(action.clone(), str::to_owned);

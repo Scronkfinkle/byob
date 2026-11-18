@@ -341,15 +341,23 @@ fn the_sheet_view_charts_a_selection_and_shows_its_charts() {
     let made: Vec<&Value> = msgs.iter().filter(|m| m["type"] == "artifact").collect();
     assert_eq!(made.len(), 1, "{msgs:?}");
     assert_eq!((made[0]["title"].as_str(), made[0]["id"].is_null()), (Some("Sales, Costs by Month"), true));
-    // It shows under the grid, and follows the sheet.
+    // "Charts (1)" swaps the grid (which fills the pane) for the charts, "Grid" back.
     let tree = b.view(&aid);
-    let chart = nodes(&tree).into_iter().find(|n| n["type"] == "chart").cloned().expect("the chart under the grid");
+    assert!(nodes(&tree).iter().any(|n| n["type"] == "button" && n["label"] == "Charts (1)"), "{tree}");
+    assert!(grid_of(&tree).is_some() && !nodes(&tree).iter().any(|n| n["type"] == "chart"));
+    b.event_at(&aid, "", None, Some("show_charts"), false, json!({}));
+    let tree = b.view(&aid);
+    let chart = nodes(&tree).into_iter().find(|n| n["type"] == "chart").cloned().expect("the chart instead of the grid");
+    assert!(grid_of(&tree).is_none());
     assert_eq!(chart["spec"]["data"].as_array().unwrap().len(), 3);
     assert_eq!(chart["spec"]["source"]["series"], json!(["B", "C"]));
+    // It follows the sheet.
     b.tool("write_cells", json!({"sheet": aid, "cells": {"B2": 99}}));
     let tree = b.view(&aid);
     let chart = nodes(&tree).into_iter().find(|n| n["type"] == "chart").cloned().unwrap();
     assert_eq!(chart["spec"]["data"][0]["Sales"], json!(99.0));
+    b.event_at(&aid, "", None, Some("show_grid"), false, json!({}));
+    assert!(grid_of(&b.view(&aid)).is_some());
 }
 
 #[test]
