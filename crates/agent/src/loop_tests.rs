@@ -27,6 +27,8 @@ pub(crate) enum Reply {
     StreamError(&'static str),
     /// Reasoning, then the reply.
     Reasoned(&'static str, Box<Reply>),
+    /// Text cut off at the output limit (`finish_reason: length`).
+    Cut(&'static str),
 }
 
 pub(crate) fn call(name: &str, args: &str) -> Reply {
@@ -54,6 +56,10 @@ pub(crate) fn sse(reply: &Reply) -> String {
                 out += &frame(json!({"choices":[{"delta":{"tool_calls":[{"index":i,"function":{"arguments":b}}]}}]}));
             }
             out += &frame(json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}));
+        }
+        Reply::Cut(t) => {
+            out += &frame(json!({"choices":[{"delta":{"content": t}}]}));
+            out += &frame(json!({"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":8192}}));
         }
         Reply::Mixed(text, name, args) => {
             out += &frame(json!({"choices":[{"delta":{"content": text}}]}));
@@ -354,6 +360,22 @@ fn a_blank_reply_gets_one_nudge() {
     let view = run_turn(&mut c, "hi", |_, _| {});
     assert_eq!(view.error, Some(None));
     assert_eq!(h.requests.lock().unwrap().len(), 2);
+}
+
+/// Regression: a reply the server cut off at the output limit ended as if finished (or,
+/// cut off while thinking, with nothing at all). It says it was cut off.
+#[test]
+fn a_reply_cut_off_at_the_output_limit_says_so() {
+    let h = harness(vec![Reply::Cut("Here is the shader: fn scene(p")], "echo", Access::Read);
+    let (mut c, _) = client(&h);
+    let view = run_turn(&mut c, "write a backdrop", |_, _| {});
+    assert_eq!(view.error, Some(None));
+    let content = &view.reply().content;
+    assert!(content.starts_with("Here is the shader: fn scene(p\n\n(The reply was cut off"), "{content}");
+    // A finished reply has no note.
+    let h = harness(vec![Reply::Text("Done.")], "echo", Access::Read);
+    let (mut c, _) = client(&h);
+    assert_eq!(run_turn(&mut c, "hi", |_, _| {}).reply().content, "Done.");
 }
 
 /// Regression: each round's reasoning ran straight on from the last ("…key dates.Let me

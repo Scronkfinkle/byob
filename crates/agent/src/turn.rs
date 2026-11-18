@@ -54,6 +54,10 @@ fn ask_vision(vision: &byob_llm::Client, question: &str, images: Vec<String>, ca
 /// Sent when a turn ends with nothing for the user to read.
 const NO_ANSWER_NUDGE: &str = "(byob: your last reply had no text, so the user saw nothing. Finish what you were doing if anything is left, then tell them in a sentence or two what you did.)";
 
+/// Shown at the end of a reply the server cut off at the model's output limit.
+const CUT_OFF: &str =
+    "(The reply was cut off: the model reached its output limit before it finished. Ask it to go on, or raise Max tokens in the model's settings.)";
+
 /// Images from tool calls kept in a turn's messages (the latest ones).
 const MAX_LIVE_IMAGES: usize = 8;
 const OLD_IMAGE_NOTE: &str = "[an image shown earlier, no longer kept; look at it again if you need it]";
@@ -495,6 +499,7 @@ impl Turn {
             if out.cancelled {
                 return Err(End::Stopped);
             }
+            let cut_off = out.finish_reason.as_deref() == Some("length");
             let prompt = self.s.plan.prompt_tools;
             let (text, calls) = if prompt && tools_on {
                 let mut parsed = toolprompt::parse_tool_calls(&out.content, &specs);
@@ -515,6 +520,9 @@ impl Turn {
                     continue;
                 }
                 self.answer = text;
+                if cut_off {
+                    self.say_cut_off();
+                }
                 return Ok(());
             }
             if prompt {
@@ -731,6 +739,20 @@ impl Turn {
         self.context_tokens = context;
         self.emit(TurnEvent::Usage { id, prompt: prompt_tokens, completion, context, estimated });
         Ok(out)
+    }
+
+    /// The reply ended at the model's output limit: say so after what it wrote, so it isn't
+    /// mistaken for a finished answer (or for nothing at all).
+    fn say_cut_off(&mut self) {
+        // Shown in a paragraph of its own (`Shown` starts one after earlier text).
+        let mut shown = Shown::new(self.content_len);
+        shown.tail_newlines = self.tail_newlines;
+        shown.send(&self.s.inbox, self.s.child, self.s.entry, CUT_OFF.to_owned(), String::new());
+        self.content_len = shown.len;
+        self.tail_newlines = shown.tail_newlines;
+        let note = format!("{}{CUT_OFF}", if self.content.trim().is_empty() { "" } else { "\n\n" });
+        self.content.push_str(&note);
+        self.answer.push_str(&note);
     }
 
     fn add_usage(&mut self, prompt: u64, completion: u64) {
