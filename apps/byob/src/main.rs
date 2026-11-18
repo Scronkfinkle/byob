@@ -30,6 +30,8 @@
 //!     --arrangement NAME      where the window's parts are (experimental): docked, floating,
 //!                             cockpit or focus (overrides the saved preference)
 //!     --arranging             start with the free arrangement's handles showing (testing)
+//!     --look KEY=VALUE        change one appearance setting as the model's ui_look would
+//!                             (repeatable; e.g. --look controls=hud --look accent=orange)
 //!
 //! Testing (see scripts/headless.sh):
 //!     --send TEXT             send a message on startup (repeatable)
@@ -102,6 +104,7 @@ struct Args {
     backdrop: Option<String>,
     arrangement: Option<String>,
     arranging: bool,
+    look: Vec<(String, String)>,
     open_settings: bool,
     settings_section: Option<String>,
     settings_search: Option<String>,
@@ -153,6 +156,7 @@ fn parse_args() -> Result<Args, String> {
         backdrop: None,
         arrangement: None,
         arranging: false,
+        look: Vec::new(),
         open_settings: false,
         settings_section: None,
         settings_search: None,
@@ -206,6 +210,11 @@ fn parse_args() -> Result<Args, String> {
                 args.arrangement = Some(name);
             }
             "--arranging" => args.arranging = true,
+            "--look" => {
+                let kv = it.next().ok_or("--look needs KEY=VALUE")?;
+                let (k, v) = kv.split_once('=').ok_or_else(|| format!("--look {kv}: KEY=VALUE"))?;
+                args.look.push((k.trim().to_owned(), v.to_owned()));
+            }
             "--open-settings" => args.open_settings = true,
             "--settings-section" => {
                 args.settings_section =
@@ -603,7 +612,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
     let script = testing::Runner::new(args.script);
     let (theme_arg, open_settings, section, search) = (args.theme, args.open_settings, args.settings_section, args.settings_search);
     let backdrop_arg = args.backdrop;
-    let (arrangement_arg, arranging) = (args.arrangement, args.arranging);
+    let (arrangement_arg, arranging, look_args) = (args.arrangement, args.arranging, args.look);
     let result = eframe::run_native(
         "byob",
         options,
@@ -638,6 +647,14 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
                     Some(a) => prefs.cockpit.arrangement = a,
                     None => prefs.cockpit.arrangement.free = false,
                 }
+            }
+            if !look_args.is_empty() {
+                let changes: byob_protocol::look::LookChanges =
+                    look_args.iter().map(|(k, v)| (k.clone(), serde_json::from_str(v).unwrap_or_else(|_| serde_json::Value::String(v.clone())))).collect();
+                for problem in byob_ui_egui::look::apply(&mut prefs, &changes, true, ui.user_themes(), true) {
+                    log::warn!("--look {problem}");
+                }
+                prefs.cockpit.trial = false;
             }
             ui.restore_prefs(prefs);
             if arranging {

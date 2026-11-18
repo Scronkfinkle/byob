@@ -25,6 +25,8 @@ struct Byob {
     accent: vec4<f32>,
     background: vec4<f32>,
     text: vec4<f32>,
+    hot: vec4<f32>,
+    hot_state: vec4<f32>,
     panels: array<vec4<f32>, 16>,
 }
 
@@ -78,6 +80,13 @@ fn panel_glow(p: vec2<f32>, radius: f32) -> f32 {
     return exp(-max(panel_sdf(p), 0.0) / max(radius, 0.001));
 }
 
+fn hot_sdf(p: vec2<f32>) -> f32 {
+    if (u.hot_state.x <= 0.0) {
+        return 1e6;
+    }
+    return sd_box(p, (u.hot.xy + u.hot.zw) * 0.5, (u.hot.zw - u.hot.xy) * 0.5, 4.0);
+}
+
 fn soft_shadow(p: vec2<f32>, light: vec3<f32>, height: f32) -> f32 {
     let to = light.xy - p;
     let dist = length(to);
@@ -119,6 +128,26 @@ fn byob_fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 }
 ";
 
+/// The overlay's entry point, added when the scene defines `fn overlay`: its colour over
+/// everything, premultiplied (rgb is added; alpha darkens what's under it).
+const OVERLAY_ENTRY: &str = r"
+@fragment
+fn byob_overlay_fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = overlay(pos.xy / u.scale);
+    let a = clamp(c.a, 0.0, 0.6);
+    var rgb = clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    if (BYOB_LINEAR_TARGET) {
+        rgb = pow(rgb, vec3<f32>(2.2));
+    }
+    return vec4<f32>(rgb, a);
+}
+";
+
+/// Whether the scene draws over the interface too (`fn overlay`).
+pub fn has_overlay(source: &str) -> bool {
+    source.contains("fn overlay")
+}
+
 /// For the model: what a backdrop is and what it can use (sent with the window's look).
 pub const GUIDE: &str = "A backdrop is a WGSL shader drawn behind byob's panels, for every pixel, up to 30 times a second. Write module-scope WGSL that defines
 
@@ -131,15 +160,19 @@ It can read, from the uniform u:
 - u.busy: 0, easing to 1 while the model is working on a reply (make the scene come alive while it thinks)
 - u.accent, u.background, u.text: the theme's colours (vec4<f32>, use .rgb)
 - u.panel_count and u.panels[i] (x0, y0, x1, y1 in points): where byob's panels are (the header, chat list, chat, message box, panes)
+- u.hot (x0, y0, x1, y1): the control under the pointer (a button, a field, a chat in the list); u.hot_state.x is 0 for none, 1 hovered, 2 pressed, and u.hot_state.y the seconds since it was first hovered
 
-Helpers (don't redefine them): hash21(p) -> f32 in 0..1; noise2(p), fbm2(p): smooth noise in 0..1; sd_box(p, center, half_size, radius): a rounded box's signed distance; panel_sdf(p): distance to the nearest panel, negative inside one; panel_glow(p, radius): 1 at a panel's edge fading to 0 over about radius points; soft_shadow(p, light: vec3<f32>, height): 0 in the shadow the panels cast from a light at light.xy, light.z points above the window, as if the panels stood height points tall, else 1 (soft at the edges).
+Helpers (don't redefine them): hash21(p) -> f32 in 0..1; noise2(p), fbm2(p): smooth noise in 0..1; sd_box(p, center, half_size, radius): a rounded box's signed distance; panel_sdf(p): distance to the nearest panel, negative inside one; panel_glow(p, radius): 1 at a panel's edge fading to 0 over about radius points; hot_sdf(p): distance to the control under the pointer (huge when there's none); soft_shadow(p, light: vec3<f32>, height): 0 in the shadow the panels cast from a light at light.xy, light.z points above the window, as if the panels stood height points tall, else 1 (soft at the edges).
+
+Optionally also define fn overlay(p: vec2<f32>) -> vec4<f32>, drawn over the whole interface, text included: its rgb is added (glows, light catching a control: use hot_sdf) and its alpha (at most 0.6) darkens what's below (scanlines, a vignette). Keep it faint: the text has to stay readable. Return vec4<f32>(0.0) where it should do nothing.
 
 Keep it cheap: loops with a small fixed bound (a few dozen steps), no loops over pixels. The panels are see-through over the backdrop (the look's glass setting, 1 opaque); text sits on them, so keep it calm where panel_sdf(p) < 0 or dim the scene there. A backdrop that fails to compile is refused with the line and the reason.";
 
 /// The whole module for `source` (the model's code), `linear` when the window's surface
 /// takes linear colour (the scene's sRGB colour is converted).
 pub fn module(source: &str, linear: bool) -> String {
-    format!("{source}\n{}", PRELUDE.replace("BYOB_LINEAR_TARGET", if linear { "true" } else { "false" }))
+    let overlay = if has_overlay(source) { OVERLAY_ENTRY } else { "" };
+    format!("{source}\n{PRELUDE}{overlay}").replace("BYOB_LINEAR_TARGET", if linear { "true" } else { "false" })
 }
 
 /// The line count of `source` as [`module`] places it, for errors past its end.
@@ -211,6 +244,21 @@ mod tests {
         assert!(e.contains("line 2") || e.contains("scene"), "{e}");
         assert!(check("fn other() {}").unwrap_err().contains("fn scene"));
         assert!(check(&"x".repeat(MAX_SOURCE + 1)).unwrap_err().contains("at most"));
+    }
+
+    /// A scene with an overlay compiles with its second entry point, and the overlay's
+    /// mistakes are found too.
+    #[test]
+    fn an_overlay_is_checked_with_the_scene() {
+        let scene = "fn scene(p: vec2<f32>) -> vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }\n";
+        let ok = format!(
+            "{scene}fn overlay(p: vec2<f32>) -> vec4<f32> {{\n    let g = exp(-max(hot_sdf(p), 0.0) / 8.0) * u.hot_state.x;\n    return vec4<f32>(u.accent.rgb * g * 0.3, 0.05 * step(0.5, fract(p.y * 0.5)));\n}}\n"
+        );
+        assert!(has_overlay(&ok) && !has_overlay(scene));
+        assert_eq!(check(&ok), Ok(()));
+        assert!(module(&ok, false).contains("byob_overlay_fs") && !module(scene, false).contains("byob_overlay_fs"));
+        let bad = format!("{scene}fn overlay(p: vec2<f32>) -> vec4<f32> {{\n    return 1.0;\n}}\n");
+        assert!(check(&bad).is_err());
     }
 
     #[test]

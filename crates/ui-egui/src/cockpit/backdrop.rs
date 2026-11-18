@@ -23,12 +23,16 @@ pub struct Inputs {
     pub accent: [f32; 4],
     pub background: [f32; 4],
     pub text: [f32; 4],
+    /// The control under the pointer (x0, y0, x1, y1), and (0 none / 1 hovered / 2 pressed,
+    /// seconds hovered, 0, 0).
+    pub hot: [f32; 4],
+    pub hot_state: [f32; 4],
     /// (x0, y0, x1, y1) in points; the first [`wgsl::MAX_PANELS`] are used.
     pub panels: Vec<[f32; 4]>,
 }
 
 /// Bytes in the uniform buffer (the WGSL `Byob` struct).
-const UNIFORM_SIZE: usize = 80 + 16 * wgsl::MAX_PANELS;
+const UNIFORM_SIZE: usize = 112 + 16 * wgsl::MAX_PANELS;
 
 impl Inputs {
     /// The uniform's bytes, laid out as WGSL's `Byob` (16-byte aligned vec4s).
@@ -41,7 +45,7 @@ impl Inputs {
         b.extend_from_slice(&count.to_le_bytes());
         b.extend_from_slice(&self.scale.to_le_bytes());
         let panels = (0..wgsl::MAX_PANELS).flat_map(|i| self.panels.get(i).copied().unwrap_or_default());
-        for v in self.accent.iter().chain(&self.background).chain(&self.text).copied().chain(panels) {
+        for v in self.accent.iter().chain(&self.background).chain(&self.text).chain(&self.hot).chain(&self.hot_state).copied().chain(panels) {
             b.extend_from_slice(&v.to_le_bytes());
         }
         b
@@ -72,8 +76,18 @@ struct Gpu {
     pipeline_layout: wgpu::PipelineLayout,
     buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    /// The scene the pipeline is for (by [`scene_id`]), if it built.
-    pipeline: Option<(u64, Option<wgpu::RenderPipeline>)>,
+    /// The scene the pipelines are for (by [`scene_id`]): under everything, and over it
+    /// (when the scene has an overlay).
+    pipeline: Option<(u64, Option<wgpu::RenderPipeline>, Option<wgpu::RenderPipeline>)>,
+}
+
+/// Which of a scene's two passes a callback draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pass {
+    /// `scene`, under everything.
+    Scene,
+    /// `overlay`, over everything.
+    Overlay,
 }
 
 /// Make backdrops drawable with this render state. wgpu errors are logged (and kept for
@@ -128,33 +142,39 @@ impl Gpu {
     fn build(&mut self, device: &wgpu::Device, id: u64, source: &str) {
         let text = wgsl::module(source, self.format.is_srgb());
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("byob_backdrop"), source: wgpu::ShaderSource::Wgsl(text.into()) });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("byob_backdrop"),
-            layout: Some(&self.pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("byob_vs"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("byob_fs"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: self.format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        self.pipeline = Some((id, Some(pipeline)));
+        let pipeline = |entry: &str, blend: Option<wgpu::BlendState>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&self.pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("byob_vs"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some(entry),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: self.format, blend, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let scene = pipeline("byob_fs", None);
+        let overlay = wgsl::has_overlay(source).then(|| pipeline("byob_overlay_fs", Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)));
+        self.pipeline = Some((id, Some(scene), overlay));
     }
 }
 
-/// The paint callback: one per frame while a backdrop is on.
+/// A paint callback: each frame while a backdrop is on, one for the scene (under
+/// everything) and, when it has one, one for its overlay (over everything).
 pub struct Paint {
+    pub pass: Pass,
     pub id: u64,
     pub source: Arc<str>,
     /// Filled at the end of the frame, after the panels are placed (read in `prepare`).
@@ -173,11 +193,13 @@ impl egui_wgpu::CallbackTrait for Paint {
         let Some(gpu) = resources.get_mut::<Gpu>() else {
             return Vec::new();
         };
-        if gpu.pipeline.as_ref().is_none_or(|(id, _)| *id != self.id) {
+        if gpu.pipeline.as_ref().is_none_or(|(id, _, _)| *id != self.id) {
             gpu.build(device, self.id, &self.source);
         }
-        let bytes = self.inputs.lock().unwrap_or_else(PoisonError::into_inner).bytes();
-        queue.write_buffer(&gpu.buffer, 0, &bytes);
+        if self.pass == Pass::Scene {
+            let bytes = self.inputs.lock().unwrap_or_else(PoisonError::into_inner).bytes();
+            queue.write_buffer(&gpu.buffer, 0, &bytes);
+        }
         Vec::new()
     }
 
@@ -185,7 +207,14 @@ impl egui_wgpu::CallbackTrait for Paint {
         let Some(gpu) = resources.get::<Gpu>() else {
             return;
         };
-        if let Some((id, Some(pipeline))) = &gpu.pipeline
+        let Some((id, scene, overlay)) = &gpu.pipeline else {
+            return;
+        };
+        let pipeline = match self.pass {
+            Pass::Scene => scene,
+            Pass::Overlay => overlay,
+        };
+        if let Some(pipeline) = pipeline
             && *id == self.id
         {
             pass.set_pipeline(pipeline);
@@ -199,17 +228,26 @@ impl egui_wgpu::CallbackTrait for Paint {
 mod tests {
     use super::*;
 
-    /// The bytes match WGSL's layout of `Byob`: 80 bytes of scalars and colours, then 16
-    /// panels of 16 bytes, the count where `panel_count` is.
+    /// The bytes match WGSL's layout of `Byob`: 112 bytes of scalars, colours and the hot
+    /// control, then 16 panels of 16 bytes, the count where `panel_count` is.
     #[test]
     fn inputs_are_laid_out_as_the_shader_reads_them() {
-        let i =
-            Inputs { size: [800.0, 600.0], time: 2.0, scale: 2.0, accent: [1.0, 0.5, 0.0, 1.0], panels: vec![[1.0, 2.0, 3.0, 4.0]; 20], ..Default::default() };
+        let i = Inputs {
+            size: [800.0, 600.0],
+            time: 2.0,
+            scale: 2.0,
+            accent: [1.0, 0.5, 0.0, 1.0],
+            hot: [5.0, 6.0, 7.0, 8.0],
+            hot_state: [2.0, 0.5, 0.0, 0.0],
+            panels: vec![[1.0, 2.0, 3.0, 4.0]; 20],
+            ..Default::default()
+        };
         let b = i.bytes();
         assert_eq!(b.len(), UNIFORM_SIZE);
         let f = |at: usize| f32::from_le_bytes(b[at..at + 4].try_into().unwrap());
         assert_eq!((f(0), f(4), f(16), f(28), f(32), f(36)), (800.0, 600.0, 2.0, 2.0, 1.0, 0.5));
         assert_eq!(u32::from_le_bytes(b[24..28].try_into().unwrap()), 16, "at most 16 panels");
-        assert_eq!((f(80), f(92)), (1.0, 4.0));
+        assert_eq!((f(80), f(92), f(96), f(100)), (5.0, 8.0, 2.0, 0.5));
+        assert_eq!((f(112), f(124)), (1.0, 4.0), "the panels after hot and hot_state");
     }
 }

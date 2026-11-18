@@ -41,3 +41,14 @@ fn scene(p: vec2<f32>) -> vec4<f32> {
     col *= 1.0 - 0.5 * pow(length(uv - 0.5) * 1.25, 2.0);
     return vec4<f32>(col, 1.0);
 }
+
+// Over the interface: faint scanlines, and the control under the pointer catching the
+// instruments' amber light (brighter while pressed).
+fn overlay(p: vec2<f32>) -> vec4<f32> {
+    let lines = 0.035 * step(0.5, fract(p.y * 0.5));
+    let d = max(hot_sdf(p), 0.0);
+    let pressed = step(1.5, u.hot_state.x);
+    let rise = min(u.hot_state.y * 6.0, 1.0);
+    let glow = exp(-d / 6.0) * step(0.5, u.hot_state.x) * rise * (0.3 + 0.3 * pressed);
+    return vec4<f32>(AMBER * glow, lines);
+}

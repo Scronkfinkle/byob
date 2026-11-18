@@ -44,6 +44,9 @@ egui.workspace = true
 eframe = { workspace = true, features = ["persistence"] }
 log.workspace = true
 env_logger.workspace = true
+# --look: appearance changes as the model's ui_look sends them.
+byob-protocol.workspace = true
+serde_json.workspace = true
 png.workspace = true
 # Talking to the Servo helper process (host/artifact-host) that renders HTML apps inline.
 byob-artifact-wire.workspace = true
@@ -53,9 +56,6 @@ nix.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-# examples/view_trees.rs
-byob-protocol.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true

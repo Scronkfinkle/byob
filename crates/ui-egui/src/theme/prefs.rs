@@ -154,6 +154,43 @@ impl BubbleStyle {
     }
 }
 
+/// How buttons and other controls are drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Controls {
+    /// byob's own: soft filled buttons.
+    #[default]
+    Standard,
+    /// A heads-up display: square, outlined in the accent, lit when hovered.
+    Hud,
+    /// Raised metal plates that press in.
+    Plate,
+    /// Fully rounded.
+    Pill,
+}
+
+impl Controls {
+    pub const ALL: [Controls; 4] = [Controls::Standard, Controls::Hud, Controls::Plate, Controls::Pill];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Controls::Standard => "Standard",
+            Controls::Hud => "HUD",
+            Controls::Plate => "Plate",
+            Controls::Pill => "Pill",
+        }
+    }
+
+    /// Its name for the model (`ui_look`'s `controls`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Controls::Standard => "standard",
+            Controls::Hud => "hud",
+            Controls::Plate => "plate",
+            Controls::Pill => "pill",
+        }
+    }
+}
+
 /// Where messages sit in the transcript column.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Align {
@@ -269,6 +306,8 @@ pub struct Knobs {
     pub sidebar_width: f32,
     /// Starting share of the window the artifact pane takes.
     pub pane_share: f32,
+    /// How buttons and other controls are drawn.
+    pub controls: Controls,
 }
 
 impl Default for Knobs {
@@ -291,6 +330,7 @@ impl Default for Knobs {
             line_spacing: 1.0,
             sidebar_width: 240.0,
             pane_share: 0.48,
+            controls: Controls::Standard,
         }
     }
 }

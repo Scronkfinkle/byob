@@ -18,7 +18,7 @@ use std::sync::Arc;
 use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Shadow, Stroke, TextStyle, Visuals};
 
 pub use file::{ThemeDef, ThemeFile};
-pub use prefs::{Accent, Align, BubbleStyle, ChartPalette, Density, Knobs, MonoFont, Prefs, ThemeKind, UiFont};
+pub use prefs::{Accent, Align, BubbleStyle, ChartPalette, Controls, Density, Knobs, MonoFont, Prefs, ThemeKind, UiFont};
 use presets::Palette;
 
 /// Font family for bold text and headings (Inter SemiBold). egui's default fonts have no bold.
@@ -597,7 +597,52 @@ impl Tokens {
         w.open.bg_stroke = Stroke::new(1.0, self.border);
         w.open.fg_stroke = Stroke::new(1.0, self.text);
         w.open.corner_radius = r;
+        self.style_controls(&mut v);
         v
+    }
+
+    /// The controls' style ([`Controls`]) over byob's standard widgets.
+    fn style_controls(&self, v: &mut Visuals) {
+        let w = &mut v.widgets;
+        let a = self.accent;
+        match self.knobs.controls {
+            Controls::Standard => {}
+            Controls::Pill => {
+                for s in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+                    s.corner_radius = CornerRadius::same(255);
+                }
+            }
+            Controls::Hud => {
+                let square = CornerRadius::ZERO;
+                for (s, fill, stroke, width) in
+                    [(&mut w.inactive, 0.06, 0.55, 1.0), (&mut w.hovered, 0.2, 1.0, 1.5), (&mut w.active, 0.34, 1.0, 1.5), (&mut w.open, 0.2, 0.8, 1.0)]
+                {
+                    s.bg_fill = a.gamma_multiply(fill);
+                    s.weak_bg_fill = a.gamma_multiply(fill);
+                    s.bg_stroke = Stroke::new(width, a.gamma_multiply(stroke));
+                    s.corner_radius = square;
+                }
+                w.hovered.expansion = 1.0;
+                w.hovered.fg_stroke = Stroke::new(1.5, mix(self.text_strong, a, 0.35));
+                w.noninteractive.corner_radius = square;
+            }
+            Controls::Plate => {
+                let plate = mix(self.button_bg.to_opaque(), Color32::WHITE, 0.07);
+                let r = CornerRadius::same(3);
+                for (s, fill, stroke) in [
+                    (&mut w.inactive, plate, Stroke::new(1.0, Color32::from_black_alpha(150))),
+                    (&mut w.hovered, mix(plate, Color32::WHITE, 0.08), Stroke::new(1.0, a.gamma_multiply(0.8))),
+                    (&mut w.active, mix(plate, Color32::BLACK, 0.3), Stroke::new(1.0, a)),
+                    (&mut w.open, mix(plate, Color32::WHITE, 0.05), Stroke::new(1.0, Color32::from_black_alpha(150))),
+                ] {
+                    s.bg_fill = fill;
+                    s.weak_bg_fill = fill;
+                    s.bg_stroke = stroke;
+                    s.corner_radius = r;
+                }
+                w.active.expansion = -0.5;
+            }
+        }
     }
 
     /// Categorical colours for chart series (and pie slices), in a fixed order: series `i`

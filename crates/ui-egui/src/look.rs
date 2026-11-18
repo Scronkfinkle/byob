@@ -101,6 +101,11 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef], backdrop
         field("font", json!(if k.ui_font == UiFont::Ubuntu { "ubuntu" } else { "inter" }), "the interface font: inter or ubuntu"),
         field("code_font", json!(if k.mono_font == MonoFont::JetBrainsMono { "jetbrains_mono" } else { "hack" }), "the code font: hack or jetbrains_mono"),
         field("high_contrast", json!(k.high_contrast), "stronger text and borders: true or false"),
+        field(
+            "controls",
+            json!(k.controls.name()),
+            "how buttons and other controls look: standard, hud (a heads-up display: square, outlined in the accent, lit when hovered), plate (raised metal plates that press in) or pill (fully rounded)",
+        ),
         field("reduce_motion", json!(k.reduce_motion), "no animations: true or false"),
         field("chart_colours", json!(if k.chart == ChartPalette::Accessible { "accessible" } else { "theme" }), "theme, or accessible (colour-blind safe)"),
     ];
@@ -376,6 +381,11 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
                 _ => Err(format!("code_font: hack or jetbrains_mono, not {v}")),
             },
             "high_contrast" => boolean(v, key).map(|b| k.high_contrast = b),
+            "controls" => crate::theme::Controls::ALL
+                .into_iter()
+                .find(|c| c.name() == text(v))
+                .map(|c| k.controls = c)
+                .ok_or_else(|| format!("controls: standard, hud, plate or pill, not {v}")),
             "backdrop" => backdrop(&mut prefs.cockpit, v, backdrops),
             "arrangement" => {
                 let a = &mut prefs.cockpit.arrangement;

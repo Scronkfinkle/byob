@@ -183,6 +183,8 @@ pub struct Stage {
     refused: Vec<u64>,
     /// The source being drawn (shared with the frame's callback).
     source: Option<(u64, Arc<str>)>,
+    /// The control under the pointer, and since when (egui time).
+    hot: Option<(egui::Id, f64)>,
 }
 
 impl Stage {
@@ -236,8 +238,37 @@ impl Stage {
             self.since = Some((id, now));
         }
         let rect = ui.ctx().content_rect();
-        let paint = backdrop::Paint { id, source: Arc::clone(source), inputs: Arc::clone(&self.inputs) };
-        ui.ctx().layer_painter(egui::LayerId::background()).add(egui_wgpu::Callback::new_paint_callback(rect, paint));
+        let paint = |pass| backdrop::Paint { pass, id, source: Arc::clone(source), inputs: Arc::clone(&self.inputs) };
+        ui.ctx().layer_painter(egui::LayerId::background()).add(egui_wgpu::Callback::new_paint_callback(rect, paint(backdrop::Pass::Scene)));
+        if wgsl::has_overlay(source) {
+            // Over everything, menus and tooltips included.
+            let top = egui::LayerId::new(egui::Order::Debug, egui::Id::unique("byob-backdrop-overlay"));
+            ui.ctx().layer_painter(top).add(egui_wgpu::Callback::new_paint_callback(rect, paint(backdrop::Pass::Overlay)));
+        }
+    }
+
+    /// The control under the pointer: the smallest hovered thing that can be clicked or
+    /// dragged, its rect, whether it's pressed, and for how long it has been hovered.
+    fn hot(&mut self, ctx: &egui::Context, now: f64) -> ([f32; 4], [f32; 4]) {
+        let hovered: Vec<egui::Id> = ctx.interaction_snapshot(|s| s.hovered.iter().copied().collect());
+        let best = hovered
+            .into_iter()
+            .filter_map(|id| ctx.read_response(id).map(|r| (id, r)))
+            .filter(|(_, r)| (r.sense.senses_click() || r.sense.senses_drag()) && r.rect.is_positive() && r.rect.area() < 400.0 * 120.0)
+            .min_by(|(_, a), (_, b)| a.rect.area().total_cmp(&b.rect.area()));
+        let Some((id, r)) = best else {
+            self.hot = None;
+            return ([0.0; 4], [0.0; 4]);
+        };
+        let since = match self.hot {
+            Some((h, s)) if h == id => s,
+            _ => now,
+        };
+        self.hot = Some((id, since));
+        let pressed = ctx.input(|i| i.pointer.primary_down());
+        #[allow(clippy::cast_possible_truncation)] // seconds hovered, for animation
+        let held = (now - since) as f32;
+        ([r.rect.min.x, r.rect.min.y, r.rect.max.x, r.rect.max.y], [if pressed { 2.0 } else { 1.0 }, held, 0.0, 0.0])
     }
 
     /// At the frame's end: the scene's inputs (the panels are placed now), the next redraw
@@ -261,6 +292,7 @@ impl Stage {
         let panels = ctx.data(|d| d.get_temp::<Vec<egui::Rect>>(panels_key())).unwrap_or_default();
         #[allow(clippy::cast_possible_truncation)] // seconds since start, for animation
         let time = if t.knobs.reduce_motion { 0.0 } else { (now - since) as f32 };
+        let (hot, hot_state) = self.hot(ctx, now);
         *self.inputs.lock().unwrap_or_else(PoisonError::into_inner) = backdrop::Inputs {
             size: [rect.width(), rect.height()],
             mouse: pointer.map_or([-1.0, -1.0], |p| [p.x, p.y]),
@@ -270,9 +302,11 @@ impl Stage {
             accent: rgba(t.accent),
             background: rgba(t.app_bg.to_opaque()),
             text: rgba(t.text),
+            hot,
+            hot_state,
             panels: panels.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect(),
         };
-        let moving = wgsl::animated(&c.backdrop) && !t.knobs.reduce_motion;
+        let moving = (wgsl::animated(&c.backdrop) || (hot_state[0] > 0.0 && c.backdrop.contains("hot_state.y"))) && !t.knobs.reduce_motion;
         if focused && (moving || (self.busy - target).abs() > 0.01) {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }

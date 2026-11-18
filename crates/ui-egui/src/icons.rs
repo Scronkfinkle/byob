@@ -291,16 +291,7 @@ pub fn icon_button(ui: &mut Ui, t: &Tokens, paint: Paint, label: Option<&str>, s
     let size = vec2(pad + icon + text_w + pad, height);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
-        let fill = if resp.is_pointer_button_down_on() {
-            Some(t.pressed)
-        } else if resp.hovered() {
-            Some(t.hover)
-        } else {
-            selected.then_some(t.selection)
-        };
-        if let Some(fill) = fill {
-            ui.painter().rect_filled(rect, t.round(4.0), fill);
-        }
+        control_back(ui.painter(), rect, t, resp.hovered(), resp.is_pointer_button_down_on(), selected);
         let icon_rect = Rect::from_min_size(pos2(rect.left() + pad, rect.center().y - icon / 2.0), vec2(icon, icon));
         let icon_color = if resp.hovered() || selected { t.text_strong } else { t.text_dim };
         paint(ui.painter(), icon_rect, icon_color);
@@ -310,6 +301,71 @@ pub fn icon_button(ui: &mut Ui, t: &Tokens, paint: Paint, label: Option<&str>, s
         }
     }
     resp
+}
+
+/// What's behind an icon button, in the controls' style ([`crate::theme::Controls`]).
+fn control_back(p: &egui::Painter, rect: Rect, t: &Tokens, hovered: bool, down: bool, selected: bool) {
+    use crate::theme::{Controls, mix};
+    use egui::{Color32, Stroke, StrokeKind};
+    let a = t.accent;
+    match t.knobs.controls {
+        Controls::Standard | Controls::Pill => {
+            let r = if t.knobs.controls == Controls::Pill { rect.height() / 2.0 } else { t.round(4.0) };
+            let fill = if down {
+                Some(t.pressed)
+            } else if hovered {
+                Some(t.hover)
+            } else {
+                selected.then_some(t.selection)
+            };
+            if let Some(fill) = fill {
+                p.rect_filled(rect, r, fill);
+            }
+        }
+        Controls::Hud => {
+            // Corner brackets always; lit when hovered, pressed or selected.
+            let lit = if down {
+                0.34
+            } else if hovered || selected {
+                0.18
+            } else {
+                0.0
+            };
+            if lit > 0.0 {
+                p.rect(rect, 0.0, a.gamma_multiply(lit), Stroke::new(1.0, a), StrokeKind::Inside);
+            }
+            let c = Stroke::new(1.0, a.gamma_multiply(if hovered { 1.0 } else { 0.45 }));
+            let k = 4.0;
+            for (corner, dx, dy) in
+                [(rect.left_top(), 1.0, 1.0), (rect.right_top(), -1.0, 1.0), (rect.left_bottom(), 1.0, -1.0), (rect.right_bottom(), -1.0, -1.0)]
+            {
+                p.line_segment([corner, corner + vec2(k * dx, 0.0)], c);
+                p.line_segment([corner, corner + vec2(0.0, k * dy)], c);
+            }
+        }
+        Controls::Plate => {
+            let base = mix(t.button_bg.to_opaque(), Color32::WHITE, if hovered { 0.15 } else { 0.07 });
+            let fill = if down {
+                mix(base, Color32::BLACK, 0.3)
+            } else if selected {
+                mix(base, a, 0.25)
+            } else {
+                base
+            };
+            p.rect(rect, 3.0, fill, Stroke::new(1.0, Color32::from_black_alpha(150)), StrokeKind::Inside);
+            // The bevel: lit on top, shaded below (the other way round when pressed in).
+            let (top, bottom) = if down {
+                (Color32::from_black_alpha(90), Color32::from_white_alpha(20))
+            } else {
+                (Color32::from_white_alpha(30), Color32::from_black_alpha(110))
+            };
+            p.line_segment([rect.left_top() + vec2(3.0, 1.5), rect.right_top() + vec2(-3.0, 1.5)], Stroke::new(1.0, top));
+            p.line_segment([rect.left_bottom() + vec2(3.0, -1.5), rect.right_bottom() + vec2(-3.0, -1.5)], Stroke::new(1.0, bottom));
+            if hovered && !down {
+                p.rect(rect.expand(1.0), 4.0, Color32::TRANSPARENT, Stroke::new(1.0, a.gamma_multiply(0.7)), StrokeKind::Outside);
+            }
+        }
+    }
 }
 
 /// A frameless button showing the chat settings icon.
