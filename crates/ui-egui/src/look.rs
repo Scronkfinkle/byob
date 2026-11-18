@@ -70,7 +70,7 @@ fn backdrop_value(source: &str) -> String {
     }
     match cockpit::SCENES.iter().find(|s| s.source == source) {
         Some(s) => s.name.into(),
-        None => format!("custom ({} lines, in the note backdrop_source)", source.lines().count()),
+        None => format!("custom ({} lines, in the note backdrop_source: read ui_look with notes: true)", source.lines().count()),
     }
 }
 
@@ -116,7 +116,7 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef], backdrop
         fields.push(field(
             "backdrop",
             json!(backdrop_value(&c.backdrop)),
-            &format!("a scene drawn behind the panels, which turn to glass over it: off, one of byob's ({}; sets glass and panel_gap to suit), or your own WGSL shader code (see the note backdrop_guide)", names.join(", ")),
+            &format!("a scene drawn behind the panels, which turn to glass over it: off, one of byob's ({}; sets glass and panel_gap to suit), or your own WGSL shader code (read ui_look with notes: true first, for how)", names.join(", ")),
         ));
         fields.push(field("glass", round2(c.glass), "how opaque the panels are over a backdrop, 0.2 (mostly see-through) to 1 (opaque)"));
         fields.push(field("frost", round2(c.frost), "how frosted the glass is over a backdrop, 0 (clear) to 1 (blurs what's behind the panels); only where the window can (a backdrop on when byob started)"));

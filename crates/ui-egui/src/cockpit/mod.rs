@@ -251,6 +251,10 @@ impl Stage {
         let now = ui.input(|i| i.time);
         if self.since.is_none_or(|(s, _)| s != id) {
             self.since = Some((id, now));
+            // Errors from before this scene aren't its own.
+            if let Some(e) = &self.errors {
+                e.take();
+            }
         }
         if compositing {
             // The compositor draws it (and frosts the glass over it).

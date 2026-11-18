@@ -100,8 +100,9 @@ fn shown(v: &Value) -> String {
     }
 }
 
-/// The look for the model.
-fn describe(r: &LookReport) -> String {
+/// The look for the model; the window's notes (a backdrop's guide and source) only when
+/// asked for (`notes`), else just their names: they're long, and most changes don't need them.
+fn describe(r: &LookReport, notes: bool) -> String {
     let mut out = format!(
         "The look of the byob window showing this chat (each device keeps its own).\nSettings: {}\nColour roles (as colour.<role>): {}\n\n",
         names(r),
@@ -116,8 +117,13 @@ fn describe(r: &LookReport) -> String {
             let _ = writeln!(out, "- {}: {} ({})", t.id, t.name, if t.dark { "dark" } else { "light" });
         }
     }
-    for (name, text) in &r.notes {
-        let _ = write!(out, "\nNote {name}:\n{text}\n");
+    if notes {
+        for (name, text) in &r.notes {
+            let _ = write!(out, "\nNote {name}:\n{text}\n");
+        }
+    } else if !r.notes.is_empty() {
+        let names: Vec<&str> = r.notes.keys().map(String::as_str).collect();
+        let _ = write!(out, "\nNotes (read them with {{\"notes\": true}}): {}\n", names.join(", "));
     }
     out
 }
@@ -328,7 +334,8 @@ impl Tool for UiLook {
                 "properties": {
                     "set": {"type": "object", "description": "Setting → new value, e.g. {\"accent\": \"orange\", \"corners\": 12}. Call without arguments first for the settings there are.", "additionalProperties": true},
                     "undo": {"type": "boolean", "description": "Put back the look from before the last change you made (again to go further back). For \"undo that\" or \"put it back\"."},
-                    "reset": {"type": "boolean", "description": "Back to the theme's own colours and byob's default sizes, corners and bubbles first (themes, dark or light, and zoom stay); `set` applies on top."}
+                    "reset": {"type": "boolean", "description": "Back to the theme's own colours and byob's default sizes, corners and bubbles first (themes, dark or light, and zoom stay); `set` applies on top."},
+                    "notes": {"type": "boolean", "description": "Also read the window's notes (how to write a backdrop shader, the current backdrop's code), when you're about to write or change a backdrop."}
                 }
             }),
         }
@@ -382,7 +389,7 @@ impl Tool for UiLook {
         };
         let Checked { set, read_as, skipped } = match changes(args, &now) {
             Ok(Some(c)) => c,
-            Ok(None) => return ToolOutput::ok(describe(&now)),
+            Ok(None) => return ToolOutput::ok(describe(&now, args.get("notes").and_then(Value::as_bool) == Some(true))),
             Err(e) => return ToolOutput::err(e),
         };
         let whole = set.contains_key("undo") || set.contains_key("reset");
@@ -439,6 +446,17 @@ mod tests {
     use super::*;
     use byob_protocol::look::LookField;
 
+    /// The window's notes are long: named in a plain read, given in full when asked for.
+    #[test]
+    fn notes_are_read_only_when_asked_for() {
+        let mut r = report();
+        r.notes.insert("backdrop_guide".into(), "fn scene(p: vec2<f32>) -> vec4<f32> …".into());
+        let plain = describe(&r, false);
+        assert!(plain.contains("Notes (read them with {\"notes\": true}): backdrop_guide") && !plain.contains("fn scene"), "{plain}");
+        assert!(describe(&r, true).contains("Note backdrop_guide:\nfn scene"));
+        assert_eq!(changes(&json!({"notes": true}), &r), Ok(None), "reading notes changes nothing");
+    }
+
     fn report() -> LookReport {
         LookReport {
             fields: vec![
@@ -461,7 +479,7 @@ mod tests {
         let c = changes(&json!({"set": {"accent": "teal", "bubbles": "outlined"}}), &report()).unwrap().unwrap();
         assert_eq!((c.set.len(), c.skipped.len()), (1, 2));
         assert!(changes(&json!({"set": {"colour.app_bg": "#202020"}}), &report()).unwrap().is_some());
-        let text = describe(&report());
+        let text = describe(&report(), false);
         assert!(text.contains("- accent: \"theme\" — theme, blue") && text.contains("Colour roles (as colour.<role>): app_bg"), "{text}");
     }
 
