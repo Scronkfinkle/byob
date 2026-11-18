@@ -677,7 +677,11 @@ one row of a paperclip (attach), the text and the send control, a round arrow th
 the accent once there is something to send. It starts one line tall; the text grows to ten
 lines (but no more than 38% of the window, so short windows and phones keep their transcript),
 then scrolls, and the controls keep to its bottom edge. A draft put in (a chat's, a starter's)
-puts the cursor at its end and scrolls there.
+puts the cursor at its end and scrolls there. Files attach through the paperclip, by drag
+and drop, or by pasting: in the desktop app an image on the clipboard (with no text) arrives
+as egui's `PasteImage` and is attached as `pasted-image-N.png`; in the browser, eframe only
+reads a paste's text, so `upload.rs` listens for `paste` on the window (capture phase) and
+attaches the clipboard's files.
 
 The text is Markdown, styled as it is typed (`crates/ui-egui/src/compose_md.rs`): it stays a
 plain `TextEdit` over the raw text, which is what is sent, with a `layouter` that styles it.

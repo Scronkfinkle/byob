@@ -1,5 +1,6 @@
 //! Attaching files in the composer: its paperclip (a file picker), drag and drop onto
-//! the window, upload in chunks over the protocol, and chips for what is attached.
+//! the window, pasting an image (or, in the browser, copied files), upload in chunks over
+//! the protocol, and chips for what is attached.
 //!
 //! Picking and reading files can't block a frame (and can't block at all in the browser),
 //! so both report back through a channel polled every frame.
@@ -19,6 +20,57 @@ use crate::theme::Tokens;
 
 /// A file read on the client, or why it couldn't be.
 pub type Picked = Result<(String, Vec<u8>), String>;
+
+/// A pasted image as PNG bytes.
+fn png_of(img: &egui::ColorImage) -> Result<Vec<u8>, String> {
+    let [w, h] = img.size;
+    let rgba: Vec<u8> = img.pixels.iter().flat_map(|p| p.to_srgba_unmultiplied()).collect();
+    let (w, h) = (u32::try_from(w).map_err(|_| "the pasted image is too large")?, u32::try_from(h).map_err(|_| "the pasted image is too large")?);
+    let buf = image::RgbaImage::from_raw(w, h, rgba).ok_or("the pasted image couldn't be read")?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    buf.write_to(&mut out, image::ImageFormat::Png).map_err(|e| format!("the pasted image couldn't be saved: {e}"))?;
+    Ok(out.into_inner())
+}
+
+/// In the browser: files on a paste (an image copied from a page or a screenshot, or files
+/// copied in a file manager) are attached. egui takes the paste's text itself and stops the
+/// event, so this listens first (in the capture phase), on the window, once.
+#[cfg(target_arch = "wasm32")]
+fn listen_for_pasted_files(ctx: &egui::Context, tx: &Sender<Picked>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use wasm_bindgen::JsCast as _;
+    use wasm_bindgen::closure::Closure;
+    static LISTENING: AtomicBool = AtomicBool::new(false);
+    if LISTENING.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let Some(window) = web_sys::window() else { return };
+    let (ctx, tx) = (ctx.clone(), tx.clone());
+    let on_paste = Closure::<dyn FnMut(web_sys::ClipboardEvent)>::new(move |event: web_sys::ClipboardEvent| {
+        let Some(files) = event.clipboard_data().and_then(|d| d.files()) else { return };
+        for i in 0..files.length() {
+            let Some(file) = files.get(i) else { continue };
+            let (tx, ctx) = (tx.clone(), ctx.clone());
+            wasm_bindgen_futures::spawn_local(async move {
+                let name = if file.name().is_empty() { "pasted-file".to_owned() } else { file.name() };
+                #[allow(clippy::cast_precision_loss)] // sizes far below 2^52
+                let result = if file.size() > MAX_UPLOAD_BYTES as f64 {
+                    Err(format!("{name} is too big to attach (the limit is {})", media::size_label(MAX_UPLOAD_BYTES)))
+                } else {
+                    match wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
+                        Ok(buf) => Ok((name, js_sys::Uint8Array::new(&buf).to_vec())),
+                        Err(_) => Err(format!("Couldn't read {name}")),
+                    }
+                };
+                let _ = tx.send(result);
+                ctx.request_repaint();
+            });
+        }
+    });
+    let _ = window.add_event_listener_with_callback_and_bool("paste", on_paste.as_ref().unchecked_ref(), true);
+    // Lives as long as the page.
+    on_paste.forget();
+}
 
 /// Longest side of an attachment's preview, in pixels (shown small in its chip, at this
 /// size on hover).
@@ -153,6 +205,16 @@ impl Uploads {
         let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
         for file in dropped {
             read_dropped(ctx, file, self.tx.clone());
+        }
+        #[cfg(target_arch = "wasm32")]
+        listen_for_pasted_files(ctx, &self.tx);
+        // An image pasted in the desktop app (a screenshot, an image copied without text):
+        // attached as a PNG.
+        let images: Vec<std::sync::Arc<egui::ColorImage>> =
+            ctx.input(|i| i.events.iter().filter_map(|e| if let egui::Event::PasteImage(img) = e { Some(std::sync::Arc::clone(img)) } else { None }).collect());
+        for (i, img) in (0u64..).zip(images) {
+            let name = format!("pasted-image-{}.png", self.next_id.saturating_add(i));
+            let _ = self.tx.send(png_of(&img).map(|bytes| (name, bytes)));
         }
         let mut errors = Vec::new();
         while let Ok(picked) = self.rx.try_recv() {
@@ -397,6 +459,25 @@ mod tests {
         fn try_recv(&mut self) -> Option<ServerMsg> {
             None
         }
+    }
+
+    #[test]
+    fn a_pasted_image_is_attached_as_a_png() {
+        let ctx = egui::Context::default();
+        let mut u = Uploads::default();
+        let mut conn = Recorder::default();
+        let img = egui::ColorImage::new([3, 2], vec![egui::Color32::from_rgb(200, 10, 30); 6]);
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::PasteImage(std::sync::Arc::new(img)));
+        let mut out = ctx.run_ui(input, |ui| {
+            assert!(u.poll(ui.ctx(), &mut conn).is_empty());
+        });
+        out.textures_delta.clear();
+        let [ClientMsg::Upload { name, data, done: true, .. }] = conn.0.as_slice() else { panic!("{:?}", conn.0) };
+        assert_eq!(name, "pasted-image-1.png");
+        let png = image::load_from_memory(&media::decode(data).unwrap()).unwrap().to_rgba8();
+        assert_eq!((png.width(), png.height()), (3, 2));
+        assert_eq!(png.get_pixel(2, 1).0, [200, 10, 30, 255]);
     }
 
     #[test]
