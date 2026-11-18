@@ -121,30 +121,64 @@ fn transcript(ui: &mut egui::Ui, t: &Tokens, th: Thread<'_>, cache: &mut markdow
             }
             Segment::Steps(range) => {
                 ui.add_space(2.0);
+                // Plain rows in a row (no card, question or subagent between them) scroll as
+                // one box once there are many; what needs seeing in full stays outside it.
+                let mut rows: Vec<&Step> = Vec::new();
                 for step in th.steps.get(range).unwrap_or_default() {
-                    if step.status == StepStatus::Waiting && step.ask.as_ref().is_some_and(|a| a.choice.is_some()) {
+                    let waiting = step.status == StepStatus::Waiting;
+                    let has_cards = !step.artifacts.is_empty() || !step.views.is_empty();
+                    // Finished (failed ones too) and the layout hides tool steps: only what
+                    // it made. A running one still shows; approvals are cards.
+                    let quiet = step.status.finished() && !crate::layout::visible(ui.ctx(), "message.steps", false);
+                    if !waiting && step.delegation.is_none() && !has_cards {
+                        if !quiet {
+                            rows.push(step);
+                        }
+                        continue;
+                    }
+                    step_rows(ui, t, th.key, &std::mem::take(&mut rows), th.done);
+                    if waiting && step.ask.as_ref().is_some_and(|a| a.choice.is_some()) {
                         msg = msg.or(question_card(ui, t, step, th.agent));
-                    } else if step.status == StepStatus::Waiting {
+                    } else if waiting {
                         msg = msg.or(approval_card(ui, t, step, th.agent));
                     } else if let Some(d) = step.delegation.as_deref() {
                         msg = msg.or(delegation(ui, t, step, d, cache, cards));
                     } else {
-                        // Finished (failed ones too) and the layout hides tool steps: only what
-                        // it made. A running one still shows; approvals are cards, above.
-                        let quiet = step.status.finished() && !crate::layout::visible(ui.ctx(), "message.steps", false);
                         if !quiet {
                             row(ui, t, step);
                         }
-                        if !step.artifacts.is_empty() || !step.views.is_empty() {
-                            cards(ui, step);
-                        }
+                        cards(ui, step);
                     }
                 }
+                step_rows(ui, t, th.key, &rows, th.done);
                 ui.add_space(2.0);
             }
         }
     }
     msg
+}
+
+/// Tool rows shown before a run of them scrolls.
+pub const MAX_ROWS: usize = 8;
+
+/// A run of plain tool rows: as they are, or in a box [`MAX_ROWS`] tall that scrolls (and
+/// follows the newest while the reply runs) when there are more.
+fn step_rows(ui: &mut egui::Ui, t: &Tokens, key: u64, rows: &[&Step], done: bool) {
+    let Some(first) = rows.first() else { return };
+    if rows.len() <= MAX_ROWS {
+        rows.iter().for_each(|s| row(ui, t, s));
+        return;
+    }
+    let row_h = ui.spacing().interact_size.y.max(ui.text_style_height(&egui::TextStyle::Body)) + ui.spacing().item_spacing.y;
+    // Half a row more than fits shows there is more to scroll to.
+    #[allow(clippy::cast_precision_loss)] // a handful of rows
+    let height = row_h * (MAX_ROWS as f32 + 0.5);
+    egui::ScrollArea::vertical()
+        .id_salt(("step-rows", key, first.id))
+        .max_height(height)
+        .auto_shrink([false, true])
+        .stick_to_bottom(!done)
+        .show(ui, |ui| rows.iter().for_each(|s| row(ui, t, s)));
 }
 
 /// Tallest a running subagent's transcript gets before it scrolls (several can run at once).
@@ -912,5 +946,26 @@ mod tests {
         run(vec![Event::Text("Both, please".into())]);
         let enter = Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
         assert_eq!(run(vec![enter]).1, Some(ClientMsg::AnswerQuestion { step: 7, text: "Both, please".into() }));
+    }
+
+    /// A long run of tool rows scrolls in a box about [`MAX_ROWS`] tall; a short one doesn't.
+    #[test]
+    fn many_tool_rows_scroll_in_a_box() {
+        let height = |n: u64| {
+            let mut e = entry((0..n).map(|i| Step { title: format!("Step {i}"), ..step(i + 1, StepStatus::Done) }).collect());
+            e.done = true;
+            let ctx = egui::Context::default();
+            let mut cache = markdown::Cache::default();
+            let mut h = 0.0;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let r = ui.scope(|ui| body(ui, &Tokens::dark(), &e, false, &mut cache, &mut |_, _| {}));
+                h = r.response.rect.height();
+            });
+            out.textures_delta.clear();
+            h
+        };
+        let (eight, nine, forty) = (height(8), height(9), height(40));
+        assert!(nine < eight * 1.2 && forty < eight * 1.2, "8 rows {eight}, 9 rows {nine}, 40 rows {forty}");
+        assert!(height(3) < eight * 0.6, "a few rows are just rows");
     }
 }
