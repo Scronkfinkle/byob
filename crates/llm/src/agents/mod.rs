@@ -82,6 +82,9 @@ pub struct RunRequest<'a> {
     pub system: &'a str,
     /// The conversation so far, as text ([`transcript`]).
     pub prompt: &'a str,
+    /// The same with its images, for a CLI that takes them ([`Provider::takes_images`]);
+    /// empty when there are none, and then `prompt` is the whole conversation.
+    pub parts: &'a [Part],
     pub model: &'a str,
     pub effort: Option<&'a str>,
     /// An empty folder the CLI runs in, so it auto-reads no guide files.
@@ -107,6 +110,11 @@ pub trait Provider: Sync {
     fn detect_uncached(&self, binary: Option<PathBuf>) -> Detection;
     /// Models to offer.
     fn models(&self, binary: &Path) -> Vec<String>;
+    /// Can it be sent images (in [`RunRequest::parts`])? Otherwise the prompt says they
+    /// were left out.
+    fn takes_images(&self) -> bool {
+        false
+    }
     /// Run one turn, handing every event to `on_event`.
     fn run(&self, req: &RunRequest<'_>, stop: &dyn Fn() -> bool, on_event: &mut dyn FnMut(AgentEvent));
     /// Plan usage from the latest run, if the CLI reports it.
@@ -211,6 +219,31 @@ pub fn list_models(id: &str) -> Result<Vec<String>, LlmError> {
 /// system messages are left out (they go to [`system_text`]); tool calls are written in the
 /// `<function_call>` form the tool prompt teaches, so the model sees its own earlier calls.
 pub fn transcript(messages: &[ChatMessage]) -> String {
+    transcript_parts(messages, false)
+        .into_iter()
+        .filter_map(|p| match p {
+            Part::Text(t) => Some(t),
+            Part::Image(_) => None,
+        })
+        .collect()
+}
+
+/// Most images sent with one request (the latest; earlier ones are mentioned instead).
+pub const MAX_IMAGES: usize = 20;
+
+/// A piece of a prompt: text, or an image (a `data:` or http(s) URL) where it was attached.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Part {
+    Text(String),
+    Image(String),
+}
+
+/// [`transcript`] with each user message's images after its text when `images` is set (the
+/// latest [`MAX_IMAGES`]), or a note that they were left out.
+pub fn transcript_parts(messages: &[ChatMessage], images: bool) -> Vec<Part> {
+    let total: usize = messages.iter().filter(|m| m.role == "user").map(|m| m.images.len()).sum();
+    let mut skip = if images { total.saturating_sub(MAX_IMAGES) } else { total };
+    let mut parts = Vec::new();
     let mut out = String::new();
     for m in messages {
         let text = m.content.as_deref().unwrap_or_default().trim();
@@ -219,8 +252,16 @@ pub fn transcript(messages: &[ChatMessage]) -> String {
             "user" => {
                 out.push_str("<user>\n");
                 out.push_str(text);
-                if !m.images.is_empty() {
-                    out.push_str(&format!("\n[{} image(s) attached; this model can't see them here]", m.images.len()));
+                let left_out = m.images.len().min(skip);
+                skip -= left_out;
+                if left_out > 0 {
+                    let why = if images { "earlier image(s) left out" } else { "image(s) attached; this model can't see them here" };
+                    out.push_str(&format!("\n[{left_out} {why}]"));
+                }
+                for url in m.images.iter().skip(left_out) {
+                    out.push('\n');
+                    parts.push(Part::Text(std::mem::take(&mut out)));
+                    parts.push(Part::Image(url.clone()));
                 }
                 out.push_str("\n</user>\n\n");
             }
@@ -244,7 +285,8 @@ pub fn transcript(messages: &[ChatMessage]) -> String {
         }
     }
     out.push_str("Write the next <assistant> reply. Write only the reply itself, without the <assistant> tags.");
-    out
+    parts.push(Part::Text(out));
+    parts
 }
 
 /// byob's system messages, joined.
@@ -281,9 +323,11 @@ pub(crate) fn stream(
         system.push_str(&toolprompt::tool_prompt(tools));
     }
     let prompt = transcript(messages);
+    let has_images = messages.iter().any(|m| m.role == "user" && !m.images.is_empty());
+    let parts = if has_images && p.takes_images() { transcript_parts(messages, true) } else { Vec::new() };
     let effort = config.params.effort.map(|e| e.as_str());
     let cwd = sandbox_dir();
-    let req = RunRequest { binary: &binary, system: &system, prompt: &prompt, model: config.model.trim(), effort, cwd: &cwd };
+    let req = RunRequest { binary: &binary, system: &system, prompt: &prompt, parts: &parts, model: config.model.trim(), effort, cwd: &cwd };
     log::info!("agent {id}: model {:?}, system {} chars, prompt {} chars", req.model, system.len(), prompt.len());
     let mut out = ChatOutcome::default();
     let mut failure: Option<(ErrorKind, String)> = None;
@@ -362,6 +406,41 @@ mod tests {
         assert_eq!(system_text(&messages), "be nice");
     }
 
+    /// Regression: images attached in a chat on Claude Code were dropped ("this model can't
+    /// see them here"). For a CLI that takes them they come after their message's text, the
+    /// latest MAX_IMAGES of them.
+    #[test]
+    fn images_go_where_they_were_attached() {
+        let messages = vec![
+            ChatMessage::user_with_images("what's this?", vec!["data:image/png;base64,AAAA".into()]),
+            ChatMessage::assistant("A dot."),
+            ChatMessage::user("thanks"),
+        ];
+        let parts = transcript_parts(&messages, true);
+        assert!(
+            matches!(&parts[..], [Part::Text(a), Part::Image(u), Part::Text(b)]
+            if a.ends_with("<user>\nwhat's this?\n") && u == "data:image/png;base64,AAAA" && b.starts_with("\n</user>") && b.contains("thanks")),
+            "{parts:?}"
+        );
+        // Without images, the note as before.
+        assert!(transcript(&messages).contains("[1 image(s) attached; this model can't see them here]"));
+        // Only the latest are sent.
+        let many: Vec<ChatMessage> = (0..MAX_IMAGES + 3).map(|i| ChatMessage::user_with_images(format!("{i}"), vec![format!("https://x/{i}.png")])).collect();
+        let parts = transcript_parts(&many, true);
+        let sent: Vec<&String> = parts.iter().filter_map(|p| if let Part::Image(u) = p { Some(u) } else { None }).collect();
+        assert_eq!((sent.len(), sent[0].as_str()), (MAX_IMAGES, "https://x/3.png"));
+        let text: String = parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(t.as_str()) } else { None }).collect();
+        assert_eq!(text.matches("[1 earlier image(s) left out]").count(), 3);
+    }
+
+    /// The probe reports vision from this, and the engine strips images from requests to a
+    /// model without it: Claude Code takes them, Codex doesn't (yet).
+    #[test]
+    fn claude_code_takes_images() {
+        assert!(provider("claude").is_some_and(|p| p.takes_images()));
+        assert!(provider("codex").is_some_and(|p| !p.takes_images()));
+    }
+
     #[test]
     fn errors_are_sorted_by_what_the_user_can_do() {
         assert_eq!(classify("Invalid API key · Please run /login"), ErrorKind::NotLoggedIn);
@@ -420,6 +499,20 @@ mod tests {
     #[ignore = "live: runs the signed-in Claude Code CLI"]
     fn live_claude() {
         live_chat("cli://claude", "haiku");
+    }
+
+    /// Live: Claude Code sees an attached image (a red square).
+    #[test]
+    #[ignore = "live: runs the signed-in Claude Code CLI"]
+    fn live_claude_sees_images() {
+        use std::sync::atomic::AtomicBool;
+        const RED: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==";
+        let client = crate::Client::new(byob_types::InferenceConfig { base_url: "cli://claude".into(), model: "haiku".into(), ..Default::default() }).unwrap();
+        let messages =
+            [ChatMessage::system("You are terse."), ChatMessage::user_with_images("What single color fills this image? One word.", vec![RED.into()])];
+        let out = client.stream_chat(&messages, &[], &AtomicBool::new(false), |_| {}).unwrap();
+        println!("{:?}", out.content);
+        assert!(out.content.to_lowercase().contains("red"), "{:?}", out.content);
     }
 
     #[test]

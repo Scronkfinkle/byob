@@ -176,11 +176,12 @@ impl Client {
 
 impl Prober<'_> {
     /// An agent CLI: what it lists, and the facts every CLI shares. byob's tools reach it
-    /// through the tool prompt (no CLI hands its tool calls back), and images aren't passed.
+    /// through the tool prompt (no CLI hands its tool calls back); images reach the ones
+    /// that take them (Claude Code).
     fn agent_cli(&mut self, id: &str) {
         self.caps.server = ServerKind::AgentCli;
         self.caps.tools = ToolSupport::InContent;
-        self.caps.vision = Some(false);
+        self.caps.vision = Some(crate::agents::provider(id).is_some_and(|p| p.takes_images()));
         self.caps.context_length = Some(crate::agents::CONTEXT_TOKENS);
         match crate::agents::list_models(id) {
             Ok(models) => self.caps.models = models,

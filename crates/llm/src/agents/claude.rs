@@ -12,9 +12,9 @@ use std::process::Command;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use super::{AgentEvent, Detection, ErrorKind, PlanUsage, Provider, RunRequest, classify, proc};
+use super::{AgentEvent, Detection, ErrorKind, Part, PlanUsage, Provider, RunRequest, classify, proc};
 use crate::Usage;
 
 /// Largest system prompt passed as an argument; a longer one goes on stdin instead.
@@ -55,6 +55,10 @@ impl Provider for Claude {
         d
     }
 
+    fn takes_images(&self) -> bool {
+        true
+    }
+
     fn models(&self, _binary: &Path) -> Vec<String> {
         // Claude Code takes these aliases for the newest model of each family.
         ["sonnet", "opus", "haiku", "fable"].map(str::to_owned).to_vec()
@@ -78,7 +82,13 @@ impl Provider for Claude {
             stdin.push_str(req.system);
             stdin.push_str("\n\n");
         }
-        stdin.push_str(req.prompt);
+        if req.parts.is_empty() {
+            stdin.push_str(req.prompt);
+        } else {
+            // Images: one user message of text and image blocks, as the Messages API takes them.
+            cmd.args(["--input-format", "stream-json"]);
+            stdin = user_message(&stdin, req.parts);
+        }
         let mut state = Stream::default();
         let exit = proc::run(cmd, &stdin, super::run_timeout(), stop, &mut |line| state.line(line, on_event));
         match exit {
@@ -100,6 +110,22 @@ impl Provider for Claude {
     fn usage(&self) -> Option<PlanUsage> {
         USAGE.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
+}
+
+/// The `stream-json` input line for one user message: `lead` (the system prompt when it was
+/// too long for an argument), then the parts, images as image blocks.
+fn user_message(lead: &str, parts: &[Part]) -> String {
+    let text = |t: &str| (!t.trim().is_empty()).then(|| json!({"type": "text", "text": t}));
+    let mut content: Vec<Value> = text(lead).into_iter().collect();
+    for p in parts {
+        match p {
+            Part::Text(t) => content.extend(text(t)),
+            Part::Image(url) => content.push(crate::anthropic::image(url)),
+        }
+    }
+    let mut line = json!({"type": "user", "message": {"role": "user", "content": content}}).to_string();
+    line.push('\n');
+    line
 }
 
 /// Reading `stream-json` lines.
@@ -171,6 +197,22 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Images reach Claude Code as image blocks of one stream-json user message.
+    #[test]
+    fn a_prompt_with_images_is_one_stream_json_message() {
+        let parts = [Part::Text("<user>\nwhat color?\n".into()), Part::Image("data:image/png;base64,AAAA".into()), Part::Text("\n</user>".into())];
+        let line = user_message("", &parts);
+        assert!(line.ends_with('\n') && line.trim_end().lines().count() == 1);
+        let v: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["type"], "user");
+        let content = v["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[1], json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}));
+        // A system prompt too long for an argument leads.
+        let v: Value = serde_json::from_str(&user_message("be brief", &parts)).unwrap();
+        assert_eq!(v["message"]["content"][0]["text"], "be brief");
+    }
 
     fn feed(lines: &[&str]) -> (Vec<AgentEvent>, Stream) {
         let mut s = Stream::default();

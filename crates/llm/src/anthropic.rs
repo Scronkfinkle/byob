@@ -200,7 +200,7 @@ fn user_blocks(m: &ChatMessage) -> Vec<Value> {
 }
 
 /// An image block from a `data:image/...;base64,` URL or an http(s) URL.
-fn image(url: &str) -> Value {
+pub(crate) fn image(url: &str) -> Value {
     if let Some(rest) = url.strip_prefix("data:") {
         let parsed = rest.split_once(',').and_then(|(meta, data)| Some((meta.strip_suffix(";base64")?, data)));
         return match parsed {
