@@ -529,8 +529,9 @@ impl Turn {
                 self.messages.push(toolprompt::fallback_assistant_message(&text, &calls));
             } else {
                 let text = Some(text).filter(|c| !c.trim().is_empty());
-                // Anthropic: the reply's own blocks (thinking included) go back with it.
-                self.messages.push(ChatMessage::assistant_tool_calls(text, &calls).with_native(out.native));
+                // The reasoning goes back with the calls so the model keeps its train of thought
+                // (Anthropic: the reply's own blocks, thinking included).
+                self.messages.push(ChatMessage::assistant_tool_calls(text, &calls).with_native(out.native).with_reasoning(out.reasoning, out.reasoning_field));
             }
             for (call, result) in calls.iter().zip(self.call_all(&calls)) {
                 self.messages.push(if prompt { toolprompt::fallback_tool_result(call, &result) } else { ChatMessage::tool_result(call.id.clone(), result) });

@@ -39,7 +39,12 @@ pub fn estimate_message_tokens(m: &ChatMessage) -> usize {
         .map(|c| estimate_tokens(&c.function.name).saturating_add(estimate_tokens(&c.function.arguments)).saturating_add(MESSAGE_OVERHEAD))
         .fold(0, usize::saturating_add);
     let images = m.images.len().saturating_mul(IMAGE_TOKENS);
-    MESSAGE_OVERHEAD.saturating_add(m.content.as_deref().map(estimate_tokens).unwrap_or(0)).saturating_add(calls).saturating_add(images)
+    let reasoning = if m.reasoning.is_empty() { 0 } else { estimate_tokens(&m.reasoning) };
+    MESSAGE_OVERHEAD
+        .saturating_add(m.content.as_deref().map(estimate_tokens).unwrap_or(0))
+        .saturating_add(calls)
+        .saturating_add(images)
+        .saturating_add(reasoning)
 }
 
 /// Estimated tokens for a transcript.

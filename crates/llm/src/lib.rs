@@ -82,6 +82,10 @@ pub struct ChatOutcome {
     /// in [`Usage::prompt_tokens`]).
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    /// The field the server streamed `reasoning` in (`reasoning_content` or `reasoning`);
+    /// `None` when it came in `<think>` tags or there was none. See
+    /// [`ChatMessage::with_reasoning`].
+    pub reasoning_field: Option<&'static str>,
 }
 
 /// Handle to a remote inference endpoint. Cheap to clone.
@@ -432,6 +436,7 @@ fn read_stream(mut reader: impl BufRead, cancel: &AtomicBool, on_event: &mut imp
                 answered = true;
                 let chunk = wire::Chunk::parse(json).map_err(LlmError::Stream)?;
                 if let Some(reasoning) = chunk.reasoning {
+                    out.reasoning_field = out.reasoning_field.or(chunk.reasoning_field);
                     emit(&mut out, StreamEvent::Reasoning(reasoning));
                 }
                 if let Some(content) = chunk.content {

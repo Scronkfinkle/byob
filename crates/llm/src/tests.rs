@@ -90,6 +90,7 @@ fn streams_content_reasoning_and_usage() {
     let out = client(url).stream_chat(&[ChatMessage::user("hi")], &[], &AtomicBool::new(false), |e| events.push(e)).unwrap();
     assert_eq!(out.content, "Hello");
     assert_eq!(out.reasoning, "let me think");
+    assert_eq!(out.reasoning_field, Some("reasoning_content"));
     assert_eq!(out.finish_reason.as_deref(), Some("stop"));
     assert_eq!(out.usage, Some(Usage { prompt_tokens: 5, completion_tokens: 2 }));
     assert_eq!(events.len(), 3);
@@ -611,4 +612,29 @@ fn images_become_content_parts_and_text_stays_a_string() {
     assert!(crate::budget::estimate_message_tokens(&m) > crate::budget::estimate_message_tokens(&ChatMessage::user("what is this?")) + 500);
     let tool = serde_json::to_value(ChatMessage::tool_result("c1", "ok")).unwrap();
     assert_eq!(tool, serde_json::json!({"role": "tool", "content": "ok", "tool_call_id": "c1"}));
+}
+
+/// Reasoning goes back on an assistant message in the field the server streamed it in, or in
+/// `<think>` tags when the model wrote it that way; never on other roles.
+#[test]
+fn reasoning_is_sent_back_the_way_it_came() {
+    use crate::ToolCall;
+    let calls = [ToolCall { id: "c1".into(), name: "echo".into(), arguments: "{}".into() }];
+    let as_json = |m: &ChatMessage| serde_json::to_value(m).unwrap();
+
+    let m = ChatMessage::assistant_tool_calls(None, &calls).with_reasoning("look it up".into(), Some("reasoning"));
+    let v = as_json(&m);
+    assert_eq!(v["reasoning"], "look it up");
+    assert!(v.get("reasoning_content").is_none() && v.get("content").is_none());
+
+    let m = ChatMessage::assistant_tool_calls(Some("Checking.".into()), &calls).with_reasoning("look it up".into(), None);
+    assert_eq!(as_json(&m)["content"], "<think>\nlook it up\n</think>\n\nChecking.");
+
+    let none = ChatMessage::assistant_tool_calls(None, &calls).with_reasoning("  ".into(), Some("reasoning_content"));
+    assert!(as_json(&none).get("reasoning_content").is_none());
+    let user = ChatMessage::user("hi").with_reasoning("x".into(), Some("reasoning_content"));
+    assert!(as_json(&user).get("reasoning_content").is_none());
+
+    let chunk = crate::wire::Chunk::parse(r#"{"choices":[{"delta":{"reasoning":"hm"}}]}"#).unwrap();
+    assert_eq!((chunk.reasoning.as_deref(), chunk.reasoning_field), (Some("hm"), Some("reasoning")));
 }

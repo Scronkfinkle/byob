@@ -27,7 +27,22 @@ pub struct ChatMessage {
     /// by the OpenAI wire format; never serialized or stored.
     #[serde(skip)]
     pub native: Vec<Value>,
+    /// An assistant reply's reasoning, sent back within a tool loop so the model keeps its
+    /// train of thought between tool calls (Qwen, GLM, Kimi, MiniMax, gpt-oss and DeepSeek
+    /// expect it; their chat templates keep it after the last user message). It goes in
+    /// the field the server sent it in ([`ChatMessage::reasoning_field`]). Never stored.
+    #[serde(skip)]
+    pub reasoning: String,
+    /// Where `reasoning` goes: `reasoning_content` or `reasoning` (as the server streamed
+    /// it), or `None` for reasoning the model wrote in `<think>` tags, which goes back the
+    /// same way, in front of the content.
+    #[serde(skip)]
+    pub reasoning_field: Option<&'static str>,
 }
+
+/// The delta fields servers stream reasoning in: llama-server, vLLM and DeepSeek use
+/// `reasoning_content`; OpenRouter and newer vLLM use `reasoning`.
+pub const REASONING_FIELDS: [&str; 2] = ["reasoning_content", "reasoning"];
 
 impl Serialize for ChatMessage {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -43,12 +58,19 @@ impl Serialize for ChatMessage {
         }
         let mut map = s.serialize_map(None)?;
         map.serialize_entry("role", &self.role)?;
+        let reasoning = Some(self.reasoning.trim()).filter(|r| !r.is_empty() && self.role == "assistant");
+        // Reasoning from `<think>` tags goes back as the model wrote it.
+        let tagged = match (reasoning, self.reasoning_field) {
+            (Some(r), None) => Some(format!("<think>\n{r}\n</think>\n\n{}", self.content.as_deref().unwrap_or(""))),
+            _ => None,
+        };
+        let content = tagged.as_ref().or(self.content.as_ref());
         if self.images.is_empty() {
-            if let Some(c) = &self.content {
+            if let Some(c) = content {
                 map.serialize_entry("content", c)?;
             }
         } else {
-            let text = self.content.as_deref().filter(|t| !t.is_empty()).map(|text| Part::Text { text });
+            let text = content.map(String::as_str).filter(|t| !t.is_empty()).map(|text| Part::Text { text });
             let images = self.images.iter().map(|url| Part::ImageUrl { image_url: Url { url } });
             let parts: Vec<Part<'_>> = text.into_iter().chain(images).collect();
             map.serialize_entry("content", &parts)?;
@@ -58,6 +80,9 @@ impl Serialize for ChatMessage {
         }
         if let Some(id) = &self.tool_call_id {
             map.serialize_entry("tool_call_id", id)?;
+        }
+        if let (Some(r), Some(field)) = (reasoning, self.reasoning_field) {
+            map.serialize_entry(field, r)?;
         }
         map.end()
     }
@@ -74,7 +99,16 @@ impl ChatMessage {
         Self::text("assistant", text)
     }
     fn text(role: &str, text: impl Into<String>) -> Self {
-        Self { role: role.into(), content: Some(text.into()), tool_calls: Vec::new(), tool_call_id: None, images: Vec::new(), native: Vec::new() }
+        Self {
+            role: role.into(),
+            content: Some(text.into()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            images: Vec::new(),
+            native: Vec::new(),
+            reasoning: String::new(),
+            reasoning_field: None,
+        }
     }
     /// A user message with images (URLs or `data:image/...;base64,` URLs) after the text.
     pub fn user_with_images(text: impl Into<String>, images: Vec<String>) -> Self {
@@ -105,7 +139,7 @@ impl ChatMessage {
                 function: WireFunction { name: c.name.clone(), arguments: c.arguments.clone() },
             })
             .collect();
-        Self { role: "assistant".into(), content: text, tool_calls, tool_call_id: None, images: Vec::new(), native: Vec::new() }
+        Self { tool_calls, content: text, ..Self::text("assistant", "") }
     }
     /// The result of a tool call.
     pub fn tool_result(call_id: impl Into<String>, text: impl Into<String>) -> Self {
@@ -116,12 +150,19 @@ impl ChatMessage {
             tool_call_id: Some(call_id.into()),
             images: Vec::new(),
             native: Vec::new(),
+            reasoning: String::new(),
+            reasoning_field: None,
         }
     }
     /// This message with the provider-native blocks of the reply it came from (see
     /// [`ChatMessage::native`]).
     pub fn with_native(self, native: Vec<Value>) -> Self {
         Self { native, ..self }
+    }
+    /// This assistant message with the reasoning of the reply it came from, to send back
+    /// within the tool loop (see [`ChatMessage::reasoning`]).
+    pub fn with_reasoning(self, reasoning: String, field: Option<&'static str>) -> Self {
+        Self { reasoning, reasoning_field: field, ..self }
     }
 }
 
@@ -206,6 +247,8 @@ pub struct ToolCallDelta {
 pub struct Chunk {
     pub content: Option<String>,
     pub reasoning: Option<String>,
+    /// The delta field `reasoning` came in (one of [`REASONING_FIELDS`]).
+    pub reasoning_field: Option<&'static str>,
     pub tool_calls: Vec<ToolCallDelta>,
     pub finish_reason: Option<String>,
     pub usage: Option<Usage>,
@@ -226,8 +269,10 @@ impl Chunk {
         chunk.finish_reason = str_at(choice, "finish_reason");
         let Some(delta) = choice.get("delta") else { return Ok(chunk) };
         chunk.content = str_at(delta, "content");
-        // llama-server/DeepSeek use `reasoning_content`; some servers use `reasoning`.
-        chunk.reasoning = str_at(delta, "reasoning_content").or_else(|| str_at(delta, "reasoning"));
+        if let Some((field, text)) = REASONING_FIELDS.iter().find_map(|f| str_at(delta, f).map(|t| (*f, t))) {
+            chunk.reasoning = Some(text);
+            chunk.reasoning_field = Some(field);
+        }
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for (i, call) in calls.iter().enumerate() {
                 let f = call.get("function");

@@ -392,6 +392,26 @@ fn each_rounds_thinking_is_its_own_paragraph() {
     assert_eq!(view.reply().reasoning, "Let me check the dates.\n\nGood, 1817 it is.");
 }
 
+/// Regression: the reasoning before a tool call was dropped from the transcript, so on the
+/// next round the model had lost its train of thought (and llama-server's cache missed from
+/// there). It goes back on the assistant message, in the field the server sent it in.
+#[test]
+fn reasoning_goes_back_with_the_tool_calls() {
+    let script = vec![
+        Reply::Reasoned("Let me check the dates.", Box::new(call("echo", r#"{"text":"1817"}"#))),
+        Reply::Reasoned("Good, 1817 it is.", Box::new(Reply::Text("Done."))),
+    ];
+    let h = harness(script, "echo", Access::Read);
+    let (mut c, _) = client(&h);
+    run_turn(&mut c, "when?", |_, _| panic!("reads must not ask"));
+    let requests = h.requests.lock().unwrap().clone();
+    let second = requests.iter().filter(|r| r.get("tools").is_some()).nth(1).expect("a second round");
+    let messages = second["messages"].as_array().unwrap();
+    let asked = messages.iter().find(|m| m["role"] == "assistant" && m.get("tool_calls").is_some()).expect("the call");
+    assert_eq!(asked["reasoning_content"], "Let me check the dates.");
+    assert!(asked.get("reasoning").is_none());
+}
+
 /// Regression: a reply's "in" added up every request's prompt (each tool round reads the
 /// conversation again), so it looked far bigger than the context. The context at the end
 /// is recorded too: the last request's prompt and completion.
