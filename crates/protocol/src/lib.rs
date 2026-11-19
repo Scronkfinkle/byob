@@ -388,6 +388,16 @@ pub enum ClientMsg {
     /// This client's look (13.12+, cap [`look::CAP_LOOK`]): after connecting, after every
     /// change, and in answer to [`ServerMsg::SetLook`].
     ReportLook(look::LookReport),
+    /// A screenshot of this client's window (13.15+, cap [`look::CAP_CAPTURE`]), in answer
+    /// to [`ServerMsg::Capture`]: a PNG or JPEG of at most [`media::MAX_IMAGE_BYTES`],
+    /// base64, longest side at most [`look::CAPTURE_SIDE`]; or why there's none.
+    Captured {
+        request: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// A message from a newer client this engine doesn't know (answered with a notice).
     #[serde(other)]
     Unknown,
@@ -503,6 +513,9 @@ pub enum ServerMsg {
     /// windows showing the chat where the model asked). Answered with a
     /// [`ClientMsg::ReportLook`] whose `answered` is `request`.
     SetLook { request: u64, changes: look::LookChanges },
+    /// Take a screenshot of this window for the model (13.15+, cap [`look::CAP_CAPTURE`]; to
+    /// a window showing the chat where it asked). Answered with [`ClientMsg::Captured`].
+    Capture { request: u64 },
     /// A message from a newer engine this client doesn't know: skip it.
     #[serde(other)]
     Unknown,

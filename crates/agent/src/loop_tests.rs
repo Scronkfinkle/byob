@@ -1464,6 +1464,44 @@ fn the_model_changes_the_windows_look() {
     assert!(results[3].contains("- accent: \"orange\" → \"theme\""), "undo says what moved: {}", results[3]);
 }
 
+/// `ui_screenshot`: the window showing the chat sends a screenshot, which reaches the model as
+/// an image after the tool's result; a window that can't send one says why.
+#[test]
+fn the_model_sees_a_screenshot_of_the_window() {
+    let script = vec![call("ui_screenshot", "{}"), call("ui_screenshot", "{}"), Reply::Text("done")];
+    let (url, requests) = fake_llm(script, "final answer");
+    let home = tempfile::tempdir().unwrap();
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = home.path().join("ws");
+    config.auto_title = false;
+    config.detect_local = false;
+    config.plugins = Some(crate::extensions::PluginsConfig::default());
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let mut c = hello(&engine);
+    let mut png = Vec::new();
+    image::RgbImage::from_pixel(40, 30, image::Rgb([200, 30, 40])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    c.send(ClientMsg::SendMessage { text: "how does it look?".into(), attachments: vec![] });
+    let mut asked = 0;
+    loop {
+        match recv(&mut c) {
+            ServerMsg::Capture { request } => {
+                asked += 1;
+                let (image, error) = if asked == 1 { (Some(byob_protocol::media::encode(&png)), None) } else { (None, Some("no GPU".to_owned())) };
+                c.send(ClientMsg::Captured { request, image, error });
+            }
+            ServerMsg::EntryFinished { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(asked, 2);
+    let reqs = requests.lock().unwrap();
+    let results = tool_results(reqs.last().unwrap());
+    assert!(results[0].contains("A screenshot of the byob window showing this chat (40×30 px)"), "{}", results[0]);
+    assert!(results[1].contains("couldn't take a screenshot: no GPU"), "{}", results[1]);
+    let sent = reqs.last().unwrap().to_string();
+    assert!(sent.contains("data:image/png;base64,"), "the image reached the model");
+}
+
 /// Regression: a window that wasn't drawing (hidden) didn't answer `ui_look` changes; the
 /// tool said they failed, the model sent them again (and an undo), and they all applied
 /// later. Now the tool says the change is waiting, reads say how many are, and further
@@ -1475,6 +1513,7 @@ fn look_changes_the_window_hasnt_applied_are_waited_for() {
         call("ui_look", r#"{"set": {"accent": "orange"}}"#),
         call("ui_look", "{}"),
         call("ui_look", r#"{"undo": true}"#),
+        Reply::Text("it's waiting"),
         call("ui_look", "{}"),
         Reply::Text("done"),
     ];
@@ -1492,36 +1531,32 @@ fn look_changes_the_window_hasnt_applied_are_waited_for() {
         ..Default::default()
     };
     c.send(ClientMsg::ReportLook(report("theme")));
-    c.send(ClientMsg::SendMessage { text: "make it orange, no, undo".into(), attachments: vec![] });
-    let (mut asked, mut held, mut finished) = (0, None, std::collections::BTreeSet::new());
-    loop {
-        match recv(&mut c) {
-            // The window is hidden: it holds the change.
-            ServerMsg::SetLook { request, .. } => {
-                asked += 1;
-                held = Some(request);
+    // The window is hidden: it holds the change.
+    let turn = |c: &mut LocalConnection, text: &str| {
+        c.send(ClientMsg::SendMessage { text: text.into(), attachments: vec![] });
+        let mut held = Vec::new();
+        loop {
+            match recv(c) {
+                ServerMsg::SetLook { request, .. } => held.push(request),
+                ServerMsg::EntryFinished { .. } => return held,
+                _ => {}
             }
-            ServerMsg::StepUpdated { step, .. } if step.tool == "ui_look" && !matches!(step.status, StepStatus::Running) => {
-                finished.insert(step.id);
-                // After the refused undo, the window comes back and applies what it held.
-                if finished.len() == 3
-                    && let Some(request) = held.take()
-                {
-                    let mut r = report("orange");
-                    r.answered = Some(request);
-                    c.send(ClientMsg::ReportLook(r));
-                }
-            }
-            ServerMsg::EntryFinished { .. } => break,
-            _ => {}
         }
-    }
-    assert_eq!(asked, 1, "the undo wasn't sent while the change waited");
+    };
+    let held = turn(&mut c, "make it orange, no, undo");
+    assert_eq!(held.len(), 1, "the undo wasn't sent while the change waited");
     let results = tool_results(requests.lock().unwrap().last().unwrap());
     assert!(results[0].contains("will apply when the window draws again") && results[0].contains("Don't send it again"), "{}", results[0]);
     assert!(results[1].starts_with("1 look change(s) sent earlier haven't been applied yet"), "{}", results[1]);
     assert!(results[2].contains("1 earlier look change(s) haven't been applied yet") && results[2].contains("it wasn't sent"), "{}", results[2]);
-    assert!(!results[3].contains("haven't been applied") && results[3].contains("- accent: \"orange\""), "applied late, nothing waits: {}", results[3]);
+    // The window comes back and applies what it held.
+    let mut r = report("orange");
+    r.answered = Some(held[0]);
+    c.send(ClientMsg::ReportLook(r));
+    assert!(turn(&mut c, "and now?").is_empty());
+    let results = tool_results(requests.lock().unwrap().last().unwrap());
+    let last = results.last().unwrap();
+    assert!(!last.contains("haven't been applied") && last.contains("- accent: \"orange\""), "applied late, nothing waits: {last}");
 }
 
 /// "Undo that": the layout before the model's last change comes back; with nothing left to

@@ -22,7 +22,7 @@ use serde_json::Value;
 /// Bumped on a change an older peer can't survive (see the module docs).
 pub const PROTOCOL_MAJOR: u32 = 13;
 /// Bumped on additive changes; peers with the same major but another minor still talk.
-pub const PROTOCOL_MINOR: u32 = 14;
+pub const PROTOCOL_MINOR: u32 = 15;
 // Minors: 1 — `Artifact::content_type` (open artifact types; `kind` stays for 13.0 clients);
 // 2 — `PluginInfo::backend` (plugin backend processes); 3 — render sites: `PluginInfo::views`,
 // `View::owner`, `OpenView`/`CloseView`/`ViewEvent`, `LiveView` (cap `view_sites`); 4 — bundled
@@ -45,6 +45,7 @@ pub const PROTOCOL_MINOR: u32 = 14;
 // 13 — going back: `ClientMsg::Rewind` (cap `rewind`).
 // 14 — HTML apps on the internet: `Artifact::network`, `ClientMsg::SetArtifactNetwork` (cap
 // `artifact_network`); `LookReport::notes`.
+// 15 — screenshots: `ServerMsg::Capture`, `ClientMsg::Captured` (cap `capture`).
 
 /// Cap: the engine takes [`crate::ClientMsg::Rewind`] (and the client offers it).
 pub const CAP_REWIND: &str = "rewind";
@@ -79,6 +80,7 @@ pub fn client_caps() -> Vec<String> {
         crate::profiles::CAP_PROFILES.to_owned(),
         crate::layout::CAP_LAYOUT.to_owned(),
         crate::look::CAP_LOOK.to_owned(),
+        crate::look::CAP_CAPTURE.to_owned(),
         CAP_REWIND.to_owned(),
         CAP_ARTIFACT_NETWORK.to_owned(),
     ]
@@ -95,6 +97,7 @@ pub fn engine_caps() -> Vec<String> {
         crate::profiles::CAP_PROFILES.to_owned(),
         crate::layout::CAP_LAYOUT.to_owned(),
         crate::look::CAP_LOOK.to_owned(),
+        crate::look::CAP_CAPTURE.to_owned(),
         CAP_REWIND.to_owned(),
         CAP_ARTIFACT_NETWORK.to_owned(),
     ]

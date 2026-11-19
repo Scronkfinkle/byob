@@ -67,6 +67,7 @@ fn compose(ext: &mut Ext, ws: &Path, switches: &[(&str, bool)]) -> Composed {
     // The engine registers the layout tool (it talks to the engine); the `appearance` plugin names it.
     base.register(crate::layout::UiLayout::new(std::sync::mpsc::channel().0));
     base.register(std::sync::Arc::new(crate::look::UiLook { inbox: std::sync::mpsc::channel().0 }));
+    base.register(std::sync::Arc::new(crate::capture::UiScreenshot { inbox: std::sync::mpsc::channel().0 }));
     let trust = BTreeMap::new();
     let values = BTreeMap::new();
     let eff = effective(switches);
@@ -132,12 +133,12 @@ fn bundled_plugins_load_with_no_files_on_disk() {
     assert_eq!(charts.tools, ["make_chart"]);
     // Every tool of the base is offered (run_command & co. are optional: not in this base).
     let mut have: Vec<String> = c.tools.specs().into_iter().map(|s| s.name).collect();
-    have.retain(|n| !matches!(n.as_str(), "use_skill" | "remember" | "forget" | "byob_help" | "ui_layout" | "ui_look"));
+    have.retain(|n| !matches!(n.as_str(), "use_skill" | "remember" | "forget" | "byob_help" | "ui_layout" | "ui_look" | "ui_screenshot"));
     let memory = c.infos.iter().find(|p| p.id == "memory").unwrap();
     assert_eq!(memory.views.len(), 1, "its pane");
     assert_eq!(c.infos.iter().find(|p| p.id == "plan").unwrap().tools, ["update_plan"]);
     assert_eq!(c.infos.iter().find(|p| p.id == "ask-user").unwrap().tools, ["ask_user"]);
-    assert_eq!(c.infos.iter().find(|p| p.id == "appearance").unwrap().tools, ["ui_layout", "ui_look"]);
+    assert_eq!(c.infos.iter().find(|p| p.id == "appearance").unwrap().tools, ["ui_layout", "ui_look", "ui_screenshot"]);
     let base: Vec<String> = byob_tools::builtin().specs().into_iter().map(|s| s.name).collect();
     assert_eq!(have, base);
 }

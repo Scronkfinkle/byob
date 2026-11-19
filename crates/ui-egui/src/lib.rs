@@ -4,6 +4,7 @@
 
 pub mod appview;
 pub mod artifact;
+pub mod capture;
 pub mod chart;
 pub mod cockpit;
 pub mod compose_md;
@@ -119,6 +120,8 @@ pub struct ByobApp {
     look_reported: Option<(u64, bool)>,
     /// Look changes applied and not answered yet: their requests and problems.
     look_answer: Vec<(u64, Vec<String>)>,
+    /// Screenshots the engine asked for ([`capture`]).
+    captures: capture::Captures,
     /// Looks from before each change the model made, newest last (`ui_look`'s undo).
     look_history: Vec<theme::Prefs>,
     /// One of your messages being changed, to start over from it.
@@ -195,6 +198,7 @@ impl ByobApp {
             layout: std::sync::Arc::default(),
             look_reported: None,
             look_answer: Vec::new(),
+            captures: capture::Captures::default(),
             look_history: Vec::new(),
             editing: Editing::default(),
             math: false,
@@ -414,6 +418,7 @@ impl ByobApp {
                     self.look_answer.push((request, problems));
                     self.look_reported = None;
                 }
+                ServerMsg::Capture { request } => self.captures.asked(request),
                 // Handled by the queue above.
                 ServerMsg::Queue(_) => {}
                 // Handled by the plugins above.
@@ -465,6 +470,9 @@ impl ByobApp {
     /// when it came back.
     pub fn logic(&mut self, ctx: &egui::Context) {
         self.pump();
+        // A screenshot paints the window even while it's hidden.
+        self.captures.start(ctx);
+        self.captures.send(self.conn.as_mut());
         if !self.look_answer.is_empty() {
             // The colors the change makes, as the next frame will apply them.
             let mut tokens = theme::Tokens::for_prefs(&self.prefs, ctx.system_theme(), &self.user_themes);
@@ -833,6 +841,8 @@ impl ByobApp {
     /// Draw one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.pump();
+        self.captures.start(ui.ctx());
+        self.captures.send(self.conn.as_mut());
         self.take_dropped_folders(ui.ctx());
         for e in self.uploads.poll(ui.ctx(), self.conn.as_mut()) {
             self.notice(NoticeLevel::Error, e);

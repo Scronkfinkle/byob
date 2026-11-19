@@ -124,7 +124,9 @@ counts and show the speed" or "make it cleaner" changes it in every window (the 
 tool of the bundled Appearance plugin). The look itself can be asked for too: "make it warmer,
 rounder, with bigger text" changes the theme, accent, corners, text size, bubbles, padding, line
 spacing or any color of the window showing the chat (`ui_look`; looks stay per device, like the
-settings). "Undo that" puts back the look or layout from before byob's last change.
+settings). "Undo that" puts back the look or layout from before byob's last change. byob can
+look at the window too (`ui_screenshot`, with a model that sees images): to check a look it
+changed, or to see what you mean by "that thing at the top".
 
 **Backdrop and glass** (experimental; Settings → Appearance → Backdrop and glass, or ask
 byob, e.g. "put a rainy city behind the chat"): a **backdrop**, a shader scene drawn behind the panels, which turn to glass

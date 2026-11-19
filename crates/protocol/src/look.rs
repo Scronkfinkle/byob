@@ -17,6 +17,13 @@ use serde_json::Value;
 /// Cap: the peer reports and applies looks.
 pub const CAP_LOOK: &str = "look";
 
+/// Cap (13.15+): the client takes screenshots of its window for the model
+/// ([`crate::ServerMsg::Capture`], answered with [`crate::ClientMsg::Captured`]).
+pub const CAP_CAPTURE: &str = "capture";
+
+/// Longest side of a screenshot a client sends, in pixels. Clients scale theirs down to it.
+pub const CAPTURE_SIDE: u32 = 1568;
+
 /// Most settings in a report, and the longest key, description and value text.
 pub const MAX_FIELDS: usize = 128;
 pub const MAX_KEY: usize = 64;

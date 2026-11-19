@@ -29,6 +29,7 @@ mod backends;
 pub mod bench;
 #[cfg(test)]
 mod bundled_tests;
+pub mod capture;
 mod channel;
 mod chats;
 mod compact;
@@ -277,6 +278,11 @@ enum Input {
         chat: String,
         changes: Option<byob_protocol::look::LookChanges>,
         reply: Sender<look::Answer>,
+    },
+    /// The `ui_screenshot` tool asks a window showing `chat` for a screenshot.
+    Capture {
+        chat: String,
+        reply: Sender<capture::Answer>,
     },
     /// The `ui_layout` tool reads (and with `change`, replaces) the layout.
     Layout {
@@ -586,6 +592,8 @@ struct Engine {
     /// Look reports and requests, numbered; requests waiting for a window's answer ([`look`]).
     look_seq: u64,
     look_waits: BTreeMap<u64, look::Waiting>,
+    /// Screenshots asked of windows ([`capture`]), numbered like look requests.
+    capture_waits: BTreeMap<u64, capture::Waiting>,
     /// Profiles levels point at that don't exist, warned about once.
     missing_warned: std::sync::Mutex<BTreeSet<String>>,
     /// Profiles with a test running.
@@ -681,6 +689,7 @@ impl Engine {
             // Offered while the bundled `appearance` plugin (which names it) is on.
             tools.register(layout::UiLayout::new(inbox.clone()));
             tools.register(Arc::new(look::UiLook { inbox: inbox.clone() }));
+            tools.register(Arc::new(capture::UiScreenshot { inbox: inbox.clone() }));
         }
         let plugin_values = Self::load_plugin_values(config.paths.as_ref());
         let layout = Self::load_layout(config.paths.as_ref());
@@ -750,6 +759,7 @@ impl Engine {
             layout,
             look_seq: 0,
             look_waits: BTreeMap::new(),
+            capture_waits: BTreeMap::new(),
             missing_warned: std::sync::Mutex::default(),
             profile_tests: BTreeSet::new(),
             subagents: config.subagents,
@@ -1127,6 +1137,7 @@ impl Engine {
             Input::Plugins { chat, op, reply } => self.plugin_op(&chat, op, &reply),
             Input::Layout { change, reply } => self.tool_layout(change, &reply),
             Input::Look { chat, changes, reply } => self.tool_look(&chat, changes, reply),
+            Input::Capture { chat, reply } => self.tool_capture(&chat, reply),
             Input::Connected { key, result } => self.server_connected(&key, result),
             Input::Backend { dir, plugin, generation, out } => self.backend_out(&dir, &plugin, generation, out),
             Input::ViewReply { dir, view, key, starts, result } => self.view_reply(&dir, &view, &key, starts, result),
@@ -1224,6 +1235,7 @@ impl Engine {
             ClientMsg::SetLevelProfile { scope, profile } => self.set_level_profile(id, scope, profile),
             ClientMsg::SetLayout { layout } => self.client_set_layout(id, layout),
             ClientMsg::ReportLook(report) => self.report_look(id, report),
+            ClientMsg::Captured { request, image, error } => self.captured(id, request, image, error),
             ClientMsg::SetConfig { scope, layer, api_key } => self.set_config(id, scope, layer, api_key),
             ClientMsg::ListFolders { path } => self.list_folders(id, path),
             ClientMsg::CheckContainers => self.check_containers(id),
