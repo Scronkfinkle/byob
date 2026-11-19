@@ -79,7 +79,7 @@ fn by_default_every_detail_is_shown() {
     pears(&fake);
     let ctx = egui::Context::default();
     let text = away(&ctx, &mut app);
-    for want in ["Seven pears.", "You\n", "byob\n", "Thought · 25 chars", "1234 in · 56 out tokens · 2.5 s", "Shift+Enter for a new line", "3.4k"] {
+    for want in ["Seven pears.", "You\n", "byob\n", "Thought · ~8 tokens", "1234 in · 56 out tokens · 2.5 s", "Shift+Enter for a new line", "3.4k"] {
         assert!(text.contains(want), "{want:?} isn't drawn: {text}");
     }
     assert!(!text.contains("tokens/s"), "speed is off by default: {text}");

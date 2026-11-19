@@ -9,6 +9,7 @@ pub mod cockpit;
 pub mod compose_md;
 pub mod composer;
 pub mod connect;
+pub mod count;
 mod envpanel;
 pub mod export;
 mod form;
@@ -43,17 +44,6 @@ use byob_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, Notice
 
 /// Tallest an expanded thinking block gets before it scrolls.
 const THINKING_MAX_HEIGHT: f32 = 320.0;
-
-/// "840 chars", "12.4k chars".
-fn size_label(chars: usize) -> String {
-    if chars < 1000 {
-        format!("{chars} chars")
-    } else {
-        #[allow(clippy::cast_precision_loss)] // display only
-        let k = chars as f64 / 1000.0;
-        format!("{k:.1}k chars")
-    }
-}
 
 /// Notices kept on screen.
 const MAX_NOTICES: usize = 3;
@@ -489,6 +479,7 @@ impl ByobApp {
     pub fn set_prefs(&mut self, prefs: theme::Prefs) {
         let prefs = prefs.sanitized();
         let reload = prefs.imported != self.prefs.imported;
+        count::set_unit(prefs.thinking_size);
         self.prefs = prefs;
         self.prefs_gen = self.prefs_gen.wrapping_add(1);
         if reload {
@@ -1240,7 +1231,7 @@ fn entry_view(
                 }
                 let thinking = !entry.done && entry.content.is_empty() && entry.steps.iter().all(|s| s.status == StepStatus::Running);
                 if !entry.reasoning.is_empty() && (thinking || shape.visible("message.thinking", hovered)) {
-                    let size = size_label(entry.reasoning.chars().count());
+                    let size = count::thinking_size(entry.id, &entry.reasoning);
                     let title = match (thinking, shape.visible("message.thought_size", hovered)) {
                         (true, true) => format!("Thinking… · {size}"),
                         (true, false) => "Thinking…".to_owned(),
@@ -1397,17 +1388,6 @@ fn readable_column(ui: &mut egui::Ui, t: &theme::Tokens, add: impl FnOnce(&mut e
             add(ui);
         });
     });
-}
-
-#[cfg(test)]
-mod thinking_tests {
-    use super::size_label;
-
-    #[test]
-    fn sizes_read_naturally() {
-        assert_eq!(size_label(840), "840 chars");
-        assert_eq!(size_label(12_400), "12.4k chars");
-    }
 }
 
 #[cfg(test)]

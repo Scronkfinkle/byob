@@ -116,6 +116,11 @@ impl ByobApp {
             Key::Radius => {
                 ui.add(egui::Slider::new(&mut k.radius, Knobs::RADIUS_RANGE).step_by(1.0).suffix(" pt"));
             }
+            Key::ThinkingSize => {
+                for u in crate::count::SizeUnit::ALL {
+                    ui.selectable_value(&mut d.prefs.thinking_size, u, u.label());
+                }
+            }
             Key::ChartColours => {
                 for c in ChartPalette::ALL {
                     ui.selectable_value(&mut k.chart, c, c.label());

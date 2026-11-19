@@ -97,6 +97,7 @@ naga = { version = "30", features = ["wgsl-in"] }
 # File dialogs (desktop). GTK3 backend on Linux: works without a desktop portal service.
 # Linux: XDG desktop portal over D-Bus (pure Rust, zenity fallback), so the binary links no
 # GUI toolkit and `--headless` runs on bare servers. (rfd takes exactly one backend, so no GTK opt-in.)
+tiktoken-rs = { version = "0.12", default-features = false }
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 pollster = "1"
 # The format eframe persists app state in (tests check preference migration with it).

@@ -40,6 +40,8 @@ byob-mail = { workspace = true, optional = true }
 byob-store.workspace = true
 byob-server.workspace = true
 byob-ui-egui.workspace = true
+# Token counts in the window (o200k; the browser build estimates instead).
+tiktoken-rs.workspace = true
 egui.workspace = true
 eframe = { workspace = true, features = ["persistence"] }
 log.workspace = true

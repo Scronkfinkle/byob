@@ -25,7 +25,7 @@ keys! {
     ModelList, VisionRole, SubagentRole, UtilityRole,
     Instructions, Approvals, ToolCalls, Subagents, Compaction, ModelImages, ToolCalling, WorkspaceSettings,
     PluginList,
-    Mode, ThemePair, Gallery, Accent, Radius, ChartColours, MessageLayout, UserBubble, ReplyBubble, BubblePadding, LineSpacing, ShownPreset, ShownList, Controls, Backdrop, Glass, Frost, PanelGap, Arrangement, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
+    Mode, ThemePair, Gallery, Accent, Radius, ChartColours, MessageLayout, UserBubble, ReplyBubble, BubblePadding, LineSpacing, ThinkingSize, ShownPreset, ShownList, Controls, Backdrop, Glass, Frost, PanelGap, Arrangement, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
     Zoom, TextSize, CodeSize, Font, CodeFont, Density, ColumnWidth, ChatListWidth, ArtifactPane, HighContrast, ReduceMotion, ResetText,
     ColourRoles,
 }
@@ -311,6 +311,15 @@ pub static SETTINGS: &[Setting] = &[
         Row,
     ),
     s(Key::LineSpacing, "line-spacing", &MESSAGES, "Line spacing", "Space between the lines of messages.", "line height leading spacing density text", Row),
+    s(
+        Key::ThinkingSize,
+        "thinking-size",
+        &MESSAGES,
+        "Thinking size",
+        "Measure a reply's thinking in tokens (about) or characters.",
+        "tokens characters chars count length reasoning thought counter tokenizer",
+        Row,
+    ),
     s(
         Key::ShownPreset,
         "shown-preset",

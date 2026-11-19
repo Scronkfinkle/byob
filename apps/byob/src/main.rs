@@ -74,6 +74,7 @@ mod extensions;
 mod gpu;
 mod launch_env;
 mod testing;
+mod tokens;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -492,6 +493,7 @@ fn export_chats(to: StorageKind, paths: Option<&Paths>, settings: &Settings) -> 
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
+    tokens::install();
     if std::env::var_os(byob_store::HOME_ENV).is_none() {
         byob_store::Paths::migrate_from_yah();
     }

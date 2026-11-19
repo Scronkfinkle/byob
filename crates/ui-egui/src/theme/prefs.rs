@@ -384,6 +384,8 @@ pub struct Prefs {
     pub zoom: f32,
     /// The cockpit (experimental): a backdrop scene behind glass panels.
     pub cockpit: crate::cockpit::Cockpit,
+    /// What a reply's thinking is measured in.
+    pub thinking_size: crate::count::SizeUnit,
     /// Version 0's text size; moved into `knobs` by [`Prefs::sanitized`].
     #[serde(skip_serializing, deserialize_with = "present")]
     pub font_scale: Option<f32>,
@@ -410,6 +412,7 @@ impl Default for Prefs {
             imported: Vec::new(),
             zoom: 1.0,
             cockpit: crate::cockpit::Cockpit::default(),
+            thinking_size: crate::count::SizeUnit::Tokens,
             font_scale: None,
             high_contrast: None,
         }
