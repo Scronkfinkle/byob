@@ -359,8 +359,7 @@ impl ByobApp {
                 self.dock();
                 ui.close();
             }
-        } else if ui.button("Arrange panels…").on_hover_text("Place the window's parts anywhere: floating, as cockpit instruments, or just the chat").clicked()
-        {
+        } else if ui.button("Arrange panels…").on_hover_text("Place the window's parts anywhere: floating, framed in metal, or just the chat").clicked() {
             self.start_arranging();
             ui.close();
         }

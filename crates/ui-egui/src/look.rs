@@ -57,7 +57,7 @@ fn arrangement_fields(a: &cockpit::arrange::Arrangement, fields: &mut Vec<LookFi
         fields.push(field(
             &format!("bezel.{id}"),
             json!(a.bezel(m).name()),
-            &format!("its frame when free: {} (instrument: a cockpit instrument's plate with screws, label and a lit screen)", bezels.join(", ")),
+            &format!("its frame when free: {} (metal: a metal plate with screws, a stamped label and a lit screen)", bezels.join(", ")),
         ));
         fields.push(field(&format!("label.{id}"), json!(a.label(m)), "text stamped on its bezel when free (\"COMMS\"), up to 24 characters, \"\" for none"));
     }
@@ -255,7 +255,7 @@ fn module_setting(a: &mut cockpit::arrange::Arrangement, key: &str, v: &Value) -
                     a.bezels.insert(m.id().to_owned(), b);
                 }
             })
-            .ok_or_else(|| format!("{key}: glass, instrument or bare, not {v}")),
+            .ok_or_else(|| format!("{key}: glass, metal or bare, not {v}")),
         _ => {
             let label: String = text_value.trim().chars().filter(|c| !c.is_control()).take(MAX_LABEL).collect();
             if label.is_empty() {
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!((a.spot(Module::Chat), a.bezel(Module::Chat)), (Spot::At([25.0, 30.0, 50.0, 55.0]), Bezel::Bare));
         assert_eq!(
             (a.label(Module::Composer), a.label(Module::Chats), a.bezel(Module::Chats)),
-            ("Say it", "NAV", Bezel::Instrument),
+            ("Say it", "NAV", Bezel::Metal),
             "labels and bezels on top of the floating arrangement"
         );
         let bad =

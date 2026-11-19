@@ -91,11 +91,11 @@ pub static SHOWN: Section = sec(
     "What's shown",
     "Details, labels and hints, and the order of the header and of a reply's details. Kept for every window and browser tab. Or ask byob, e.g. \"hide the token counts\".",
 );
-pub static COCKPIT: Section = sec(
+pub static SCENE: Section = sec(
     Tab::Appearance,
-    "cockpit",
-    "Cockpit (experimental)",
-    "A scene drawn behind byob with the panels as glass, the parts placed anywhere, and controls to match. Or ask byob, e.g. \"make it a starship's bridge\".",
+    "scene",
+    "Backdrop and glass (experimental)",
+    "A scene drawn behind byob with the panels as glass, the parts placed anywhere, and controls to match. Or ask byob, e.g. \"put a rainy city behind the chat\".",
 );
 pub static THEME_FILES: Section =
     sec(Tab::Appearance, "theme-files", "Theme files", "Keep the current look (colours and the settings above) as a .json theme file, or add someone else's.");
@@ -120,7 +120,7 @@ pub static SECTIONS: &[&Section] = &[
     &STYLE,
     &MESSAGES,
     &SHOWN,
-    &COCKPIT,
+    &SCENE,
     &THEME_FILES,
     &RESET_LOOK,
     &SIZE,
@@ -329,28 +329,12 @@ pub static SETTINGS: &[Setting] = &[
         "layout hide show hover order reorder move tokens time speed stats header model chip context meter wordmark shortcuts hints labels you byob thinking plugins toolbar",
         Block,
     ),
-    s(Key::Controls, "controls", &COCKPIT, "Controls", "How buttons are drawn.", "buttons hud plate pill style widgets", Row),
-    s(
-        Key::Backdrop,
-        "backdrop",
-        &COCKPIT,
-        "Backdrop",
-        "A scene behind the panels.",
-        "background shader scene wallpaper animated stars aurora cockpit wgsl",
-        Row,
-    ),
-    s(Key::Glass, "glass", &COCKPIT, "Glass", "How much the panels hide the backdrop.", "transparency opacity translucent see-through panels", Row),
-    s(Key::Frost, "frost", &COCKPIT, "Frosted glass", "Blur the backdrop behind the panels.", "blur frosted glass acrylic mica", Row),
-    s(Key::PanelGap, "panel-gap", &COCKPIT, "Space between panels", "Where the backdrop shows around docked panels.", "gap margin spacing panels", Row),
-    s(
-        Key::Arrangement,
-        "arrangement",
-        &COCKPIT,
-        "Arrangement",
-        "Where the window's parts are.",
-        "layout free floating move panels place drag focus cockpit docked",
-        Row,
-    ),
+    s(Key::Controls, "controls", &SCENE, "Controls", "How buttons are drawn.", "buttons hud plate pill style widgets", Row),
+    s(Key::Backdrop, "backdrop", &SCENE, "Backdrop", "A scene behind the panels.", "background shader scene wallpaper animated stars wgsl", Row),
+    s(Key::Glass, "glass", &SCENE, "Glass", "How much the panels hide the backdrop.", "transparency opacity translucent see-through panels", Row),
+    s(Key::Frost, "frost", &SCENE, "Frosted glass", "Blur the backdrop behind the panels.", "blur frosted glass acrylic mica", Row),
+    s(Key::PanelGap, "panel-gap", &SCENE, "Space between panels", "Where the backdrop shows around docked panels.", "gap margin spacing panels", Row),
+    s(Key::Arrangement, "arrangement", &SCENE, "Arrangement", "Where the window's parts are.", "layout free floating move panels place drag focus docked", Row),
     s(Key::ImportTheme, "import-theme", &THEME_FILES, "Add a theme", "Import a .json theme file.", "import load file json reload folder", Row),
     s(
         Key::ExportTheme,

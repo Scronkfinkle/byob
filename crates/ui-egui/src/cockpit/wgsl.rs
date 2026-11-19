@@ -172,7 +172,7 @@ Re-theming the whole window as a place or mood (\"a starship's bridge\", \"a rai
 1. Colours first: mode, accent and the colour.* roles (app_bg, panel_bg, sidebar_bg, text, borders) in the palette of the place.
 2. The backdrop: a scene of the place behind the panels (keep it dark or calm where text sits), alive with u.busy and the pointer.
 3. glass, frost and panel_gap: how much of the scene shows through and between the panels.
-4. The arrangement, when the place has a shape: arrangement free (or floating to start from), place.<part> for where each part goes (leave open space where the scene should show), bezel.<part> (instrument for consoles and dials, glass, bare) and label.<part> (short words stamped on a bezel, in the place's own vocabulary).
+4. The arrangement, when the place has a shape: arrangement free (or floating to start from), place.<part> for where each part goes (leave open space where the scene should show), bezel.<part> (metal for consoles and dials, glass, bare) and label.<part> (short words stamped on a bezel, in the place's own vocabulary).
 5. controls (hud, plate, pill), corners and fonts to match.
 Evoke a look the user names from films, games or brands with original details of your own (colours, shapes, light, words); don't copy logos, insignia or text from them. Afterwards say what you changed and that \"undo that\" puts the last look back.
 

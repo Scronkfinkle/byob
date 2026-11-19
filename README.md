@@ -154,13 +154,13 @@ rounder, with bigger text" changes the theme, accent, corners, text size, bubble
 spacing or any colour of the window showing the chat (`ui_look`; looks stay per device, like the
 settings). "Undo that" puts back the look or layout from before byob's last change.
 
-**Cockpit** (experimental; Settings → Appearance → Cockpit, or ask byob, e.g. "make it a
-starship's bridge"): a **backdrop**, a shader scene drawn behind the panels, which turn to glass
+**Backdrop and glass** (experimental; Settings → Appearance → Backdrop and glass, or ask
+byob, e.g. "put a rainy city behind the chat"): a **backdrop**, a shader scene drawn behind the panels, which turn to glass
 over it (byob writes it in WGSL for the place or mood you describe, checked before it runs and
 refused with the line and reason when it doesn't compile); **frosted glass** (the scene blurred
 behind the panels, when a backdrop was on as byob started); the **arrangement**: docked as
 usual, or free, with the header, chat list, chat, message box and panes placed anywhere, each in
-a glass, instrument or bare frame and labelled as you like (floating and focus to start from; ⋯ → Arrange
+a glass, metal or bare frame and labelled as you like (floating and focus to start from; ⋯ → Arrange
 panels… to drag, resize or hide them; Dock everything to go back); and **controls**: standard,
 HUD, plate or pill buttons. A new backdrop that byob closes on within a few seconds is switched
 off at the next start; `BYOB_NO_BACKDROP=1` starts without any. From a terminal: `--backdrop

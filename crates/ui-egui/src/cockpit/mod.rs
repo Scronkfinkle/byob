@@ -4,8 +4,8 @@
 //!   through `ui_look`, drawn behind everything; the panels turn to glass over it. It sees
 //!   where the panels are, so it can light them, glow around them and cast their shadows.
 //! - **Free arrangement** ([`arrange`]): the header, chat list, chat, message box and panes
-//!   as modules placed anywhere (by % of the window), each in a bezel (glass, a cockpit
-//!   instrument, or bare), dragged into place while arranging, or placed by the model.
+//!   as modules placed anywhere (by % of the window), each in a bezel (glass, metal
+//!   plate, or bare), dragged into place while arranging, or placed by the model.
 //!
 //! Safety: a scene is checked with naga before a GPU sees it, and wgpu's errors are logged
 //! instead of ending the process. A scene that compiles can still be too slow or hang the

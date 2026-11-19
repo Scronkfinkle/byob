@@ -14,7 +14,7 @@ written by the model (or loaded from a file).
    scene, blurred behind the panels and sharp between them.
 
 All of it is reachable three ways: by asking the model (the `ui_look` tool, through the
-bundled Appearance plugin), in Settings → Appearance → Cockpit, and from the command line.
+bundled Appearance plugin), in Settings → Appearance → Backdrop and glass, and from the command line.
 
 ## Trying it
 
@@ -55,7 +55,7 @@ example) and the current custom shader's source.
     arrangement), and `Stage` (draws the scene, eases `busy`, finds the
     hovered control via `interaction_snapshot` + `read_response`, times the trial).
   - `arrange.rs`: modules, places (% of the window, so arrangements survive resizing),
-    bezels (glass, instrument, bare), presets, least sizes (part + bezel).
+    bezels (glass, metal, bare), presets, least sizes (part + bezel).
   - `free.rs`: drawing a free arrangement (each module in a child `Ui` with its own clip),
     the chat making room for open panes, and arranging by hand.
 - `look.rs`: `backdrop`, `glass`, `panel_gap`, `controls`, `arrangement`, `place.<part>`,

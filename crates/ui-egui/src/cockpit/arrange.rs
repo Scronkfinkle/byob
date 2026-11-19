@@ -145,26 +145,29 @@ pub enum Bezel {
     /// A rounded pane of the panel colour (glass over a backdrop).
     #[default]
     Glass,
-    /// A cockpit instrument: a bevelled metal plate with screws, its label stamped on it,
-    /// and the part on a lit screen inside.
-    Instrument,
+    /// A bevelled metal plate with screws, its label stamped on it, and the part on a lit
+    /// screen inside. ("instrument" in arrangements saved by 0.3.10.)
+    #[serde(alias = "instrument")]
+    Metal,
     /// Nothing: the part straight on the backdrop.
     Bare,
 }
 
 impl Bezel {
-    pub const ALL: [Self; 3] = [Self::Glass, Self::Instrument, Self::Bare];
+    pub const ALL: [Self; 3] = [Self::Glass, Self::Metal, Self::Bare];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Glass => "glass",
-            Self::Instrument => "instrument",
+            Self::Metal => "metal",
             Self::Bare => "bare",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|b| b.name() == s.trim().to_ascii_lowercase())
+        let s = s.trim().to_ascii_lowercase();
+        let s = if s == "instrument" { "metal".to_owned() } else { s };
+        Self::ALL.into_iter().find(|b| b.name() == s)
     }
 
     /// The room it takes around the part (labelled or not), as [`paint`] draws it.
@@ -173,7 +176,7 @@ impl Bezel {
         match self {
             Self::Bare => Vec2::ZERO,
             Self::Glass => vec2(12.0, 12.0 + label),
-            Self::Instrument => vec2(32.0, 34.0 + if labelled { LABEL_HEIGHT - 12.0 + 2.0 } else { 0.0 }),
+            Self::Metal => vec2(32.0, 34.0 + if labelled { LABEL_HEIGHT - 12.0 + 2.0 } else { 0.0 }),
         }
     }
 }
@@ -296,7 +299,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, bezel: Bezel, label: &str, t: 
             let inner = rect.shrink(6.0);
             if label.is_empty() { inner } else { stamp(painter, rect, label, t.text_dim, t).1.intersect(inner) }
         }
-        Bezel::Instrument => instrument(painter, rect, label, t),
+        Bezel::Metal => metal(painter, rect, label, t),
     }
 }
 
@@ -309,8 +312,8 @@ fn stamp(painter: &egui::Painter, rect: Rect, label: &str, color: Color32, t: &T
     (h, Rect::from_min_max(pos2(rect.left(), rect.top() + h), rect.max))
 }
 
-/// A cockpit instrument: plate, bevel, screws, stamped label, lit screen.
-fn instrument(painter: &egui::Painter, rect: Rect, label: &str, t: &Tokens) -> Rect {
+/// A metal plate: bevel, screws, stamped label, lit screen.
+fn metal(painter: &egui::Painter, rect: Rect, label: &str, t: &Tokens) -> Rect {
     let plate = mix(t.panel_bg.to_opaque(), Color32::from_rgb(40, 42, 46), 0.55);
     let r = CornerRadius::same(t.round(6.0).round().clamp(2.0, 12.0) as u8);
     painter.rect_filled(rect, r, plate);
@@ -358,16 +361,25 @@ mod tests {
     }
 
     #[test]
+    fn the_metal_bezel_reads_its_old_name() {
+        // 0.3.10 called it "instrument" (a cockpit instrument); saved arrangements keep working.
+        assert_eq!(serde_json::from_str::<Bezel>("\"instrument\"").unwrap(), Bezel::Metal);
+        assert_eq!(Bezel::parse(" Instrument "), Some(Bezel::Metal));
+        assert_eq!(serde_json::to_string(&Bezel::Metal).unwrap(), "\"metal\"");
+        assert_eq!(Bezel::parse("metal"), Some(Bezel::Metal));
+    }
+
+    #[test]
     fn modules_keep_their_least_size_and_stay_on_screen() {
         let screen = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 800.0));
         let mut a = Arrangement::preset("floating").unwrap();
         a.places.insert("chat".into(), Spot::At([22.0, 36.0, 56.0, 48.0]));
         assert_eq!(a.rect(Module::Chat, screen), Some(Rect::from_min_size(pos2(220.0, 288.0), vec2(560.0, 384.0))));
         a.places.insert("header".into(), Spot::At([90.0, 95.0, 5.0, 3.0]));
-        a.bezels.insert("header".into(), Bezel::Instrument);
+        a.bezels.insert("header".into(), Bezel::Metal);
         a.labels.insert("header".into(), "DECK".into());
         let h = a.rect(Module::Header, screen).unwrap();
-        assert!(screen.contains_rect(h) && h.width() >= 360.0 + 32.0 && h.height() >= 40.0 + 34.0, "room for the header and its instrument bezel: {h:?}");
+        assert!(screen.contains_rect(h) && h.width() >= 360.0 + 32.0 && h.height() >= 40.0 + 34.0, "room for the header and its metal bezel: {h:?}");
         assert_eq!(Arrangement::preset("focus").unwrap().rect(Module::Chats, screen), None);
     }
 
