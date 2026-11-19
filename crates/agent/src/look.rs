@@ -19,16 +19,23 @@ use crate::{ClientId, Engine, Input};
 pub const TOOL: &str = "ui_look";
 
 /// How long the tool waits for a window to answer.
-const TIMEOUT: Duration = Duration::from_secs(10);
+const TIMEOUT: Duration = if cfg!(test) { Duration::from_millis(400) } else { Duration::from_secs(10) };
 
-/// What the engine answers the tool: the look before, and after the change (if one was asked).
-pub(crate) type Answer = Result<(LookReport, Option<LookReport>), String>;
+/// What the engine answers the tool: the look before, after the change (if one was asked),
+/// and how many earlier changes still wait for the window (see [`Engine::look_waiting`]).
+pub(crate) type Answer = Result<(LookReport, Option<LookReport>, usize), String>;
 
 /// A change sent to windows, waiting for the first to answer.
 pub(crate) struct Waiting {
     before: LookReport,
     reply: Sender<Answer>,
+    chat: String,
+    clients: Vec<ClientId>,
+    sent: Instant,
 }
+
+/// The tool's answer when the window doesn't answer in time.
+const NOT_DRAWING: &str = "The window hasn't answered in 10 seconds: it isn't drawing right now (a browser tab in the background, for one). The change was sent and will apply when the window draws again. Don't send it again: read the look later (a read says how many changes are still waiting).";
 
 const NO_WINDOW: &str = "no byob window is showing this chat right now (or it's too old to report its look), so there's no look to read or change";
 
@@ -46,8 +53,16 @@ impl Engine {
             c.look = Some((seq, report.clone()));
         }
         if let Some(w) = report.answered.and_then(|n| self.look_waits.remove(&n)) {
-            let _ = w.reply.send(Ok((w.before, Some(report))));
+            let waiting = self.look_waiting(&w.chat);
+            let _ = w.reply.send(Ok((w.before, Some(report), waiting)));
         }
+    }
+
+    /// Changes to `chat`'s look whose tool gave up waiting (the window wasn't drawing) and
+    /// that a window still showing it may yet apply.
+    fn look_waiting(&self, chat: &str) -> usize {
+        let ids = self.look_clients(chat);
+        self.look_waits.values().filter(|w| w.chat == chat && w.sent.elapsed() >= TIMEOUT && w.clients.iter().any(|c| ids.contains(c))).count()
     }
 
     /// `Input::Look`: the look of the window showing `chat` that reported last, and with
@@ -59,17 +74,26 @@ impl Engine {
             let _ = reply.send(Err(NO_WINDOW.into()));
             return;
         };
+        let waiting = self.look_waiting(chat);
         let Some(changes) = changes else {
-            let _ = reply.send(Ok((before, None)));
+            let _ = reply.send(Ok((before, None, waiting)));
             return;
         };
+        // Another change would land after those, in an order the model can't see (an undo
+        // would undo one of them): it waits until they're applied.
+        if waiting > 0 {
+            let _ = reply.send(Err(format!(
+                "{waiting} earlier look change(s) haven't been applied yet: the window isn't drawing. They'll apply when it draws again, and this one would land after them, so it wasn't sent. Read the look later and change it then."
+            )));
+            return;
+        }
         self.look_seq += 1;
         let request = self.look_seq;
         // Forget requests nobody answered (their tool gave up long ago).
         while self.look_waits.len() > 16 {
             self.look_waits.pop_first();
         }
-        self.look_waits.insert(request, Waiting { before, reply });
+        self.look_waits.insert(request, Waiting { before, reply, chat: chat.to_owned(), clients: ids.clone(), sent: Instant::now() });
         for id in ids {
             self.send_to(id, ServerMsg::SetLook { request, changes: changes.clone() });
         }
@@ -87,7 +111,7 @@ fn request(inbox: &Sender<Input>, chat: &str, changes: Option<LookChanges>, canc
         match answer.recv_timeout(Duration::from_millis(50)) {
             Ok(r) => return r,
             Err(RecvTimeoutError::Timeout) if started.elapsed() < TIMEOUT => {}
-            Err(_) => return Err("the window didn't answer".into()),
+            Err(_) => return Err(NOT_DRAWING.into()),
         }
     }
 }
@@ -384,20 +408,26 @@ impl Tool for UiLook {
 
     fn run(&self, args: &Value, ctx: &ToolContext<'_>) -> ToolOutput {
         let Some(chat) = ctx.chat() else { return ToolOutput::err(NO_WINDOW) };
-        let now = match request(&self.inbox, chat, None, ctx.cancel_flag()) {
-            Ok((r, _)) => r,
+        let (now, waiting) = match request(&self.inbox, chat, None, ctx.cancel_flag()) {
+            Ok((r, _, waiting)) => (r, waiting),
             Err(e) => return ToolOutput::err(e),
         };
         let Checked { set, read_as, skipped } = match changes(args, &now) {
             Ok(Some(c)) => c,
-            Ok(None) => return ToolOutput::ok(describe(&now, args.get("notes").and_then(Value::as_bool) == Some(true))),
+            Ok(None) => {
+                let mut out = describe(&now, args.get("notes").and_then(Value::as_bool) == Some(true));
+                if waiting > 0 {
+                    out.insert_str(0, &format!("{waiting} look change(s) sent earlier haven't been applied yet: the window isn't drawing. They'll apply when it draws again (this is the look before them); don't send them again.\n\n"));
+                }
+                return ToolOutput::ok(out);
+            }
             Err(e) => return ToolOutput::err(e),
         };
         let whole = set.contains_key("undo") || set.contains_key("reset");
         let asked: Vec<String> = set.keys().filter(|k| *k != "undo" && *k != "reset").cloned().collect();
         let (before, after) = match request(&self.inbox, chat, Some(set), ctx.cancel_flag()) {
-            Ok((b, Some(a))) => (b, a),
-            Ok((_, None)) => return ToolOutput::err("the window didn't answer"),
+            Ok((b, Some(a), _)) => (b, a),
+            Ok((_, None, _)) => return ToolOutput::err(NOT_DRAWING),
             Err(e) => return ToolOutput::err(e),
         };
         // What was asked for, setting by setting; colors that follow from it (an accent

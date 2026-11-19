@@ -326,6 +326,12 @@ struct App {
 }
 
 impl eframe::App for App {
+    // Before each frame, and alone while the window is hidden (eframe runs no frames then):
+    // the engine's messages are taken here so look changes don't wait for the window.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.ui.logic(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let (app, script) = (&mut self.ui, &mut self.script);
         let mut frame = |ui: &mut egui::Ui| {

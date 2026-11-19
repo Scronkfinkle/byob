@@ -1464,6 +1464,66 @@ fn the_model_changes_the_windows_look() {
     assert!(results[3].contains("- accent: \"orange\" → \"theme\""), "undo says what moved: {}", results[3]);
 }
 
+/// Regression: a window that wasn't drawing (hidden) didn't answer `ui_look` changes; the
+/// tool said they failed, the model sent them again (and an undo), and they all applied
+/// later. Now the tool says the change is waiting, reads say how many are, and further
+/// changes aren't sent until the window has applied them.
+#[test]
+fn look_changes_the_window_hasnt_applied_are_waited_for() {
+    use byob_protocol::look::{LookField, LookReport};
+    let script = vec![
+        call("ui_look", r#"{"set": {"accent": "orange"}}"#),
+        call("ui_look", "{}"),
+        call("ui_look", r#"{"undo": true}"#),
+        call("ui_look", "{}"),
+        Reply::Text("done"),
+    ];
+    let (url, requests) = fake_llm(script, "final answer");
+    let home = tempfile::tempdir().unwrap();
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, ..Default::default() });
+    config.workspace = home.path().join("ws");
+    config.auto_title = false;
+    config.detect_local = false;
+    config.plugins = Some(crate::extensions::PluginsConfig::default());
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let mut c = hello(&engine);
+    let report = |accent: &str| LookReport {
+        fields: vec![LookField { key: "accent".into(), value: serde_json::json!(accent), describe: "theme, blue, orange or #rrggbb".into() }],
+        ..Default::default()
+    };
+    c.send(ClientMsg::ReportLook(report("theme")));
+    c.send(ClientMsg::SendMessage { text: "make it orange, no, undo".into(), attachments: vec![] });
+    let (mut asked, mut held, mut finished) = (0, None, std::collections::BTreeSet::new());
+    loop {
+        match recv(&mut c) {
+            // The window is hidden: it holds the change.
+            ServerMsg::SetLook { request, .. } => {
+                asked += 1;
+                held = Some(request);
+            }
+            ServerMsg::StepUpdated { step, .. } if step.tool == "ui_look" && !matches!(step.status, StepStatus::Running) => {
+                finished.insert(step.id);
+                // After the refused undo, the window comes back and applies what it held.
+                if finished.len() == 3
+                    && let Some(request) = held.take()
+                {
+                    let mut r = report("orange");
+                    r.answered = Some(request);
+                    c.send(ClientMsg::ReportLook(r));
+                }
+            }
+            ServerMsg::EntryFinished { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(asked, 1, "the undo wasn't sent while the change waited");
+    let results = tool_results(requests.lock().unwrap().last().unwrap());
+    assert!(results[0].contains("will apply when the window draws again") && results[0].contains("Don't send it again"), "{}", results[0]);
+    assert!(results[1].starts_with("1 look change(s) sent earlier haven't been applied yet"), "{}", results[1]);
+    assert!(results[2].contains("1 earlier look change(s) haven't been applied yet") && results[2].contains("it wasn't sent"), "{}", results[2]);
+    assert!(!results[3].contains("haven't been applied") && results[3].contains("- accent: \"orange\""), "applied late, nothing waits: {}", results[3]);
+}
+
 /// "Undo that": the layout before the model's last change comes back; with nothing left to
 /// undo, it says so.
 #[test]

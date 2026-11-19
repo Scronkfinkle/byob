@@ -117,7 +117,8 @@ pub struct ByobApp {
     /// The look last reported to the engine (preferences generation, dark), and a change it
     /// asked for to answer in the next report ([`look`]).
     look_reported: Option<(u64, bool)>,
-    look_answer: Option<(u64, Vec<String>)>,
+    /// Look changes applied and not answered yet: their requests and problems.
+    look_answer: Vec<(u64, Vec<String>)>,
     /// Looks from before each change the model made, newest last (`ui_look`'s undo).
     look_history: Vec<theme::Prefs>,
     /// One of your messages being changed, to start over from it.
@@ -193,7 +194,7 @@ impl ByobApp {
             sent_new: false,
             layout: std::sync::Arc::default(),
             look_reported: None,
-            look_answer: None,
+            look_answer: Vec::new(),
             look_history: Vec::new(),
             editing: Editing::default(),
             math: false,
@@ -410,7 +411,7 @@ impl ByobApp {
                     let problems = look::change(&mut prefs, &mut self.look_history, &changes, self.tokens.dark, &self.user_themes, self.stage.available());
                     self.set_prefs(prefs);
                     // Answered once the new look is drawn (its colors are what the theme makes).
-                    self.look_answer = Some((request, problems));
+                    self.look_answer.push((request, problems));
                     self.look_reported = None;
                 }
                 // Handled by the queue above.
@@ -445,12 +446,34 @@ impl ByobApp {
             return;
         }
         self.look_reported = Some(now);
-        let mut report = look::report(&self.prefs, &self.tokens, &self.user_themes, self.stage.available());
-        if let Some((request, problems)) = self.look_answer.take() {
-            report.answered = Some(request);
-            report.problems = problems;
+        let report = look::report(&self.prefs, &self.tokens, &self.user_themes, self.stage.available());
+        // Every change gets its answer (several can arrive between two frames).
+        let answers = std::mem::take(&mut self.look_answer);
+        if answers.is_empty() {
+            self.conn.send(ClientMsg::ReportLook(report));
+            return;
         }
-        self.conn.send(ClientMsg::ReportLook(report));
+        for (request, problems) in answers {
+            self.conn.send(ClientMsg::ReportLook(byob_protocol::look::LookReport { answered: Some(request), problems, ..report.clone() }));
+        }
+    }
+
+    /// The app's logic between frames, and the only thing eframe runs while the window is
+    /// hidden (minimized, or covered by other windows): messages from the engine are taken
+    /// and look changes answered then too. They used to wait for the next frame, so a
+    /// `ui_look` change made while the window was out of sight timed out and applied
+    /// when it came back.
+    pub fn logic(&mut self, ctx: &egui::Context) {
+        self.pump();
+        if !self.look_answer.is_empty() {
+            // The colors the change makes, as the next frame will apply them.
+            let mut tokens = theme::Tokens::for_prefs(&self.prefs, ctx.system_theme(), &self.user_themes);
+            if self.stage.active(&self.prefs.cockpit) {
+                cockpit::glaze(&mut tokens, self.prefs.cockpit.glass);
+            }
+            self.tokens = tokens;
+            self.report_look();
+        }
     }
 
     /// Draw backdrops ([`cockpit`]) with eframe's wgpu render state.

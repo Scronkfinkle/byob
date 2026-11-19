@@ -40,3 +40,30 @@ fn the_window_reports_its_look_and_answers_changes() {
     // The colors it reports are the ones drawn now: the accent role follows.
     assert_ne!(first[0].get("color.accent"), answer.get("color.accent"));
 }
+
+/// Regression: a window out of sight (minimized, or covered by other windows) runs no
+/// frames, and look changes waited for one: the model's `ui_look` timed out, retried, and
+/// every change applied at once when the window came back. They're applied and answered
+/// between frames now (`logic`, which eframe still runs then), each with its own answer.
+#[test]
+fn a_hidden_window_answers_every_look_change() {
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    let ctx = egui::Context::default();
+    fake.inbox.lock().unwrap().push(ServerMsg::Welcome(Welcome::current()));
+    frames(&ctx, &mut app, 3);
+    let before = reports(&fake).len();
+    for (request, corners) in [(8, 3), (9, 11)] {
+        let changes = serde_json::from_value(serde_json::json!({"corners": corners})).unwrap();
+        fake.inbox.lock().unwrap().push(ServerMsg::SetLook { request, changes });
+    }
+    // No frame, only logic.
+    app.logic(&ctx);
+    let answers: Vec<_> = reports(&fake).into_iter().skip(before).collect();
+    assert_eq!(answers.iter().map(|r| r.answered).collect::<Vec<_>>(), [Some(8), Some(9)], "{answers:?}");
+    assert_eq!(answers[1].get("corners"), Some(&serde_json::json!(11.0)));
+    assert_eq!(app.prefs().knobs.radius, 11.0);
+    // The next frame doesn't answer again.
+    frames(&ctx, &mut app, 2);
+    assert_eq!(reports(&fake).len(), before + 2);
+}
