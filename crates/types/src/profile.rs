@@ -158,6 +158,10 @@ pub struct Profile {
     /// Context window, overriding what the probe found (budgeting and compaction).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub context: Option<u32>,
+    /// Compact when a request passes this percentage (10..=95) of the context window,
+    /// instead of the global setting. A workspace's or chat's own threshold still wins.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub compact_percent: Option<u8>,
     /// Request parameters, sent with every chat request made with it.
     #[serde(default, deserialize_with = "lenient_or_default", skip_serializing_if = "Params::is_empty")]
     pub params: Params,
@@ -284,6 +288,9 @@ impl Profile {
         }
         self.max_parallel = self.max_parallel.filter(|n| *n > 0);
         self.context = self.context.filter(|n| *n > 0);
+        if self.compact_percent.is_some_and(|p| !(10..=95).contains(&p)) {
+            return Err("compact at must be between 10 and 95 (% of the context window)".into());
+        }
         Ok(self)
     }
 }
@@ -407,6 +414,13 @@ pub fn resolve_with<'a>(
         {
             effective.tool_mode = Sourced { value: m, from: level };
         }
+        // The model's threshold replaces the default and the global one, not a workspace's
+        // or chat's own.
+        if let Some(pc) = p.compact_percent
+            && matches!(effective.compact_percent.from, Level::Default | Level::Global)
+        {
+            effective.compact_percent = Sourced { value: pc.clamp(10, 95), from: level };
+        }
     }
     Resolved { effective, profile, missing }
 }
@@ -451,6 +465,25 @@ mod tests {
         let forced = Forced { tool_mode: Some(ToolMode::Native), ..Forced::default() };
         let r = resolve_with(Levels { global: Some(&g), workspace: Some(&w), chat: None }, Keys::default(), forced, &ps, has);
         assert_eq!(r.effective.tool_mode.from, Level::Flag);
+    }
+
+    /// A model's compaction threshold replaces the default and the global one; a workspace's
+    /// or chat's own threshold still wins over it.
+    #[test]
+    fn a_models_compaction_threshold_overrides_the_default() {
+        let mut ps = BTreeMap::new();
+        ps.insert("big".to_owned(), Profile { compact_percent: Some(60), ..profile("big", "http://big/v1", "large") });
+        let has = |_: &str| false;
+        let at = |g: Layer, w: Layer| {
+            resolve_with(Levels { global: Some(&g), workspace: Some(&w), chat: None }, Keys::default(), Forced::default(), &ps, has).effective.compact_percent
+        };
+        let pick = Layer { profile: Some("big".into()), ..Layer::default() };
+        assert_eq!(at(Layer::default(), pick.clone()), Sourced { value: 60, from: Level::Workspace }, "over the default");
+        assert_eq!(at(Layer { compact_percent: Some(85), ..Layer::default() }, pick.clone()).value, 60, "over the global setting");
+        assert_eq!(at(Layer::default(), Layer { compact_percent: Some(40), ..pick }).value, 40, "the workspace's own wins");
+        // Without the profile, the default.
+        assert_eq!(at(Layer::default(), Layer::default()).value, crate::config::DEFAULT_COMPACT_PERCENT);
+        assert!(Profile { compact_percent: Some(99), ..profile("x", "http://x/v1", "m") }.validated().is_err());
     }
 
     #[test]

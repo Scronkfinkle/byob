@@ -69,6 +69,7 @@ struct Editor {
     max_tokens: String,
     max_parallel: String,
     context: String,
+    compact_percent: String,
     extra: String,
     error: Option<String>,
     /// Expand Advanced on the next frame.
@@ -105,6 +106,7 @@ impl Editor {
             max_tokens: opt_text(p.params.max_tokens),
             max_parallel: opt_text(p.max_parallel),
             context: opt_text(p.context),
+            compact_percent: opt_text(p.compact_percent),
             extra: if p.params.extra.is_empty() { String::new() } else { serde_json::to_string_pretty(&p.params.extra).unwrap_or_default() },
             error: None,
             open_advanced: false,
@@ -125,6 +127,7 @@ impl Editor {
         };
         p.max_parallel = parse(&self.max_parallel, "subagents at once")?;
         p.context = parse(&self.context, "context window")?;
+        p.compact_percent = parse(&self.compact_percent, "compact at")?;
         p.validated()
     }
 }
@@ -523,6 +526,13 @@ impl ModelsUi {
                         &mut e.context,
                         "as probed",
                         "Tokens to budget chats against (and compact before), instead of what the server reported",
+                    );
+                    field(
+                        ui,
+                        "Compact at (%)",
+                        &mut e.compact_percent,
+                        "as each chat says",
+                        "Summarize older messages when a request passes this much of the context window (10 to 95), instead of the global setting. A workspace's or chat's own setting still wins",
                     );
                     let sampling = if anthropic { "Current Claude models reject it: leave it empty" } else { "Sampling temperature" };
                     field(ui, "Temperature", &mut e.temperature, "server default", sampling);
