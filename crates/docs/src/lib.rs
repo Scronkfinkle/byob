@@ -1,7 +1,7 @@
 //! Text out of documents, and PDF pages as pictures, in pure Rust.
 //!
 //! - **PDF** ([`pdf`]): text per page (hayro's interpreter, a text-collecting device), page
-//!   count, and a page rendered to PNG (hayro's rasteriser) for a vision model.
+//!   count, and a page rendered to PNG (hayro's rasterizer) for a vision model.
 //! - **Word and PowerPoint** ([`ooxml`]): `.docx` and `.pptx` are zip files of XML; their text
 //!   comes out as rough Markdown (headings, lists, tables), slides one by one.
 //!

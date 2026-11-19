@@ -5,12 +5,12 @@
 //! [`LayoutJob`] whose sections cover the text exactly, in order, with nothing inserted or
 //! removed, so the galley's characters are the text's characters and the cursor, selection,
 //! copy/paste and IME work as in an unstyled field. Markers (`**`, `#`, backticks, `>`, link
-//! targets) stay visible in a faint colour; what they mark gets the style.
+//! targets) stay visible in a faint color; what they mark gets the style.
 //!
 //! Parsing is `pulldown-cmark` with source offsets (the same CommonMark the transcript renders
 //! with, so `snake_case` and `2*3*4` are not emphasis): every event's byte range sets flags on
 //! the bytes it covers, and bytes no text event covers are syntax. Bare `http(s)://` URLs are
-//! found by a scan. Fenced code gets the transcript's syntax colours and a background painted
+//! found by a scan. Fenced code gets the transcript's syntax colors and a background painted
 //! behind its whole lines ([`paint_code_backgrounds`]).
 //!
 //! egui calls the layouter every frame, so [`cached`] keeps the last job per field, keyed by
@@ -48,7 +48,7 @@ struct Cell {
     flags: u16,
     /// Heading level 1–6, 0 outside headings.
     heading: u8,
-    /// A syntax colour inside a fenced block (index into [`syntax_colors`], 0 = none).
+    /// A syntax color inside a fenced block (index into [`syntax_colors`], 0 = none).
     syntax: u8,
 }
 
@@ -278,7 +278,7 @@ fn list_marker_len(item: &str) -> usize {
     }
 }
 
-/// Syntax colours for a code block's text (`pieces` are its source ranges, in order).
+/// Syntax colors for a code block's text (`pieces` are its source ranges, in order).
 fn highlight(t: &Tokens, fonts: &Fonts, text: &str, lang: &str, pieces: &[Range<usize>], cells: &mut [Cell]) {
     if lang.is_empty() || pieces.is_empty() {
         return;
@@ -291,7 +291,7 @@ fn highlight(t: &Tokens, fonts: &Fonts, text: &str, lang: &str, pieces: &[Range<
     let mut p = 0usize;
     let mut piece_start = 0usize;
     for section in &job.sections {
-        #[allow(clippy::cast_possible_truncation)] // 7 colours
+        #[allow(clippy::cast_possible_truncation)] // 7 colors
         let idx = colors.iter().position(|c| *c == section.format.color).unwrap_or(0) as u8;
         if idx == 0 {
             continue;
@@ -433,7 +433,7 @@ pub fn cached(ui: &egui::Ui, t: &Tokens, id: egui::Id, text: &str) -> Styled {
 }
 
 /// The code-block backgrounds behind the galley's code lines, from `left` to `right`: the inline
-/// code colour (the transcript's code background is too close to the field's).
+/// code color (the transcript's code background is too close to the field's).
 pub fn code_backgrounds(
     t: &Tokens,
     galley: &egui::Galley,

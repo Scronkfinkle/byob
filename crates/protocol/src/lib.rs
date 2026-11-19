@@ -200,7 +200,7 @@ pub enum ClientMsg {
         id: String,
         on: bool,
     },
-    /// Summarise the conversation in view now, so later requests start from the summary
+    /// Summarize the conversation in view now, so later requests start from the summary
     /// (also typed as `/compact [focus]`). `focus` says what the summary must keep.
     Compact {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1227,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_info_is_optional_and_summarised() {
+    fn endpoint_info_is_optional_and_summarized() {
         let old = r#"{"version":"0","inference_base_url":"u","inference_model":"m","has_api_key":false,"endpoint":null,"busy":false}"#;
         assert_eq!(serde_json::from_str::<EngineState>(old).unwrap().endpoint_info, None);
         let info = EndpointInfo {

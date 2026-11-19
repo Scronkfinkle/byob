@@ -94,7 +94,7 @@ exceptions. So byob can run a workspace's `run_command` / `run_python` in a cont
   a container workspace can run its commands on this machine instead (its settings), and
   the other way round.
 - **One long-lived container per workspace**, created on the first command, reused across
-  commands and byob restarts. It's named `byob-<folder>-<hash of the path>` and labelled
+  commands and byob restarts. It's named `byob-<folder>-<hash of the path>` and labeled
   `byob.managed=1`, `byob.workspace=<path>`, `byob.config=<stamp>`; a changed
   devcontainer.json, Dockerfile or image setting recreates it (the model is told installed
   packages are gone). Find byob's containers with

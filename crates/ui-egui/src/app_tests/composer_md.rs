@@ -64,7 +64,7 @@ fn ctrl_b_and_ctrl_i_wrap_the_selection_while_the_composer_is_focused() {
     select(&ctx, 4, 9);
     run(&ctx, &mut app, size, vec![key(egui::Key::B)]);
     assert_eq!(app.input, "say **hello** now");
-    // The same words stay selected, so the next press undoes it, and Ctrl+I italicises.
+    // The same words stay selected, so the next press undoes it, and Ctrl+I italicizes.
     run(&ctx, &mut app, size, vec![key(egui::Key::B)]);
     assert_eq!(app.input, "say hello now");
     run(&ctx, &mut app, size, vec![key(egui::Key::I)]);

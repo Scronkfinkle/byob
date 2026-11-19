@@ -350,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn recognises_tool_rejections() {
+    fn recognizes_tool_rejections() {
         let http = |status, message: &str| LlmError::Http { status, message: message.into() };
         assert!(rejects_tools(&http(500, "tools param requires --jinja flag")));
         assert!(rejects_tools(&http(400, "This model does not support Tools")));
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn info_summarises_probe() {
+    fn info_summarizes_probe() {
         let mut e = Endpoints::default();
         let caps =
             Capabilities { server: ServerKind::LlamaCpp, context_length: Some(262_144), vision: Some(true), tools: ToolSupport::Native, ..Default::default() };

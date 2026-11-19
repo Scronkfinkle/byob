@@ -1,6 +1,6 @@
 //! A scripted MCP server on stdio for byob-mcp's integration tests. Not shipped.
 //!
-//! `FAKE_MCP_MODE` picks misbehaviour: `normal` (default), `garbage` (junk lines before
+//! `FAKE_MCP_MODE` picks misbehavior: `normal` (default), `garbage` (junk lines before
 //! every reply), `exit-on-init` (dies during the handshake), `silent` (never answers).
 
 use std::io::{BufRead, Write};

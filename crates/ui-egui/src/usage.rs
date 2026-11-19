@@ -97,7 +97,7 @@ impl Usage {
             ui.add(egui::TextEdit::singleline(&mut self.focus).hint_text("Keep in detail… (optional)").desired_width(f32::INFINITY));
             ui.horizontal(|ui| {
                 let button = ui.add_enabled(!busy, egui::Button::new("Compact now"));
-                if button.on_hover_text("Summarise the conversation so far; later requests start from the summary").clicked() {
+                if button.on_hover_text("Summarize the conversation so far; later requests start from the summary").clicked() {
                     let focus = std::mem::take(&mut self.focus);
                     let focus = focus.trim();
                     out = Some(ClientMsg::Compact { focus: (!focus.is_empty()).then(|| focus.to_owned()) });
@@ -110,7 +110,7 @@ impl Usage {
     }
 }
 
-/// Colour of the bar: accent while there is room, warning near the threshold, danger past it.
+/// Color of the bar: accent while there is room, warning near the threshold, danger past it.
 fn bar_color(t: &Tokens, pressure: f32) -> Color32 {
     if pressure < 0.6 {
         t.accent
@@ -190,7 +190,7 @@ fn divider(ui: &mut egui::Ui, t: &Tokens, c: &Compaction, doc: &mut markdown::Do
     let gap = ui.spacing().item_spacing.x;
     let text_width = (measure(&label) + measure(action) + gap + 4.0).min(ui.available_width());
     ui.add_space(2.0);
-    // A full-width row: rules either side of the centred label and link.
+    // A full-width row: rules either side of the centered label and link.
     let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), Sense::hover());
     let (x0, x1) = (row.center().x - text_width / 2.0, row.center().x + text_width / 2.0);
     let stroke = Stroke::new(1.0, t.separator);
@@ -206,7 +206,7 @@ fn divider(ui: &mut egui::Ui, t: &Tokens, c: &Compaction, doc: &mut markdown::Do
     inner.label(RichText::new(&label).small().color(t.text_dim)).on_hover_text(
         c.focus
             .as_deref()
-            .map_or_else(|| "Older messages were summarised to free context; the transcript still shows them all.".to_owned(), |f| format!("Focus: {f}")),
+            .map_or_else(|| "Older messages were summarized to free context; the transcript still shows them all.".to_owned(), |f| format!("Focus: {f}")),
     );
     if inner.link(RichText::new(action).small()).clicked() {
         open = !open;

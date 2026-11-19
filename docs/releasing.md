@@ -61,7 +61,7 @@ notarizes the dmg and `xcrun stapler staple` attaches the ticket.
 ## byob.chat
 
 `site/` is the website; the README's pictures (`docs/media`) are served from it as `media/`.
-The fonts are self-hosted (OFL, licences in `site/fonts/`), so the page loads nothing from
+The fonts are self-hosted (OFL, licenses in `site/fonts/`), so the page loads nothing from
 other sites. Publish it with:
 
 ```sh

@@ -16,7 +16,7 @@ Last updated: 2026-11-09
 - Markdown, remote-access hardening, Tailscale identity allowlist.
 - Theming: 15 presets (byob, Catppuccin ×4, Gruvbox, Nord, Dracula, Solarized, Tokyo Night, Rosé Pine),
   separate light/dark picks for System, accents, knobs (sizes, fonts, density, radius, bubbles,
-  layout, column width, motion, chart colours, pane widths), every colour role overridable,
+  layout, column width, motion, chart colors, pane widths), every color role overridable,
   JSON theme files (import/export, `<config>/themes`), basic code highlighting.
 - Artifacts: versioned markdown / HTML app / chart / image / text files beside the chat
   (`create_artifact`, `update_artifact` with find/replace edits, `read_artifact`; charts and

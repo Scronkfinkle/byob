@@ -3,7 +3,7 @@
 # UI compiled in (`byob --serve` just works) and the HTML app renderer (byob-artifact-host, the
 # Servo helper, next to byob, with its MPL NOTICE), and `byob-slim-…` with neither. On macOS
 # also `byob-<version>-<target>.dmg`: byob.app (byob and the helper in Contents/MacOS, the
-# licences and NOTICE in Contents/Resources) built by scripts/macos-bundle.sh.
+# licenses and NOTICE in Contents/Resources) built by scripts/macos-bundle.sh.
 #
 # macOS signing and notarization (docs/releasing.md) are off until these repository secrets
 # exist; without MACOS_CERTIFICATE the app is signed ad hoc and users must allow it once:
@@ -99,7 +99,7 @@ jobs:
           BINDGEN_EXTRA_CLANG_ARGS: ${{ runner.os == 'Windows' && '-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH' || '' }}
           CXXFLAGS: ${{ runner.os == 'Windows' && '-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH' || '' }}
       # Windows draws through ANGLE (Cargo.toml): its two DLLs go next to the helper, with
-      # ANGLE's licence from the exact source that was built.
+      # ANGLE's license from the exact source that was built.
       - name: Gather the helper's files
         shell: bash
         run: |

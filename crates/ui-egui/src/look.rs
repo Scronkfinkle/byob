@@ -83,7 +83,7 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef], backdrop
         field(
             "accent",
             json!(accent_name(&prefs.accent)),
-            "the highlight colour: theme (the theme's own), blue, violet, green, orange, pink, teal, or any #rrggbb",
+            "the highlight color: theme (the theme's own), blue, violet, green, orange, pink, teal, or any #rrggbb",
         ),
         field("corners", round2(k.radius), "how round corners are, 0 (square) to 16"),
         field("text_size", round2(k.font_scale), "text size, 0.75 to 2 (1 is normal)"),
@@ -105,7 +105,7 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef], backdrop
             "how buttons and other controls look: standard, hud (a heads-up display: square, outlined in the accent, lit when hovered), plate (raised metal plates that press in) or pill (fully rounded)",
         ),
         field("reduce_motion", json!(k.reduce_motion), "no animations: true or false"),
-        field("chart_colours", json!(if k.chart == ChartPalette::Accessible { "accessible" } else { "theme" }), "theme, or accessible (colour-blind safe)"),
+        field("chart_colors", json!(if k.chart == ChartPalette::Accessible { "accessible" } else { "theme" }), "theme, or accessible (color-blind safe)"),
     ];
     let mut notes = std::collections::BTreeMap::new();
     if backdrops {
@@ -128,7 +128,7 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef], backdrop
         if let Some(c) = tokens.get(r.name) {
             let overridden = prefs.overrides.get(prefs.theme_id(tokens.dark)).is_some_and(|o| o.contains_key(r.name));
             let describe = format!("{} ({}){}: #rrggbb, or \"\" for the theme's", r.label, r.group, if overridden { ", changed from the theme's" } else { "" });
-            fields.push(LookField { key: format!("colour.{}", r.name), value: json!(theme::hex(c)), describe });
+            fields.push(LookField { key: format!("color.{}", r.name), value: json!(theme::hex(c)), describe });
         }
     }
     let themes = file::all(user_themes).into_iter().map(|d| ThemeChoice { id: d.id, name: d.name, dark: d.dark }).collect();
@@ -166,7 +166,7 @@ pub const HISTORY: usize = 20;
 
 /// A change the model asked for (`ServerMsg::SetLook`), with undo: `{"undo": true}` puts back
 /// the look before the last change (`history`, newest last); `{"reset": true}` goes back to
-/// the theme's own colours and byob's defaults (keeping the themes, mode and zoom). Anything
+/// the theme's own colors and byob's defaults (keeping the themes, mode and zoom). Anything
 /// else is [`apply`]'d. What couldn't be done, and why.
 pub fn change(prefs: &mut Prefs, history: &mut Vec<Prefs>, changes: &LookChanges, dark: bool, user_themes: &[ThemeDef], backdrops: bool) -> Vec<String> {
     let flag = |k: &str| changes.get(k).is_some_and(|v| v.as_bool().unwrap_or(true));
@@ -274,10 +274,10 @@ fn module_setting(a: &mut cockpit::arrange::Arrangement, key: &str, v: &Value) -
 pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: &[ThemeDef], backdrops: bool) -> Vec<String> {
     let mut problems = Vec::new();
     let themes = file::all(user_themes);
-    // Colours last, into the theme the window draws with after the rest: "dark mode, and
-    // this background" colours the dark theme.
-    let (colours, rest): (Vec<_>, Vec<_>) = changes.iter().partition(|(k, _)| k.starts_with("colour."));
-    for (key, v) in rest.into_iter().chain(colours) {
+    // Colors last, into the theme the window draws with after the rest: "dark mode, and
+    // this background" colors the dark theme.
+    let (colors, rest): (Vec<_>, Vec<_>) = changes.iter().partition(|(k, _)| k.starts_with("color."));
+    for (key, v) in rest.into_iter().chain(colors) {
         let dark = match prefs.theme {
             ThemeKind::Dark => true,
             ThemeKind::Light => false,
@@ -405,21 +405,21 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
             "frost" => number(v, 0.0..=1.0, key).map(|n| prefs.cockpit.frost = n),
             "panel_gap" => number(v, cockpit::Cockpit::GAP_RANGE, key).map(|n| prefs.cockpit.gap = n.round()),
             "reduce_motion" => boolean(v, key).map(|b| k.reduce_motion = b),
-            "chart_colours" => match text(v).as_str() {
+            "chart_colors" | "chart_colours" => match text(v).as_str() {
                 "theme" => {
                     k.chart = ChartPalette::Theme;
                     Ok(())
                 }
-                "accessible" | "colour_blind" | "colorblind" => {
+                "accessible" | "color_blind" | "colour_blind" | "colorblind" => {
                     k.chart = ChartPalette::Accessible;
                     Ok(())
                 }
-                _ => Err(format!("chart_colours: theme or accessible, not {v}")),
+                _ => Err(format!("chart_colors: theme or accessible, not {v}")),
             },
             other if other.starts_with("place.") || other.starts_with("bezel.") || other.starts_with("label.") => {
                 module_setting(&mut prefs.cockpit.arrangement, other, v)
             }
-            other => match other.strip_prefix("colour.").filter(|r| ROLES.iter().any(|x| x.name == *r)) {
+            other => match other.strip_prefix("color.").filter(|r| ROLES.iter().any(|x| x.name == *r)) {
                 Some(role) => {
                     let id = prefs.theme_id(dark).to_owned();
                     match v.as_str().map(str::trim) {
@@ -464,7 +464,7 @@ mod tests {
         let r = report(&prefs, &tokens, &[], true);
         assert!(r.fields.len() > 20 && r.fields.len() <= byob_protocol::look::MAX_FIELDS, "{}", r.fields.len());
         assert!(r.themes.iter().any(|t| t.id == prefs.dark_theme));
-        let all: LookChanges = r.fields.iter().filter(|f| !f.key.starts_with("colour.")).map(|f| (f.key.clone(), f.value.clone())).collect();
+        let all: LookChanges = r.fields.iter().filter(|f| !f.key.starts_with("color.")).map(|f| (f.key.clone(), f.value.clone())).collect();
         let mut p = prefs.clone();
         assert_eq!(apply(&mut p, &all, true, &[], true), Vec::<String>::new());
         assert_eq!(p, prefs, "setting each to what it is changes nothing");
@@ -476,7 +476,7 @@ mod tests {
         let problems = apply(
             &mut p,
             &changes(
-                json!({"accent": "Orange", "corners": 12, "text_size": "120%", "mode": "light", "replies": "outlined", "colour.app_bg": "#202124", "zoom": 9, "sparkle": 1, "light_theme": "byob-dark"}),
+                json!({"accent": "Orange", "corners": 12, "text_size": "120%", "mode": "light", "replies": "outlined", "color.app_bg": "#202124", "zoom": 9, "sparkle": 1, "light_theme": "byob-dark"}),
             ),
             true,
             &[],
@@ -489,10 +489,13 @@ mod tests {
         assert!(problems.iter().any(|e| e.starts_with("zoom:")) && problems.iter().any(|e| e.contains("sparkle")), "{problems:?}");
         assert!(problems.iter().any(|e| e.starts_with("text_size:")), "120% isn't a scale: {problems:?}");
         assert!(problems.iter().any(|e| e.contains("is a dark theme")), "{problems:?}");
-        // A custom accent, and a colour back to the theme's.
-        assert!(apply(&mut p, &changes(json!({"accent": "#ff8800", "colour.app_bg": ""})), true, &[], true).is_empty());
+        // A custom accent, and a color back to the theme's.
+        assert!(apply(&mut p, &changes(json!({"accent": "#ff8800", "color.app_bg": ""})), true, &[], true).is_empty());
         assert_eq!(p.accent, Accent::Custom("#ff8800".into()));
         assert!(p.overrides[p.theme_id(false)].is_empty());
+        // The old British key still works.
+        assert!(apply(&mut p, &changes(json!({"chart_colours": "accessible"})), true, &[], true).is_empty());
+        assert_eq!(p.knobs.chart, ChartPalette::Accessible);
     }
 
     /// A backdrop: a scene by name, WGSL that compiles (on trial, its source in a note), or
@@ -520,7 +523,7 @@ mod tests {
         assert!(report(&p, &Tokens::dark(), &[], false).get("backdrop").is_none());
     }
 
-    /// Arrangements: a preset by name, then a part moved, framed and labelled on top; a
+    /// Arrangements: a preset by name, then a part moved, framed and labeled on top; a
     /// place given while docked makes it free; mistakes are named.
     #[test]
     fn the_model_arranges_the_window() {
@@ -573,14 +576,14 @@ mod tests {
     }
 
     /// Undo puts back the look before the model's last change (exactly: overrides too);
-    /// reset goes back to the theme's; colours asked for with a mode go to that mode's theme.
+    /// reset goes back to the theme's; colors asked for with a mode go to that mode's theme.
     #[test]
     fn changes_can_be_undone_and_reset() {
         let start = Prefs::default();
         let mut p = start.clone();
         let mut history = Vec::new();
-        assert!(change(&mut p, &mut history, &changes(json!({"mode": "dark", "colour.app_bg": "#191724", "corners": 16})), false, &[], true).is_empty());
-        assert_eq!(p.overrides[&p.dark_theme]["app_bg"], "#191724", "the colour went to the dark theme, the one now in use");
+        assert!(change(&mut p, &mut history, &changes(json!({"mode": "dark", "color.app_bg": "#191724", "corners": 16})), false, &[], true).is_empty());
+        assert_eq!(p.overrides[&p.dark_theme]["app_bg"], "#191724", "the color went to the dark theme, the one now in use");
         assert!(!p.overrides.contains_key(&p.light_theme));
         assert!(change(&mut p, &mut history, &changes(json!({"accent": "pink"})), true, &[], true).is_empty());
         assert!(change(&mut p, &mut history, &changes(json!({"undo": true})), true, &[], true).is_empty());
@@ -589,7 +592,7 @@ mod tests {
         assert_eq!(p, start, "back to the start");
         assert!(change(&mut p, &mut history, &changes(json!({"undo": true})), true, &[], true)[0].contains("no earlier look"));
         // Reset keeps the themes and mode, drops the rest.
-        change(&mut p, &mut history, &changes(json!({"mode": "dark", "colour.text": "#ff0000", "corners": 3})), false, &[], true);
+        change(&mut p, &mut history, &changes(json!({"mode": "dark", "color.text": "#ff0000", "corners": 3})), false, &[], true);
         change(&mut p, &mut history, &changes(json!({"reset": true})), true, &[], true);
         assert_eq!((p.theme, p.knobs.radius), (ThemeKind::Dark, Knobs::default().radius));
         assert!(p.overrides.values().all(std::collections::BTreeMap::is_empty), "{:?}", p.overrides);

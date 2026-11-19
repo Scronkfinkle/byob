@@ -104,7 +104,7 @@ pub fn gap(ctx: &egui::Context) -> f32 {
     ctx.data(|d| d.get_temp::<f32>(gap_key())).unwrap_or_default()
 }
 
-/// A panel's frame: over a backdrop, set off from its neighbours by the gap, with rounded
+/// A panel's frame: over a backdrop, set off from its neighbors by the gap, with rounded
 /// corners, so the scene shows around it.
 pub fn framed(ctx: &egui::Context, frame: egui::Frame) -> egui::Frame {
     let g = gap(ctx);

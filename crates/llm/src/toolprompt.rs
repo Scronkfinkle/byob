@@ -27,7 +27,7 @@ const MAX_BARE_SPAN: usize = 64 * 1024;
 /// The tags we ask for.
 const OPEN: &str = "<function_call>";
 const CLOSE: &str = "</function_call>";
-/// Every recognised (open, close) tag pair; the second is what Hermes/Qwen models are trained on.
+/// Every recognized (open, close) tag pair; the second is what Hermes/Qwen models are trained on.
 const TAGS: [(&str, &str); 2] = [(OPEN, CLOSE), ("<tool_call>", "</tool_call>")];
 
 /// System-prompt section describing `tools` and the `<function_call>` reply format.
@@ -113,7 +113,7 @@ pub fn to_fallback(messages: &[ChatMessage]) -> Vec<ChatMessage> {
 /// Visible text plus the calls extracted from a reply.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ParsedToolCalls {
-    /// The reply with all recognised call markup removed, trimmed.
+    /// The reply with all recognized call markup removed, trimmed.
     pub text: String,
     pub calls: Vec<ToolCall>,
 }
@@ -229,7 +229,7 @@ fn extract_bare(content: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>) ->
     text
 }
 
-/// Byte index just past the bracket matching the one at `start`, honouring JSON strings.
+/// Byte index just past the bracket matching the one at `start`, honoring JSON strings.
 fn balanced_end(s: &str, start: usize) -> Option<usize> {
     let mut depth = 0usize;
     let mut in_str = false;

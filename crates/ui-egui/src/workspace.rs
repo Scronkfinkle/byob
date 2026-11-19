@@ -315,7 +315,7 @@ impl LayerEditor {
                                 ui.add(egui::Slider::new(&mut p, 10..=95).suffix("%"))
                             })
                             .inner
-                            .on_hover_text("Summarise older messages when a request passes this much of the context window");
+                            .on_hover_text("Summarize older messages when a request passes this much of the context window");
                         if (r.drag_stopped() || (r.changed() && !r.dragged())) && Some(p) != self.draft.compact_percent {
                             self.draft.compact_percent = Some(p);
                             out = Some(self.send(None));
@@ -1453,8 +1453,8 @@ impl WorkspaceUi {
         let max_w = (screen.width() - 24.0).clamp(240.0, 520.0);
         let max_h = (screen.height() - 80.0).max(200.0);
         let opens = self.opens;
-        // Centred near the top at first; movable by the title bar (and kept on screen).
-        let top_centre = |dy: f32| egui::pos2(screen.center().x, screen.top() + dy);
+        // Centered near the top at first; movable by the title bar (and kept on screen).
+        let top_center = |dy: f32| egui::pos2(screen.center().x, screen.top() + dy);
         if let Some(form) = &mut self.form {
             let mut open = true;
             let (root, support) = (self.root.clone(), self.support.clone());
@@ -1469,7 +1469,7 @@ impl WorkspaceUi {
                 .max_width(max_w)
                 .max_height(max_h)
                 .pivot(egui::Align2::CENTER_TOP)
-                .default_pos(top_centre(60.0))
+                .default_pos(top_center(60.0))
                 .movable(true)
                 .constrain(true)
                 .show(ctx, |ui| {
@@ -1498,7 +1498,7 @@ impl WorkspaceUi {
                 .max_width(max_w)
                 .max_height(max_h)
                 .pivot(egui::Align2::CENTER_TOP)
-                .default_pos(top_centre(50.0))
+                .default_pos(top_center(50.0))
                 .movable(true)
                 .constrain(true)
                 .show(ctx, |ui| {

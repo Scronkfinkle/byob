@@ -44,7 +44,7 @@ byob-help = { path = "crates/help", version = "0.3.10" }
 # MIT OR Apache-2.0.
 ironcalc = "=0.9.1"
 
-# Documents (byob-docs). hayro: pure-Rust PDF parser and rasteriser (MIT OR Apache-2.0; its
+# Documents (byob-docs). hayro: pure-Rust PDF parser and rasterizer (MIT OR Apache-2.0; its
 # embedded standard-font substitutes are Foxit's, BSD). zip + quick-xml read .docx/.pptx
 # (MIT; ironcalc already links both).
 hayro = "0.9"
@@ -86,7 +86,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 
 # UI.
 # `monochrome_emoji_fonts`: egui's bundled Noto Emoji, every build's emoji fallback (egui 0.37
-# moved them out of `default_fonts`). epaint's `color_fonts` draws a system colour emoji font.
+# moved them out of `default_fonts`). epaint's `color_fonts` draws a system color emoji font.
 egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 epaint = { version = "0.37", features = ["color_fonts"] }
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "accesskit", "clipboard", "wayland", "x11"] }

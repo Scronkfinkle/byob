@@ -133,6 +133,6 @@
     }
   ],
   "starters": [
-    { "title": "Catch up on email", "prompt": "Summarise my unread email from the last two days and suggest which need a reply." }
+    { "title": "Catch up on email", "prompt": "Summarize my unread email from the last two days and suggest which need a reply." }
   ]
 }

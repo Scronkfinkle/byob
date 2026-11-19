@@ -1,4 +1,4 @@
-//! Charts (`.chart.json`): a chart spec, validated and normalised before it is saved, drawn
+//! Charts (`.chart.json`): a chart spec, validated and normalized before it is saved, drawn
 //! natively by clients.
 
 use std::sync::Arc;
@@ -14,7 +14,7 @@ pub fn register(types: &ArtifactTypes) {
         ArtifactType::new(TYPE_CHART, "chart", ArtifactKind::Chart)
             .suffixes(&[".chart.json"])
             .describe(".chart.json (a chart spec)")
-            .pick("a chart of numbers → make_chart (or .html for a custom visualisation)")
+            .pick("a chart of numbers → make_chart (or .html for a custom visualization)")
             .hooks(Arc::new(Chart)),
     );
 }

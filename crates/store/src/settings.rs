@@ -97,7 +97,7 @@ impl StorageKind {
     }
 }
 
-/// When the engine summarises a conversation to free context (see `byob-agent`).
+/// When the engine summarizes a conversation to free context (see `byob-agent`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CompactionSettings {

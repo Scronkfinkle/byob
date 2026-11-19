@@ -1,5 +1,5 @@
 //! Native charts: draws a [`ChartSpec`] (bar, line, area, pie, scatter; stacked; units) with
-//! egui's painter, in theme colours, with a hover tooltip and a "Show data" table.
+//! egui's painter, in theme colors, with a hover tooltip and a "Show data" table.
 //!
 //! Drawn by hand rather than with `egui_plot`: it needs a donut chart, categorical axes and
 //! hob's look (rounded bar ends, recessive grid), and must not grab scroll/drag gestures
@@ -75,7 +75,7 @@ fn legend(spec: &ChartSpec, color: &dyn Fn(usize) -> Color32) -> Vec<(String, Co
     if spec.series.len() > 1 { spec.series.iter().enumerate().map(|(i, s)| (s.label.clone(), color(i))).collect() } else { Vec::new() }
 }
 
-/// Hover tooltip content: a heading and (colour, name, value) rows.
+/// Hover tooltip content: a heading and (color, name, value) rows.
 struct Tip {
     heading: String,
     rows: Vec<(Color32, String, String)>,

@@ -1,6 +1,6 @@
 //! GPU backend selection.
 //!
-//! eframe's default asks wgpu for Vulkan/Metal/DX12 *and* GL. Initialising the GL path
+//! eframe's default asks wgpu for Vulkan/Metal/DX12 *and* GL. Initializing the GL path
 //! (EGL, and on Linux usually Mesa's llvmpipe software renderer with libLLVM) costs ~70 MB
 //! of resident memory even though a primary backend almost always wins. So: use the primary
 //! backends, and add GL only when no primary adapter exists (old GPUs, some VMs).

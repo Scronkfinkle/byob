@@ -1,5 +1,5 @@
 //! Parent side: start a command in its own process group, feed stdin, capture bounded
-//! stdout/stderr, enforce a wall-clock timeout, honour cancellation, and kill the whole
+//! stdout/stderr, enforce a wall-clock timeout, honor cancellation, and kill the whole
 //! group when it ends (so `cmd &` stragglers don't outlive the run).
 
 use std::collections::VecDeque;

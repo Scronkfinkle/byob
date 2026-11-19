@@ -336,7 +336,7 @@ pub enum CellType {
     Error,
 }
 
-/// Where a cell's text sits (by default numbers right, booleans centred, the rest left).
+/// Where a cell's text sits (by default numbers right, booleans centered, the rest left).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CellAlign {
@@ -359,12 +359,12 @@ pub struct GridCell {
     pub italic: bool,
     /// Background: a theme role (`accent`, `chart3`, …) or `#rrggbb`.
     pub fill: Option<String>,
-    /// Text colour, the same way.
+    /// Text color, the same way.
     pub color: Option<String>,
     pub align: Option<CellAlign>,
 }
 
-/// Longest colour name of a cell.
+/// Longest color name of a cell.
 const MAX_COLOR_CHARS: usize = 64;
 
 impl GridCell {
@@ -539,7 +539,7 @@ pub fn cell_name(row: u32, col: u32) -> String {
     format!("{}{}", column_name(col), u64::from(row) + 1)
 }
 
-/// A colour role, not a colour: clients map it to their theme. Unknown names (a newer tone)
+/// A color role, not a color: clients map it to their theme. Unknown names (a newer tone)
 /// are [`Tone::Normal`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -604,7 +604,7 @@ impl TableColumn {
     }
 }
 
-/// One canvas shape (`"type"` in JSON). Colours are theme role names (`accent`, `text_dim`,
+/// One canvas shape (`"type"` in JSON). Colors are theme role names (`accent`, `text_dim`,
 /// `border`, …), `chart1`…`chart8`, or `#rrggbb`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

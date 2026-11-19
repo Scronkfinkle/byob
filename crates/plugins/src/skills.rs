@@ -380,7 +380,7 @@ fn with_run_line(name: &str, instructions: &str, files: &BTreeMap<String, String
     format!("{}\n\nScripts in this skill: run them with run_python, passing {} and the inputs as args.", instructions.trim(), missing.join(" or "))
 }
 
-/// `save_skill`: writes a skill the user asked to keep. It changes later behaviour, so the
+/// `save_skill`: writes a skill the user asked to keep. It changes later behavior, so the
 /// agent should always ask first (hob also refuses after untrusted web content in the
 /// same message; that check belongs to the agent, which knows).
 #[derive(Debug, Clone)]
@@ -422,7 +422,7 @@ impl Tool for SaveSkillTool {
         format!("Saved the “{}” skill", skill_name(args.get("name").and_then(Value::as_str).unwrap_or("")))
     }
 
-    /// Writes outside the workspace and changes later behaviour: always ask.
+    /// Writes outside the workspace and changes later behavior: always ask.
     fn access(&self, _args: &Value) -> Access {
         Access::Write
     }

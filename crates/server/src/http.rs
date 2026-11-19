@@ -34,7 +34,7 @@ impl Request {
     /// any website you visit could drive the harness. Native clients send no `Origin`.
     ///
     /// `tailscale serve` passes the browser's `Host` through unchanged and also sets
-    /// `X-Forwarded-Host`, so either matches. `X-Forwarded-Host` is only honoured from a
+    /// `X-Forwarded-Host`, so either matches. `X-Forwarded-Host` is only honored from a
     /// loopback proxy (`trusted_proxy`).
     pub fn origin_allowed(&self, trusted_proxy: bool) -> bool {
         let Some(origin) = self.header("origin") else { return true };
@@ -43,7 +43,7 @@ impl Request {
         [self.header("host"), forwarded].into_iter().flatten().any(|h| h.eq_ignore_ascii_case(origin_host))
     }
 
-    /// Does the client accept a gzip body? Honours `q=0` ("not acceptable").
+    /// Does the client accept a gzip body? Honors `q=0` ("not acceptable").
     pub fn accepts_gzip(&self) -> bool {
         self.header("accept-encoding").is_some_and(|v| {
             v.split(',').any(|item| {
@@ -285,7 +285,7 @@ mod tests {
         assert!(serve.origin_allowed(true));
         let serve_port = req(&[("Host", "box.ts.net:8443"), ("X-Forwarded-Host", "box.ts.net:8443"), ("Origin", "https://box.ts.net:8443")]);
         assert!(serve_port.origin_allowed(true));
-        // A proxy that rewrites Host but sets X-Forwarded-Host: honoured only from loopback.
+        // A proxy that rewrites Host but sets X-Forwarded-Host: honored only from loopback.
         let rewritten = req(&[("Host", "127.0.0.1:7470"), ("X-Forwarded-Host", "box.ts.net"), ("Origin", "https://box.ts.net")]);
         assert!(rewritten.origin_allowed(true));
         assert!(!rewritten.origin_allowed(false));

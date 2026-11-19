@@ -40,7 +40,7 @@
 //!     --screenshot-after SECS minimum wait before the screenshot (default 2)
 //!     --open-settings         start with the settings panel open
 //!     --settings-section NAME open the settings on a tab (models, defaults, plugins, appearance,
-//!                             text, colours; chats, knobs and advanced still work), at one
+//!                             text, colors; chats, knobs and advanced still work), at one
 //!                             setting (its id: accent, approvals, zoom, …) or at model
 //!                             profile ID's form, Advanced expanded (model:ID)
 //!     --settings-search TEXT  open the settings with TEXT typed in their search field
@@ -219,7 +219,7 @@ fn parse_args() -> Result<Args, String> {
             "--open-settings" => args.open_settings = true,
             "--settings-section" => {
                 args.settings_section =
-                    Some(it.next().ok_or("--settings-section needs a tab (models, defaults, plugins, appearance, text, colours) or model:<id>")?)
+                    Some(it.next().ok_or("--settings-section needs a tab (models, defaults, plugins, appearance, text, colors) or model:<id>")?)
             }
             "--settings-search" => args.settings_search = Some(it.next().ok_or("--settings-search needs text")?),
             "--window-size" => {

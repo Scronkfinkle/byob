@@ -189,7 +189,7 @@ pub fn groups<'a>(workspaces: &'a [WorkspaceSummary], recent: &'a [ChatSummary])
     out
 }
 
-/// The search, normalised: trimmed and lower case (`None`: no search).
+/// The search, normalized: trimmed and lower case (`None`: no search).
 fn query(search: &str) -> Option<String> {
     Some(search.trim().to_lowercase()).filter(|q| !q.is_empty())
 }
@@ -219,7 +219,7 @@ fn sort(pinned: &mut [ChatSummary], recent: &mut [ChatSummary]) {
 }
 
 /// A title laid out on one line, cut with "…" to `width`, with the part matching `q` (lower
-/// case) in the accent colour.
+/// case) in the accent color.
 fn title_galley(ui: &Ui, text: &str, font: egui::FontId, color: egui::Color32, width: f32, q: Option<&str>, accent: egui::Color32) -> Arc<Galley> {
     use egui::text::{LayoutJob, TextFormat, TextWrapping};
     let fmt = |color| TextFormat { font_id: font.clone(), color, ..Default::default() };

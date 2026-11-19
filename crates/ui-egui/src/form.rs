@@ -143,7 +143,7 @@ pub struct RowOut<R> {
 }
 
 /// One setting: `name` and `desc` on the left, the control `add` draws on the right (its
-/// right edge on the page's), centred on the text; stacked on narrow pages.
+/// right edge on the page's), centered on the text; stacked on narrow pages.
 pub fn setting_row<R>(ui: &mut Ui, t: &Tokens, id: Id, name: &str, desc: &str, style: RowStyle<'_>, add: impl FnOnce(&mut Ui) -> R) -> RowOut<R> {
     let w = ui.available_width();
     let left = ui.cursor().left();
@@ -178,7 +178,7 @@ pub fn setting_row<R>(ui: &mut Ui, t: &Tokens, id: Id, name: &str, desc: &str, s
     let (text_top, inner, bottom) = match control_rect {
         None => {
             let y = top + pad_y + text_h + t.pad(8.0);
-            // One control row tall: the layout centres across it and grows down as it wraps.
+            // One control row tall: the layout centers across it and grows down as it wraps.
             let max = Rect::from_min_max(pos2(left, y), pos2(right, y + control_h(t)));
             let mut child = ui.new_child(UiBuilder::new().id_salt(id).max_rect(max).layout(layout));
             let inner = add(&mut child);
@@ -223,7 +223,7 @@ pub fn setting_row<R>(ui: &mut Ui, t: &Tokens, id: Id, name: &str, desc: &str, s
 }
 
 /// `text` laid out at most `wrap` wide, with every occurrence of `needles` (ASCII case
-/// ignored) marked by `hl` (background, text colour).
+/// ignored) marked by `hl` (background, text color).
 pub fn highlight(text: &str, needles: &[String], font: FontId, color: Color32, hl: (Color32, Color32), wrap: f32) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap.max(10.0);

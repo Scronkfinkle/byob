@@ -409,7 +409,7 @@ impl ByobApp {
                     let mut prefs = self.prefs.clone();
                     let problems = look::change(&mut prefs, &mut self.look_history, &changes, self.tokens.dark, &self.user_themes, self.stage.available());
                     self.set_prefs(prefs);
-                    // Answered once the new look is drawn (its colours are what the theme makes).
+                    // Answered once the new look is drawn (its colors are what the theme makes).
                     self.look_answer = Some((request, problems));
                     self.look_reported = None;
                 }
@@ -656,7 +656,7 @@ impl ByobApp {
     pub const PLUGIN_PANELS: &'static str = "plugin-pane, plugin-pane:<plugin>[/<view>], plugin:<id>, artifact:<prefix>";
 
     /// Scripted runs: open the settings on a tab ([`settings::Tab::id`]: `models`, `defaults`,
-    /// `plugins`, `appearance`, `text`, `colours`; also `chats`, `knobs`, `advanced`), at one
+    /// `plugins`, `appearance`, `text`, `colors`; also `chats`, `knobs`, `advanced`), at one
     /// setting (its registry id, e.g. `accent`, `approvals`: scrolled to and lit), or at a
     /// saved model's form, Advanced expanded (`model:<id>`). False for a name it doesn't know.
     pub fn reveal_settings(&mut self, section: &str) -> bool {
@@ -886,7 +886,7 @@ impl ByobApp {
             self.plugins.sites.side_panel(ui, &t, self.artifacts.web_mut());
         }
         // The chat and its composer sit on the window background (app_bg); the header, chat
-        // list and panes on the panel colour.
+        // list and panes on the panel color.
         let composer_frame = cockpit::framed(ui.ctx(), egui::Frame::side_top_panel(ui.style()).fill(t.app_bg));
         let chat_frame = cockpit::framed(ui.ctx(), egui::Frame::central_panel(ui.style()).fill(t.app_bg));
         let composer = egui::Panel::bottom("composer").show_separator_line(false).frame(composer_frame).show(ui, |ui| self.composer(ui));
@@ -1372,7 +1372,7 @@ fn tokens_detail(s: &byob_protocol::TurnStats) -> String {
     out
 }
 
-/// The transcript in a centred column no wider than the user's readable width.
+/// The transcript in a centered column no wider than the user's readable width.
 fn readable_column(ui: &mut egui::Ui, t: &theme::Tokens, add: impl FnOnce(&mut egui::Ui)) {
     let full = ui.available_width();
     let max = t.knobs.max_width;
@@ -1589,7 +1589,7 @@ mod app_tests {
     }
 
     #[test]
-    fn send_turns_the_accent_colour_once_something_is_typed() {
+    fn send_turns_the_accent_color_once_something_is_typed() {
         let ctx = egui::Context::default();
         let mut app = crowded_app();
         let accent = app.tokens.accent;

@@ -1,4 +1,4 @@
-//! The sheets backend's behaviour through its tools and grid view, with a fake byob around
+//! The sheets backend's behavior through its tools and grid view, with a fake byob around
 //! it (`common`): writes and recalculation, fills, errors and lints, structural edits,
 //! formats, the grid (frozen strips, paging, tabs, edits saved as drafts, stale keys, older
 //! versions read-only), CSV/TSV files and artifacts, and wrong input answered in sentences.
@@ -150,7 +150,7 @@ fn bad_input_is_a_sentence() {
     let t = b.tool("write_cells", json!({"sheet": aid}));
     assert!(t.contains("Give `rows`"), "{t}");
     let t = b.tool("format_cells", json!({"sheet": aid, "range": "A1", "fill": "blurple"}));
-    assert!(t.contains("`fill` should be a colour"), "{t}");
+    assert!(t.contains("`fill` should be a color"), "{t}");
     // stringified JSON rows are accepted
     let out = b.tool("write_cells", json!({"sheet": aid, "rows": "[[\"x\", 1]]"}));
     assert!(out.contains("Wrote 2 cells"), "{out}");

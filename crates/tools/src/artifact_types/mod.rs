@@ -25,7 +25,7 @@ pub mod text;
 /// suits plain text.
 pub trait ArtifactHooks: Send + Sync {
     /// Check content `create_artifact` / `update_artifact` are about to save (already known
-    /// to be non-empty and within the size limit), maybe normalise it. Returns the text to
+    /// to be non-empty and within the size limit), maybe normalize it. Returns the text to
     /// save and a note for the model (appended to the tool's result).
     fn check(&self, content: &str) -> Result<(String, String), String> {
         Ok((content.to_owned(), String::new()))
@@ -275,7 +275,7 @@ mod tests {
     /// The prompt as it was written before artifact types were registrations.
     const OLD_PROMPT: &str = "Artifacts: when the user wants something to keep, reuse or export — a report, summary or document, an interactive tool, calculator, game or app, a data file — \
 make it an artifact with create_artifact rather than pasting it into the chat; it shows in a pane beside the conversation and can be exported. Pick the format that fits: \
-summary/report/notes → .md; interactive tool or app → a single-file .html app; data → .csv or .json; a chart of numbers → make_chart (or .html for a custom visualisation). \
+summary/report/notes → .md; interactive tool or app → a single-file .html app; data → .csv or .json; a chart of numbers → make_chart (or .html for a custom visualization). \
 To change an artifact, call update_artifact with its id and small find/replace edits (read_artifact shows its current text) — never create a new one for a change. \
 HTML apps: one self-contained file with inline <style> and <script>; nothing from the network (no CDNs, web fonts, fetch or images by URL — all blocked) \
 unless the app needs the web (live data, a public API, a library from a CDN): then pass network: true to create_artifact or update_artifact, which lets it use HTTPS URLs (not plain http, nor byob itself; the user can switch it in the app's pane too); \

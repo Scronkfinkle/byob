@@ -178,7 +178,7 @@ impl Store {
 
     /// Delete `from` and every later message of its chat (editing a sent message, or
     /// retrying a reply). Returns how many were removed. Undo journals are kept; compactions
-    /// that summarised any of the removed messages are dropped with them.
+    /// that summarized any of the removed messages are dropped with them.
     pub fn delete_messages_from(&self, chat_id: &str, from: MessageId) -> Result<usize> {
         let tx = self.write_tx()?;
         tx.execute("DELETE FROM compactions WHERE chat_id = ?1 AND through_id >= ?2", params![chat_id, from.0])?;

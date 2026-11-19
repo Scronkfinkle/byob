@@ -1162,7 +1162,7 @@ mod tests {
         let list = list(ws, "c");
         assert_eq!(list.iter().map(|a| (a.kind, a.title.as_str())).collect::<Vec<_>>(), vec![(ArtifactKind::Chart, "Sales"), (ArtifactKind::Image, "plot")]);
         assert_eq!(list[1].versions[0].path, "plot.png");
-        // an artifact tool's own version is recognised, not adopted again
+        // an artifact tool's own version is recognized, not adopted again
         let p = ws.join(".byob/artifacts/x-1/v3.md");
         assert_eq!(for_call(ws, "c", &[FileChange::Created(p)], &media), vec![ArtifactRef { id: "x-1".into(), version: 3 }]);
     }

@@ -1,8 +1,8 @@
-//! Design tokens. Every widget reads colours and sizes from [`Tokens`] so themes apply
+//! Design tokens. Every widget reads colors and sizes from [`Tokens`] so themes apply
 //! everywhere.
 //!
 //! A theme is a [`presets::Palette`] (the built-in presets, or the base of a theme file)
-//! plus optional colour overrides ([`file::ThemeDef`]). [`Tokens::build`] derives every role
+//! plus optional color overrides ([`file::ThemeDef`]). [`Tokens::build`] derives every role
 //! from it, then applies the per-device [`Prefs`]: accent, knobs, high contrast, and the
 //! user's own per-theme overrides. Prefs are per device — a phone can be light while the
 //! desktop is dark — so the apps persist them with eframe storage.
@@ -35,12 +35,12 @@ pub fn bold_or_regular(ctx: &egui::Context) -> FontFamily {
 
 /// Install the UI fonts: Inter (OFL) or egui's Ubuntu for text, Inter SemiBold for bold, Hack
 /// or JetBrains Mono (OFL) for code, egui's defaults (symbols, monochrome Noto Emoji) as
-/// fallbacks, and before those the system's colour emoji font when there is one.
+/// fallbacks, and before those the system's color emoji font when there is one.
 pub fn install_fonts(ctx: &egui::Context, ui_font: UiFont, mono_font: MonoFont) {
     ctx.set_fonts(font_definitions(ui_font, mono_font, system_emoji()));
 }
 
-/// The fonts [`install_fonts`] installs, given the colour emoji font (if any).
+/// The fonts [`install_fonts`] installs, given the color emoji font (if any).
 fn font_definitions(ui_font: UiFont, mono_font: MonoFont, color_emoji: Option<Arc<FontData>>) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     if let Some(emoji) = color_emoji {
@@ -74,7 +74,7 @@ const COLOR_EMOJI: &str = "system-color-emoji";
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_EMOJI_FONT_BYTES: u64 = 40 * 1024 * 1024;
 
-/// The system's colour emoji font, read once. None in the browser (it can't read the disk),
+/// The system's color emoji font, read once. None in the browser (it can't read the disk),
 /// on systems without one, or when it is too large to keep in memory.
 fn system_emoji() -> Option<Arc<FontData>> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -83,7 +83,7 @@ fn system_emoji() -> Option<Arc<FontData>> {
         FONT.get_or_init(|| {
             let path = emoji_font_paths().into_iter().find(|p| p.metadata().is_ok_and(|m| m.is_file() && m.len() <= MAX_EMOJI_FONT_BYTES))?;
             let bytes = std::fs::read(&path).ok()?;
-            log::info!("colour emoji from {}", path.display());
+            log::info!("color emoji from {}", path.display());
             Some(Arc::new(FontData::from_owned(bytes).tweak(egui::FontTweak { scale: 0.85, ..Default::default() })))
         })
         .clone()
@@ -92,7 +92,7 @@ fn system_emoji() -> Option<Arc<FontData>> {
     None
 }
 
-/// Where colour emoji fonts live: fontconfig's pick first (most Linux and BSD desktops), then
+/// Where color emoji fonts live: fontconfig's pick first (most Linux and BSD desktops), then
 /// the usual install paths.
 #[cfg(not(target_arch = "wasm32"))]
 fn emoji_font_paths() -> Vec<std::path::PathBuf> {
@@ -127,7 +127,7 @@ pub fn inner_radius(outer: f32, inset: f32) -> f32 {
     (outer - inset).max(0.0)
 }
 
-/// A colour role: a field of [`Tokens`] users can override.
+/// A color role: a field of [`Tokens`] users can override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Role {
     /// Field name, also the key in theme files and overrides (`app_bg`).
@@ -136,21 +136,21 @@ pub struct Role {
     pub group: &'static str,
 }
 
-/// Defines [`Tokens`] (colour roles plus the non-colour fields) and the role table.
+/// Defines [`Tokens`] (color roles plus the non-color fields) and the role table.
 macro_rules! tokens {
     ($( $group:literal => { $( $(#[$doc:meta])* $field:ident : $label:literal ),* $(,)? } )*) => {
         #[derive(Debug, Clone, Copy, PartialEq)]
         pub struct Tokens {
             pub dark: bool,
             $($( $(#[$doc])* pub $field: Color32, )*)*
-            /// Chart series colours, in order (roles `chart1`…`chart8`).
+            /// Chart series colors, in order (roles `chart1`…`chart8`).
             pub chart: [Color32; 8],
             /// Base corner radius in points.
             pub radius: f32,
             pub knobs: Knobs,
         }
 
-        /// Every overridable colour, grouped for the Advanced settings.
+        /// Every overridable color, grouped for the Advanced settings.
         pub const ROLES: &[Role] = &[
             $($( Role { name: stringify!($field), label: $label, group: $group }, )*)*
             Role { name: "chart1", label: "Series 1", group: "Charts" },
@@ -164,7 +164,7 @@ macro_rules! tokens {
         ];
 
         impl Tokens {
-            /// A role's colour by name.
+            /// A role's color by name.
             pub fn get(&self, role: &str) -> Option<Color32> {
                 match role {
                     $($( stringify!($field) => Some(self.$field), )*)*
@@ -287,7 +287,7 @@ pub fn separate(c: Color32, bg: Color32, min: f32, toward: &[Color32]) -> Color3
     c
 }
 
-/// `0xRRGGBB` → colour.
+/// `0xRRGGBB` → color.
 pub const fn rgb(v: u32) -> Color32 {
     Color32::from_rgb(((v >> 16) & 0xff) as u8, ((v >> 8) & 0xff) as u8, (v & 0xff) as u8)
 }
@@ -317,7 +317,7 @@ pub fn parse_color(s: &str) -> Option<Color32> {
     }
 }
 
-/// WCAG relative luminance of an sRGB colour (alpha ignored).
+/// WCAG relative luminance of an sRGB color (alpha ignored).
 pub fn luminance(c: Color32) -> f32 {
     let lin = |x: u8| {
         let s = f32::from(x) / 255.0;
@@ -390,9 +390,9 @@ impl Tokens {
         t
     }
 
-    /// Every role from a palette. Text-like colours are nudged until readable on the
+    /// Every role from a palette. Text-like colors are nudged until readable on the
     /// surfaces they're drawn on (accents and status ≥ 4.5:1, faint text ≥ 3:1). Body text
-    /// keeps the scheme's own colour unless it falls below 4.5:1 somewhere (it aims for 7:1;
+    /// keeps the scheme's own color unless it falls below 4.5:1 somewhere (it aims for 7:1;
     /// see the contrast tests for the presets documented as AA-only).
     pub fn derive(p: &Palette, accent: Color32, knobs: &Knobs) -> Self {
         let dark = p.dark;
@@ -400,7 +400,7 @@ impl Tokens {
         let [s0, s1, s2] = p.surface.map(rgb);
         let extreme = if dark { Color32::WHITE } else { Color32::BLACK };
         // Replies sit on the chat background (app_bg): far enough from it to read as a
-        // bubble even where the scheme's background and fields are nearly one colour.
+        // bubble even where the scheme's background and fields are nearly one color.
         let assistant = if dark { mix(bg, s0, 0.45) } else { mix(bg, field, 0.7) };
         let assistant = if dark { separate(assistant, bg, 1.07, &[s1, Color32::WHITE]) } else { separate(assistant, bg, 1.05, &[Color32::WHITE, s0]) };
         let base_surfaces = [bg, panel, field, assistant];
@@ -645,7 +645,7 @@ impl Tokens {
         }
     }
 
-    /// Categorical colours for chart series (and pie slices), in a fixed order: series `i`
+    /// Categorical colors for chart series (and pie slices), in a fixed order: series `i`
     /// always gets slot `i`. Text never uses these; labels stay in the text tokens.
     pub fn chart_palette(&self) -> [Color32; 8] {
         self.chart

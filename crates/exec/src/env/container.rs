@@ -3,7 +3,7 @@
 //! workspace has a devcontainer.json).
 //!
 //! - **One container per workspace**, named `byob-<folder>-<hash of the path>` and
-//!   labelled `byob.managed=1`, `byob.workspace=<path>`, `byob.config=<stamp>`. It's
+//!   labeled `byob.managed=1`, `byob.workspace=<path>`, `byob.config=<stamp>`. It's
 //!   created on first use, reused across commands and byob restarts, and recreated when
 //!   devcontainer.json (or the image setting) changes. It idles in a `sleep` loop under
 //!   `--init`.

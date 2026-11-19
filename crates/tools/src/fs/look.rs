@@ -150,7 +150,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         fs::write(d.path().join("big.png"), png(2048, 1024)).unwrap();
         fs::write(d.path().join("small.png"), png(40, 20)).unwrap();
-        let (out, images) = run(&LookAtImage, d.path(), json!({"path": "big.png", "question": "what colour?"}));
+        let (out, images) = run(&LookAtImage, d.path(), json!({"path": "big.png", "question": "what color?"}));
         assert!(!out.failed, "{}", out.text);
         assert_eq!(out.text, "Image big.png (2048×1024 px, shown at 1024×512).");
         assert_eq!(images.len(), 1);

@@ -308,7 +308,7 @@ pub fn heuristic_title(text: &str) -> String {
     if title.is_empty() { UNTITLED.to_owned() } else { title }
 }
 
-/// Normalise a title from a user or a model: one line, no wrapping quotes or "Title:"
+/// Normalize a title from a user or a model: one line, no wrapping quotes or "Title:"
 /// prefix, at most `max` characters.
 pub fn clean_title(raw: &str, max: usize) -> String {
     let line = raw.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();

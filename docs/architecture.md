@@ -80,7 +80,7 @@ the theme tokens, on the desktop and in the browser alike. Authoring guide: `doc
   `markdown`, `chip`, `button`, `input`, `toggle`, `select`, `progress`, `table` (virtualized,
   editable columns), `grid` (a spreadsheet: virtualized rows and columns served in windows
   by its owner; `tree/grid.rs`, Grids in `docs/views.md`), `chart` (`ChartSpec`), `separator`, `image` (media path / artifact
-  id), `canvas` (display list in theme colours). Any node may carry a `key`. Colours are only theme
+  id), `canvas` (display list in theme colors). Any node may carry a `key`. Colors are only theme
   roles (tones), never values, except `#hex` on a canvas. An `Event` is an action plus the
   value of every named field (form semantics) and an optional cell edit; a `Reply` is a whole
   `view`, `patch`es, and `values` to force over typed text.
@@ -201,7 +201,7 @@ browser's `Host` through unchanged, always *sets* `X-Forwarded-Host` (and `X-For
 Funnel (public internet) requests get `Tailscale-Funnel-Request: ?1` and no identity.
 
 - **Origin check.** The `/ws` upgrade rejects browser `Origin`s that don't match `Host` (or
-  `X-Forwarded-Host`, honoured only from a loopback proxy), so a random website open in your
+  `X-Forwarded-Host`, honored only from a loopback proxy), so a random website open in your
   browser can't drive the harness (cross-site WebSocket hijacking). Behind `tailscale serve`
   `Host` already equals the tailnet name, so the check holds unchanged.
 - **Identity.** `Tailscale-User-*` headers are trusted only when the TCP peer is loopback;
@@ -244,7 +244,7 @@ Funnel (public internet) requests get `Tailscale-Funnel-Request: ?1` and no iden
 only the header and the settings screen: on a desktop the left column (where the chat list
 was, `sidebar_width` wide, at least `form::NAV_W`) becomes the settings' navigation, "← Back to
 chat", a search field and the categories (`settings::Tab`); the selected category's page
-scrolls beside it in a column at most `form::MAX_W` (880) wide, centred. The header keeps the
+scrolls beside it in a column at most `form::MAX_W` (880) wide, centered. The header keeps the
 wordmark, "Settings", the ⋯ menu and the reply's running/approval state; the chat, its list,
 composer and panes aren't drawn and nothing of them changes, so Back (or Esc with no field
 focused and no menu open, or Ctrl+,) finds the chat as it was, scroll position and panes
@@ -257,10 +257,10 @@ global layer, drawn field by field by `workspace.rs`'s `LayerEditor::control`: c
 instructions; permissions and limits: approvals, tool calls per turn, subagents; context and
 requests: compaction, images to the model, tool calling; and the workspace in view's settings),
 **Plugins** (`plugins.rs`), and per device **Appearance** (theme: mode, light/dark themes,
-gallery; accent and shape: accent, corner radius, chart colours; messages: layout, your
+gallery; accent and shape: accent, corner radius, chart colors; messages: layout, your
 messages, replies; theme files; reset), **Text & layout** (size: zoom, text, code; fonts;
 layout: density, conversation width, chat list width, artifact pane; accessibility: high
-contrast, reduce motion; reset) and **Colours** (every colour role, in two columns).
+contrast, reduce motion; reset) and **Colors** (every color role, in two columns).
 
 **Registry.** `settings/registry.rs` declares every setting once: a `Key`, an id, its
 `Section` (tab, title, blurb), name, one-line description, search keywords and `Kind` (`Row`:
@@ -275,7 +275,7 @@ sections (`form::section`).
 
 **Search.** Words match (all of them, ASCII case ignored) a setting's name, description,
 keywords, section and category, names ranking first; plus the items of lists: saved models
-(name, model, URL), plugins, themes and colour roles. Results replace the page, grouped by
+(name, model, URL), plugins, themes and color roles. Results replace the page, grouped by
 category (its heading opens it), matches highlighted; settings are drawn with their working
 control, lists as rows that open them. Enter goes to the first result, a result's name to its
 place in its page (scrolled to and lit for a moment, `jump_to`), ↓ to the results, Esc clears;
@@ -287,7 +287,7 @@ settings are open.
 `jump_to(key)` open a page: `open_connection()` (⋯ → Models…, the model chip's Manage models…, a
 failed reply's card) → Models; `PluginsUi::open` (⋯ → Plugins…, the header chip, a card's
 Files) → Plugins; `--settings-section NAME` (a tab id: `models`, `defaults`, `plugins`,
-`appearance`, `text`, `colours`; also `chats`, `knobs`, `advanced`, `model:<id>`; or a setting's
+`appearance`, `text`, `colors`; also `chats`, `knobs`, `advanced`, `model:<id>`; or a setting's
 id such as `accent`, `approvals`, `reduce-motion`); `--settings-search TEXT`; `--open-panel
 models|plugins|plugin:<id>|add-models:<url>|edit-model:<id>`. Spacing comes from `form.rs`
 (page padding, rows, one control height, section gaps, all through `Tokens::pad`); the
@@ -297,10 +297,10 @@ workspace and chat settings keep `form::grid` and the same `LayerEditor` fields.
 
 Appearance is per device (`theme::Prefs`, eframe storage: a file natively, `localStorage` in
 the browser) and lives entirely in `byob-ui-egui`. A theme is a `presets::Palette` (the
-schemes' own colours in a dozen slots) plus a theme file's changes (`file::ThemeDef`);
-`Tokens::build` derives every colour role from it, nudges text-like roles to readable
+schemes' own colors in a dozen slots) plus a theme file's changes (`file::ThemeDef`);
+`Tokens::build` derives every color role from it, nudges text-like roles to readable
 contrast, then applies the user's accent, knobs, high contrast and per-theme overrides.
-Widgets read only `Tokens` (colours, `round()`/`pad()`/`text_size()` for the radius, density
+Widgets read only `Tokens` (colors, `round()`/`pad()`/`text_size()` for the radius, density
 and size knobs). Theme files are small JSON (`base` preset + changed roles + knobs);
 desktop lists `<config>/themes/*.json`, the browser keeps imported ones in its prefs. HTML
 artifacts get the theme as `--byob-*` CSS variables (`THEME_VARS`, additive only).
@@ -350,7 +350,7 @@ the same API third parties (and, in P3, bundled plugins) use.
   `ArtifactType` has the content type, file-name suffixes (longest match wins; nothing matches
   → `text/plain`), a label ("app", "document"), its 13.0 `kind`, whether it is text, how
   `create_artifact` describes it, its clause in the prompt's "pick the format" list, extra prompt
-  guidance, and `ArtifactHooks`: `check` (validate/normalise content before saving, note for the
+  guidance, and `ArtifactHooks`: `check` (validate/normalize content before saving, note for the
   model), `serve` (the body served for viewing; the CSP stays the server's, the same for every
   type) and `shrink_for_client` (a version too big for one message). The registry is shared
   (`EngineConfig::artifact_types`, cloned into the artifact tools by
@@ -483,7 +483,7 @@ registered by the app as native backend `sheets` (default feature `native-sheets
 linked into `ui-egui` or the wasm build; without it the plugin reports its backend missing).
 It runs in byob's process on a thread of its own, needs no Python or network, and starts in
 well under a millisecond. Its tests (`crates/sheets/tests/`) drive it in-process through a
-fake byob with an artifact store: behaviour tests (`functional.rs`) and whole-reply snapshots
+fake byob with an artifact store: behavior tests (`functional.rs`) and whole-reply snapshots
 of every tool, a 38-formula battery, the grid and CSV/TSV handling (`snapshots.rs`,
 `tests/snapshots/`; `BYOB_BLESS=1` rewrites them). The plugin declares `"provides":
 "spreadsheets"`, so a third-party spreadsheets plugin can replace it (see Plugins).
@@ -636,7 +636,7 @@ above window − reply reserve; hidden `--compact-at TOKENS` for testing) it fir
 `utility` role's, if set; see [Model profiles](#model-profiles)),
 off-stream, for a dense summary (goals, decisions, facts, files/artifact ids, key tool results,
 open tasks) of the conversation written out as text. Before the first request the newest
-`keep_turns` turns stay verbatim; inside a tool loop everything is summarised and the request is
+`keep_turns` turns stay verbatim; inside a tool loop everything is summarized and the request is
 repeated after it. The request continues as system prompt + summary pair + verbatim tail.
 Compactions are stored (SQLite `compactions` table / folder `compaction_added` events:
 summary, last message covered) and the next
@@ -691,8 +691,8 @@ plain `TextEdit` over the raw text, which is what is sent, with a `layouter` tha
 `pulldown-cmark` with source offsets (the transcript's CommonMark, so `snake_case` isn't
 italic; `2*3*4` is kept out of emphasis too) flags every byte: bold, italic, strikethrough,
 headings (a little larger), list and task markers (accent), inline code (monospace on the
-inline-code background), fenced code (monospace, the transcript's syntax colours, a
-background painted behind its whole lines), links and bare URLs (link colour), quotes
+inline-code background), fenced code (monospace, the transcript's syntax colors, a
+background painted behind its whole lines), links and bare URLs (link color), quotes
 (dimmed). Bytes no text event covers are the syntax (`**`, `#`, backticks, `>`, link
 targets): they stay visible, faint. The job's sections cover the text exactly, so the cursor,
 selection, copy/paste and IME are those of a plain field. The job is cached per field by the
@@ -795,7 +795,7 @@ list_files · 4.1 s]`), is the tool result, so the parent's context grows only b
   endpoint leases from that endpoint's slots. Automatic, no setting.
 - **Shared world.** Children run in the chat's workspace with its permission policy, grants
   and sandbox. Their steps go through the same gate; approval cards sit in the child's
-  transcript (labelled "Subagent explorer asks") and are answered with the usual `Approve`
+  transcript (labeled "Subagent explorer asks") and are answered with the usual `Approve`
   from any client. Their file changes join the parent reply's undo journal. Stop sets the
   parent's flag; children check it between steps and a watchdog copies it (and the time
   limit) into the child's own flag for the model stream.
@@ -1296,7 +1296,7 @@ usage meter, the header (`EngineState.chat_endpoint`), the environment of `run_c
   `--inference-url` / `--model` stand in for the global endpoint.
 - **Model profiles.** A level may pick a saved model (`Layer::profile`, below); its
   endpoint, key and (when set) tool mode stand in for the level's own.
-- **Environment.** Auto is today's behaviour (asked once per folder). Host never uses a
+- **Environment.** Auto is today's behavior (asked once per folder). Host never uses a
   container; Nix loads the folder's dev shell without asking; Container runs every command
   in the workspace's container, no question (the choice is also recorded as the folder's
   answer). A chat can move its commands to this machine or into the container; the Nix
@@ -1587,4 +1587,4 @@ metadata and the UI's per-device pane prefs name only chat and artifact ids.
 egui/eframe 0.37 (wgpu; WebGPU with WebGL2 fallback on the web). gpui, iced, Slint,
 Freya, Xilem and Floem were prototyped on 2026-11-09 (prototypes kept outside this repo). gpui
 scored best for chat UX but is Zed-internal with only a third-party crates.io republish;
-the others lacked selectable text, accessibility, virtualization, or a clean licence.
+the others lacked selectable text, accessibility, virtualization, or a clean license.

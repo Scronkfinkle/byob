@@ -32,7 +32,7 @@ pub enum Problem {
 }
 
 impl Problem {
-    /// Recognise a connection problem in an error message from the engine (the text of
+    /// Recognize a connection problem in an error message from the engine (the text of
     /// `byob_llm::LlmError`, which entries and test results carry). `None` for anything
     /// else (tool loops, cancelled turns, …).
     pub fn classify(error: &str) -> Option<Self> {

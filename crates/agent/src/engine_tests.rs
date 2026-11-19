@@ -186,7 +186,7 @@ fn unreachable_endpoint_finishes_with_error() {
     let mut c = engine.connect(Arc::new(|| {}));
     hello(&mut c);
     c.send(ClientMsg::SendMessage { text: "hi".into(), attachments: vec![] });
-    // Clients recognise it (to say "can't reach the model server" and offer settings).
+    // Clients recognize it (to say "can't reach the model server" and offer settings).
     let error = finish(&mut c).0.unwrap();
     assert_eq!(byob_protocol::Problem::classify(&error), Some(byob_protocol::Problem::Unreachable), "{error}");
 }

@@ -347,7 +347,7 @@ impl Env {
         ToolSpec {
             name: TOOL.into(),
             description: "Hand a self-contained task to a subagent that works with its own fresh context and the same tools, and get back \
-its report. Use it for research or busywork that would fill your context (reading many files, searching, summarising), and to do \
+its report. Use it for research or busywork that would fill your context (reading many files, searching, summarizing), and to do \
 independent things at once: several delegate calls in one reply run in parallel. The subagent sees only `task`, not this \
 conversation, so say everything it needs (paths, names, what to report back)."
                 .into(),

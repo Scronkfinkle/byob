@@ -162,7 +162,7 @@ pub fn content_start(messages: &[ChatMessage]) -> usize {
 
 /// Where the verbatim tail starts when compacting before a request: the newest `keep` turns
 /// before `end` (the new user message) that fit in `room` tokens together. `None` if that
-/// leaves nothing worth summarising (only an earlier summary, or nothing at all).
+/// leaves nothing worth summarizing (only an earlier summary, or nothing at all).
 pub fn split_point(messages: &[ChatMessage], end: usize, keep: usize, room: usize) -> Option<usize> {
     let start = content_start(messages);
     let end = end.min(messages.len());
@@ -188,7 +188,7 @@ pub fn split_point(messages: &[ChatMessage], end: usize, keep: usize, room: usiz
     (split > first_new).then_some(split)
 }
 
-/// Compacting in the middle of a tool loop: everything is summarised and the turn goes on
+/// Compacting in the middle of a tool loop: everything is summarized and the turn goes on
 /// from the summary and a copy of the user's request (with a note).
 pub fn resume_message(messages: &[ChatMessage]) -> Option<ChatMessage> {
     let mut m = messages.iter().rev().find(|m| starts_turn(m))?.clone();
@@ -230,7 +230,7 @@ pub fn summarize_via(
 ) -> Result<Summary, Failure> {
     if let Some(h) = utility {
         match summarize(&h.llm, messages, focus, &h.plan, cancel) {
-            Err(Failure::Error(e)) => log::warn!("the utility model couldn't summarise ({e}); the chat's model tries"),
+            Err(Failure::Error(e)) => log::warn!("the utility model couldn't summarize ({e}); the chat's model tries"),
             done => return done,
         }
     }
@@ -265,7 +265,7 @@ pub fn summarize(llm: &byob_llm::Client, messages: &[ChatMessage], focus: Option
     let out = match result {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => return Err(Failure::Error(e.to_string())),
-        Err(_) => return Err(Failure::Error("internal error while summarising".into())),
+        Err(_) => return Err(Failure::Error("internal error while summarizing".into())),
     };
     if overthought {
         return Err(Failure::Error("the model kept thinking instead of writing the summary".into()));
@@ -464,9 +464,9 @@ struct TurnState {
 }
 
 impl crate::hooks::NativeHook for CompactionHook {
-    /// Before a model request: if it would pass the threshold, summarise the conversation
+    /// Before a model request: if it would pass the threshold, summarize the conversation
     /// and continue from the summary. Before the first request the newest turns stay
-    /// verbatim; later (inside the tool loop) everything is summarised and the request is
+    /// verbatim; later (inside the tool loop) everything is summarized and the request is
     /// repeated after the summary. A failed summary leaves the messages alone (fit_history
     /// still shortens them) and turns compaction off for the rest of the turn.
     fn before_request(&self, ctx: &mut crate::hooks::RequestCtx<'_>) -> crate::hooks::Flow {
@@ -494,7 +494,7 @@ impl crate::hooks::NativeHook for CompactionHook {
             let Some(resume) = resume_message(ctx.messages) else { return Flow::Continue };
             (ctx.messages.get(start..).unwrap_or_default().to_vec(), vec![resume], ctx.prior)
         };
-        // Not worth a model call if little but an earlier summary would be summarised (the
+        // Not worth a model call if little but an earlier summary would be summarized (the
         // threshold may sit just above the system prompt and tool definitions).
         if fresh_tokens(&covered) < auto.at / 4 {
             return Flow::Continue;
@@ -510,7 +510,7 @@ impl crate::hooks::NativeHook for CompactionHook {
             Err(Failure::Error(e)) => {
                 log::warn!("compaction failed: {e}");
                 st.failed = true;
-                let text = format!("Couldn't summarise the conversation to free context ({e}); older messages were shortened instead.");
+                let text = format!("Couldn't summarize the conversation to free context ({e}); older messages were shortened instead.");
                 (ctx.emit)(TurnEvent::Notice { id, text });
                 return Flow::Continue;
             }
@@ -579,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_command_is_recognised() {
+    fn compact_command_is_recognized() {
         assert_eq!(command("/compact"), Some(None));
         assert_eq!(command("  /compact   keep the CSV analysis details "), Some(Some("keep the CSV analysis details".into())));
         assert_eq!(command("/compactly"), None);
@@ -626,12 +626,12 @@ mod tests {
         h.push(ChatMessage::user("new"));
         let end = h.len() - 1;
         assert_eq!(split_point(&h, end, 2, 10_000), Some(5), "q2 onwards kept");
-        assert_eq!(split_point(&h, end, 0, 10_000), Some(end), "everything before the new message summarised");
+        assert_eq!(split_point(&h, end, 0, 10_000), Some(end), "everything before the new message summarized");
         // A tiny room keeps no turn.
         assert_eq!(split_point(&h, end, 2, 1), Some(end));
-        // Keeping more turns than there are leaves nothing to summarise.
+        // Keeping more turns than there are leaves nothing to summarize.
         assert_eq!(split_point(&h, end, 9, 10_000), None);
-        // Only an earlier summary before the kept turns: nothing new to summarise.
+        // Only an earlier summary before the kept turns: nothing new to summarize.
         let mut s = vec![ChatMessage::system("sys")];
         s.extend(summary_messages("old"));
         s.extend([ChatMessage::user("q"), ChatMessage::assistant("a"), ChatMessage::user("new")]);

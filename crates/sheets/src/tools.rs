@@ -1252,7 +1252,7 @@ pub fn format_cells(store: &mut Store, cx: &Ctx<'_>, args: &Value) -> R<Value> {
             } else {
                 match hex_color(t.trim()) {
                     Some(c) => Some(c),
-                    None => return msg(format!("`fill` should be a colour like \"#ffe599\"; got {}.", repr(f))),
+                    None => return msg(format!("`fill` should be a color like \"#ffe599\"; got {}.", repr(f))),
                 }
             }
         }

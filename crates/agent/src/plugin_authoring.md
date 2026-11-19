@@ -49,7 +49,7 @@ Rules:
   `float`, `bool`, `list[str]`, `dict`, `Literal["a", "b"]`, `Optional[x]`), defaults and the
   docstring's `Args:` lines become the tool's JSON schema. Parameters without a default are
   required.
-- Return a string, or anything JSON-serialisable (dict, list, number). Print nothing else to
+- Return a string, or anything JSON-serializable (dict, list, number). Print nothing else to
   stdout. Raise an exception to report an error (the model sees the traceback).
 - Standard library only, unless the workspace environment has the package installed. Files
   you write go to the workspace folder (the current directory). The plugin folder is
@@ -280,7 +280,7 @@ byob.on((params, method) => {                           // "byob/message": byob.
 </script>
 ```
 
-Style it with byob's colours: `var(--byob-bg)`, `--byob-fg`, `--byob-surface`, `--byob-muted`,
+Style it with byob's colors: `var(--byob-bg)`, `--byob-fg`, `--byob-surface`, `--byob-muted`,
 `--byob-accent`, `--byob-on-accent`, `--byob-border`, `--byob-radius` (they follow the
 theme). In `backend.py`:
 

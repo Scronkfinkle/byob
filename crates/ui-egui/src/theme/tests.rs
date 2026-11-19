@@ -2,10 +2,10 @@ use super::file::{self, Origin};
 use super::presets::{self, PRESETS};
 use super::*;
 
-/// Presets whose own body-text colour doesn't reach 7:1 (WCAG AAA) on every surface — the
+/// Presets whose own body-text color doesn't reach 7:1 (WCAG AAA) on every surface — the
 /// raised ones (replies, your accent-tinted messages, code) are where they fall short — and
 /// the floor they do reach, with every accent. All are at least AA (4.5:1). The scheme's
-/// colours are kept as designed; High contrast lifts every one of them to 7:1 (tested).
+/// colors are kept as designed; High contrast lifts every one of them to 7:1 (tested).
 /// Solarized's text sits right at 4.5:1 by design and is lifted to it where needed.
 const BODY_TEXT_EXCEPTIONS: &[(&str, f32)] = &[
     ("catppuccin-latte", 6.2),
@@ -144,7 +144,7 @@ fn hostile_knobs_are_clamped() {
         assert!(k.max_width == 0.0 || (480.0..=2000.0).contains(&k.max_width), "{bad}");
     }
     let p = Prefs {
-        accent: Accent::Custom("not a colour".into()),
+        accent: Accent::Custom("not a color".into()),
         dark_theme: String::new(),
         overrides: [("nord".to_owned(), [("text".to_owned(), "#zzz".to_owned()), ("nope".to_owned(), "#fff".to_owned())].into())].into(),
         imported: vec!["x".repeat(Prefs::MAX_THEME_BYTES + 1)],
@@ -181,7 +181,7 @@ fn version_0_prefs_migrate_without_losing_anything() {
     assert_eq!((p.version, p.theme, &p.accent), (Prefs::VERSION, ThemeKind::Light, &Accent::Teal));
     assert_eq!((p.knobs.font_scale, p.knobs.high_contrast), (1.3, true));
     assert_eq!((p.dark_theme.as_str(), p.light_theme.as_str()), ("byob-dark", "byob-light"));
-    // Same colours as before: byob's light theme, the old teal accent.
+    // Same colors as before: byob's light theme, the old teal accent.
     assert!(!Tokens::for_prefs(&p, None, &[]).dark);
     let plain = Tokens::for_prefs(&Prefs { knobs: Knobs { high_contrast: false, ..p.knobs }, ..p.clone() }, None, &[]);
     assert_eq!((plain.app_bg, plain.accent), (rgb(0xf6f6f4), rgb(0x0d6b63)));
@@ -228,7 +228,7 @@ fn every_role_reads_and_writes() {
 }
 
 #[test]
-fn colours_parse_strictly() {
+fn colors_parse_strictly() {
     assert_eq!(parse_color("#1e1e2e"), Some(rgb(0x1e1e2e)));
     assert_eq!(parse_color(" CBA6F7 "), Some(rgb(0xcba6f7)));
     assert_eq!(parse_color("#fff"), Some(Color32::WHITE));
@@ -285,7 +285,7 @@ fn malformed_theme_files_warn_and_fall_back() {
     assert_eq!(f.def.colors, vec![("app_bg".to_owned(), rgb(0x010203))]);
     // `colors.accent` sets the theme's accent (it drives hover, selection, your bubbles).
     assert_eq!(f.def.accent, Some(rgb(0xff8800)));
-    // Valid knobs survive their bad neighbours (and are clamped).
+    // Valid knobs survive their bad neighbors (and are clamped).
     let mut k = Knobs::default();
     file::apply_knobs(f.def.knobs.as_ref().unwrap(), &mut k, &mut Vec::new());
     assert_eq!((k.density, k.font_scale, k.radius), (Density::Compact, 2.0, 6.0));
@@ -363,7 +363,7 @@ fn zoom_is_kept_in_range_and_old_prefs_get_100_percent() {
     assert_eq!(Prefs::zoom_step(3.0, 1), 3.0);
 }
 
-/// Emoji need a font in every family even without a system colour emoji font (the browser,
+/// Emoji need a font in every family even without a system color emoji font (the browser,
 /// bare systems): egui 0.37 moved its emoji fonts behind `monochrome_emoji_fonts`, and without
 /// it they drew as boxes.
 #[test]
@@ -407,7 +407,7 @@ fn composer_controls_are_concentric_with_the_frame() {
 }
 
 /// The chat is drawn on app_bg: every preset's bubbles and the composer's field read as
-/// apart from it (light schemes whose background and fields were nearly one colour lost
+/// apart from it (light schemes whose background and fields were nearly one color lost
 /// their reply bubbles).
 #[test]
 fn bubbles_stand_apart_from_the_chat_background() {

@@ -49,6 +49,9 @@ Conventions are adapted from filmcraft. When this file and other docs disagree, 
 - Keep fixes narrow; add a test that fails without the fix. Report only what actually ran.
 - Dependencies must be permissively licensed (MIT, Apache-2.0, BSD, ISC, Zlib, OFL, CC0).
 - `plan/` is a gitignored scratch notebook.
+- American spelling everywhere, user-visible or not: color, behavior, center, summarize,
+  labeled, gray. Where models or old files may send a British key (`colour.*`), accept it
+  as an alias rather than spelling the canonical name that way.
 
 ## 3. Exemption: the artifact host (`host/artifact-host` only)
 The desktop renders HTML app artifacts with Servo in a **separate helper process**,

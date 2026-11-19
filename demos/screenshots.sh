@@ -55,7 +55,7 @@ shot() {
     local t0=$SECONDS
     scripts/headless.sh "${DEMO_ARGS[@]}" "${extra[@]}" --screenshot "$out/$name.png" >"$logs/$name.log" 2>&1 \
       || echo "   $name: byob exited with an error (log: $logs/$name.log)" >&2
-    # 256 colours keep the committed PNGs ~4x smaller (text stays sharp).
+    # 256 colors keep the committed PNGs ~4x smaller (text stays sharp).
     if command -v magick >/dev/null && [[ -f "$out/$name.png" ]]; then
       magick "$out/$name.png" -colors 256 "PNG8:$out/$name.png" || true
     fi

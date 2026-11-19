@@ -830,7 +830,7 @@ impl Artifacts {
                     let maximized = self.pane.maximized(false);
                     let max_keys = ui.ctx().format_shortcut(&MAXIMIZE_SHORTCUT);
                     if maximized {
-                        // Obvious way back: a labelled button where the collapse arrow was.
+                        // Obvious way back: a labeled button where the collapse arrow was.
                         if ui.button(RichText::new("Restore").color(t.text_strong)).on_hover_text(format!("Back to the chat (Esc or {max_keys})")).clicked() {
                             self.actions.push(Action::Maximize(false));
                         }
@@ -983,7 +983,7 @@ fn status_color(t: &Tokens, status: AppStatus) -> Option<egui::Color32> {
     }
 }
 
-/// A small live (green) / paused (grey) / stopped (red) dot.
+/// A small live (green) / paused (gray) / stopped (red) dot.
 fn status_dot(ui: &mut egui::Ui, t: &Tokens, status: AppStatus) {
     let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), egui::Sense::hover());
     if let Some(c) = status_color(t, status) {

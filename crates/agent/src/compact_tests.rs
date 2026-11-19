@@ -413,7 +413,7 @@ fn failed_summary_falls_back_to_fit_history_and_the_turn_answers() {
     }
     assert_eq!(summaries(&seen).len(), 1);
     assert!(v.compactions.is_empty());
-    assert!(v.notices.iter().any(|(l, t)| *l == NoticeLevel::Info && t.contains("Couldn't summarise") && t.contains("out of memory")), "{:?}", v.notices);
+    assert!(v.notices.iter().any(|(l, t)| *l == NoticeLevel::Info && t.contains("Couldn't summarize") && t.contains("out of memory")), "{:?}", v.notices);
     // The request went out with the full history (it fits the 32k default window).
     let last = texts(normal(&seen).last().unwrap());
     assert!(last[1].starts_with("question 1") && last.len() == 10);

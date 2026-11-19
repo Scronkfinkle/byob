@@ -159,7 +159,7 @@ fn extra_json(text: &str) -> Result<serde_json::Map<String, serde_json::Value>, 
     }
 }
 
-/// The colour of a profile's status dot, and what it means.
+/// The color of a profile's status dot, and what it means.
 fn status(t: &Tokens, v: &ProfileView, test: Option<&Tested>) -> (egui::Color32, String) {
     match test {
         Some(Tested::Running) => return (t.warning, "Testing…".into()),

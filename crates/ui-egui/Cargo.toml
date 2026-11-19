@@ -11,7 +11,7 @@ homepage.workspace = true
 [dependencies]
 byob-protocol.workspace = true
 egui.workspace = true
-# Only for its `color_fonts` feature (colour emoji); egui re-exports the API.
+# Only for its `color_fonts` feature (color emoji); egui re-exports the API.
 epaint.workspace = true
 # Backdrop shaders (`cockpit`): wgpu paint callbacks, and naga to check a shader first.
 egui-wgpu.workspace = true

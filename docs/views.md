@@ -146,8 +146,8 @@ under it. Unknown fields are ignored.
 | `grid` | `name: str`, `rows: int`, `cols: int`, `blocks: [{"row", "col", "cells": [[cell, ...]]}]`, `frozen_rows?`, `frozen_cols?`, `widths?`, `default_width?`, `editable?`, `headers?`, `height?`, `selection?` — a spreadsheet (see below) |
 
 `tone` is one of `"normal"`, `"dim"`, `"accent"`, `"success"`, `"warning"`, `"danger"`.
-These are colour *roles*: the theme picks the actual colours. There is no way to give a
-colour directly, except on a canvas.
+These are color *roles*: the theme picks the actual colors. There is no way to give a
+color directly, except on a canvas.
 
 ### Tables
 
@@ -180,11 +180,11 @@ that size costs what a small one does.
 
 - `blocks`: rectangles of known cells, `cells` row by row from (`row`, `col`), 0-based. At
   most 16 blocks and 50,000 cells in all. Cells in no block aren't loaded (drawn blank).
-- A cell is null, a string, a number (right-aligned), a bool (`TRUE`/`FALSE`, centred), or
+- A cell is null, a string, a number (right-aligned), a bool (`TRUE`/`FALSE`, centered), or
   `{"v": shown text, "i"?: input (what the formula bar shows and editing starts with, e.g.
-  "=SUM(B2:B9)"), "t"?: "s" | "n" | "b" | "e" (an error, drawn in the danger colour), "b"?:
-  bold, "it"?: italic, "fill"?: colour, "color"?: colour, "align"?: "left" | "center" |
-  "right"}`. Colours as on a canvas. Text is cut to 4,096 characters.
+  "=SUM(B2:B9)"), "t"?: "s" | "n" | "b" | "e" (an error, drawn in the danger color), "b"?:
+  bold, "it"?: italic, "fill"?: color, "color"?: color, "align"?: "left" | "center" |
+  "right"}`. Colors as on a canvas. Text is cut to 4,096 characters.
 - `frozen_rows` / `frozen_cols`: rows from the top and columns from the left that stay while
   the rest scrolls. `headers` (default true): column letters and row numbers.
 - `widths`: column index → points (`{"0": 140}`); other columns are `default_width` (90).
@@ -226,7 +226,7 @@ Each shape has a `"type"`:
 | `line` | `points: [[x, y], ...]`, `stroke?`, `width?` (1) |
 | `text` | `x, y, text`, `color?`, `size?` (14) — `x, y` is the top left |
 
-Colours are theme role names (`"accent"`, `"text"`, `"text_dim"`, `"border"`, `"success"`,
+Colors are theme role names (`"accent"`, `"text"`, `"text_dim"`, `"border"`, `"success"`,
 `"danger"`, `"field_bg"`, …), `"chart1"` … `"chart8"`, or `"#rrggbb"`. A click on a canvas with
 an `action` sends it with the point in `values._x` / `values._y` (canvas units).
 

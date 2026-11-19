@@ -1196,7 +1196,7 @@ impl Tool for SaveSkill {
         format!("Saved the “{}” skill", byob_plugins::skills::skill_name(str_arg(args, "name")))
     }
 
-    /// Saving for later chats changes later behaviour: it asks (by the approvals); a skill
+    /// Saving for later chats changes later behavior: it asks (by the approvals); a skill
     /// for this chat only doesn't.
     fn access(&self, args: &Value) -> Access {
         if skill_scope(args) == "chat" { Access::Read } else { Access::Write }

@@ -252,7 +252,7 @@ impl Uploads {
         let tall = self.pending.iter().any(|p| p.thumb.is_some()) || self.ready.iter().any(|r| self.thumbs.contains_key(&r.path));
         let min_h = if tall { t.text_size(44.0) } else { 0.0 };
         let thumbs = &mut self.thumbs;
-        // Top-aligned rows (horizontal_wrapped centres each chip on a row that grows as taller
+        // Top-aligned rows (horizontal_wrapped centers each chip on a row that grows as taller
         // ones arrive, so they stepped down).
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true), |ui| {
             for (i, r) in self.ready.iter().enumerate() {

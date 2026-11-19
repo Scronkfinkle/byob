@@ -484,7 +484,7 @@ mod tests {
         assert_eq!(r.show, [("reply.tokens".to_owned(), Show::Hidden), ("view:todo/count".to_owned(), Show::Hover)]);
         assert!(r.problems.is_empty());
         let problem = |args: Value| Request::parse(&args, &views()).problems.join("\n");
-        assert!(problem(json!({"show": {"reply.colour": "hidden"}})).contains("there's no \"reply.colour\""));
+        assert!(problem(json!({"show": {"reply.color": "hidden"}})).contains("there's no \"reply.color\""));
         assert!(problem(json!({"show": {"reply.time": "sometimes"}})).contains("mode"));
         assert!(problem(json!({"show": {"view:gone/x": "hidden"}})).contains("view:gone/x"));
         assert!(problem(json!({"order": {"footer": []}})).contains("no region"));

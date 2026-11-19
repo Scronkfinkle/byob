@@ -61,6 +61,6 @@
     }
   ],
   "starters": [
-    { "title": "Search the web", "prompt": "Search the web for the latest llama.cpp release and summarise what changed." }
+    { "title": "Search the web", "prompt": "Search the web for the latest llama.cpp release and summarize what changed." }
   ]
 }

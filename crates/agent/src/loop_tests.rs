@@ -1286,7 +1286,7 @@ impl Tool for Eyes {
 
 /// An engine with the `eyes` tool; `vision`: the URL of a `vision` model role.
 fn eyes_harness(script: Vec<Reply>, vision: Option<String>) -> Harness {
-    let script = if script.is_empty() { vec![call("eyes", r#"{"question":"what colour?"}"#), Reply::Text("It is red.")] } else { script };
+    let script = if script.is_empty() { vec![call("eyes", r#"{"question":"what color?"}"#), Reply::Text("It is red.")] } else { script };
     let (url, requests) = fake_llm(script, "final answer");
     let mut tools = Registry::default();
     tools.register(Arc::new(Eyes));
@@ -1306,7 +1306,7 @@ fn eyes_harness(script: Vec<Reply>, vision: Option<String>) -> Harness {
 fn shown_images_follow_the_results_for_a_model_that_sees() {
     let h = eyes_harness(Vec::new(), None);
     let (mut c, _) = client(&h);
-    let view = run_turn(&mut c, "what colour is a.png?", |_, _| panic!("reads must not ask"));
+    let view = run_turn(&mut c, "what color is a.png?", |_, _| panic!("reads must not ask"));
     assert_eq!(view.error, Some(None));
     assert_eq!(view.reply().content, "It is red.");
     let reqs = h.requests.lock().unwrap();
@@ -1326,16 +1326,16 @@ fn a_vision_role_answers_for_the_model() {
     let (vision_url, vision_reqs) = fake_llm(vec![Reply::Text("unused")], "a red square");
     let h = eyes_harness(Vec::new(), Some(vision_url));
     let (mut c, _) = client(&h);
-    let view = run_turn(&mut c, "what colour is a.png?", |_, _| panic!("reads must not ask"));
+    let view = run_turn(&mut c, "what color is a.png?", |_, _| panic!("reads must not ask"));
     assert_eq!(view.error, Some(None));
     let reqs = h.requests.lock().unwrap();
     let results = tool_results(&reqs[1]);
-    assert_eq!(results[0], "Image a.png.\nThe vision model looked at it for \"what colour?\":\na red square");
+    assert_eq!(results[0], "Image a.png.\nThe vision model looked at it for \"what color?\":\na red square");
     // The main model got no image; the vision model got the question and the image.
     assert!(messages(&reqs[1]).iter().all(|m| m["content"].is_string() || m["content"].is_null()));
     let asked = vision_reqs.lock().unwrap();
     let parts = &asked[0]["messages"][0]["content"];
-    assert_eq!((parts[0]["text"].as_str(), parts[1]["image_url"]["url"].as_str()), (Some("what colour?"), Some("data:image/png;base64,AAAA")));
+    assert_eq!((parts[0]["text"].as_str(), parts[1]["image_url"]["url"].as_str()), (Some("what color?"), Some("data:image/png;base64,AAAA")));
 }
 
 /// The layout: a client gets it after the Welcome; the model's `ui_layout` reads it,
@@ -1351,7 +1351,7 @@ fn the_model_changes_the_layout_and_every_window_follows() {
     let script = vec![
         call("ui_layout", "{}"),
         call("ui_layout", r#"{"show": {"reply.tokens": "hidden", "reply.speed": "hover"}, "order": {"reply": ["reply.time"]}}"#),
-        call("ui_layout", r#"{"show": {"reply.colour": "hidden"}}"#),
+        call("ui_layout", r#"{"show": {"reply.color": "hidden"}}"#),
         Reply::Text("done"),
     ];
     let (url, requests) = fake_llm(script, "final answer");
@@ -1383,7 +1383,7 @@ fn the_model_changes_the_layout_and_every_window_follows() {
     let results = tool_results(requests.lock().unwrap().last().unwrap());
     assert!(results[0].contains("- reply.tokens: shown") && results[0].contains("Region toolbar"), "{}", results[0]);
     assert!(results[1].starts_with("Changed") && results[1].contains("- reply.tokens: shown → hidden"), "{}", results[1]);
-    assert!(results[2].contains("there's no \"reply.colour\""), "{}", results[2]);
+    assert!(results[2].contains("there's no \"reply.color\""), "{}", results[2]);
     let titles: Vec<&str> = view.reply().steps.iter().map(|s| s.title.as_str()).collect();
     assert_eq!(titles[..2], ["Read the layout", "Layout: Hover for Speed, hid Tokens, reordered the reply"]);
 

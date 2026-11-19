@@ -112,7 +112,7 @@ gives way to Back, a search field (any setting by name, what it does, or a word 
 it; Ctrl/Cmd+F) and the categories: Models (saved models and their roles), Chats (what every
 chat starts with: instructions, approvals, limits, context), Plugins and, on this device only,
 Appearance (light or dark, themes, accent, messages, theme files), Text & layout (zoom, sizes,
-fonts, density, accessibility) and Colours. Back or Esc returns to the chat as you left it.
+fonts, density, accessibility) and Colors. Back or Esc returns to the chat as you left it.
 
 **What's shown** (Settings → Appearance, shared by every window and browser tab): each detail
 of the interface (who wrote a message, the thinking and its length, tool steps, Undo, a reply's
@@ -123,7 +123,7 @@ reordered. Everything / Balanced / Minimal set them all at once. Or ask byob: "h
 counts and show the speed" or "make it cleaner" changes it in every window (the `ui_layout`
 tool of the bundled Appearance plugin). The look itself can be asked for too: "make it warmer,
 rounder, with bigger text" changes the theme, accent, corners, text size, bubbles, padding, line
-spacing or any colour of the window showing the chat (`ui_look`; looks stay per device, like the
+spacing or any color of the window showing the chat (`ui_look`; looks stay per device, like the
 settings). "Undo that" puts back the look or layout from before byob's last change.
 
 **Backdrop and glass** (experimental; Settings → Appearance → Backdrop and glass, or ask
@@ -132,7 +132,7 @@ over it (byob writes it in WGSL for the place or mood you describe, checked befo
 refused with the line and reason when it doesn't compile); **frosted glass** (the scene blurred
 behind the panels, when a backdrop was on as byob started); the **arrangement**: docked as
 usual, or free, with the header, chat list, chat, message box and panes placed anywhere, each in
-a glass, metal or bare frame and labelled as you like (floating and focus to start from; ⋯ → Arrange
+a glass, metal or bare frame and labeled as you like (floating and focus to start from; ⋯ → Arrange
 panels… to drag, resize or hide them; Dock everything to go back); and **controls**: standard,
 HUD, plate or pill buttons. A new backdrop that byob closes on within a few seconds is switched
 off at the next start; `BYOB_NO_BACKDROP=1` starts without any. From a terminal: `--backdrop

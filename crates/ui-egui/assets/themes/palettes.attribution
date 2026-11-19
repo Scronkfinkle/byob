@@ -1,7 +1,7 @@
-asset:        Colour palettes of the built-in theme presets (hex values only, no code or files copied)
+asset:        Color palettes of the built-in theme presets (hex values only, no code or files copied)
 used-in:      crates/ui-egui/src/theme/presets.rs
 added:        2026-11-09 by Claude (agent)
-notes:        Slots a scheme has no colour for are derived from its neighbours and marked
+notes:        Slots a scheme has no color for are derived from its neighbors and marked
               "derived" in presets.rs. Readability fix-ups (accents nudged to 4.5:1) happen at
               runtime in Tokens::derive.
 

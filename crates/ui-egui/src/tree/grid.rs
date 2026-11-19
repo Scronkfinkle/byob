@@ -1041,7 +1041,7 @@ impl Cells<'_> {
                     (Some(CellAlign::Right), _) | (None, CellType::Number) => Align2::RIGHT_CENTER,
                     _ => Align2::LEFT_CENTER,
                 };
-                // On a cell's own fill the theme's text colour may not read (a light fill in a
+                // On a cell's own fill the theme's text color may not read (a light fill in a
                 // dark theme): dark or light text by the fill's lightness.
                 let fill = cell.and_then(|c| c.fill.as_deref()).map(|f| canvas::color(t, Some(f), Color32::TRANSPARENT)).filter(|c| c.a() > 0);
                 let default = match (ty, fill) {

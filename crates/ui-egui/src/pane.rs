@@ -272,7 +272,7 @@ impl Pane {
         }
     }
 
-    /// Close a tab (the artifact stays); the neighbour to the right, else left, comes forward.
+    /// Close a tab (the artifact stays); the neighbor to the right, else left, comes forward.
     pub fn close(&mut self, id: &str) {
         let Some(i) = self.cur.tabs.iter().position(|t| t == id) else { return };
         self.cur.tabs.remove(i);
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!((p.active(), p.shown(false)), (Some("c"), Shown::Open));
         p.add_tab("a");
         assert_eq!((p.tabs().len(), p.active()), (3, Some("a")), "no duplicate tabs");
-        // Closing the front tab brings its right neighbour forward, then the left one.
+        // Closing the front tab brings its right neighbor forward, then the left one.
         p.close("a");
         assert_eq!((p.tabs(), p.active()), (&["c".to_owned(), "b".to_owned()][..], Some("c")));
         p.activate("b");

@@ -49,7 +49,7 @@ pub struct Manifest {
     pub requirements: Vec<String>,
     /// Live views its backend draws at render sites (`views`).
     pub views: Vec<ManifestView>,
-    /// Can't be switched off (`locked`; honoured for bundled plugins and their forks).
+    /// Can't be switched off (`locked`; honored for bundled plugins and their forks).
     pub locked: bool,
     /// On until someone switches it (`"enabled": false` ships it switched off).
     pub on_by_default: bool,

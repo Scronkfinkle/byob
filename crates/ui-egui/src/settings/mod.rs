@@ -5,9 +5,9 @@
 //!
 //! What the pages show comes from the [registry](registry): every setting declared once
 //! (name, description, keywords, tab and section), drawn by [`controls`]. The search matches
-//! the same entries, plus the items of lists (saved models, plugins, themes, colour roles).
+//! the same entries, plus the items of lists (saved models, plugins, themes, color roles).
 //! Models are engine-wide; chat defaults are the global layer of the layered settings;
-//! appearance, text & layout and colours are per device.
+//! appearance, text & layout and colors are per device.
 
 mod controls;
 pub(crate) mod registry;
@@ -40,12 +40,12 @@ pub enum Tab {
     Appearance,
     /// Zoom, text sizes, fonts, density, widths, accessibility.
     Text,
-    /// Every colour role of the current theme.
-    Colours,
+    /// Every color role of the current theme.
+    Colors,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [Tab::Models, Tab::Defaults, Tab::Plugins, Tab::Appearance, Tab::Text, Tab::Colours];
+    pub const ALL: [Tab; 6] = [Tab::Models, Tab::Defaults, Tab::Plugins, Tab::Appearance, Tab::Text, Tab::Colors];
 
     /// The name scripts use (`--settings-section`).
     pub fn id(self) -> &'static str {
@@ -55,7 +55,7 @@ impl Tab {
             Tab::Plugins => "plugins",
             Tab::Appearance => "appearance",
             Tab::Text => "text",
-            Tab::Colours => "colours",
+            Tab::Colors => "colors",
         }
     }
 
@@ -66,7 +66,7 @@ impl Tab {
             Tab::Plugins => "Plugins",
             Tab::Appearance => "Appearance",
             Tab::Text => "Text & layout",
-            Tab::Colours => "Colours",
+            Tab::Colors => "Colors",
         }
     }
 
@@ -78,7 +78,7 @@ impl Tab {
             Tab::Plugins => "Tools, skills and servers",
             Tab::Appearance => "Theme, accent, messages",
             Tab::Text => "Zoom, fonts, density, accessibility",
-            Tab::Colours => "All the theme's colours, one by one",
+            Tab::Colors => "All the theme's colors, one by one",
         }
     }
 
@@ -89,12 +89,12 @@ impl Tab {
             Tab::Plugins => icons::puzzle,
             Tab::Appearance => icons::contrast,
             Tab::Text => icons::text_size,
-            Tab::Colours => icons::colours,
+            Tab::Colors => icons::colors,
         }
     }
 
     /// A tab by its [`Tab::id`], or by the older section names: `knobs` (text & layout),
-    /// `advanced` / `colors` (colours), `connection`, `chats`, `model:<id>` (models).
+    /// `advanced` / `colors` (colors), `connection`, `chats`, `model:<id>` (models).
     pub fn find(name: &str) -> Option<Tab> {
         let name = name.trim();
         if name.starts_with("model:") {
@@ -102,7 +102,7 @@ impl Tab {
         }
         Tab::ALL.into_iter().find(|t| t.id() == name).or(match name {
             "knobs" | "text-and-layout" | "layout" => Some(Tab::Text),
-            "advanced" | "colors" => Some(Tab::Colours),
+            "advanced" | "colours" => Some(Tab::Colors),
             "connection" => Some(Tab::Models),
             "chat-defaults" | "chats" => Some(Tab::Defaults),
             _ => None,
@@ -119,8 +119,8 @@ enum Hit {
     /// A plugin: (id, name, description).
     Plugin(String, String, String),
     Theme(ThemeDef),
-    /// Colour roles: how many match, and the first few names.
-    Colours(usize, String),
+    /// Color roles: how many match, and the first few names.
+    Colors(usize, String),
 }
 
 impl Hit {
@@ -427,9 +427,9 @@ impl ByobApp {
             Tab::Plugins => "What the chat in view can use: plugins of this chat, its workspace and every chat.".into(),
             Tab::Appearance => "How byob looks. Saved on this device only, except what's shown, which every window shares.".into(),
             Tab::Text => "Sizes, fonts and how the window is laid out. Saved on this device only.".into(),
-            Tab::Colours => {
+            Tab::Colors => {
                 let current = file::resolve(self.prefs.theme_id(self.tokens.dark), self.tokens.dark, &self.user_themes);
-                format!("Every colour of {}, changed on this device only. Export the theme under Appearance → Theme files to keep them.", current.name)
+                format!("Every color of {}, changed on this device only. Export the theme under Appearance → Theme files to keep them.", current.name)
             }
         }
     }
@@ -439,7 +439,7 @@ impl ByobApp {
     }
 
     /// The page (or the search's results), scrolling on its own in a column at most
-    /// [`form::MAX_W`] wide, centred in what is left of the window.
+    /// [`form::MAX_W`] wide, centered in what is left of the window.
     fn settings_content(&mut self, ui: &mut egui::Ui, t: &Tokens, pad: f32) {
         let searching = !self.appearance.search.trim().is_empty();
         let tab = self.appearance.tab;
@@ -591,7 +591,7 @@ impl ByobApp {
                             hits.push(Hit::Theme(def));
                         }
                     }
-                    Tab::Colours => {
+                    Tab::Colors => {
                         let roles: Vec<&str> =
                             ROLES.iter().filter(|r| registry::matches_all(&format!("{} {} {}", r.label, r.name, r.group), words)).map(|r| r.label).collect();
                         if !roles.is_empty() {
@@ -599,7 +599,7 @@ impl ByobApp {
                             if roles.len() > 4 {
                                 names.push_str(", …");
                             }
-                            hits.push(Hit::Colours(roles.len(), names));
+                            hits.push(Hit::Colors(roles.len(), names));
                         }
                     }
                     Tab::Defaults | Tab::Text => {}
@@ -627,9 +627,9 @@ impl ByobApp {
                 self.set_prefs(p);
                 self.jump_to(Key::Gallery);
             }
-            Hit::Colours(..) => {
+            Hit::Colors(..) => {
                 self.appearance.filter = self.appearance.search.trim().to_owned();
-                self.jump_to(Key::ColourRoles);
+                self.jump_to(Key::ColorRoles);
             }
         }
     }
@@ -695,7 +695,7 @@ impl ByobApp {
                         let what = format!("{} theme · {}", if def.dark { "Dark" } else { "Light" }, def.credit());
                         (Id::unique(("hit-theme", &def.id)), def.name.clone(), what, "Use")
                     }
-                    Hit::Colours(count, names) => (Id::unique("hit-colours"), format!("{count} colour roles"), format!("{names}."), "Show"),
+                    Hit::Colors(count, names) => (Id::unique("hit-colors"), format!("{count} color roles"), format!("{names}."), "Show"),
                     Hit::Setting(_) => continue,
                 };
                 let out = form::setting_row(ui, t, id, &name, &desc, style, |ui| ui.button(button).clicked());
@@ -939,7 +939,7 @@ mod tests {
                 let mut out = ctx.run_ui(input, |ui| {
                     app.apply_theme(ui.ctx());
                     let t = app.tokens;
-                    for tab in [Tab::Appearance, Tab::Text, Tab::Colours] {
+                    for tab in [Tab::Appearance, Tab::Text, Tab::Colors] {
                         app.appearance.tab = tab;
                         app.settings_content(ui, &t, 16.0);
                     }

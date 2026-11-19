@@ -689,7 +689,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn manifests_the_file_tools_create_are_recognised() {
+    fn manifests_the_file_tools_create_are_recognized() {
         assert_eq!(created_plugin(".byob/plugins/weather/byob-plugin.json"), Some("weather"));
         assert_eq!(created_plugin(".byob/plugins/weather/tools/x.py"), None);
         assert_eq!(created_plugin(".byob/plugins/Bad Id/byob-plugin.json"), None);

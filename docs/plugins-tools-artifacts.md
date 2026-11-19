@@ -24,7 +24,7 @@ A plugin can bring any mix of:
 - **Settings and permissions** (Mail: your account, and "confirm every send").
 - **Kinds of artifact** and how they're displayed (Charts, Markdown, Math).
 - **Interface pieces**: panes, views, header items, `/commands`, suggested prompts ("Benchmark this model").
-- **Behind-the-scenes behaviour**, such as summarising long chats (Compaction).
+- **Behind-the-scenes behavior**, such as summarizing long chats (Compaction).
 
 Some plugins have no tools at all. Math only teaches byob to typeset formulas.
 

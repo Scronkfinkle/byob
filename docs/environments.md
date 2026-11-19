@@ -127,7 +127,7 @@ gated the same way before they run, and the policy can't allow them either.
   than the sandbox's 8 GB `RLIMIT_AS`. They still run in the sandbox, and installed
   environments are readable there (not only their `bin` on `PATH`), so their libraries load.
 - **The question is a card, not a setting you must find first.** Alternatives: load
-  silently (the old behaviour; surprising network use and lock files in the user's repo), or
+  silently (the old behavior; surprising network use and lock files in the user's repo), or
   only `BYOB_WORKSPACE_ENV` (not discoverable). Answers are per workspace *path*: moving a
   folder asks again. Rejected: keying on the project file's contents (a `git pull` would ask
   again).
@@ -158,7 +158,7 @@ exceptions. So byob can run a workspace's `run_command` / `run_python` in a cont
   a container workspace can run its commands on this machine instead (its settings), and
   the other way round.
 - **One long-lived container per workspace**, created on the first command, reused across
-  commands and byob restarts. It's named `byob-<folder>-<hash of the path>` and labelled
+  commands and byob restarts. It's named `byob-<folder>-<hash of the path>` and labeled
   `byob.managed=1`, `byob.workspace=<path>`, `byob.config=<stamp>`; a changed
   devcontainer.json, Dockerfile or image setting recreates it (the model is told installed
   packages are gone). Find byob's containers with

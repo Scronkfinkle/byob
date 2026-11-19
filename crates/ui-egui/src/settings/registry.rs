@@ -3,7 +3,7 @@
 //! this list in order and the search matches against it, so the two can't drift apart.
 //!
 //! How each one is drawn is [`ByobApp::control`](crate::ByobApp) (an exhaustive match on
-//! [`Key`]). Lists that aren't settings (saved models, plugins, themes, colour roles) are one
+//! [`Key`]). Lists that aren't settings (saved models, plugins, themes, color roles) are one
 //! [`Kind::Block`] entry each here; their items are searched separately ([`super::search`]).
 
 use super::Tab;
@@ -25,9 +25,9 @@ keys! {
     ModelList, VisionRole, SubagentRole, UtilityRole,
     Instructions, Approvals, ToolCalls, Subagents, Compaction, ModelImages, ToolCalling, WorkspaceSettings,
     PluginList,
-    Mode, ThemePair, Gallery, Accent, Radius, ChartColours, MessageLayout, UserBubble, ReplyBubble, BubblePadding, LineSpacing, ThinkingSize, ShownPreset, ShownList, Controls, Backdrop, Glass, Frost, PanelGap, Arrangement, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
+    Mode, ThemePair, Gallery, Accent, Radius, ChartColors, MessageLayout, UserBubble, ReplyBubble, BubblePadding, LineSpacing, ThinkingSize, ShownPreset, ShownList, Controls, Backdrop, Glass, Frost, PanelGap, Arrangement, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
     Zoom, TextSize, CodeSize, Font, CodeFont, Density, ColumnWidth, ChatListWidth, ArtifactPane, HighContrast, ReduceMotion, ResetText,
-    ColourRoles,
+    ColorRoles,
 }
 
 /// How a setting is laid out.
@@ -98,14 +98,14 @@ pub static SCENE: Section = sec(
     "A scene drawn behind byob with the panels as glass, the parts placed anywhere, and controls to match. Or ask byob, e.g. \"put a rainy city behind the chat\".",
 );
 pub static THEME_FILES: Section =
-    sec(Tab::Appearance, "theme-files", "Theme files", "Keep the current look (colours and the settings above) as a .json theme file, or add someone else's.");
+    sec(Tab::Appearance, "theme-files", "Theme files", "Keep the current look (colors and the settings above) as a .json theme file, or add someone else's.");
 pub static RESET_LOOK: Section = sec(Tab::Appearance, "reset", "Reset", "");
 pub static SIZE: Section = sec(Tab::Text, "size", "Size", "");
 pub static FONTS: Section = sec(Tab::Text, "fonts", "Fonts", "");
 pub static LAYOUT: Section = sec(Tab::Text, "layout", "Layout", "How the window shares its space.");
 pub static ACCESSIBILITY: Section = sec(Tab::Text, "accessibility", "Accessibility", "");
 pub static RESET_TEXT: Section = sec(Tab::Text, "reset", "Reset", "");
-pub static COLOURS: Section = sec(Tab::Colours, "colours", "", "");
+pub static COLORS: Section = sec(Tab::Colors, "colors", "", "");
 
 /// Every section, in page order.
 pub static SECTIONS: &[&Section] = &[
@@ -128,7 +128,7 @@ pub static SECTIONS: &[&Section] = &[
     &LAYOUT,
     &ACCESSIBILITY,
     &RESET_TEXT,
-    &COLOURS,
+    &COLORS,
 ];
 
 const fn s(key: Key, id: &'static str, section: &'static Section, name: &'static str, desc: &'static str, keywords: &'static str, kind: Kind) -> Setting {
@@ -218,8 +218,8 @@ pub static SETTINGS: &[Setting] = &[
         "compaction",
         &REQUESTS,
         "Compaction",
-        "Summarise older messages when a request passes this much of the context window.",
-        "context window summarise summarize summary tokens auto compact memory",
+        "Summarize older messages when a request passes this much of the context window.",
+        "context window summarize summarise summary tokens auto compact memory",
         Row,
     ),
     s(
@@ -279,15 +279,15 @@ pub static SETTINGS: &[Setting] = &[
         "themes scheme palette preset catppuccin gruvbox nord solarized dracula tokyo rose pine",
         Block,
     ),
-    s(Key::Accent, "accent", &STYLE, "Accent", "The colour of buttons, links and the selection.", "colour color highlight tint brand", Row),
+    s(Key::Accent, "accent", &STYLE, "Accent", "The color of buttons, links and the selection.", "color colour highlight tint brand", Row),
     s(Key::Radius, "radius", &STYLE, "Corner radius", "How round buttons, cards and bubbles are.", "rounded corners shape roundness", Row),
     s(
-        Key::ChartColours,
-        "chart-colours",
+        Key::ChartColors,
+        "chart-colors",
         &STYLE,
-        "Chart colours",
-        "The theme's colours, or a palette people with colour blindness can tell apart.",
-        "colorblind colour blind palette graphs plots accessibility",
+        "Chart colors",
+        "The theme's colors, or a palette people with color blindness can tell apart.",
+        "colorblind color blind colour colourblind palette graphs plots accessibility",
         Row,
     ),
     s(
@@ -354,13 +354,13 @@ pub static SETTINGS: &[Setting] = &[
         "save export share json file",
         Row,
     ),
-    s(Key::ResetLook, "reset-look", &RESET_LOOK, "Reset the look", "Accent, corners, bubbles and chart colours back to the theme's.", "defaults restore", Row),
+    s(Key::ResetLook, "reset-look", &RESET_LOOK, "Reset the look", "Accent, corners, bubbles and chart colors back to the theme's.", "defaults restore", Row),
     s(
         Key::ResetAppearance,
         "reset-appearance",
         &RESET_LOOK,
         "Reset all appearance",
-        "Themes, accent, text, layout and colours back to the defaults. Imported themes stay.",
+        "Themes, accent, text, layout and colors back to the defaults. Imported themes stay.",
         "defaults restore factory everything",
         Row,
     ),
@@ -401,14 +401,14 @@ pub static SETTINGS: &[Setting] = &[
         "defaults restore",
         Row,
     ),
-    // Colours: every role of the current theme, this device only.
+    // Colors: every role of the current theme, this device only.
     s(
-        Key::ColourRoles,
-        "colour-roles",
-        &COLOURS,
-        "Colour roles",
-        "Every colour of the current theme, each with a picker.",
-        "colour color override hex palette custom roles background text border syntax code",
+        Key::ColorRoles,
+        "color-roles",
+        &COLORS,
+        "Color roles",
+        "Every color of the current theme, each with a picker.",
+        "color colour override hex palette custom roles background text border syntax code",
         Block,
     ),
 ];
@@ -510,7 +510,7 @@ mod tests {
             hits.into_iter().map(|h| h.0).collect::<Vec<_>>()
         };
         assert_eq!(find("accent").first(), Some(&"accent"), "by name");
-        assert!(find("colour blindness").contains(&"chart-colours"), "by description");
+        assert!(find("color blindness").contains(&"chart-colors"), "by description");
         assert!(find("dark mode").contains(&"mode"), "by keyword");
         assert!(find("SYSTEM PROMPT").contains(&"instructions"), "case ignored");
         assert!(find("sidebar").contains(&"chat-list-width"));

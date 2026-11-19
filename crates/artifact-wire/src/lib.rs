@@ -302,7 +302,7 @@ pub fn send<M: Message>(w: &mut impl Write, msg: &M) -> io::Result<()> {
 pub const MARKED_ENV: &str = "BYOB_WIRE_MARKED";
 
 /// Set (to `1`) in the helper's environment for an app that may use the internet (HTTPS and
-/// WSS only); helpers with [`Features::NETWORK`] honour it, older ones keep it offline.
+/// WSS only); helpers with [`Features::NETWORK`] honor it, older ones keep it offline.
 pub const NETWORK_ENV: &str = "BYOB_ARTIFACT_NETWORK";
 
 /// Starts every marked frame. Never confused with text (0xFF isn't UTF-8) nor with an

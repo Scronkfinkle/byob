@@ -388,7 +388,7 @@ fn node(ui: &mut egui::Ui, cx: &mut Cx<'_, '_>, n: &Node, id: egui::Id) {
             }
         }
         Kind::Progress { value, label } => {
-            // The label under the bar, not on it: text on a part-filled bar has no colour that
+            // The label under the bar, not on it: text on a part-filled bar has no color that
             // reads on both parts in every theme.
             ui.vertical(|ui| {
                 let bar = egui::ProgressBar::new(value.clamp(0.0, 1.0)).fill(t.accent).desired_width(ui.available_width().min(360.0)).desired_height(8.0);

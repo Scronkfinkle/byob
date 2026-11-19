@@ -131,7 +131,7 @@
     {
       "name": "format_cells",
       "title": "Format cells",
-      "description": "Format a range: number format (\"#,##0.00\", \"0%\", \"$#,##0\", \"yyyy-mm-dd\"), bold, fill colour, alignment, column width.",
+      "description": "Format a range: number format (\"#,##0.00\", \"0%\", \"$#,##0\", \"yyyy-mm-dd\"), bold, fill color, alignment, column width.",
       "run": "backend",
       "params": {
         "type": "object",
@@ -140,7 +140,7 @@
           "range": { "type": "string", "description": "Range like B2:B13, 1:1 or C:C." },
           "number_format": { "type": "string", "description": "Excel number format, e.g. #,##0.00 or 0% or yyyy-mm-dd." },
           "bold": { "type": "boolean" },
-          "fill": { "type": "string", "description": "Background colour like #ffe599, or none." },
+          "fill": { "type": "string", "description": "Background color like #ffe599, or none." },
           "align": { "type": "string", "enum": ["left", "center", "right"] },
           "width": { "type": "number", "description": "Column width in characters (default about 12), for every column in the range." },
           "sheet_name": { "type": "string", "description": "Sheet (tab) name; default the first sheet." }

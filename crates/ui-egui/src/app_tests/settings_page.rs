@@ -31,7 +31,7 @@ const MARKERS: [(Tab, &str); 6] = [
     (Tab::Plugins, "What the chat in view can use"),
     (Tab::Appearance, "How byob looks"),
     (Tab::Text, "Sizes, fonts and how the window"),
-    (Tab::Colours, "Every colour of"),
+    (Tab::Colors, "Every color of"),
 ];
 
 /// [`crowded_app`] with saved models and the global settings the engine would send, so every
@@ -238,7 +238,7 @@ fn search_finds_settings_by_name_description_and_keyword() {
     let mut app = full_app();
     for (query, key, not) in [
         ("accent", Key::Accent, Key::Zoom),
-        ("colour blindness", Key::ChartColours, Key::Accent),
+        ("color blindness", Key::ChartColors, Key::Accent),
         ("dark mode", Key::Mode, Key::Font),
         ("SYSTEM PROMPT", Key::Instructions, Key::Approvals),
         ("sidebar", Key::ChatListWidth, Key::ColumnWidth),
@@ -248,8 +248,8 @@ fn search_finds_settings_by_name_description_and_keyword() {
         assert_eq!(drawn(&app, key).len(), 1, "{query:?} finds {key:?}");
         assert!(drawn(&app, not).is_empty(), "{query:?} doesn't find {not:?}");
     }
-    // Lists' items: a saved model, a plugin, a theme, colour roles.
-    for (query, shown) in [("cloud", "Model cloud"), ("weather", "The weather plugin"), ("nord", "Nord"), ("syntax", "colour roles")] {
+    // Lists' items: a saved model, a plugin, a theme, color roles.
+    for (query, shown) in [("cloud", "Model cloud"), ("weather", "The weather plugin"), ("nord", "Nord"), ("syntax", "color roles")] {
         app.set_settings_search(query);
         settle(&ctx, &mut app, 1200.0);
         let text = drawn_text(&ctx, &mut app, 1200.0);
@@ -297,7 +297,7 @@ fn every_way_into_the_settings_selects_its_page() {
     frame(&ctx, &mut app, 1000.0);
     let mut check = |name: &str, open: &dyn Fn(&mut ByobApp), want: Tab| {
         app.close_settings();
-        app.appearance.tab = if want == Tab::Colours { Tab::Models } else { Tab::Colours };
+        app.appearance.tab = if want == Tab::Colors { Tab::Models } else { Tab::Colors };
         open(&mut app);
         frame(&ctx, &mut app, 1000.0);
         frame(&ctx, &mut app, 1000.0);
@@ -320,9 +320,9 @@ fn every_way_into_the_settings_selects_its_page() {
         ("plugins", Tab::Plugins),
         ("appearance", Tab::Appearance),
         ("text", Tab::Text),
-        ("colours", Tab::Colours),
+        ("colors", Tab::Colors),
         ("knobs", Tab::Text),
-        ("advanced", Tab::Colours),
+        ("advanced", Tab::Colors),
         ("model:local", Tab::Models),
         // One setting, by its id.
         ("accent", Tab::Appearance),
@@ -397,9 +397,9 @@ fn phones_list_the_categories_then_open_one() {
     press_key(&ctx, &mut app, 390.0, egui::Key::Escape);
     assert!(!app.show_settings);
     // A deep link goes straight to its page; search sits on the list.
-    assert!(app.reveal_settings("colours"));
+    assert!(app.reveal_settings("colors"));
     let text = drawn_text(&ctx, &mut app, 390.0);
-    assert!(text.contains("Every colour of"), "{text}");
+    assert!(text.contains("Every color of"), "{text}");
     app.set_settings_search("density");
     settle(&ctx, &mut app, 390.0);
     assert_eq!(drawn(&app, Key::Density).len(), 1);
@@ -407,14 +407,14 @@ fn phones_list_the_categories_then_open_one() {
 }
 
 #[test]
-fn the_content_column_stays_readable_and_centred_in_a_wide_window() {
+fn the_content_column_stays_readable_and_centered_in_a_wide_window() {
     let ctx = egui::Context::default();
     let mut app = crowded_app();
     app.open_settings_at(Tab::Defaults);
     settle(&ctx, &mut app, 2000.0);
     let (body, page) = (app.header_rects.settings_body, app.header_rects.settings_page);
     assert!(body.width() <= form::MAX_W + 0.5, "{body:?}");
-    assert!(((body.left() - page.left()) - (page.right() - body.right())).abs() < 24.0, "centred: {body:?} in {page:?}");
+    assert!(((body.left() - page.left()) - (page.right() - body.right())).abs() < 24.0, "centered: {body:?} in {page:?}");
     // In a laptop window it takes what there is, less the padding.
     settle(&ctx, &mut app, 1100.0);
     let (body, page) = (app.header_rects.settings_body, app.header_rects.settings_page);

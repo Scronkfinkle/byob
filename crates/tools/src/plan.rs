@@ -333,8 +333,8 @@ impl Tool for AskUser {
         };
         match ctx.ask_user(&q) {
             UserReply::Answered(a) => ToolOutput::ok(format!("The user answered: {a}")),
-            UserReply::Skipped => ToolOutput::ok("The user skipped the question. Go on with your best judgement and say what you assumed."),
-            UserReply::NoOne => ToolOutput::ok("Nobody could answer now. Go on with your best judgement and say what you assumed."),
+            UserReply::Skipped => ToolOutput::ok("The user skipped the question. Go on with your best judgment and say what you assumed."),
+            UserReply::NoOne => ToolOutput::ok("Nobody could answer now. Go on with your best judgment and say what you assumed."),
         }
     }
 }

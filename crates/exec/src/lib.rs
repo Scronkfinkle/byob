@@ -568,7 +568,7 @@ impl Tool for RunPython {
             name: "run_python".into(),
             description:
                 "Run Python 3 code with the workspace as the current folder (so `pd.read_csv('data.csv')` works) and get its output and the files it created. \
-                Use it to analyse data (pandas, numpy if installed) and to draw charts with matplotlib: save each figure as a PNG in the workspace, \
+                Use it to analyze data (pandas, numpy if installed) and to draw charts with matplotlib: save each figure as a PNG in the workspace, \
                 e.g. `plt.savefig('sales.png', dpi=150, bbox_inches='tight')` — saved images are shown to the user. `print` the numbers you need. \
                 Same sandbox as run_command (workspace only, no network unless `network` is true)."
                     .into(),

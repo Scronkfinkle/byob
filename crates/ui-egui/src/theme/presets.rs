@@ -1,10 +1,10 @@
 //! Built-in theme presets, as data. Each preset is a [`Palette`]: the scheme's own named
-//! colours mapped onto a small set of slots, from which [`super::Tokens::derive`] builds
+//! colors mapped onto a small set of slots, from which [`super::Tokens::derive`] builds
 //! every role. Hex values are the schemes' official ones (credits in
-//! `crates/ui-egui/assets/themes/palettes.attribution`); slots a scheme has no colour for are
-//! derived from its neighbours and marked as such.
+//! `crates/ui-egui/assets/themes/palettes.attribution`); slots a scheme has no color for are
+//! derived from its neighbors and marked as such.
 
-/// One preset. Colours are `0xRRGGBB`.
+/// One preset. Colors are `0xRRGGBB`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
     /// Stable id used in preferences and theme files (`catppuccin-mocha`).
@@ -31,7 +31,7 @@ pub struct Palette {
     pub red: u32,
     pub yellow: u32,
     pub green: u32,
-    /// Named accent colours the user can pick from; the first is the default.
+    /// Named accent colors the user can pick from; the first is the default.
     pub accents: &'static [(&'static str, u32)],
     /// `inline code` text.
     pub inline_code: u32,
@@ -51,7 +51,7 @@ impl Palette {
     }
 }
 
-/// byob's validated categorical palette (colour-vision-deficiency ordered), dark surfaces.
+/// byob's validated categorical palette (color-vision-deficiency ordered), dark surfaces.
 pub const ACCESSIBLE_CHART_DARK: [u32; 8] = [0x3987e5, 0xd95926, 0x199e70, 0xc98500, 0xd55181, 0x008300, 0x9085e9, 0xe66767];
 /// The same, stepped for light surfaces.
 pub const ACCESSIBLE_CHART_LIGHT: [u32; 8] = [0x2a78d6, 0xeb6834, 0x1baf7a, 0xeda100, 0xe87ba4, 0x008300, 0x6250d6, 0xe34948];
@@ -100,7 +100,7 @@ pub const BYOB_LIGHT: Palette = Palette {
     chart: ACCESSIBLE_CHART_LIGHT,
 };
 
-/// A Catppuccin flavour from its named colours. Accents are listed mauve first (the default).
+/// A Catppuccin flavor from its named colors. Accents are listed mauve first (the default).
 macro_rules! catppuccin {
     ($id:literal, $name:literal, dark: $dark:literal,
      rosewater $rw:literal, flamingo $fl:literal, pink $pk:literal, mauve $mv:literal, red $rd:literal, maroon $mr:literal,
@@ -115,7 +115,7 @@ macro_rules! catppuccin {
             credit: "Catppuccin (MIT)",
             bg: $ba,
             panel: $ma,
-            // Light flavours have nothing lighter than base: fields are derived (base → white).
+            // Light flavors have nothing lighter than base: fields are derived (base → white).
             field: if $dark { $cr } else { 0xf9fafb },
             surface: [$u0, $u1, $u2],
             overlay: $o1,

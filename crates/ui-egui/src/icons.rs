@@ -9,7 +9,7 @@ use egui::{Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
 
 use crate::theme::Tokens;
 
-/// A shape drawn into a square: (painter, rect, colour).
+/// A shape drawn into a square: (painter, rect, color).
 pub type Paint = fn(&egui::Painter, Rect, Color32);
 
 /// "Chat settings": three slider lines with knobs.
@@ -170,7 +170,7 @@ pub fn paperclip(painter: &egui::Painter, r: Rect, color: Color32) {
 /// "Send": an arrow pointing up.
 pub fn arrow_up(painter: &egui::Painter, r: Rect, color: Color32) {
     let s = r.width().min(r.height());
-    // A whole number of pixels wide, on the pixel grid: an odd width centred on a pixel, an
+    // A whole number of pixels wide, on the pixel grid: an odd width centered on a pixel, an
     // even one between two, so the stem is crisp instead of smeared over three columns.
     let ppp = painter.pixels_per_point();
     let px = (s * 0.11 * ppp).round().max(2.0);
@@ -236,8 +236,8 @@ pub fn text_size(painter: &egui::Painter, r: Rect, color: Color32) {
     a(x0 + s * 0.56, s * 0.36, s * 0.44);
 }
 
-/// "Colours": three overlapping circles.
-pub fn colours(painter: &egui::Painter, r: Rect, color: Color32) {
+/// "Colors": three overlapping circles.
+pub fn colors(painter: &egui::Painter, r: Rect, color: Color32) {
     let s = r.width().min(r.height());
     let stroke = Stroke::new((s * 0.08).max(1.1), color);
     let c = r.center();
@@ -246,7 +246,7 @@ pub fn colours(painter: &egui::Painter, r: Rect, color: Color32) {
     }
 }
 
-/// A small chevron pointing down (menus, split buttons), centred in `rect`.
+/// A small chevron pointing down (menus, split buttons), centered in `rect`.
 pub fn chevron_down(painter: &egui::Painter, rect: Rect, color: Color32) {
     let c = rect.center();
     let s = rect.width().min(rect.height()) * 0.22;
@@ -254,7 +254,7 @@ pub fn chevron_down(painter: &egui::Painter, rect: Rect, color: Color32) {
     painter.line(vec![pos2(c.x - s, c.y - s * 0.5), pos2(c.x, c.y + s * 0.5), pos2(c.x + s, c.y - s * 0.5)], stroke);
 }
 
-/// A small chevron pointing right (a row that opens a page), centred in `rect`.
+/// A small chevron pointing right (a row that opens a page), centered in `rect`.
 pub fn chevron_right(painter: &egui::Painter, rect: Rect, color: Color32) {
     let c = rect.center();
     let s = rect.width().min(rect.height()) * 0.22;
@@ -382,7 +382,7 @@ pub fn settings_button(ui: &mut Ui, t: &Tokens) -> Response {
     resp
 }
 
-/// A small triangle pointing right (`open` = false) or down, centred in `rect`.
+/// A small triangle pointing right (`open` = false) or down, centered in `rect`.
 pub fn disclosure(painter: &egui::Painter, rect: Rect, open: bool, color: Color32) {
     let c = rect.center();
     let s = rect.width().min(rect.height()) * 0.28;
@@ -410,7 +410,7 @@ pub fn env(painter: &egui::Painter, rect: Rect, kind: EnvKind, color: Color32) {
             painter.line_segment([at(0.5, 0.5), at(0.5, 0.96)], stroke);
         }
         EnvKind::Nix => {
-            // A snowflake: three bars through the centre, each end with a small V.
+            // A snowflake: three bars through the center, each end with a small V.
             let c = r.center();
             for k in 0..6 {
                 #[allow(clippy::cast_precision_loss)] // 0..6
@@ -450,7 +450,7 @@ pub fn env(painter: &egui::Painter, rect: Rect, kind: EnvKind, color: Color32) {
     }
 }
 
-/// The colour an environment's icon is drawn in.
+/// The color an environment's icon is drawn in.
 pub fn env_color(t: &Tokens, kind: EnvKind) -> Color32 {
     match kind {
         EnvKind::Container => t.link,

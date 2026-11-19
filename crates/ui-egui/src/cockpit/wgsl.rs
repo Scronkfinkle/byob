@@ -128,7 +128,7 @@ fn byob_fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 }
 ";
 
-/// The overlay's entry point, added when the scene defines `fn overlay`: its colour over
+/// The overlay's entry point, added when the scene defines `fn overlay`: its color over
 /// everything, premultiplied (rgb is added; alpha darkens what's under it).
 const OVERLAY_ENTRY: &str = r"
 @fragment
@@ -153,12 +153,12 @@ pub const GUIDE: &str = "A backdrop is a WGSL shader drawn behind byob's panels,
 
     fn scene(p: vec2<f32>) -> vec4<f32>
 
-p is the pixel's position from the window's top left in points (y grows downwards). Return its colour: rgb from 0 to 1 as on a web page (sRGB); alpha is ignored. Your code may also define consts and other functions.
+p is the pixel's position from the window's top left in points (y grows downwards). Return its color: rgb from 0 to 1 as on a web page (sRGB); alpha is ignored. Your code may also define consts and other functions.
 
 It can read, from the uniform u:
 - u.size: the window's size in points; u.mouse: the pointer (-1, -1 when it's outside); u.time: seconds; u.scale: pixels per point
 - u.busy: 0, easing to 1 while the model is working on a reply (make the scene come alive while it thinks)
-- u.accent, u.background, u.text: the theme's colours (vec4<f32>, use .rgb)
+- u.accent, u.background, u.text: the theme's colors (vec4<f32>, use .rgb)
 - u.panel_count and u.panels[i] (x0, y0, x1, y1 in points): where byob's panels are (the header, chat list, chat, message box, panes)
 - u.hot (x0, y0, x1, y1): the control under the pointer (a button, a field, a chat in the list); u.hot_state.x is 0 for none, 1 hovered, 2 pressed, and u.hot_state.y the seconds since it was first hovered
 
@@ -169,12 +169,12 @@ Optionally also define fn overlay(p: vec2<f32>) -> vec4<f32>, drawn over the who
 Keep it cheap: loops with a small fixed bound (a few dozen steps), no loops over pixels. The panels are see-through over the backdrop (the look's glass setting, 1 opaque); text sits on them, so keep it calm where panel_sdf(p) < 0 or dim the scene there. A backdrop that fails to compile is refused with the line and the reason.
 
 Re-theming the whole window as a place or mood (\"a starship's bridge\", \"a rainy neon city\", \"a cosy library\"), in one ui_look call when you can:
-1. Colours first: mode, accent and the colour.* roles (app_bg, panel_bg, sidebar_bg, text, borders) in the palette of the place.
+1. Colors first: mode, accent and the color.* roles (app_bg, panel_bg, sidebar_bg, text, borders) in the palette of the place.
 2. The backdrop: a scene of the place behind the panels (keep it dark or calm where text sits), alive with u.busy and the pointer.
 3. glass, frost and panel_gap: how much of the scene shows through and between the panels.
 4. The arrangement, when the place has a shape: arrangement free (or floating to start from), place.<part> for where each part goes (leave open space where the scene should show), bezel.<part> (metal for consoles and dials, glass, bare) and label.<part> (short words stamped on a bezel, in the place's own vocabulary).
 5. controls (hud, plate, pill), corners and fonts to match.
-Evoke a look the user names from films, games or brands with original details of your own (colours, shapes, light, words); don't copy logos, insignia or text from them. Afterwards say what you changed and that \"undo that\" puts the last look back.
+Evoke a look the user names from films, games or brands with original details of your own (colors, shapes, light, words); don't copy logos, insignia or text from them. Afterwards say what you changed and that \"undo that\" puts the last look back.
 
 A small example to start from (a sky over a glowing horizon, the panels casting shadows from the pointer, the hovered control lit):
 
@@ -193,7 +193,7 @@ A small example to start from (a sky over a glowing horizon, the panels casting 
     }";
 
 /// The whole module for `source` (the model's code), `linear` when the window's surface
-/// takes linear colour (the scene's sRGB colour is converted).
+/// takes linear color (the scene's sRGB color is converted).
 pub fn module(source: &str, linear: bool) -> String {
     let overlay = if has_overlay(source) { OVERLAY_ENTRY } else { "" };
     format!("{source}\n{PRELUDE}{overlay}").replace("BYOB_LINEAR_TARGET", if linear { "true" } else { "false" })

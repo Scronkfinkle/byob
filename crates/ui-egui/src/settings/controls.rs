@@ -1,5 +1,5 @@
 //! How each setting of the [registry](super::registry) is drawn: one exhaustive match on
-//! [`Key`], and the appearance pieces it uses (the theme gallery, accent swatches, the colour
+//! [`Key`], and the appearance pieces it uses (the theme gallery, accent swatches, the color
 //! roles table).
 
 use byob_protocol::profiles::{ROLE_SUBAGENTS, ROLE_UTILITY, ROLE_VISION};
@@ -121,7 +121,7 @@ impl ByobApp {
                     ui.selectable_value(&mut d.prefs.thinking_size, u, u.label());
                 }
             }
-            Key::ChartColours => {
+            Key::ChartColors => {
                 for c in ChartPalette::ALL {
                     ui.selectable_value(&mut k.chart, c, c.label());
                 }
@@ -192,7 +192,7 @@ impl ByobApp {
             Key::ImportTheme => self.import_buttons(ui),
             Key::ExportTheme => self.export_controls(ui, t, d),
             Key::ResetLook => {
-                if ui.button("Reset").on_hover_text("Accent, corners, bubbles and chart colours back to the theme's").clicked() {
+                if ui.button("Reset").on_hover_text("Accent, corners, bubbles and chart colors back to the theme's").clicked() {
                     let dk = Knobs::default();
                     d.prefs.accent = Accent::Theme;
                     (k.radius, k.user_bubble, k.assistant_bubble, k.chart) = (dk.radius, dk.user_bubble, dk.assistant_bubble, dk.chart);
@@ -200,7 +200,7 @@ impl ByobApp {
                 }
             }
             Key::ResetAppearance => {
-                if ui.button("Reset everything").on_hover_text("Themes, accent, text, layout and colour overrides (keeps imported themes)").clicked() {
+                if ui.button("Reset everything").on_hover_text("Themes, accent, text, layout and color overrides (keeps imported themes)").clicked() {
                     d.prefs = Prefs { imported: std::mem::take(&mut d.prefs.imported), ..Prefs::default() };
                 }
             }
@@ -258,7 +258,7 @@ impl ByobApp {
                     (k.high_contrast, k.reduce_motion) = (dk.high_contrast, dk.reduce_motion);
                 }
             }
-            Key::ColourRoles => advanced(ui, t, &d.current, &mut d.prefs, &mut self.appearance.filter),
+            Key::ColorRoles => advanced(ui, t, &d.current, &mut d.prefs, &mut self.appearance.filter),
         }
     }
 
@@ -297,7 +297,7 @@ impl ByobApp {
         ui.add(form::field(&mut self.appearance.export_name, t).desired_width(170.0).hint_text("Theme name"));
         let text = file::export(&current, &d.prefs, &self.appearance.export_name);
         let filename = format!("{}.json", file::slug(&self.appearance.export_name));
-        if ui.button("Export…").on_hover_text("Save the current look (colours and knobs) as a theme file").clicked() {
+        if ui.button("Export…").on_hover_text("Save the current look (colors and knobs) as a theme file").clicked() {
             self.appearance.exports.save(ui.ctx(), &filename, "application/json", text.clone().into_bytes());
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -495,7 +495,7 @@ fn scale_buttons(ui: &mut egui::Ui, value: &mut f32) {
     }
 }
 
-/// The theme's own accent, its named accents, and a custom colour.
+/// The theme's own accent, its named accents, and a custom color.
 fn accent_picker(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, accent: &mut Accent) {
     let p = current.base;
     let own = current.accent.unwrap_or_else(|| theme::rgb(p.default_accent()));
@@ -510,7 +510,7 @@ fn accent_picker(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, accent: &mut
     }
     let mut c = t.accent;
     let custom = matches!(accent, Accent::Custom(_));
-    if egui::color_picker::color_edit_button_srgba(ui, &mut c, egui::color_picker::Alpha::Opaque).on_hover_text("Any colour").changed() {
+    if egui::color_picker::color_edit_button_srgba(ui, &mut c, egui::color_picker::Alpha::Opaque).on_hover_text("Any color").changed() {
         *accent = Accent::Custom(hex(c));
     }
     if custom || matches!(accent, Accent::Blue | Accent::Violet | Accent::Green | Accent::Orange | Accent::Pink | Accent::Teal) {
@@ -529,7 +529,7 @@ fn read_on(role: &str) -> Option<&'static str> {
     })
 }
 
-/// A round colour button, ringed when selected.
+/// A round color button, ringed when selected.
 fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool, t: &Tokens) -> egui::Response {
     let size = ui.spacing().interact_size.y;
     let (rect, resp) = ui.allocate_exact_size(vec2(size, size), egui::Sense::click());
@@ -544,12 +544,12 @@ fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool, t: &Tokens) -> egui
     resp
 }
 
-/// Every colour role with a picker, in columns; changes are overrides for the current theme only.
+/// Every color role with a picker, in columns; changes are overrides for the current theme only.
 fn advanced(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, prefs: &mut Prefs, filter: &mut String) {
     ui.horizontal_wrapped(|ui| {
-        ui.add(form::field(filter, t).hint_text("Filter colours").desired_width(200.0));
+        ui.add(form::field(filter, t).hint_text("Filter colors").desired_width(200.0));
         let has = prefs.overrides.get(&current.id).is_some_and(|o| !o.is_empty());
-        if ui.add_enabled(has, egui::Button::new("Reset all colours")).clicked() {
+        if ui.add_enabled(has, egui::Button::new("Reset all colors")).clicked() {
             prefs.overrides.remove(&current.id);
         }
     });
@@ -601,7 +601,7 @@ fn advanced(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, prefs: &mut Prefs
     });
 }
 
-/// One colour role: its name, then at the right its contrast, hex and picker (and Reset when
+/// One color role: its name, then at the right its contrast, hex and picker (and Reset when
 /// changed on this device).
 fn role_row(ui: &mut egui::Ui, t: &Tokens, role: &theme::Role, current: &ThemeDef, prefs: &mut Prefs, w: f32) {
     let h = form::control_h(t);

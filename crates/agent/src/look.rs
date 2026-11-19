@@ -104,7 +104,7 @@ fn shown(v: &Value) -> String {
 /// asked for (`notes`), else just their names: they're long, and most changes don't need them.
 fn describe(r: &LookReport, notes: bool) -> String {
     let mut out = format!(
-        "The look of the byob window showing this chat (each device keeps its own).\nSettings: {}\nColour roles (as colour.<role>): {}\n\n",
+        "The look of the byob window showing this chat (each device keeps its own).\nSettings: {}\nColor roles (as color.<role>): {}\n\n",
         names(r),
         roles(r).join(", ")
     );
@@ -128,27 +128,27 @@ fn describe(r: &LookReport, notes: bool) -> String {
     out
 }
 
-/// The window's setting names (the colours as one `colour.<role>`), for a model that guessed.
+/// The window's setting names (the colors as one `color.<role>`), for a model that guessed.
 fn names(have: &LookReport) -> String {
-    let mut names: Vec<&str> = have.fields.iter().map(|f| f.key.as_str()).filter(|k| !k.starts_with("colour.")).collect();
-    if have.fields.iter().any(|f| f.key.starts_with("colour.")) {
-        names.push("colour.<role>");
+    let mut names: Vec<&str> = have.fields.iter().map(|f| f.key.as_str()).filter(|k| !k.starts_with("color.")).collect();
+    if have.fields.iter().any(|f| f.key.starts_with("color.")) {
+        names.push("color.<role>");
     }
     names.join(", ")
 }
 
-/// The colour roles the window has (`app_bg`, `text`, …).
+/// The color roles the window has (`app_bg`, `text`, …).
 fn roles(have: &LookReport) -> Vec<&str> {
-    have.fields.iter().filter_map(|f| f.key.strip_prefix("colour.")).collect()
+    have.fields.iter().filter_map(|f| f.key.strip_prefix("color.")).collect()
 }
 
 /// Names models reach for → the setting they mean (checked against the window's settings
-/// before use). Colours by role, then other settings.
-const COLOUR_ALIASES: &[(&[&str], &str)] = &[
+/// before use). Colors by role, then other settings.
+const COLOR_ALIASES: &[(&[&str], &str)] = &[
     (&["bg", "background", "window", "window_bg", "app_background", "canvas", "base", "chat", "chat_bg", "transcript", "desktop", "page"], "app_bg"),
-    (&["fg", "foreground", "body", "body_text", "text_colour", "main_text"], "text"),
+    (&["fg", "foreground", "body", "body_text", "text_color", "text_colour", "main_text"], "text"),
     (&["muted", "dim", "secondary", "subtle", "text_muted", "subtext", "muted_text"], "text_dim"),
-    (&["faint", "text_faint_colour"], "text_faint"),
+    (&["faint", "text_faint_color", "text_faint_colour"], "text_faint"),
     (&["surface", "panel", "panels", "header", "header_bg", "title_bar", "titlebar", "toolbar", "composer", "chrome"], "panel_bg"),
     (&["buttons", "button"], "button_bg"),
     (&["sidebar", "chat_list", "nav"], "sidebar_bg"),
@@ -157,7 +157,7 @@ const COLOUR_ALIASES: &[(&[&str], &str)] = &[
     (&["user", "user_bg", "your_messages", "you", "me"], "user_bubble"),
     (&["code_background", "code_block", "pre"], "code_bg"),
     (&["code_fg", "code_foreground", "code"], "code_text"),
-    (&["primary", "highlight", "brand", "theme_colour"], "accent"),
+    (&["primary", "highlight", "brand", "theme_color", "theme_colour"], "accent"),
     (&["error", "errors", "red"], "danger"),
     (&["outline", "borders", "stroke"], "border"),
 ];
@@ -174,42 +174,42 @@ const SETTING_ALIASES: &[(&[&str], &str)] = &[
     (&["animations"], "reduce_motion"),
     (&["user_bubble", "user_messages", "my_messages"], "your_messages"),
     (&["assistant_bubble", "assistant_messages", "reply_style"], "replies"),
-    (&["accent_colour", "accent_color", "primary"], "accent"),
+    (&["accent_color", "accent_colour", "primary"], "accent"),
     (&["dark_mode", "theme_mode", "appearance", "scheme", "color_scheme", "colour_scheme"], "mode"),
 ];
 
-/// `Color-Scheme`, `colors.bg` → `colour_scheme`, `colour.bg`.
+/// `Color-Scheme`, `colors.bg` → `color_scheme`, `color.bg`.
 fn tidy(key: &str) -> String {
     let k = key.trim().to_lowercase().replace(['-', ' '], "_");
-    for p in ["colors.", "colours.", "color.", "color_", "colour_"] {
+    for p in ["colors.", "colours.", "color.", "colour.", "color_", "colour_"] {
         if let Some(rest) = k.strip_prefix(p) {
-            return format!("colour.{rest}");
+            return format!("color.{rest}");
         }
     }
     k
 }
 
-/// The setting `key` means for `value`, if it can be told: exact, tidied, a bare colour
-/// role, or a common name for one. A `#rrggbb` value goes to a colour unless the setting
-/// takes colours itself (`replies: "#fff"` is the replies' colour, not their style).
+/// The setting `key` means for `value`, if it can be told: exact, tidied, a bare color
+/// role, or a common name for one. A `#rrggbb` value goes to a color unless the setting
+/// takes colors itself (`replies: "#fff"` is the replies' color, not their style).
 /// `None` when it's a guess too far (see [`suggest`]).
 fn resolve(key: &str, value: &Value, have: &LookReport) -> Option<String> {
     let has = |k: &str| have.get(k).is_some();
-    let takes_colour = |k: &str| have.fields.iter().any(|f| f.key == k && (k.starts_with("colour.") || f.describe.contains('#')));
+    let takes_color = |k: &str| have.fields.iter().any(|f| f.key == k && (k.starts_with("color.") || f.describe.contains('#')));
     let hex = value.as_str().is_some_and(|v| v.trim().starts_with('#'));
     let k = tidy(key);
-    let (colour, bare) = match k.strip_prefix("colour.") {
+    let (color, bare) = match k.strip_prefix("color.") {
         Some(role) => (true, role.to_owned()),
         None => (false, k.clone()),
     };
-    let as_colour = |role: &str| has(&format!("colour.{role}")).then(|| format!("colour.{role}"));
-    let colour_for = || as_colour(&bare).or_else(|| COLOUR_ALIASES.iter().find(|(from, _)| from.contains(&bare.as_str())).and_then(|(_, to)| as_colour(to)));
+    let as_color = |role: &str| has(&format!("color.{role}")).then(|| format!("color.{role}"));
+    let color_for = || as_color(&bare).or_else(|| COLOR_ALIASES.iter().find(|(from, _)| from.contains(&bare.as_str())).and_then(|(_, to)| as_color(to)));
     for exact in [key, k.as_str()] {
-        if has(exact) && (!hex || takes_colour(exact)) {
+        if has(exact) && (!hex || takes_color(exact)) {
             return Some(exact.to_owned());
         }
     }
-    if hex && let Some(c) = colour_for() {
+    if hex && let Some(c) = color_for() {
         return Some(c);
     }
     if has(&k) {
@@ -223,18 +223,19 @@ fn resolve(key: &str, value: &Value, have: &LookReport) -> Option<String> {
             _ => None,
         };
     }
-    if !colour
+    if !color
         && let Some((_, to)) = SETTING_ALIASES.iter().find(|(from, _)| from.contains(&bare.as_str()))
         && has(to)
     {
         return Some((*to).to_owned());
     }
-    colour_for()
+    color_for()
 }
 
 /// The setting `key` most likely meant, by the words it shares with names and descriptions.
 fn suggest(key: &str, have: &LookReport) -> Option<String> {
-    let words: Vec<String> = tidy(key).split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() > 2 && *w != "colour").map(str::to_owned).collect();
+    let words: Vec<String> =
+        tidy(key).split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() > 2 && *w != "color" && *w != "colour").map(str::to_owned).collect();
     let mut best: Option<(usize, &str)> = None;
     for f in &have.fields {
         let text = format!("{} {}", f.key, f.describe).to_lowercase();
@@ -246,7 +247,7 @@ fn suggest(key: &str, have: &LookReport) -> Option<String> {
     best.map(|(_, k)| k.to_owned())
 }
 
-/// `set`, with nested objects flattened: `{"colour": {"bg": …}}` → `colour.bg`.
+/// `set`, with nested objects flattened: `{"color": {"bg": …}}` → `color.bg`.
 fn flatten(set: &serde_json::Map<String, Value>) -> Vec<(String, Value)> {
     let mut out = Vec::new();
     for (k, v) in set {
@@ -311,7 +312,7 @@ fn changes(args: &Value, have: &LookReport) -> Result<Option<Checked>, String> {
         }
     }
     if unknown {
-        c.skipped.push(format!("the settings are: {}; colour roles: {}", names(have), roles(have).join(", ")));
+        c.skipped.push(format!("the settings are: {}; color roles: {}", names(have), roles(have).join(", ")));
     }
     if c.set.is_empty() {
         return Err(c.skipped.join("; "));
@@ -328,13 +329,13 @@ impl Tool for UiLook {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL.into(),
-            description: "Read or change how the byob window showing this chat looks: dark or light, theme, accent colour, corner roundness, text size, zoom, density, message bubbles, fonts, any single colour, and (where the window can) a backdrop: a shader scene behind glass panels, which you can write. Without arguments: every setting with its value and what it may be. Only this device's window(s) change.".into(),
+            description: "Read or change how the byob window showing this chat looks: dark or light, theme, accent color, corner roundness, text size, zoom, density, message bubbles, fonts, any single color, and (where the window can) a backdrop: a shader scene behind glass panels, which you can write. Without arguments: every setting with its value and what it may be. Only this device's window(s) change.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "set": {"type": "object", "description": "Setting → new value, e.g. {\"accent\": \"orange\", \"corners\": 12}. Call without arguments first for the settings there are.", "additionalProperties": true},
                     "undo": {"type": "boolean", "description": "Put back the look from before the last change you made (again to go further back). For \"undo that\" or \"put it back\"."},
-                    "reset": {"type": "boolean", "description": "Back to the theme's own colours and byob's default sizes, corners and bubbles first (themes, dark or light, and zoom stay); `set` applies on top."},
+                    "reset": {"type": "boolean", "description": "Back to the theme's own colors and byob's default sizes, corners and bubbles first (themes, dark or light, and zoom stay); `set` applies on top."},
                     "notes": {"type": "boolean", "description": "Also read the window's notes (how to write a backdrop shader, the current backdrop's code), when you're about to write or change a backdrop."}
                 }
             }),
@@ -399,7 +400,7 @@ impl Tool for UiLook {
             Ok((_, None)) => return ToolOutput::err("the window didn't answer"),
             Err(e) => return ToolOutput::err(e),
         };
-        // What was asked for, setting by setting; colours that follow from it (an accent
+        // What was asked for, setting by setting; colors that follow from it (an accent
         // changes links and selections too) only as a count.
         let changed = after.changes_since(&before);
         let mut out = String::from("In the window now:\n");
@@ -417,18 +418,18 @@ impl Tool for UiLook {
                 }
             }
         }
-        // Undo and reset: every setting that moved (colours as a count, below).
+        // Undo and reset: every setting that moved (colors as a count, below).
         if whole {
-            for (k, old, new) in changed.iter().filter(|(k, _, _)| !asked.contains(k) && !k.starts_with("colour.")) {
+            for (k, old, new) in changed.iter().filter(|(k, _, _)| !asked.contains(k) && !k.starts_with("color.")) {
                 let _ = writeln!(out, "- {k}: {} → {}", shown(old), shown(new));
             }
             if changed.is_empty() {
                 out.push_str("- nothing differed\n");
             }
         }
-        let follow = changed.iter().filter(|(k, _, _)| !asked.contains(k) && (!whole || k.starts_with("colour."))).count();
+        let follow = changed.iter().filter(|(k, _, _)| !asked.contains(k) && (!whole || k.starts_with("color."))).count();
         if follow > 0 {
-            let _ = writeln!(out, "({follow} colours that follow from these changed with them.)");
+            let _ = writeln!(out, "({follow} colors that follow from these changed with them.)");
         }
         let problems: Vec<&String> = after.problems.iter().chain(&skipped).collect();
         if !problems.is_empty() {
@@ -461,7 +462,7 @@ mod tests {
         LookReport {
             fields: vec![
                 LookField { key: "accent".into(), value: json!("theme"), describe: "theme, blue, orange or #rrggbb".into() },
-                LookField { key: "colour.app_bg".into(), value: json!("#101010"), describe: "Background".into() },
+                LookField { key: "color.app_bg".into(), value: json!("#101010"), describe: "Background".into() },
             ],
             ..Default::default()
         }
@@ -473,14 +474,17 @@ mod tests {
         assert_eq!(changes(&json!({"set": {}}), &report()), Ok(None));
         assert_eq!(changes(&json!({"set": {"accent": "orange"}}), &report()).unwrap().unwrap().set["accent"], "orange");
         let e = changes(&json!({"set": {"sparkle": true}}), &report()).unwrap_err();
-        assert!(e.contains("no setting \"sparkle\"") && e.contains("the settings are: accent, colour.<role>"), "{e}");
+        assert!(e.contains("no setting \"sparkle\"") && e.contains("the settings are: accent, color.<role>"), "{e}");
         assert!(changes(&json!({"set": {"accent": ["a"]}}), &report()).is_err());
         // What it knows goes ahead; what it doesn't is said.
         let c = changes(&json!({"set": {"accent": "teal", "bubbles": "outlined"}}), &report()).unwrap().unwrap();
         assert_eq!((c.set.len(), c.skipped.len()), (1, 2));
-        assert!(changes(&json!({"set": {"colour.app_bg": "#202020"}}), &report()).unwrap().is_some());
+        assert!(changes(&json!({"set": {"color.app_bg": "#202020"}}), &report()).unwrap().is_some());
+        // British spellings, which models still send, mean the same settings.
+        let c = changes(&json!({"set": {"colour.app_bg": "#202020", "accent_colour": "teal"}}), &report()).unwrap().unwrap();
+        assert!(c.set.contains_key("color.app_bg") && c.set.contains_key("accent") && c.skipped.is_empty(), "{c:?}");
         let text = describe(&report(), false);
-        assert!(text.contains("- accent: \"theme\" — theme, blue") && text.contains("Colour roles (as colour.<role>): app_bg"), "{text}");
+        assert!(text.contains("- accent: \"theme\" — theme, blue") && text.contains("Color roles (as color.<role>): app_bg"), "{text}");
     }
 
     fn field(key: &str, value: Value, describe: &str) -> LookField {
@@ -488,7 +492,7 @@ mod tests {
     }
 
     /// Regression: a Windows 98 and a pink theme took a dozen calls each, the model guessing
-    /// `bg`, `colour.muted`, `colour.header`, a nested `colour` object, `theme`, and a colour
+    /// `bg`, `color.muted`, `color.header`, a nested `color` object, `theme`, and a color
     /// for `replies` (a style). Names it plainly meant are read as the real ones, and said.
     #[test]
     fn the_names_models_guess_are_read_as_the_settings_they_mean() {
@@ -501,37 +505,37 @@ mod tests {
                 field("replies", json!("filled"), "how replies' bubbles look: filled, outlined or minimal"),
                 field("your_messages", json!("filled"), "how your messages' bubbles look: filled, outlined or minimal"),
                 field("corners", json!(8), "corner radius 0 to 16"),
-                field("colour.app_bg", json!("#ffffff"), "Chat background (Surfaces)"),
-                field("colour.panel_bg", json!("#eeeeee"), "Header and panels (Surfaces)"),
-                field("colour.text", json!("#111111"), "Body text (Text)"),
-                field("colour.text_dim", json!("#555555"), "Secondary text (Text)"),
-                field("colour.assistant_bubble", json!("#f0f0f0"), "Replies (Messages)"),
-                field("colour.border", json!("#cccccc"), "Borders (Surfaces)"),
+                field("color.app_bg", json!("#ffffff"), "Chat background (Surfaces)"),
+                field("color.panel_bg", json!("#eeeeee"), "Header and panels (Surfaces)"),
+                field("color.text", json!("#111111"), "Body text (Text)"),
+                field("color.text_dim", json!("#555555"), "Secondary text (Text)"),
+                field("color.assistant_bubble", json!("#f0f0f0"), "Replies (Messages)"),
+                field("color.border", json!("#cccccc"), "Borders (Surfaces)"),
             ],
             ..Default::default()
         };
         let c = changes(
-            &json!({"set": {"colour": {"background": "#fdf3f6", "muted": "#a87886", "replies": "#fffafc"}, "bg": "#c0c0c0", "fg": "#000000",
-                "colour.header": "#000080", "theme": "rose-pine-dawn", "replies": "outlined", "accent": "#e07a9a", "radius": 0, "Border": "#808080",
-                "bubbles": true, "colour.reply.bg": "#ffffff"}}),
+            &json!({"set": {"color": {"background": "#fdf3f6", "muted": "#a87886", "replies": "#fffafc"}, "bg": "#c0c0c0", "fg": "#000000",
+                "color.header": "#000080", "theme": "rose-pine-dawn", "replies": "outlined", "accent": "#e07a9a", "radius": 0, "Border": "#808080",
+                "bubbles": true, "color.reply.bg": "#ffffff"}}),
             &r,
         )
         .unwrap()
         .unwrap();
         let got = |k: &str| c.set.get(k).cloned().unwrap_or(Value::Null);
-        assert_eq!(got("colour.text_dim"), "#a87886");
-        assert_eq!(got("colour.assistant_bubble"), "#fffafc", "a colour for replies is their colour");
-        assert_eq!(got("colour.text"), "#000000");
-        assert_eq!(got("colour.border"), "#808080");
+        assert_eq!(got("color.text_dim"), "#a87886");
+        assert_eq!(got("color.assistant_bubble"), "#fffafc", "a color for replies is their color");
+        assert_eq!(got("color.text"), "#000000");
+        assert_eq!(got("color.border"), "#808080");
         assert_eq!(got("light_theme"), "rose-pine-dawn", "the theme in use");
         assert_eq!(got("replies"), "outlined", "a style for replies is their style");
         assert_eq!(got("accent"), "#e07a9a");
         assert_eq!(got("corners"), 0);
-        assert!(c.read_as.iter().any(|n| n == "bg as colour.app_bg"), "{:?}", c.read_as);
-        assert_eq!(got("colour.panel_bg"), "#000080", "the header is the panels' colour");
+        assert!(c.read_as.iter().any(|n| n == "bg as color.app_bg"), "{:?}", c.read_as);
+        assert_eq!(got("color.panel_bg"), "#000080", "the header is the panels' color");
         let skipped = c.skipped.join("\n");
         assert!(skipped.contains("\"bubbles\"; did you mean"), "{skipped}");
-        assert!(skipped.contains("\"colour.reply.bg\""), "{skipped}");
-        assert!(skipped.contains("colour roles: app_bg, panel_bg"), "{skipped}");
+        assert!(skipped.contains("\"color.reply.bg\""), "{skipped}");
+        assert!(skipped.contains("color roles: app_bg, panel_bg"), "{skipped}");
     }
 }

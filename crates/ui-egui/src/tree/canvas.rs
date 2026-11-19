@@ -1,4 +1,4 @@
-//! The `canvas` node: a display list in a fixed box, scaled down to fit the width. Colours
+//! The `canvas` node: a display list in a fixed box, scaled down to fit the width. Colors
 //! are theme roles (`accent`, `text_dim`, `chart3`, …) or `#rrggbb`; a click sends the
 //! canvas's action with the point in `_x`/`_y` (canvas units).
 
@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use super::Cx;
 use crate::theme::{self, Tokens};
 
-/// A colour by role name or hex; `default` if none or unknown.
+/// A color by role name or hex; `default` if none or unknown.
 pub(crate) fn color(t: &Tokens, c: Option<&str>, default: Color32) -> Color32 {
     let Some(c) = c else { return default };
     t.get(c).or_else(|| theme::parse_color(c)).unwrap_or(default)

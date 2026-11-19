@@ -214,7 +214,7 @@ impl ByobApp {
     pub(crate) fn header_row(&mut self, ui: &mut egui::Ui, layout: Layout) {
         let t = self.tokens;
         ui.horizontal(|ui| {
-            // The row's full height up front: items line up on its centre whatever order
+            // The row's full height up front: items line up on its center whatever order
             // they are drawn in.
             let mut height = icons::button_height(ui);
             if layout.wordmark {

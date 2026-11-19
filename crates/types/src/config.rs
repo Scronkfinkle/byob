@@ -149,7 +149,7 @@ impl Approvals {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvKind {
-    /// Today's behaviour: on this machine; byob asks once before loading the folder's
+    /// Today's behavior: on this machine; byob asks once before loading the folder's
     /// project environment or using its devcontainer.json.
     #[default]
     Auto,

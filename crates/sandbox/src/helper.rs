@@ -118,7 +118,7 @@ pub fn helper_main(args: &[OsString]) -> ExitCode {
     }
 }
 
-/// Report a setup failure the way the parent recognises.
+/// Report a setup failure the way the parent recognizes.
 pub(crate) fn fail(msg: &str) -> ExitCode {
     eprintln!("{ERROR_PREFIX}{msg}");
     ExitCode::from(SETUP_FAILED)

@@ -95,7 +95,7 @@ impl Servers {
     }
 }
 
-/// Tokens of a command: quoted strings (unescaped), parenthesised groups (as written), atoms.
+/// Tokens of a command: quoted strings (unescaped), parenthesized groups (as written), atoms.
 fn tokens(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut chars = line.chars().peekable();

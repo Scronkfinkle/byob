@@ -154,7 +154,7 @@ pub struct EngineConfig {
     pub auto_title: bool,
     /// Endpoint probing and tool-calling mode.
     pub adapt: AdaptOptions,
-    /// When to summarise a conversation that outgrows the context window.
+    /// When to summarize a conversation that outgrows the context window.
     pub compaction: CompactOptions,
     /// Subagent definitions from the user's config folder and plugins (a chat's workspace
     /// `.byob/agents` and `.claude/agents` are read per turn and come first).
@@ -1906,7 +1906,7 @@ impl Engine {
         self.send_usage(chat);
     }
 
-    /// `ClientMsg::Compact` / `/compact [focus]`: summarise the chat in view now, on a
+    /// `ClientMsg::Compact` / `/compact [focus]`: summarize the chat in view now, on a
     /// background thread. The chat counts as busy until it is done.
     fn compact_chat(&mut self, client: ClientId, focus: Option<String>) {
         let Some(chat) = self.client_chat(client) else {
@@ -1918,7 +1918,7 @@ impl Engine {
         }
     }
 
-    /// Start summarising `chat` (see [`Self::compact_chat`]), or say why not.
+    /// Start summarizing `chat` (see [`Self::compact_chat`]), or say why not.
     pub(crate) fn compact_chat_in(&mut self, chat: &str, focus: Option<String>) -> Result<(), (NoticeLevel, String)> {
         let chat = chat.to_owned();
         let error = |text: String| Err((NoticeLevel::Error, text));
@@ -1958,7 +1958,7 @@ impl Engine {
             let started = Instant::now();
             let covered = messages.get(start..).unwrap_or_default();
             let result = catch_unwind(AssertUnwindSafe(|| compact::summarize_via(utility.as_ref(), &llm, covered, f.as_deref(), &plan, &flag)))
-                .unwrap_or_else(|_| Err(compact::Failure::Error("internal error while summarising".into())))
+                .unwrap_or_else(|_| Err(compact::Failure::Error("internal error while summarizing".into())))
                 .map(|summary| {
                     let mut after: Vec<byob_llm::ChatMessage> = messages.get(..start).unwrap_or_default().to_vec();
                     after.extend(compact::summary_messages(&summary.text));

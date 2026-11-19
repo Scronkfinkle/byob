@@ -758,7 +758,7 @@ pub fn layout_job(
             let display = s.math == Math::Display;
             if let Some((space, f)) = math.zip(crate::math::typeset(text, display)) {
                 // An invisible stand-in as wide as the formula, its line tall enough for it
-                // (centred, so there is room below the baseline too).
+                // (centered, so there is room below the baseline too).
                 let w = f.width() * math_size;
                 let reach = f.height().max(f.depth()) * math_size;
                 fmt.color = Color32::TRANSPARENT;

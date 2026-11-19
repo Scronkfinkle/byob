@@ -243,7 +243,7 @@ impl egui_wgpu::CallbackTrait for Paint {
 mod tests {
     use super::*;
 
-    /// The bytes match WGSL's layout of `Byob`: 112 bytes of scalars, colours and the hot
+    /// The bytes match WGSL's layout of `Byob`: 112 bytes of scalars, colors and the hot
     /// control, then 16 panels of 16 bytes, the count where `panel_count` is.
     #[test]
     fn inputs_are_laid_out_as_the_shader_reads_them() {

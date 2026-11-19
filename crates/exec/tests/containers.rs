@@ -162,7 +162,7 @@ fn default_image_runs_as_the_user_with_network_per_call_and_survives_restarts() 
 
 #[cfg(unix)]
 #[test]
-fn devcontainer_json_is_asked_once_and_honoured() {
+fn devcontainer_json_is_asked_once_and_honored() {
     let Some(rt) = docker() else { return };
     let w = World::new(rt, "python:3-slim");
     std::fs::create_dir(w.ws.join(".devcontainer")).unwrap();

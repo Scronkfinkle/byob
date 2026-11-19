@@ -175,7 +175,7 @@ fn render_pages(pages: &[(String, Option<String>)], numbers: &[usize], want: &[u
     out
 }
 
-/// Text documents (Word) by lines, honouring `offset`/`limit` like plain text files.
+/// Text documents (Word) by lines, honoring `offset`/`limit` like plain text files.
 fn lines(text: &str, head: &str, name: &str, args: &Value) -> String {
     let offset = super::opt_u64(args, "offset").ok().flatten().unwrap_or(1).max(1);
     let limit = super::opt_u64(args, "limit").ok().flatten().unwrap_or(super::read::DEFAULT_LINES).clamp(1, super::read::DEFAULT_LINES);

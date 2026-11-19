@@ -1,5 +1,5 @@
 //! A small, language-agnostic syntax highlighter for fenced code blocks: comments, strings,
-//! numbers, keywords, function calls and type-like names, coloured with the theme's
+//! numbers, keywords, function calls and type-like names, colored with the theme's
 //! `syntax_*` roles. Not a parser — it only has to look right for common languages and
 //! never misbehave on anything else (unknown or plain-text fences stay plain).
 
@@ -151,7 +151,7 @@ fn comments_for(lang: &str) -> Option<Comments> {
     })
 }
 
-/// The code as a coloured layout job (plain `code_text` when the language isn't one we
+/// The code as a colored layout job (plain `code_text` when the language isn't one we
 /// highlight or the block is very large).
 pub fn job(t: &Tokens, lang: &str, code: &str, font: &FontId) -> LayoutJob {
     let mut job = LayoutJob::default();
@@ -164,7 +164,7 @@ pub fn job(t: &Tokens, lang: &str, code: &str, font: &FontId) -> LayoutJob {
     let bytes = code.as_bytes();
     let mut i = 0usize;
     let mut plain_from = 0usize;
-    // Flush the plain run before `i`, then colour `i..end`.
+    // Flush the plain run before `i`, then color `i..end`.
     let emit = |job: &mut LayoutJob, plain_from: &mut usize, start: usize, end: usize, c: Color32| {
         if let Some(p) = code.get(*plain_from..start).filter(|p| !p.is_empty()) {
             plain(job, p);
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn colours_common_tokens_and_keeps_the_text() {
+    fn colors_common_tokens_and_keeps_the_text() {
         let t = Tokens::dark();
         let code = "fn main() {\n    let s = \"hi\"; // greet\n    println!(\"{}\", 42);\n}";
         let parts = colors("rust", code);

@@ -361,7 +361,7 @@ pub fn radii(t: &Tokens, d: f32) -> (f32, f32) {
     (outer, crate::theme::inner_radius(outer, inset).min(d / 2.0))
 }
 
-#[allow(clippy::too_many_arguments)] // a painter helper: size, shape, colours, icon, state
+#[allow(clippy::too_many_arguments)] // a painter helper: size, shape, colors, icon, state
 pub fn round_button(ui: &mut Ui, t: &Tokens, d: f32, radius: f32, fill: Color32, icon: Color32, paint: icons::Paint, enabled: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(d, d), if enabled { Sense::click() } else { Sense::hover() });
     if ui.is_rect_visible(rect) {

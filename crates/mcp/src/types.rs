@@ -40,7 +40,7 @@ impl ServerInfo {
     }
 }
 
-/// Behaviour hints a server may give for a tool. Untrusted: hints, not guarantees.
+/// Behavior hints a server may give for a tool. Untrusted: hints, not guarantees.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolAnnotations {
     pub title: Option<String>,

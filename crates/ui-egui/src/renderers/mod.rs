@@ -52,7 +52,7 @@ pub struct RendererCaps {
 }
 
 impl RendererCaps {
-    /// A text type labelled `label`, with nothing else.
+    /// A text type labeled `label`, with nothing else.
     pub fn text(label: &str) -> Self {
         Self { label: label.to_owned(), text: true, source_view: false, web_surface: false }
     }
@@ -148,7 +148,7 @@ impl ArtifactRenderers {
                     // `web:<file>`: the plugin's own page draws it, on a web surface.
                     Some(Rc::new(crate::web::WebArtifact { plugin: p.id.clone(), file: file.to_owned() }) as Rc<dyn ArtifactRenderer>)
                 } else if let Some(view) = d.renderer.strip_prefix("view:") {
-                    // The plugin's own live view, labelled with the view's title.
+                    // The plugin's own live view, labeled with the view's title.
                     let title = p.views.iter().find(|v| v.id == view).map(|v| v.title.to_lowercase()).filter(|t| !t.is_empty());
                     let label = title.unwrap_or_else(|| p.name.to_lowercase());
                     Some(Rc::new(view::ViewRenderer { plugin: p.id.clone(), view: view.to_owned(), label }) as Rc<dyn ArtifactRenderer>)

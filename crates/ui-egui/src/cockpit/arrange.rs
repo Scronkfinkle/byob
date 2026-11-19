@@ -142,10 +142,10 @@ impl From<Spot> for String {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Bezel {
-    /// A rounded pane of the panel colour (glass over a backdrop).
+    /// A rounded pane of the panel color (glass over a backdrop).
     #[default]
     Glass,
-    /// A bevelled metal plate with screws, its label stamped on it, and the part on a lit
+    /// A beveled metal plate with screws, its label stamped on it, and the part on a lit
     /// screen inside. ("instrument" in arrangements saved by 0.3.10.)
     #[serde(alias = "instrument")]
     Metal,
@@ -170,13 +170,13 @@ impl Bezel {
         Self::ALL.into_iter().find(|b| b.name() == s)
     }
 
-    /// The room it takes around the part (labelled or not), as [`paint`] draws it.
-    pub fn overhead(self, labelled: bool) -> Vec2 {
-        let label = if labelled { LABEL_HEIGHT } else { 0.0 };
+    /// The room it takes around the part (labeled or not), as [`paint`] draws it.
+    pub fn overhead(self, labeled: bool) -> Vec2 {
+        let label = if labeled { LABEL_HEIGHT } else { 0.0 };
         match self {
             Self::Bare => Vec2::ZERO,
             Self::Glass => vec2(12.0, 12.0 + label),
-            Self::Metal => vec2(32.0, 34.0 + if labelled { LABEL_HEIGHT - 12.0 + 2.0 } else { 0.0 }),
+            Self::Metal => vec2(32.0, 34.0 + if labeled { LABEL_HEIGHT - 12.0 + 2.0 } else { 0.0 }),
         }
     }
 }
@@ -289,7 +289,7 @@ impl Arrangement {
     }
 }
 
-/// Draw `bezel` around `rect` (labelled `label`), returning where the part goes inside.
+/// Draw `bezel` around `rect` (labeled `label`), returning where the part goes inside.
 pub fn paint(painter: &egui::Painter, rect: Rect, bezel: Bezel, label: &str, t: &Tokens) -> Rect {
     let r = t.round(10.0).round().clamp(0.0, 24.0);
     match bezel {

@@ -51,9 +51,9 @@ impl ThemeKind {
     }
 }
 
-/// The accent colour. `Theme` uses the theme's own; `Named` one of the theme's named
-/// accents (`mauve`); `Custom` any `#rrggbb`. The six fixed colours are byob's original
-/// accents, kept so version-0 preferences still mean the same colour.
+/// The accent color. `Theme` uses the theme's own; `Named` one of the theme's named
+/// accents (`mauve`); `Custom` any `#rrggbb`. The six fixed colors are byob's original
+/// accents, kept so version-0 preferences still mean the same color.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Accent {
     #[default]
@@ -86,7 +86,7 @@ impl Accent {
         }
     }
 
-    /// The colour of a fixed accent on a dark or light theme.
+    /// The color of a fixed accent on a dark or light theme.
     pub fn fixed_color(&self, dark: bool) -> Option<u32> {
         let p = if dark { &presets::BYOB_DARK } else { &presets::BYOB_LIGHT };
         let name = match self {
@@ -254,13 +254,13 @@ impl MonoFont {
     }
 }
 
-/// Where chart series colours come from.
+/// Where chart series colors come from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChartPalette {
-    /// The theme's own colours.
+    /// The theme's own colors.
     #[default]
     Theme,
-    /// byob's colour-vision-deficiency-checked palette.
+    /// byob's color-vision-deficiency-checked palette.
     Accessible,
 }
 
@@ -270,12 +270,12 @@ impl ChartPalette {
     pub fn label(self) -> &'static str {
         match self {
             ChartPalette::Theme => "Theme",
-            ChartPalette::Accessible => "Colour-blind safe",
+            ChartPalette::Accessible => "Color-blind safe",
         }
     }
 }
 
-/// Everything about the look that isn't a colour. Also what a theme file's `knobs` sets.
+/// Everything about the look that isn't a color. Also what a theme file's `knobs` sets.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Knobs {
@@ -375,7 +375,7 @@ pub struct Prefs {
     pub light_theme: String,
     pub accent: Accent,
     pub knobs: Knobs,
-    /// Per-theme colour overrides: theme id → role name → `#rrggbb`.
+    /// Per-theme color overrides: theme id → role name → `#rrggbb`.
     pub overrides: BTreeMap<String, BTreeMap<String, String>>,
     /// Theme files imported in the browser (their text; desktop keeps them in the themes folder).
     pub imported: Vec<String>,

@@ -13,7 +13,7 @@
 //! ```
 //!
 //! Everything but `name` is optional. Roles are the [`super::ROLES`] names; missing roles
-//! come from the base preset. Parsing is forgiving — a bad colour, an unknown role or
+//! come from the base preset. Parsing is forgiving — a bad color, an unknown role or
 //! knob becomes a warning and is skipped — and only a file that isn't a JSON object at all
 //! is rejected. Desktop keeps user themes as `<config>/themes/*.json`; the browser keeps
 //! imported ones in its preferences.
@@ -173,7 +173,7 @@ pub fn parse(text: &str, origin: Origin) -> Result<ThemeFile, String> {
     let mut accent = match obj.get("accent") {
         None => None,
         Some(v) => color_value(v).or_else(|| {
-            warnings.push(format!("\"accent\": {v} is not a colour (#rrggbb)"));
+            warnings.push(format!("\"accent\": {v} is not a color (#rrggbb)"));
             None
         }),
     };
@@ -183,7 +183,7 @@ pub fn parse(text: &str, origin: Origin) -> Result<ThemeFile, String> {
         Some(Value::Object(map)) => {
             for (role, v) in map {
                 let Some(c) = color_value(v) else {
-                    warnings.push(format!("colors.{role}: {v} is not a colour (#rrggbb)"));
+                    warnings.push(format!("colors.{role}: {v} is not a color (#rrggbb)"));
                     continue;
                 };
                 if role == "accent" {
@@ -192,11 +192,11 @@ pub fn parse(text: &str, origin: Origin) -> Result<ThemeFile, String> {
                 } else if Tokens::has_role(role) {
                     colors.push((role.clone(), c));
                 } else {
-                    warnings.push(format!("colors.{role}: no such colour role"));
+                    warnings.push(format!("colors.{role}: no such color role"));
                 }
             }
         }
-        Some(other) => warnings.push(format!("\"colors\" should be an object of role → colour, not {other}")),
+        Some(other) => warnings.push(format!("\"colors\" should be an object of role → color, not {other}")),
     }
     let knobs = match obj.get("knobs") {
         None => None,
@@ -253,7 +253,7 @@ pub fn apply_knobs(map: &Map<String, Value>, knobs: &mut Knobs, warnings: &mut V
     good
 }
 
-/// The current look as a theme file: base, accent, the colours that differ from the base
+/// The current look as a theme file: base, accent, the colors that differ from the base
 /// preset with that accent (the theme's own changes plus the user's overrides), and knobs.
 pub fn export(def: &ThemeDef, prefs: &Prefs, name: &str) -> String {
     let mut plain = prefs.clone();

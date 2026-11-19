@@ -5,7 +5,7 @@
 #   scripts/macos-bundle.sh BYOB_BIN HELPER_BIN VERSION TARGET [OUT_DIR]
 #
 # Writes OUT_DIR/byob-VERSION-TARGET.dmg (OUT_DIR defaults to the current directory) and prints
-# its path. Run from the repository root (it copies the licences, README and the helper's NOTICE).
+# its path. Run from the repository root (it copies the licenses, README and the helper's NOTICE).
 #
 # Signing: with MACOS_SIGN_IDENTITY set (a "Developer ID Application: …" identity in the
 # keychain), the helper is signed with scripts/macos-artifact-host.entitlements, then byob, then

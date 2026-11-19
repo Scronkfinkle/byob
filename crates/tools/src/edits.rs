@@ -429,7 +429,7 @@ mod tests {
         let t = "one\r\ntwo\r\nthree\r\n";
         let r = ed(t, &[("two\nthree", "2\n3\n3.5")]).unwrap();
         assert_eq!(r.text, "one\r\n2\r\n3\r\n3.5\r\n");
-        assert!(r.loose.is_empty(), "matched exactly once line endings are normalised");
+        assert!(r.loose.is_empty(), "matched exactly once line endings are normalized");
         // the model sending CRLF itself works too
         assert_eq!(ok(t, &[("one\r\ntwo", "1\r\n2")]), "1\r\n2\r\nthree\r\n");
         // mixed endings: left alone, the loose match still finds it

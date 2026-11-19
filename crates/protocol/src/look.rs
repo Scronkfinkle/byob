@@ -1,5 +1,5 @@
 //! A window's look on the wire (13.12+, cap [`CAP_LOOK`]): its theme, accent, corners, text
-//! size, bubbles and colours, which each device keeps for itself.
+//! size, bubbles and colors, which each device keeps for itself.
 //!
 //! The client is the authority on its own look: it sends [`crate::ClientMsg::ReportLook`]
 //! once connected and after every change, listing each setting with its value and what it
@@ -30,7 +30,7 @@ pub const MAX_NOTE: usize = 20 * 1024;
 /// One setting of a window's look.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LookField {
-    /// Its key in [`crate::ServerMsg::SetLook`] (`accent`, `corners`, `colour.app_bg`, …).
+    /// Its key in [`crate::ServerMsg::SetLook`] (`accent`, `corners`, `color.app_bg`, …).
     pub key: String,
     /// What it is now (a string, number or bool).
     pub value: Value,

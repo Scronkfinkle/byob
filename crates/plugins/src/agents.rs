@@ -198,11 +198,11 @@ mod tests {
 
     #[test]
     fn missing_frontmatter_falls_back_to_the_file() {
-        let a = parse("# Summariser\n\nSummarise the files you are given.");
+        let a = parse("# Summarizer\n\nSummarize the files you are given.");
         assert_eq!(a.name, "file-name");
-        assert_eq!(a.description, "Summariser");
+        assert_eq!(a.description, "Summarizer");
         assert_eq!((a.tools, a.model), (None, None));
-        // Names are normalised; empty bodies refused.
+        // Names are normalized; empty bodies refused.
         assert_eq!(parse("---\nname: Code Reviewer\n---\nx").name, "code-reviewer");
         assert!(parse_agent("---\nname: a\ndescription: d\n---\n  \n", Path::new("a.md")).unwrap_err().contains("no instructions"));
         assert!(parse_agent("---\nname: '!!!'\n---\nx", Path::new("!!!.md")).is_err());

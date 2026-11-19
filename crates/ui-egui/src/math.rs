@@ -84,7 +84,7 @@ pub fn enabled(ctx: &egui::Context) -> bool {
     ctx.data(|d| d.get_temp::<bool>(key())).unwrap_or(false)
 }
 
-/// The colour RaTeX gives everything not `\color`ed: drawn in the text colour instead.
+/// The color RaTeX gives everything not `\color`ed: drawn in the text color instead.
 const INK: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
 
 /// A typeset formula, in em (of the math font size): drawn from its top left, the baseline
@@ -243,7 +243,7 @@ fn outline(x: f64, y: f64, commands: &[PathCommand], fill: bool) -> Option<Mesh>
     Some(Mesh { indices: geometry.indices, vertices, ..Mesh::default() })
 }
 
-fn colour(c: &Color, ink: Color32) -> Color32 {
+fn ink_color(c: &Color, ink: Color32) -> Color32 {
     if *c == INK {
         return ink;
     }
@@ -262,25 +262,25 @@ pub fn paint(painter: &Painter, f: &Formula, at: Pos2, size: f32, ink: Color32) 
             DisplayItem::GlyphPath { x, y, scale, font, char_code, color } => {
                 let Some(ch) = char::from_u32(*char_code) else { continue };
                 let glyph_size = (size * em(*scale)).clamp(1.0, 2000.0);
-                let galley = painter.layout_no_wrap(ch.to_string(), FontId::new(glyph_size, family(font)), colour(color, ink));
+                let galley = painter.layout_no_wrap(ch.to_string(), FontId::new(glyph_size, family(font)), ink_color(color, ink));
                 // Put the glyph's baseline at (x, y).
                 let Some((row, g)) = galley.rows.first().and_then(|r| r.glyphs.first().map(|g| (r, g))) else { continue };
                 let offset = Vec2::new(g.pos.x, row.pos.y + g.pos.y);
-                painter.galley(to(*x, *y) - offset, galley.clone(), colour(color, ink));
+                painter.galley(to(*x, *y) - offset, galley.clone(), ink_color(color, ink));
             }
             DisplayItem::Line { x, y, width, thickness, color, .. } => {
                 let t = (em(*thickness) * size).max(1.0 / painter.pixels_per_point());
                 let start = to(*x, *y);
-                painter.rect_filled(Rect::from_min_size(start - vec2(0.0, t / 2.0), vec2(em(*width) * size, t)), 0.0, colour(color, ink));
+                painter.rect_filled(Rect::from_min_size(start - vec2(0.0, t / 2.0), vec2(em(*width) * size, t)), 0.0, ink_color(color, ink));
             }
             DisplayItem::Rect { x, y, width, height, color } => {
-                painter.rect_filled(Rect::from_min_size(to(*x, *y), vec2(em(*width), em(*height)) * size), 0.0, colour(color, ink));
+                painter.rect_filled(Rect::from_min_size(to(*x, *y), vec2(em(*width), em(*height)) * size), 0.0, ink_color(color, ink));
             }
             DisplayItem::Path { .. } => {}
         }
     }
     for (mesh, color) in &f.outlines {
-        let tint = color.as_ref().map_or(ink, |c| colour(c, ink));
+        let tint = color.as_ref().map_or(ink, |c| ink_color(c, ink));
         let mut m = mesh.clone();
         for v in &mut m.vertices {
             v.pos = top_left + v.pos.to_vec2() * size;
@@ -295,7 +295,7 @@ pub fn rect(f: &Formula, at: Pos2, size: f32) -> Rect {
     Rect::from_min_max(at - vec2(0.0, f.height() * size), at + vec2(f.width() * size, f.depth() * size))
 }
 
-/// A display formula on its own line: centred, scrolling sideways when wider than the column.
+/// A display formula on its own line: centered, scrolling sideways when wider than the column.
 pub fn block(ui: &mut egui::Ui, f: &Formula, size: f32, ink: Color32, id: egui::Id) {
     let w = f.width() * size;
     let h = (f.height() + f.depth()) * size;

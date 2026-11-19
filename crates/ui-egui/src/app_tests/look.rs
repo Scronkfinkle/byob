@@ -37,6 +37,6 @@ fn the_window_reports_its_look_and_answers_changes() {
     assert_eq!(answer.get("accent"), Some(&serde_json::json!("teal")));
     assert!(answer.problems.len() == 1 && answer.problems[0].starts_with("zoom:"), "{:?}", answer.problems);
     assert_eq!(app.prefs().knobs.radius, 14.0, "applied (and kept by the app like any change)");
-    // The colours it reports are the ones drawn now: the accent role follows.
-    assert_ne!(first[0].get("colour.accent"), answer.get("colour.accent"));
+    // The colors it reports are the ones drawn now: the accent role follows.
+    assert_ne!(first[0].get("color.accent"), answer.get("color.accent"));
 }

@@ -1,7 +1,7 @@
 # The cockpit (experimental)
 
 Some users want byob to look like anything they can describe ("a bounty hunter's gunship
-cockpit"), not just a recoloured chat app. This explores how far that goes on egui,
+cockpit"), not just a recolored chat app. This explores how far that goes on egui,
 without switching UI frameworks, in four parts, each usable on its own. byob ships the
 capabilities and the guide agents re-theme with, not themes of its own: every scene is
 written by the model (or loaded from a file).
@@ -37,14 +37,14 @@ example) and the current custom shader's source.
 
 ```
 ┌ Debug layer ─ overlay pass: fn overlay(p) (premultiplied: glows add, alpha darkens) ─┐
-│ egui: panels / free modules (glass = panel colours with alpha), text, controls       │
+│ egui: panels / free modules (glass = panel colors with alpha), text, controls       │
 └ background layer ─ scene pass: fn scene(p), drawn first, full window ─────────────────┘
 ```
 
 - `crates/ui-egui/src/cockpit/`
   - `wgsl.rs`: the contract. The model writes `fn scene(p: vec2<f32>) -> vec4<f32>` (and
     optionally `fn overlay`); byob appends a prelude: the uniform `u` (size, time, pointer,
-    busy, theme colours, the hovered control, up to 16 panel rects) and helpers (`hash21`,
+    busy, theme colors, the hovered control, up to 16 panel rects) and helpers (`hash21`,
     `noise2`, `fbm2`, `sd_box`, `panel_sdf`, `panel_glow`, `soft_shadow`, `hot_sdf`). The
     model's code goes first, so error line numbers are its own. `check` parses and validates
     with naga (wgpu's compiler, same version) before any GPU sees it.
@@ -82,7 +82,7 @@ example) and the current custom shader's source.
 - Asked to "re-theme byob as the cockpit of a bounty hunter's battered gunship", the model
   read the look and layout, then wrote an ambitious scene of its own: a planet's limb in the
   canopy, star layers, rivet rows, rust and scorch from fbm, a cracked pane, a lock reticle
-  that tightens while it works (`u.busy`). With only colours and a bundled scene it applied
+  that tightens while it works (`u.busy`). With only colors and a bundled scene it applied
   an amber accent, a backdrop, glass and corners in one call (byob then still shipped two
   scenes of its own; it doesn't any more).
 - **It never got to apply its own shader**: it thinks for 60–80k characters first. With the
@@ -136,4 +136,4 @@ this runs: the window is drawn exactly as before.
 Tested in the browser with headless Chromium (software WebGL): composited and frosted, with
 a backdrop saved in the browser's settings. Not done: integrated-GPU performance, HTML apps (the Servo view)
 inside a composited window, and light themes (scenes tend to be dark; light glass over
-them turns grey).
+them turns gray).

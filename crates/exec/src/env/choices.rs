@@ -53,7 +53,7 @@ pub struct Choices {
     /// `None`: nothing is saved (no data folder).
     file: Option<PathBuf>,
     session: Mutex<BTreeMap<PathBuf, Choice>>,
-    /// Serialises read-modify-write of the file.
+    /// Serializes read-modify-write of the file.
     writing: Mutex<()>,
 }
 
