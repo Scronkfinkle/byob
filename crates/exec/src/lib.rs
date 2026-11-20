@@ -230,6 +230,10 @@ impl Exec {
                 for p in &layer.write {
                     policy = policy.allow_write(p);
                 }
+                // The other folders the project works in (its own is the workspace).
+                for p in byob_tools::sandbox::linked(ctx.workspace) {
+                    policy = policy.allow_write(&p);
+                }
                 for p in &layer.sockets {
                     policy = policy.allow_unix_socket(p);
                 }

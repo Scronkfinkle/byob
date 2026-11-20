@@ -9,6 +9,7 @@ use egui::{Color32, RichText, Stroke, vec2};
 use super::registry::Key;
 use crate::ByobApp;
 use crate::form;
+use crate::icons;
 use crate::theme::file::{self, ThemeDef};
 use crate::theme::{self, Accent, Align, BubbleStyle, ChartPalette, Density, Knobs, MonoFont, Prefs, ROLES, ThemeKind, Tokens, UiFont, contrast, hex};
 
@@ -89,63 +90,65 @@ impl ByobApp {
             Key::WorkspaceSettings => match self.sidebar.current_workspace().map(|w| (w.id.clone(), w.name.clone())) {
                 Some((id, name)) => {
                     let label = format!("{}'s settings…", truncate(&name, 28));
-                    if ui.button(label).on_hover_text(format!("The settings of {name}, the workspace of the chat in view")).clicked() {
+                    if form::button(ui, t, &label, true).on_hover_text(format!("The settings of {name}, the project of the chat in view")).clicked() {
                         self.workspaces.open_settings(&id, false);
                     }
                 }
                 None => {
-                    ui.label(RichText::new("The chat in view isn't in a workspace").color(t.text_faint));
+                    ui.label(RichText::new("The chat in view isn't in a project").color(t.text_faint));
                 }
             },
             Key::PluginList => self.plugins.panel(ui, t, &crate::plugins::Filter::All),
             Key::Mode => {
-                for kind in ThemeKind::ALL {
-                    ui.selectable_value(&mut d.prefs.theme, kind, kind.label());
-                }
+                // Each mode drawn in the colours it gives: the light and dark themes as picked.
+                let light = theme::Tokens::build(&file::resolve(&d.prefs.light_theme, false, &self.user_themes), &d.prefs);
+                let dark = theme::Tokens::build(&file::resolve(&d.prefs.dark_theme, true, &self.user_themes), &d.prefs);
+                mode_previews(ui, t, &mut d.prefs.theme, &light, &dark);
             }
             Key::ThemePair => {
-                theme_combo(ui, "light-theme", "Light", &mut d.prefs.light_theme, &d.themes, false);
-                ui.add_space(t.pad(4.0));
-                theme_combo(ui, "dark-theme", "Dark", &mut d.prefs.dark_theme, &d.themes, true);
-            }
-            Key::Gallery => {
+                // Import a theme file and copy this look as one, then the theme for this mode.
+                if icons::icon_button(ui, t, icons::download, None, false).on_hover_text("Import a theme file (.json)").clicked() {
+                    crate::upload::pick_files(ui.ctx(), self.appearance.import_tx.clone());
+                }
+                if icons::icon_button(ui, t, icons::copy, None, false).on_hover_text("Copy this look as a theme file").clicked() {
+                    let text = file::export(&d.current, &d.prefs, &format!("{} (mine)", d.current.name));
+                    ui.ctx().copy_text(text);
+                }
                 let dark = t.dark;
-                gallery(ui, t, &d.themes, &mut d.prefs, dark, &mut d.remove);
+                let slot = if dark { &mut d.prefs.dark_theme } else { &mut d.prefs.light_theme };
+                theme_menu(ui, t, slot, &d.themes, dark, &mut d.remove);
             }
-            Key::Accent => accent_picker(ui, t, &d.current, &mut d.prefs.accent),
+            Key::Background => colour_chip(ui, t, "bg", &d.current, &mut d.prefs, "app_bg", t.app_bg),
+            Key::Foreground => colour_chip(ui, t, "fg", &d.current, &mut d.prefs, "text", t.text),
+            Key::Accent => accent_menu(ui, t, &d.current, &mut d.prefs.accent),
             Key::Radius => {
-                ui.add(egui::Slider::new(&mut k.radius, Knobs::RADIUS_RANGE).step_by(1.0).suffix(" pt"));
+                form::slider(ui, t, &mut k.radius, Knobs::RADIUS_RANGE, 1.0, |v| format!("{v:.0} pt"));
             }
             Key::ThinkingSize => {
-                for u in crate::count::SizeUnit::ALL {
-                    ui.selectable_value(&mut d.prefs.thinking_size, u, u.label());
-                }
+                let choices: Vec<(crate::count::SizeUnit, &str)> = crate::count::SizeUnit::ALL.iter().map(|u| (*u, u.label())).collect();
+                form::select(ui, t, &mut d.prefs.thinking_size, &choices, None);
             }
             Key::ChartColors => {
-                for c in ChartPalette::ALL {
-                    ui.selectable_value(&mut k.chart, c, c.label());
-                }
+                let choices: Vec<(ChartPalette, &str)> = ChartPalette::ALL.iter().map(|c| (*c, c.label())).collect();
+                form::select(ui, t, &mut k.chart, &choices, None);
             }
             Key::MessageLayout => {
-                for a in Align::ALL {
-                    ui.selectable_value(&mut k.align, a, a.label());
-                }
+                let choices: Vec<(Align, &str)> = Align::ALL.iter().map(|a| (*a, a.label())).collect();
+                form::select(ui, t, &mut k.align, &choices, None);
             }
             Key::UserBubble => {
-                for s in BubbleStyle::ALL {
-                    ui.selectable_value(&mut k.user_bubble, s, s.label());
-                }
+                let choices: Vec<(BubbleStyle, &str)> = BubbleStyle::ALL.iter().map(|s| (*s, s.label())).collect();
+                form::select(ui, t, &mut k.user_bubble, &choices, None);
             }
             Key::ReplyBubble => {
-                for s in BubbleStyle::ALL {
-                    ui.selectable_value(&mut k.assistant_bubble, s, s.label());
-                }
+                let choices: Vec<(BubbleStyle, &str)> = BubbleStyle::ALL.iter().map(|s| (*s, s.label())).collect();
+                form::select(ui, t, &mut k.assistant_bubble, &choices, None);
             }
             Key::BubblePadding => {
-                ui.add(egui::Slider::new(&mut k.bubble_padding, Knobs::PADDING_RANGE).step_by(1.0).suffix(" pt"));
+                form::slider(ui, t, &mut k.bubble_padding, Knobs::PADDING_RANGE, 1.0, |v| format!("{v:.0} pt"));
             }
             Key::LineSpacing => {
-                ui.add(egui::Slider::new(&mut k.line_spacing, Knobs::LINE_SPACING_RANGE).step_by(0.05).fixed_decimals(2));
+                form::slider(ui, t, &mut k.line_spacing, Knobs::LINE_SPACING_RANGE, 0.05, |v| format!("{v:.2}×"));
             }
             Key::ShownPreset => self.layout_presets(ui, t),
             Key::ShownList => self.layout_list(ui, t),
@@ -192,7 +195,7 @@ impl ByobApp {
             Key::ImportTheme => self.import_buttons(ui),
             Key::ExportTheme => self.export_controls(ui, t, d),
             Key::ResetLook => {
-                if ui.button("Reset").on_hover_text("Accent, corners, bubbles and chart colors back to the theme's").clicked() {
+                if form::button(ui, t, "Reset", true).on_hover_text("Accent, corners, bubbles and chart colours back to the theme's").clicked() {
                     let dk = Knobs::default();
                     d.prefs.accent = Accent::Theme;
                     (k.radius, k.user_bubble, k.assistant_bubble, k.chart) = (dk.radius, dk.user_bubble, dk.assistant_bubble, dk.chart);
@@ -200,7 +203,11 @@ impl ByobApp {
                 }
             }
             Key::ResetAppearance => {
-                if ui.button("Reset everything").on_hover_text("Themes, accent, text, layout and color overrides (keeps imported themes)").clicked() {
+                // The one destructive action on the page: in the error colour, outlined.
+                if form::danger_button(ui, t, "Reset everything")
+                    .on_hover_text("Themes, accent, text, layout and colour overrides (keeps imported themes)")
+                    .clicked()
+                {
                     d.prefs = Prefs { imported: std::mem::take(&mut d.prefs.imported), ..Prefs::default() };
                 }
             }
@@ -211,20 +218,14 @@ impl ByobApp {
             }
             Key::TextSize => scale_buttons(ui, &mut k.font_scale),
             Key::CodeSize => scale_buttons(ui, &mut k.code_scale),
-            Key::Font => {
-                for f in UiFont::ALL {
-                    ui.selectable_value(&mut k.ui_font, f, f.label());
-                }
-            }
+            Key::Font => font_menu(ui, t, &mut k.ui_font),
             Key::CodeFont => {
-                for f in MonoFont::ALL {
-                    ui.selectable_value(&mut k.mono_font, f, f.label());
-                }
+                let choices: Vec<(MonoFont, &str)> = MonoFont::ALL.iter().map(|f| (*f, f.label())).collect();
+                form::select(ui, t, &mut k.mono_font, &choices, None);
             }
             Key::Density => {
-                for dn in Density::ALL {
-                    ui.selectable_value(&mut k.density, dn, dn.label());
-                }
+                let choices: Vec<(Density, &str)> = Density::ALL.iter().map(|d| (*d, d.label())).collect();
+                form::select(ui, t, &mut k.density, &choices, None);
             }
             Key::ColumnWidth => {
                 for (w, name) in Knobs::WIDTHS {
@@ -235,11 +236,11 @@ impl ByobApp {
                 }
             }
             Key::ChatListWidth => {
-                ui.add(egui::Slider::new(&mut k.sidebar_width, Knobs::SIDEBAR_RANGE).step_by(10.0).suffix(" pt"));
+                form::slider(ui, t, &mut k.sidebar_width, Knobs::SIDEBAR_RANGE, 10.0, |v| format!("{v:.0} pt"));
             }
             Key::ArtifactPane => {
                 let mut pct = k.pane_share * 100.0;
-                if ui.add(egui::Slider::new(&mut pct, 30.0..=75.0).step_by(1.0).suffix(" %")).changed() {
+                if form::slider(ui, t, &mut pct, 30.0..=75.0, 1.0, |v| format!("{v:.0}%")) {
                     k.pane_share = pct / 100.0;
                 }
             }
@@ -250,7 +251,7 @@ impl ByobApp {
                 form::switch(ui, t, &mut k.reduce_motion);
             }
             Key::ResetText => {
-                if ui.button("Reset").on_hover_text("Zoom, sizes, fonts, spacing and layout back to defaults").clicked() {
+                if form::button(ui, t, "Reset", true).on_hover_text("Zoom, sizes, fonts, spacing and layout back to defaults").clicked() {
                     let dk = Knobs::default();
                     d.prefs.zoom = 1.0;
                     (k.font_scale, k.code_scale, k.ui_font, k.mono_font, k.density) = (dk.font_scale, dk.code_scale, dk.ui_font, dk.mono_font, dk.density);
@@ -277,33 +278,63 @@ impl ByobApp {
     }
 
     fn import_buttons(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Import…").on_hover_text("Add a theme from a .json theme file").clicked() {
+        if form::button(ui, &self.tokens, "Import…", true).on_hover_text("Add a theme from a .json theme file").clicked() {
             crate::upload::pick_files(ui.ctx(), self.appearance.import_tx.clone());
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(dir) = &self.themes_dir
-            && ui.button("Reload").on_hover_text(format!("Re-read {}", dir.display())).clicked()
+            && icons::icon_button(ui, &self.tokens, icons::refresh, None, false)
+                .on_hover_text(format!("Read the theme files in {} again", dir.display()))
+                .clicked()
         {
             self.reload_themes();
         }
     }
 
-    /// A name for the current look, and Export… / Save to themes.
+    /// "Save…": a small panel with the look's name, then Save to my themes (where there's a
+    /// themes folder) or Export as file. One button on the row, the choices when asked.
     fn export_controls(&mut self, ui: &mut egui::Ui, t: &Tokens, d: &mut Draw) {
         let current = d.current.clone();
         if self.appearance.export_name.is_empty() {
             self.appearance.export_name = if current.is_builtin() { format!("{} (mine)", current.name) } else { current.name.clone() };
         }
-        ui.add(form::field(&mut self.appearance.export_name, t).desired_width(170.0).hint_text("Theme name"));
+        let b = form::button(ui, t, "Save…", true).on_hover_text("Save this look as a theme");
+        let mut save_to_themes = false;
+        crate::menu::below(&b, t, 280.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.label(egui::RichText::new("Name").size(t.text_size(12.5)).color(t.text_dim));
+            let name_id = egui::Id::unique("export-theme-name");
+            crate::workspace::form_field(ui, t, name_id, |frame| {
+                egui::TextEdit::singleline(&mut self.appearance.export_name)
+                    .id(name_id)
+                    .hint_text("Theme name")
+                    .char_limit(80)
+                    .desired_width(240.0)
+                    .frame(frame)
+            });
+            let named = !self.appearance.export_name.trim().is_empty();
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.themes_dir.is_some()
+                    && crate::workspace::dialog_button(ui, t, "Save to my themes", true, named, 32.0)
+                        .on_hover_text("List it with your themes, ready to pick")
+                        .clicked()
+                {
+                    save_to_themes = true;
+                    ui.close();
+                }
+                if form::button(ui, t, "Export as file…", named).on_hover_text("Save it as a .json file to share").clicked() {
+                    let text = file::export(&current, &d.prefs, &self.appearance.export_name);
+                    let filename = format!("{}.json", file::slug(&self.appearance.export_name));
+                    self.appearance.exports.save(ui.ctx(), &filename, "application/json", text.into_bytes());
+                    ui.close();
+                }
+            });
+        });
         let text = file::export(&current, &d.prefs, &self.appearance.export_name);
-        let filename = format!("{}.json", file::slug(&self.appearance.export_name));
-        if ui.button("Export…").on_hover_text("Save the current look (colors and knobs) as a theme file").clicked() {
-            self.appearance.exports.save(ui.ctx(), &filename, "application/json", text.clone().into_bytes());
-        }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(dir) = self.themes_dir.clone()
-            && ui.button("Save to themes").on_hover_text(format!("Save into {} and list it in the gallery", dir.display())).clicked()
-        {
+        if save_to_themes && self.themes_dir.is_some() {
             // Saving picks the saved theme: what this frame changed goes in first.
             if d.prefs != self.prefs {
                 self.set_prefs(d.prefs.clone());
@@ -325,6 +356,8 @@ impl ByobApp {
             }
             *d = self.begin_draw();
         }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (save_to_themes, text);
     }
 
     /// Below Theme files: what the last imports and exports said, and theme file warnings.
@@ -368,125 +401,6 @@ pub(crate) fn pick_theme(prefs: &mut Prefs, def: &ThemeDef, dark_now: bool) {
     }
 }
 
-fn theme_combo(ui: &mut egui::Ui, id: &str, label: &str, value: &mut String, themes: &[ThemeDef], dark: bool) {
-    let shown = themes.iter().find(|d| d.id == *value).map_or_else(|| value.clone(), |d| d.name.clone());
-    ui.label(label);
-    egui::ComboBox::from_id_salt(id).selected_text(shown).show_ui(ui, |ui| {
-        // Themes of the matching kind first; the others are allowed too.
-        for d in themes.iter().filter(|d| d.dark == dark).chain(themes.iter().filter(|d| d.dark != dark)) {
-            ui.selectable_value(value, d.id.clone(), &d.name);
-        }
-    });
-}
-
-/// Swatch cards, one per theme. Click to use; right-click a user theme to remove it.
-fn gallery(ui: &mut egui::Ui, t: &Tokens, themes: &[ThemeDef], prefs: &mut Prefs, dark_now: bool, remove: &mut Option<ThemeDef>) {
-    let gap = ui.spacing().item_spacing.x;
-    let avail = ui.available_width();
-    // Two columns on a phone, else as many ~150 pt cards as fit, spread to fill the row.
-    let cols = if avail < form::NARROW { 2.0 } else { ((avail + gap) / (150.0 + gap)).floor().max(2.0) };
-    let w = ((avail - gap * (cols - 1.0)) / cols).floor().clamp(100.0, 220.0);
-    let h = (w * 0.62).round();
-    // Cards show each theme's own look (its accent) with this device's knobs and overrides.
-    let card_prefs = Prefs { accent: Accent::Theme, ..prefs.clone() };
-    let active = prefs.theme_id(dark_now).to_owned();
-    let mut picked = None;
-    ui.horizontal_wrapped(|ui| {
-        for def in themes {
-            let ct = Tokens::build(def, &card_prefs);
-            let slot = if def.id == prefs.dark_theme && def.id == prefs.light_theme {
-                Some("dark + light")
-            } else if def.id == prefs.dark_theme {
-                Some("dark")
-            } else if def.id == prefs.light_theme {
-                Some("light")
-            } else {
-                None
-            };
-            let resp = card(ui, t, &ct, def, vec2(w, h), def.id == active, slot);
-            let resp = resp.on_hover_text(format!("{} · {} · {}", def.name, if def.dark { "dark" } else { "light" }, def.credit()));
-            if resp.clicked() {
-                picked = Some(def.clone());
-            }
-            if !def.is_builtin() {
-                resp.context_menu(|ui| {
-                    if ui.button("Remove theme").clicked() {
-                        *remove = Some(def.clone());
-                        ui.close();
-                    }
-                });
-            }
-        }
-    });
-    if let Some(def) = picked {
-        pick_theme(prefs, &def, dark_now);
-    }
-}
-
-/// One gallery card: a miniature of the theme (header, a reply, your message, code) and its name.
-fn card(ui: &mut egui::Ui, t: &Tokens, ct: &Tokens, def: &ThemeDef, size: egui::Vec2, active: bool, slot: Option<&str>) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    if !ui.is_rect_visible(rect) {
-        return resp;
-    }
-    let p = ui.painter_at(rect.expand(2.0));
-    let r = t.round(8.0);
-    p.rect_filled(rect, r, ct.app_bg);
-    let name_h = 20.0f32.min(size.y * 0.3);
-    let body = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - name_h));
-    // header strip with the accent as the "byob" mark
-    let header = egui::Rect::from_min_size(body.min, vec2(body.width(), body.height() * 0.16));
-    p.rect_filled(header, egui::CornerRadius { nw: r as u8, ne: r as u8, sw: 0, se: 0 }, ct.panel_bg);
-    p.circle_filled(egui::pos2(header.min.x + 8.0, header.center().y), (header.height() * 0.28).max(2.0), ct.accent);
-    let inner = body.shrink2(vec2(7.0, 0.0));
-    let line = |y: f32, x0: f32, len: f32, c: Color32| {
-        p.line_segment([egui::pos2(x0, y), egui::pos2(x0 + len, y)], Stroke::new(2.0, c));
-    };
-    // a reply bubble with two lines of text and a code chip
-    let reply = egui::Rect::from_min_size(egui::pos2(inner.min.x, header.max.y + 5.0), vec2(inner.width() * 0.78, body.height() * 0.5));
-    p.rect_filled(reply, r * 0.5, ct.assistant_bubble);
-    line(reply.min.y + 6.0, reply.min.x + 6.0, reply.width() * 0.6, ct.text);
-    line(reply.min.y + 11.0, reply.min.x + 6.0, reply.width() * 0.4, ct.text_dim);
-    let code = egui::Rect::from_min_max(egui::pos2(reply.min.x + 5.0, reply.min.y + 16.0), egui::pos2(reply.max.x - 5.0, reply.max.y - 4.0));
-    if code.height() > 4.0 {
-        p.rect_filled(code, 2.0, ct.code_bg);
-        let y = code.center().y;
-        let seg = code.width() / 5.0;
-        for (i, c) in [ct.syntax_keyword, ct.syntax_function, ct.syntax_string].into_iter().enumerate() {
-            #[allow(clippy::cast_precision_loss)] // three segments
-            let x = code.min.x + 3.0 + i as f32 * (seg + 3.0);
-            line(y, x, seg, c);
-        }
-    }
-    // your message, on the right
-    let user = egui::Rect::from_min_size(egui::pos2(inner.max.x - inner.width() * 0.5, reply.max.y + 4.0), vec2(inner.width() * 0.5, body.height() * 0.16));
-    if user.max.y < body.max.y {
-        p.rect_filled(user, r * 0.5, ct.user_bubble);
-        line(user.center().y, user.min.x + 6.0, user.width() * 0.5, ct.text);
-    }
-    // name strip
-    let name_rect = egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - name_h), rect.max);
-    p.rect_filled(name_rect, egui::CornerRadius { nw: 0, ne: 0, sw: r as u8, se: r as u8 }, ct.panel_bg);
-    let font = egui::FontId::proportional(t.text_size(11.5).min(name_h * 0.7));
-    let label = p.layout(def.name.clone(), font.clone(), ct.text, name_rect.width() - 10.0);
-    p.galley(egui::pos2(name_rect.min.x + 6.0, name_rect.center().y - label.size().y / 2.0), label, ct.text);
-    if let Some(slot) = slot {
-        let badge = p.layout_no_wrap(slot.to_owned(), egui::FontId::proportional(9.5), ct.on_accent);
-        let b = egui::Rect::from_min_size(egui::pos2(rect.max.x - badge.size().x - 10.0, rect.min.y + 3.0), badge.size() + vec2(6.0, 2.0));
-        p.rect_filled(b, 3.0, ct.accent);
-        p.galley(b.min + vec2(3.0, 1.0), badge, ct.on_accent);
-    }
-    let stroke = if active {
-        Stroke::new(2.5, t.accent)
-    } else if resp.hovered() {
-        Stroke::new(1.5, t.text_dim)
-    } else {
-        Stroke::new(1.0, t.border)
-    };
-    p.rect_stroke(rect, r, stroke, egui::StrokeKind::Outside);
-    resp
-}
-
 fn scale_buttons(ui: &mut egui::Ui, value: &mut f32) {
     for (scale, name) in Knobs::FONT_SCALES {
         if ui.selectable_label((*value - scale).abs() < 0.01, name).clicked() {
@@ -495,27 +409,237 @@ fn scale_buttons(ui: &mut egui::Ui, value: &mut f32) {
     }
 }
 
-/// The theme's own accent, its named accents, and a custom color.
-fn accent_picker(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, accent: &mut Accent) {
+/// The modes as small pictures of byob, each in its own colours, with its name under it.
+/// System is split: light on the left, dark on the right. The chosen one has an ink ring.
+fn mode_previews(ui: &mut egui::Ui, t: &Tokens, value: &mut ThemeKind, light: &Tokens, dark: &Tokens) {
+    let size = vec2(76.0, 50.0);
+    let label_font = egui::FontId::proportional(12.0);
+    let label_h = 18.0;
+    let radius = t.round(form::CONTROL_R + 2.0);
+    ui.spacing_mut().item_spacing.x = 12.0;
+    for (kind, name) in [(ThemeKind::System, "System"), (ThemeKind::Light, "Light"), (ThemeKind::Dark, "Dark")] {
+        let (rect, resp) = ui.allocate_exact_size(vec2(size.x, size.y + label_h), egui::Sense::click());
+        let resp = resp.on_hover_text(match kind {
+            ThemeKind::System => "Follow this computer: light by day, dark when it is",
+            ThemeKind::Light => "Always light",
+            ThemeKind::Dark => "Always dark",
+        });
+        let on = *value == kind;
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, on, name));
+        if resp.clicked() {
+            *value = kind;
+        }
+        if !ui.is_rect_visible(rect) {
+            continue;
+        }
+        let tile = egui::Rect::from_min_size(rect.min, size);
+        let p = ui.painter();
+        match kind {
+            ThemeKind::System => {
+                let mid = tile.center().x;
+                mini_window(&p.with_clip_rect(egui::Rect::from_min_max(tile.min, egui::pos2(mid, tile.bottom()))), tile, radius, light);
+                mini_window(&p.with_clip_rect(egui::Rect::from_min_max(egui::pos2(mid, tile.top()), tile.max)), tile, radius, dark);
+            }
+            ThemeKind::Light => mini_window(p, tile, radius, light),
+            ThemeKind::Dark => mini_window(p, tile, radius, dark),
+        }
+        // A soft hairline on every tile; the chosen one gets an ink ring just outside it.
+        let edge = if resp.hovered() && !on { t.field_border } else { t.separator };
+        p.rect_stroke(tile, radius, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+        if on || resp.has_focus() {
+            p.rect_stroke(tile.expand(2.5), radius + 2.5, Stroke::new(1.5, t.text_strong), egui::StrokeKind::Middle);
+        }
+        let colour = if on { t.text_strong } else { t.text_dim };
+        p.text(egui::pos2(tile.center().x, tile.bottom() + label_h * 0.5 + 3.0), egui::Align2::CENTER_CENTER, name, label_font.clone(), colour);
+    }
+}
+
+/// byob in miniature, in `tk`'s colours: a sidebar with a few chats, a reply, your message
+/// in its bubble, and the message box with its send button in the accent.
+fn mini_window(p: &egui::Painter, r: egui::Rect, radius: f32, tk: &Tokens) {
+    use egui::{Rect, pos2};
+    p.rect_filled(r, radius, tk.app_bg);
+    // The sidebar.
+    let side = Rect::from_min_max(r.min, pos2(r.left() + r.width() * 0.3, r.bottom()));
+    p.rect_filled(side, egui::CornerRadius { nw: radius as u8, sw: radius as u8, ne: 0, se: 0 }, tk.panel_bg);
+    p.vline(side.right(), side.y_range(), Stroke::new(1.0, tk.separator));
+    let line = |x0: f32, x1: f32, y: f32, c: Color32| p.rect_filled(Rect::from_min_max(pos2(x0, y - 1.25), pos2(x1, y + 1.25)), 1.25, c);
+    let faint = tk.text_faint.gamma_multiply(0.7);
+    p.circle_filled(pos2(side.left() + 6.0, side.top() + 7.0), 2.0, faint);
+    for (i, w) in [0.75_f32, 0.55, 0.65].iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)] // three rows
+        let y = side.top() + 16.0 + i as f32 * 7.0;
+        line(side.left() + 4.0, side.left() + 4.0 + (side.width() - 8.0) * w, y, faint);
+    }
+    // The chat: a reply in two lines, then your message on the right in its bubble.
+    let main = Rect::from_min_max(pos2(side.right() + 6.0, r.top() + 7.0), pos2(r.right() - 6.0, r.bottom() - 6.0));
+    let text = tk.text_dim.gamma_multiply(0.75);
+    line(main.left(), main.left() + main.width() * 0.8, main.top() + 2.0, text);
+    line(main.left(), main.left() + main.width() * 0.55, main.top() + 8.0, text);
+    let bubble = Rect::from_min_max(pos2(main.right() - main.width() * 0.5, main.top() + 13.0), pos2(main.right(), main.top() + 21.0));
+    p.rect_filled(bubble, 3.0, tk.user_bubble);
+    // The message box with its send button.
+    let input = Rect::from_min_max(pos2(main.left(), main.bottom() - 10.0), main.max);
+    p.rect_filled(input, 3.5, tk.field_bg);
+    p.rect_stroke(input, 3.5, Stroke::new(1.0, tk.field_border.gamma_multiply(0.8)), egui::StrokeKind::Inside);
+    p.circle_filled(pos2(input.right() - 5.0, input.center().y), 2.5, tk.accent);
+}
+
+/// A theme's sample: "Aa" in its accent on its background, in a circle.
+fn theme_mark(def: &ThemeDef) -> impl Fn(&egui::Painter, egui::Rect) + '_ {
+    move |p: &egui::Painter, r: egui::Rect| {
+        let bg = theme::rgb(def.base.bg);
+        let accent = def.accent.unwrap_or_else(|| theme::rgb(def.base.default_accent()));
+        p.circle_filled(r.center(), r.width() / 2.0, bg);
+        p.circle_stroke(r.center(), r.width() / 2.0, Stroke::new(1.0, Color32::from_gray(128).gamma_multiply(0.4)));
+        p.text(r.center(), egui::Align2::CENTER_CENTER, "Aa", egui::FontId::proportional(r.height() * 0.5), accent);
+    }
+}
+
+/// The theme for this mode: byob's own first, the others under More themes (a submenu).
+fn theme_menu(ui: &mut egui::Ui, t: &Tokens, value: &mut String, themes: &[ThemeDef], dark: bool, remove: &mut Option<ThemeDef>) {
+    let Some(current) = themes.iter().find(|d| d.id == *value).or_else(|| themes.iter().find(|d| d.dark == dark)) else { return };
+    let mark = theme_mark(current);
+    let b = form::pill(ui, t, 200.0, Some(&mark), &current.name);
+    // One theme; a theme you added can be removed (right-click).
+    let row = |ui: &mut egui::Ui, def: &ThemeDef, value: &mut String, remove: &mut Option<ThemeDef>| {
+        let mark = theme_mark(def);
+        let on = def.id == *value;
+        let r = crate::menu::item_marked(ui, t, &|p, rect, _| mark(p, rect.expand(3.0)), &def.name, on.then_some("✓"));
+        let r = if def.is_builtin() { r } else { r.on_hover_text("Right-click to remove it") };
+        if !def.is_builtin() && r.secondary_clicked() {
+            *remove = Some(def.clone());
+            ui.close();
+        }
+        if r.clicked() {
+            value.clone_from(&def.id);
+            ui.close();
+        }
+    };
+    crate::menu::below(&b, t, 240.0).show(|ui| {
+        crate::menu::tighten(ui);
+        let (own, more): (Vec<&ThemeDef>, Vec<&ThemeDef>) = themes.iter().filter(|d| d.dark == dark).partition(|d| d.base.credit == "byob" || !d.is_builtin());
+        for def in own {
+            row(ui, def, value, remove);
+        }
+        if !more.is_empty() {
+            let r = crate::chatbar::value_row(ui, t, "More themes", "");
+            egui::containers::menu::SubMenu::new().config(crate::chatbar::sub_menu_config(t)).show(ui, &r, |ui| {
+                ui.set_width(220.0);
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    for def in more {
+                        row(ui, def, value, remove);
+                    }
+                });
+            });
+        }
+    });
+}
+
+/// The accent: Default (the theme's own: byob's ink), the theme's colours, or Custom (any
+/// colour, edited as hex beside it).
+fn accent_menu(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, accent: &mut Accent) {
     let p = current.base;
     let own = current.accent.unwrap_or_else(|| theme::rgb(p.default_accent()));
-    if swatch(ui, own, *accent == Accent::Theme, t).on_hover_text("The theme's own accent").clicked() {
-        *accent = Accent::Theme;
-    }
-    for (name, c) in p.accents {
-        let selected = matches!(accent, Accent::Named(n) if n.eq_ignore_ascii_case(name));
-        if swatch(ui, theme::rgb(*c), selected, t).on_hover_text(*name).clicked() {
-            *accent = Accent::Named((*name).to_owned());
+    let dot = |c: Color32| {
+        move |pt: &egui::Painter, r: egui::Rect| {
+            pt.circle_filled(r.center(), 7.0, c);
+            pt.circle_stroke(r.center(), 7.0, Stroke::new(1.0, Color32::from_gray(128).gamma_multiply(0.45)));
+        }
+    };
+    let label = match &*accent {
+        Accent::Theme => "Default".to_owned(),
+        Accent::Custom(_) => "Custom".to_owned(),
+        other => capitalise(&other.label()),
+    };
+    let mark = dot(t.accent);
+    let b = form::pill(ui, t, 130.0, Some(&mark), &label);
+    crate::menu::below(&b, t, 200.0).show(|ui| {
+        crate::menu::tighten(ui);
+        let d = dot(own);
+        if crate::menu::item_marked(ui, t, &|pt, r, _| d(pt, r), "Default", (*accent == Accent::Theme).then_some("✓")).clicked() {
+            *accent = Accent::Theme;
+            ui.close();
+        }
+        // The theme's own colours (its first is the default, already listed).
+        for (name, c) in p.accents.iter().skip(1) {
+            let on = matches!(accent, Accent::Named(n) if n.eq_ignore_ascii_case(name));
+            let d = dot(theme::rgb(*c));
+            if crate::menu::item_marked(ui, t, &|pt, r, _| d(pt, r), &capitalise(name), on.then_some("✓")).clicked() {
+                *accent = Accent::Named((*name).to_owned());
+                ui.close();
+            }
+        }
+        crate::menu::separator(ui, t);
+        let on = matches!(accent, Accent::Custom(_));
+        if crate::menu::item(ui, t, None, "Custom", on.then_some("✓")).clicked() {
+            *accent = Accent::Custom(hex(t.accent));
+            ui.close();
+        }
+    });
+    if let Accent::Custom(h) = accent {
+        let mut c = theme::parse_color(h).unwrap_or(t.accent);
+        if hex_field(ui, t, "accent-hex", &mut c) {
+            *accent = Accent::Custom(hex(c));
         }
     }
-    let mut c = t.accent;
-    let custom = matches!(accent, Accent::Custom(_));
-    if egui::color_picker::color_edit_button_srgba(ui, &mut c, egui::color_picker::Alpha::Opaque).on_hover_text("Any color").changed() {
-        *accent = Accent::Custom(hex(c));
+}
+
+/// A colour of the theme (its background, its text) as a chip: a dot and its hex, editable.
+/// A change is an override of this theme only (the Colours tab lists every one).
+fn colour_chip(ui: &mut egui::Ui, t: &Tokens, id: &str, current: &ThemeDef, prefs: &mut Prefs, role: &str, now: Color32) {
+    let mut c = now;
+    if hex_field(ui, t, id, &mut c) {
+        prefs.overrides.entry(current.id.clone()).or_default().insert(role.to_owned(), hex(c));
     }
-    if custom || matches!(accent, Accent::Blue | Accent::Violet | Accent::Green | Accent::Orange | Accent::Pink | Accent::Teal) {
-        ui.label(RichText::new(accent.label()).small().color(t.text_dim));
+}
+
+/// A hex colour in a pill: its dot and `#RRGGBB`, typed over. True when a valid new colour
+/// was entered (Enter, or leaving the field).
+fn hex_field(ui: &mut egui::Ui, t: &Tokens, id: &str, color: &mut Color32) -> bool {
+    let key = egui::Id::unique(("hex-field", id));
+    let mut text = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| hex(*color).to_uppercase());
+    let (rect, _) = ui.allocate_exact_size(vec2(118.0, 32.0), egui::Sense::hover());
+    ui.painter().rect(rect, t.round(form::CONTROL_R), Color32::TRANSPARENT, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+    ui.painter().circle_filled(egui::pos2(rect.left() + 16.0, rect.center().y), 7.0, *color);
+    ui.painter().circle_stroke(egui::pos2(rect.left() + 16.0, rect.center().y), 7.0, Stroke::new(1.0, Color32::from_gray(128).gamma_multiply(0.45)));
+    let field = egui::Rect::from_min_max(egui::pos2(rect.left() + 30.0, rect.top()), egui::pos2(rect.right() - 8.0, rect.bottom()));
+    let r = ui.put(
+        field,
+        egui::TextEdit::singleline(&mut text).frame(egui::Frame::NONE).font(egui::TextStyle::Monospace).char_limit(7).align(egui::Align2::LEFT_CENTER),
+    );
+    let mut changed = false;
+    if r.has_focus() || r.changed() {
+        ui.data_mut(|d| d.insert_temp(key, text.clone()));
     }
+    if r.lost_focus() {
+        if let Some(c) = theme::parse_color(text.trim()) {
+            changed = c != *color;
+            *color = c;
+        }
+        ui.data_mut(|d| d.remove_temp::<String>(key));
+    }
+    changed
+}
+
+/// The interface font, as a menu.
+fn font_menu(ui: &mut egui::Ui, t: &Tokens, font: &mut UiFont) {
+    let b = form::pill(ui, t, 120.0, None, font.label());
+    crate::menu::below(&b, t, 180.0).show(|ui| {
+        crate::menu::tighten(ui);
+        for f in UiFont::ALL {
+            if crate::menu::item(ui, t, None, f.label(), (*font == f).then_some("✓")).clicked() {
+                *font = f;
+                ui.close();
+            }
+        }
+    });
+}
+
+/// "violet" → "Violet".
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
 /// The background a text-like role is read on, for its contrast hint.
@@ -529,27 +653,12 @@ fn read_on(role: &str) -> Option<&'static str> {
     })
 }
 
-/// A round color button, ringed when selected.
-fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool, t: &Tokens) -> egui::Response {
-    let size = ui.spacing().interact_size.y;
-    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), egui::Sense::click());
-    let center = rect.center();
-    let r = size * 0.5;
-    if selected {
-        ui.painter().circle_stroke(center, r - 1.0, Stroke::new(2.0, t.text_strong));
-    } else if resp.hovered() {
-        ui.painter().circle_stroke(center, r - 1.0, Stroke::new(1.0, t.border));
-    }
-    ui.painter().circle_filled(center, r - 4.0, color);
-    resp
-}
-
-/// Every color role with a picker, in columns; changes are overrides for the current theme only.
+/// Every colour role with a picker, in columns; changes are overrides for the current theme only.
 fn advanced(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, prefs: &mut Prefs, filter: &mut String) {
     ui.horizontal_wrapped(|ui| {
         ui.add(form::field(filter, t).hint_text("Filter colors").desired_width(200.0));
         let has = prefs.overrides.get(&current.id).is_some_and(|o| !o.is_empty());
-        if ui.add_enabled(has, egui::Button::new("Reset all colors")).clicked() {
+        if form::button(ui, t, "Reset all colours", has).clicked() {
             prefs.overrides.remove(&current.id);
         }
     });
@@ -646,4 +755,39 @@ fn role_row(ui: &mut egui::Ui, t: &Tokens, role: &theme::Role, current: &ThemeDe
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each picture is its mode: clicking Light then Dark picks them; System stays split.
+    #[test]
+    fn clicking_a_mode_picture_picks_that_mode() {
+        let ctx = egui::Context::default();
+        let (light, dark) = (Tokens::light(), Tokens::dark());
+        let mut mode = ThemeKind::System;
+        let frame = |mode: &mut ThemeKind, events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                ui.horizontal(|ui| mode_previews(ui, &light, mode, &light, &dark));
+            });
+            out.textures_delta.clear();
+        };
+        let click = |x: f32| {
+            let at = egui::pos2(x, 25.0);
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+            ]
+        };
+        frame(&mut mode, vec![]);
+        // Tiles are 76 wide, 12 apart: System, then Light at 88, then Dark at 176.
+        frame(&mut mode, click(88.0 + 38.0));
+        assert_eq!(mode, ThemeKind::Light);
+        frame(&mut mode, click(176.0 + 38.0));
+        assert_eq!(mode, ThemeKind::Dark);
+        frame(&mut mode, click(38.0));
+        assert_eq!(mode, ThemeKind::System);
+    }
 }

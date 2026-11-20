@@ -1130,6 +1130,14 @@ pub(crate) fn expand_slash(text: &str, composed: &Composed) -> Option<String> {
 }
 
 /// How a client sees `plugin` (`tools`: its tools as offered to the model).
+/// Largest logo served, in bytes.
+pub(crate) const MAX_LOGO_BYTES: u64 = 512 * 1024;
+
+/// A plugin's logo file, if its folder has one small enough (`logo.png`, `logo.jpg`).
+pub(crate) fn logo_file(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    ["logo.png", "logo.jpg", "logo.jpeg"].iter().map(|n| dir.join(n)).find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() <= MAX_LOGO_BYTES))
+}
+
 fn info(plugin: &Plugin, scope: PluginScope, input: &ComposeIn<'_>, tools: &[String], fp: u64, last_error: Option<String>) -> PluginInfo {
     let m = &plugin.manifest;
     let (origin, trusted, declined) = origin_of(plugin, scope, input.trust);
@@ -1190,6 +1198,7 @@ fn info(plugin: &Plugin, scope: PluginScope, input: &ComposeIn<'_>, tools: &[Str
             renderers: m.renderers.iter().map(|r| RendererDecl { content_type: r.content_type.clone(), renderer: r.renderer.clone() }).collect(),
             starters: m.starters.iter().map(|s| StarterDecl { title: s.title.clone(), prompt: s.prompt.clone() }).collect(),
             superseded_by: None,
+            logo: logo_file(&plugin.dir).is_some(),
         }
     }
 }

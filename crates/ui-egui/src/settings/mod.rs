@@ -159,6 +159,8 @@ pub struct AppearanceUi {
     flash: Option<(Key, f64)>,
     /// What the last frame drew: each setting and where.
     pub(crate) drawn: Vec<(Key, egui::Rect)>,
+    /// Appearance's Advanced is open (its groups shown on the page).
+    pub(crate) advanced: bool,
 }
 
 impl Default for AppearanceUi {
@@ -179,6 +181,7 @@ impl Default for AppearanceUi {
             jump_frames: 0,
             flash: None,
             drawn: Vec::new(),
+            advanced: false,
         }
     }
 }
@@ -228,6 +231,8 @@ impl ByobApp {
     pub(crate) fn jump_to(&mut self, key: Key) {
         if let Some(s) = registry::get(key) {
             self.open_settings_at(s.section.tab);
+            // A setting of Appearance's Advanced: open it (it stays open for a page setting).
+            self.appearance.advanced |= registry::is_advanced(s.section);
             self.appearance.jump = Some(key);
             self.appearance.jump_frames = 4;
         }
@@ -423,9 +428,9 @@ impl ByobApp {
         match tab {
             Tab::Models if self.models.available() => "The models byob can use, saved for every window and browser tab.".into(),
             Tab::Models => "The model server byob talks to; saved for every window and browser tab.".into(),
-            Tab::Defaults => "Defaults for every chat, saved in settings.json. A workspace or a chat can change each of them for itself.".into(),
-            Tab::Plugins => "What the chat in view can use: plugins of this chat, its workspace and every chat.".into(),
-            Tab::Appearance => "How byob looks. Saved on this device only, except what's shown, which every window shares.".into(),
+            Tab::Defaults => "Defaults for every chat, saved in settings.json. A project or a chat can change each of them for itself.".into(),
+            Tab::Plugins => "What the chat in view can use: plugins of this chat, its project and every chat.".into(),
+            Tab::Appearance => "How byob looks on this device: its theme, colours and messages.".into(),
             Tab::Text => "Sizes, fonts and how the window is laid out. Saved on this device only.".into(),
             Tab::Colors => {
                 let current = file::resolve(self.prefs.theme_id(self.tokens.dark), self.tokens.dark, &self.user_themes);
@@ -466,26 +471,57 @@ impl ByobApp {
         });
     }
 
-    /// One category: its heading, then each section's settings in registry order.
+    /// One category: its heading, then each section's settings in registry order. On
+    /// Appearance, the fine-tuning sits under Advanced, folded, before the last row (Reset).
     fn settings_tab_page(&mut self, ui: &mut egui::Ui, t: &Tokens, tab: Tab) {
         form::heading(ui, t, self.tab_label(tab), &self.tab_blurb(tab));
         let mut d = self.begin_draw();
+        let page: Vec<&'static Section> = SECTIONS.iter().copied().filter(|s| s.tab == tab && !registry::is_advanced(s)).collect();
+        if tab == Tab::Appearance {
+            let (main, last): (Vec<&'static Section>, Vec<&'static Section>) = page.into_iter().partition(|s| !std::ptr::eq(*s, &registry::RESET_LOOK));
+            self.section_cards(ui, t, &main, &mut d);
+            if advanced_disclosure(ui, t, self.appearance.advanced).clicked() {
+                self.appearance.advanced = !self.appearance.advanced;
+            }
+            if self.appearance.advanced {
+                let advanced: Vec<&'static Section> = registry::ADVANCED.to_vec();
+                self.section_cards(ui, t, &advanced, &mut d);
+            }
+            self.section_cards(ui, t, &last, &mut d);
+        } else {
+            self.section_cards(ui, t, &page, &mut d);
+        }
+        self.end_draw(d);
+    }
+
+    /// Sections as cards: a small heading over each, its rows in a card (a section that is
+    /// one long list, like the models or the plugins, is drawn on the page as it is).
+    fn section_cards(&mut self, ui: &mut egui::Ui, t: &Tokens, sections: &[&'static Section], d: &mut controls::Draw) {
         let mut first = true;
-        for sec in SECTIONS.iter().copied().filter(|s| s.tab == tab) {
+        for sec in sections.iter().copied() {
             let rows: Vec<&'static Setting> = SETTINGS.iter().filter(|s| std::ptr::eq(s.section, sec) && self.setting_shown(s.key)).collect();
             if rows.is_empty() {
                 continue;
             }
             form::section(ui, t, self.section_title(sec), sec.blurb, first);
             first = false;
-            for (i, s) in rows.into_iter().enumerate() {
-                self.draw_setting(ui, t, s, &mut d, &[], i == 0, false);
+            // A section of rows is a card (a list draws its own).
+            if rows.iter().any(|s| s.kind != Kind::Block) {
+                form::card(t).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    for (i, s) in rows.into_iter().enumerate() {
+                        self.draw_setting(ui, t, s, d, &[], i == 0, false);
+                    }
+                });
+            } else {
+                for (i, s) in rows.into_iter().enumerate() {
+                    self.draw_setting(ui, t, s, d, &[], i == 0, false);
+                }
             }
             if std::ptr::eq(sec, &registry::THEME_FILES) {
                 self.theme_file_status(ui, t);
             }
         }
-        self.end_draw(d);
     }
 
     /// One setting, where it is on its page or as a search result (`link`: its name goes to
@@ -625,7 +661,7 @@ impl ByobApp {
                 let mut p = self.prefs.clone();
                 pick_theme(&mut p, def, self.tokens.dark);
                 self.set_prefs(p);
-                self.jump_to(Key::Gallery);
+                self.jump_to(Key::ThemePair);
             }
             Hit::Colors(..) => {
                 self.appearance.filter = self.appearance.search.trim().to_owned();
@@ -899,6 +935,33 @@ fn category_row(ui: &mut egui::Ui, t: &Tokens, tab: Tab, label: &str, summary: &
         ui.painter().galley(pos2(x, y + name_h + 2.0), sub, t.text_dim);
         let c = egui::Rect::from_center_size(pos2(rect.right() - pad - size / 2.0, rect.center().y), vec2(size, size));
         icons::chevron_right(ui.painter(), c, t.text_faint);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// "Advanced" and a caret: opens the fine-tuning below it on the page (no dialog), with
+/// what's in it on one quiet line while folded.
+fn advanced_disclosure(ui: &mut egui::Ui, t: &Tokens, open: bool) -> egui::Response {
+    ui.add_space(t.pad(form::SECTION_GAP));
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 32.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let color = if resp.hovered() { t.text_strong } else { t.text_dim };
+        let g = ui.painter().layout_no_wrap("Advanced".to_owned(), egui::FontId::new(t.text_size(14.0), crate::theme::bold_or_regular(ui.ctx())), color);
+        let gy = rect.center().y - g.size().y / 2.0;
+        let gw = g.size().x;
+        ui.painter().galley(pos2(rect.left(), gy), g, color);
+        let c = egui::Rect::from_center_size(pos2(rect.left() + gw + 14.0, rect.center().y), vec2(12.0, 12.0));
+        icons::chevron(ui.painter(), c, open, color);
+        if !open {
+            let note = ui.painter().layout_no_wrap(
+                "Colours, message style, what's shown, corners, theme files".to_owned(),
+                egui::FontId::proportional(t.text_size(12.5)),
+                t.text_faint,
+            );
+            let ny = rect.center().y - note.size().y / 2.0;
+            ui.painter().galley(pos2(c.right() + 12.0, ny), note, t.text_faint);
+        }
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

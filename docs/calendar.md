@@ -79,7 +79,7 @@ for the confirmations below.
 
 ## Always asked
 
-Even under "Allow everything" (or `--auto-approve`), a person confirms:
+Even under "Work freely" (or `--auto-approve`), a person confirms:
 
 - `calendar_create` and `calendar_update` **with attendees** and every `calendar_delete`: the
   manifest's `confirm` rules (`"confirm": {"when": ["attendees"], "warning": …}`, see
@@ -125,7 +125,7 @@ sync or caching (every call asks the server), editing one occurrence of a series
   `TcpListener` (well-known redirect, principal, home, a read-only calendar, a task list,
   REPORT, GET/PUT/DELETE with ETags, Basic auth). With the `fake-server` feature the engine's
   tests use it too (`crates/agent/src/native_backend_tests.rs`: the confirmations under
-  "Allow everything").
+  "Work freely").
 - Live, against a throwaway local Radicale (never a real account; the test refuses non-local
   URLs):
 

@@ -184,7 +184,7 @@ fn version_0_prefs_migrate_without_losing_anything() {
     // Same colors as before: byob's light theme, the old teal accent.
     assert!(!Tokens::for_prefs(&p, None, &[]).dark);
     let plain = Tokens::for_prefs(&Prefs { knobs: Knobs { high_contrast: false, ..p.knobs }, ..p.clone() }, None, &[]);
-    assert_eq!((plain.app_bg, plain.accent), (rgb(0xf6f6f4), rgb(0x0d6b63)));
+    assert_eq!((plain.app_bg, plain.accent), (rgb(0xffffff), rgb(0x0d6b63)));
     // And it saves in the new shape, which loads back the same.
     let again = ron::from_str::<Prefs>(&ron::to_string(&p).unwrap()).unwrap().sanitized();
     assert_eq!(again, p);
@@ -387,8 +387,9 @@ fn inner_radius_is_outer_minus_inset() {
     assert_eq!(inner_radius(4.0, 10.0), 0.0);
 }
 
-/// The composer's controls follow its corners at every corner-radius setting: a pill around
-/// round controls by default, both square at 0, and the controls always `outer − inset`.
+/// The composer's controls follow its corners at every corner-radius setting: gently rounded
+/// by default (a box you write in, not a pill), both square at 0, and the controls always
+/// `outer − inset`.
 #[test]
 fn composer_controls_are_concentric_with_the_frame() {
     let d = 32.0;
@@ -401,7 +402,9 @@ fn composer_controls_are_concentric_with_the_frame() {
     }
     let mut t = Tokens::dark();
     t.radius = 6.0;
-    assert_eq!(crate::composer::radii(&t, d), (d / 2.0 + 7.0, d / 2.0), "default: a pill around a circle");
+    let (outer, inner) = crate::composer::radii(&t, d);
+    assert!(outer < d / 2.0 + 7.0 && outer >= 10.0, "default: rounded, not a pill: {outer}");
+    assert!((inner - inner_radius(outer, 7.0)).abs() < 1e-3);
     t.radius = 0.0;
     assert_eq!(crate::composer::radii(&t, d), (0.0, 0.0));
 }
@@ -416,5 +419,28 @@ fn bubbles_stand_apart_from_the_chat_background() {
         let min = if p.dark { 1.07 } else { 1.05 };
         assert!(contrast(t.assistant_bubble, t.app_bg) >= min - 0.001, "{}: replies {:.3}", p.id, contrast(t.assistant_bubble, t.app_bg));
         assert!(contrast(t.user_bubble, t.app_bg) >= min, "{}: your messages {:.3}", p.id, contrast(t.user_bubble, t.app_bg));
+    }
+}
+
+/// The icons are Phosphor glyphs: both families must be installed with the UI fonts, or every
+/// icon would draw as a missing-glyph box. Text must not pick up icon glyphs either.
+#[test]
+fn the_icon_fonts_are_installed_beside_the_text_fonts() {
+    let ctx = egui::Context::default();
+    ctx.set_fonts(font_definitions(UiFont::default(), MonoFont::default(), None));
+    ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+    let gear = egui_phosphor::regular::GEAR_SIX.chars().next().unwrap();
+    let stop = egui_phosphor::fill::STOP.chars().next().unwrap();
+    ctx.fonts_mut(|f| {
+        assert!(f.has_glyph(&egui::FontId::new(14.0, egui::FontFamily::Name("phosphor".into())), gear));
+        assert!(f.has_glyph(&egui::FontId::new(14.0, egui::FontFamily::Name("phosphor-fill".into())), stop));
+    });
+    // Each icon family is Phosphor alone: the text fonts have glyphs of their own in the
+    // same private-use range (the folder icon drew as Inter's "ṁ"), and body text never
+    // consults Phosphor.
+    let defs = font_definitions(UiFont::default(), MonoFont::default(), None);
+    for family in ["phosphor", "phosphor-fill"] {
+        assert_eq!(defs.families[&egui::FontFamily::Name(family.into())], [family.to_string()]);
+        assert!(!defs.families[&egui::FontFamily::Proportional].iter().any(|k| k == family));
     }
 }

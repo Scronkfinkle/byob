@@ -45,12 +45,10 @@ pub const COL_GAP: f32 = 16.0;
 pub const ROW_GAP: f32 = 10.0;
 /// Between a heading (and its description) and what it heads.
 pub const HEAD_GAP: f32 = 16.0;
-/// Before a section within a page.
-pub const SECTION_GAP: f32 = 40.0;
+/// Before a section (a card) within a page.
+pub const SECTION_GAP: f32 = 32.0;
 /// Buttons, menus and fields in the settings.
 pub const CONTROL_H: f32 = 28.0;
-/// Below this width a form stacks each label above its controls.
-pub const NARROW: f32 = 520.0;
 
 /// The label column's width for a form `avail` wide.
 pub fn label_w(t: &Tokens, avail: f32) -> f32 {
@@ -96,22 +94,210 @@ pub fn heading(ui: &mut Ui, t: &Tokens, title: &str, blurb: &str) {
 /// A section of a page: a rule (unless it is the page's first), its heading and, if given, a
 /// line on what it is for. An empty title draws only the rule.
 pub fn section(ui: &mut Ui, t: &Tokens, title: &str, blurb: &str, first: bool) {
-    if !first {
-        ui.add_space(t.pad(SECTION_GAP / 2.0));
-        let y = ui.cursor().top();
-        ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, t.separator));
-        ui.add_space(t.pad(SECTION_GAP / 2.0));
-    }
+    // Sections are cards (see [`card`]): space between them, no rule.
+    ui.add_space(t.pad(if first { 8.0 } else { SECTION_GAP }));
     if title.is_empty() {
         return;
     }
-    ui.label(RichText::new(title).size(t.text_size(15.0)).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
+    ui.label(RichText::new(title).size(t.text_size(14.0)).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
     if !blurb.is_empty() {
         ui.add_space(t.pad(2.0));
         let w = ui.available_width().min(TEXT_MAX * 1.4 * text_scale(t));
         ui.allocate_ui(vec2(w, 0.0), |ui| ui.label(RichText::new(blurb).font(desc_font(ui)).color(t.text_dim)));
     }
-    ui.add_space(t.pad(4.0));
+    ui.add_space(t.pad(10.0));
+}
+
+/// The width of a settings select, so a column of them lines up on both edges.
+pub const SELECT_W: f32 = 240.0;
+
+/// egui's drop-down in byob's look: the app's chevron instead of a filled triangle, and
+/// [`SELECT_W`] wide unless the caller says otherwise.
+pub fn combo<'a>(id_salt: impl egui::AsIdSalt) -> egui::ComboBox<'a> {
+    egui::ComboBox::from_id_salt(id_salt).width(SELECT_W).icon(|ui, rect, visuals, _open| {
+        let r = Rect::from_center_size(rect.center(), vec2(11.0, 11.0));
+        crate::icons::chevron_down(ui.painter(), r, visuals.fg_stroke.color);
+    })
+}
+
+/// egui's own widgets inside `ui` (drop-downs, buttons, drag values) in byob's outlined
+/// look: transparent with a hairline, a soft fill on hover or open, control corners.
+pub fn outlined_controls(ui: &mut Ui, t: &Tokens) {
+    let r = egui::CornerRadius::same(t.round(CONTROL_R).round().clamp(0.0, 255.0) as u8);
+    let w = &mut ui.style_mut().visuals.widgets;
+    for (state, fill) in [(&mut w.inactive, Color32::TRANSPARENT), (&mut w.hovered, soft(t)), (&mut w.active, soft_hover(t)), (&mut w.open, soft(t))] {
+        state.weak_bg_fill = fill;
+        state.bg_stroke = Stroke::new(1.0, t.field_border);
+        state.corner_radius = r;
+    }
+}
+
+/// A select with nothing to choose: its box and text, faded, so it lines up with the
+/// selects around it.
+pub fn static_select(ui: &mut Ui, t: &Tokens, text: &str, width: f32) -> Response {
+    let h = ui.spacing().interact_size.y.max(control_h(t));
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().rect_stroke(rect, t.round(CONTROL_R), Stroke::new(1.0, t.field_border.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+        let g = ui.painter().layout_no_wrap(text.to_owned(), egui::TextStyle::Body.resolve(ui.style()), t.text_faint);
+        ui.painter().galley(pos2(rect.left() + 10.0, rect.center().y - g.size().y / 2.0), g, t.text_faint);
+    }
+    resp
+}
+
+/// Corners of controls: selects, buttons, fields and colour chips.
+pub const CONTROL_R: f32 = 8.0;
+/// Corners of cards (a step rounder than what sits inside them).
+pub const CARD_R: f32 = 12.0;
+
+/// A card's surface: white on light, a step lighter than the page on dark.
+pub fn card_fill(t: &Tokens) -> Color32 {
+    if t.dark { theme::mix(t.app_bg, Color32::WHITE, 0.035) } else { Color32::WHITE }
+}
+
+/// A card's soft edge: the separator eased toward the card, so it reads by its fill first.
+pub fn card_edge(t: &Tokens) -> Color32 {
+    theme::mix(t.separator, card_fill(t), 0.3)
+}
+
+/// A section's card: a quiet surface a step off the page (white on light, lifted on dark),
+/// a hairline border and 10-point corners; its rows have thin lines between them.
+pub fn card(t: &Tokens) -> egui::Frame {
+    let (fill, edge) = (card_fill(t), card_edge(t));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a few points
+    let r = t.round(CARD_R).round().clamp(0.0, 255.0) as u8;
+    egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, edge)).corner_radius(egui::CornerRadius::same(r)).inner_margin(egui::Margin::symmetric(18, 2))
+}
+
+/// A number on a slider: a thin track filled up to the value in the accent, a round knob,
+/// and the value beside it in plain text. Dragging or clicking the track sets it (snapped to
+/// `step`). Returns whether it changed.
+pub fn slider(ui: &mut Ui, t: &Tokens, value: &mut f32, range: std::ops::RangeInclusive<f32>, step: f32, show: impl Fn(f32) -> String) -> bool {
+    let (lo, hi) = (*range.start(), *range.end());
+    let w = 160.0;
+    let h = control_h(t).max(28.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click_and_drag());
+    let knob_r = 8.0;
+    let track = Rect::from_min_max(pos2(rect.left() + knob_r, rect.center().y - 2.0), pos2(rect.right() - knob_r, rect.center().y + 2.0));
+    let mut changed = false;
+    if let Some(p) = resp.interact_pointer_pos()
+        && (resp.dragged() || resp.clicked())
+        && hi > lo
+    {
+        let f = ((p.x - track.left()) / track.width()).clamp(0.0, 1.0);
+        let mut v = lo + f * (hi - lo);
+        if step > 0.0 {
+            v = lo + ((v - lo) / step).round() * step;
+        }
+        let v = v.clamp(lo, hi);
+        if (v - *value).abs() > f32::EPSILON {
+            *value = v;
+            changed = true;
+        }
+    }
+    let f = if hi > lo { ((*value - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
+    let x = track.left() + f * track.width();
+    let p = ui.painter();
+    p.rect_filled(track, 2.0, soft_hover(t));
+    p.rect_filled(Rect::from_min_max(track.min, pos2(x, track.max.y)), 2.0, t.accent);
+    let knob = pos2(x, rect.center().y);
+    p.circle_filled(knob + vec2(0.0, 1.0), knob_r, Color32::from_black_alpha(if t.dark { 70 } else { 28 }));
+    p.circle_filled(knob, knob_r, t.field_bg);
+    p.circle_stroke(knob, knob_r, Stroke::new(1.0, if resp.hovered() || resp.dragged() { t.text_faint } else { t.field_border }));
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let _ = resp;
+    ui.add_space(10.0);
+    let label = RichText::new(show(*value)).color(t.text_dim);
+    ui.add_sized(vec2(56.0, h), egui::Label::new(label));
+    changed
+}
+
+/// A control's fill that reads on any surface (a page, a card, a dialog, light or dark): a
+/// light tint of the text colour, not a fixed grey that can match what's behind it.
+pub(crate) fn soft(t: &Tokens) -> Color32 {
+    t.text_strong.gamma_multiply(if t.dark { 0.075 } else { 0.055 })
+}
+
+/// A whole row or card under the pointer: lighter than [`soft`], since it covers a wide
+/// area (a button's hover across a full row reads as a heavy grey bar).
+pub(crate) fn row_hover(t: &Tokens) -> Color32 {
+    t.text_strong.gamma_multiply(if t.dark { 0.045 } else { 0.03 })
+}
+
+/// [`soft`], hovered or open.
+pub(crate) fn soft_hover(t: &Tokens) -> Color32 {
+    t.text_strong.gamma_multiply(if t.dark { 0.12 } else { 0.09 })
+}
+
+/// A button in byob's style (outlined, quiet), for actions in settings rows. Greyed when
+/// `enabled` is false.
+pub(crate) fn button(ui: &mut Ui, t: &Tokens, label: &str, enabled: bool) -> Response {
+    crate::workspace::dialog_button(ui, t, label, false, enabled, control_h(t).max(32.0))
+}
+
+/// [`button`] for the one action that can't be undone: the error colour, outlined.
+pub(crate) fn danger_button(ui: &mut Ui, t: &Tokens, label: &str) -> Response {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let g = ui.painter().layout_no_wrap(label.to_owned(), font, t.danger);
+    let h = control_h(t).max(32.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2((g.size().x + 32.0).max(88.0), h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fill = if resp.hovered() { t.danger.gamma_multiply(0.1) } else { Color32::TRANSPARENT };
+        ui.painter().rect(rect, t.round(CONTROL_R), fill, Stroke::new(1.0, t.danger.gamma_multiply(0.5)), egui::StrokeKind::Inside);
+        ui.painter().galley(rect.center() - g.size() / 2.0, g, t.danger);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The button a select opens from: an optional mark, the value, a caret. Outlined (a hairline
+/// border, no fill until hovered), 6-point corners, one height.
+pub(crate) fn pill(ui: &mut Ui, t: &Tokens, min_w: f32, mark: Option<&dyn Fn(&egui::Painter, Rect)>, value: &str) -> Response {
+    let h = control_h(t).max(32.0);
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let g = ui.painter().layout_no_wrap(value.to_owned(), font, t.text);
+    let lead = if mark.is_some() { 34.0 } else { 12.0 };
+    let w = (lead + g.size().x + 34.0).max(min_w);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if ui.is_rect_visible(rect) {
+        let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+        // Outlined: it sits cleanly on a page, a card or a dialog; a soft fill only while
+        // hovered or open.
+        let fill = if resp.hovered() || open { soft(t) } else { Color32::TRANSPARENT };
+        ui.painter().rect(rect, t.round(CONTROL_R), fill, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+        if let Some(m) = mark {
+            m(ui.painter(), Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(18.0, 18.0)));
+        }
+        let gy = rect.center().y - g.size().y / 2.0;
+        ui.painter().galley(pos2(rect.left() + lead, gy), g, t.text);
+        crate::icons::chevron_down(ui.painter(), Rect::from_center_size(pos2(rect.right() - 15.0, rect.center().y), vec2(11.0, 11.0)), t.text_dim);
+    }
+    resp
+}
+
+/// One of a few choices as a select: the pill shows the current one; byob's menu lists them
+/// all, the current one ticked (with an icon each when `icon` gives one). Returns whether it
+/// changed.
+pub fn select<T: PartialEq + Copy>(ui: &mut Ui, t: &Tokens, value: &mut T, choices: &[(T, &str)], icon: Option<fn(T) -> crate::icons::Paint>) -> bool {
+    let current = choices.iter().find(|(v, _)| *v == *value).map_or("", |(_, l)| *l);
+    let paint = icon.map(|f| f(*value));
+    let mark = paint.map(|p| move |pt: &egui::Painter, r: Rect| p(pt, r.shrink(1.5), t.text_dim));
+    let b = pill(ui, t, 150.0, mark.as_ref().map(|m| m as &dyn Fn(&egui::Painter, Rect)), current);
+    let mut changed = false;
+    crate::menu::below(&b, t, b.rect.width().max(190.0)).show(|ui| {
+        crate::menu::tighten(ui);
+        for (v, label) in choices {
+            let on = *v == *value;
+            if crate::menu::item(ui, t, icon.map(|f| f(*v)), label, on.then_some("✓")).clicked() {
+                if !on {
+                    *value = *v;
+                    changed = true;
+                }
+                ui.close();
+            }
+        }
+    });
+    changed
 }
 
 /// A setting's description: a step below its name, still easy to read.
@@ -156,7 +342,7 @@ pub fn setting_row<R>(ui: &mut Ui, t: &Tokens, id: Id, name: &str, desc: &str, s
     }
     let name_font = egui::TextStyle::Body.resolve(ui.style());
     let desc_font = desc_font(ui);
-    let hl = (t.accent.gamma_multiply(0.28), t.text_strong);
+    let hl = (t.selection, t.text_strong);
     let stacked = style.wide || w < STACK_BELOW;
     let gap = t.pad(COL_GAP * 2.0);
     let size_id = id.with("control-size");
@@ -209,7 +395,7 @@ pub fn setting_row<R>(ui: &mut Ui, t: &Tokens, id: Id, name: &str, desc: &str, s
     }
     let rect = Rect::from_min_max(pos2(left, top), pos2(right, bottom));
     if style.flash > 0.0 {
-        let fill = t.accent.gamma_multiply(0.14 * style.flash.clamp(0.0, 1.0));
+        let fill = t.text_strong.gamma_multiply(0.08 * style.flash.clamp(0.0, 1.0));
         ui.painter().set(bg, egui::Shape::rect_filled(rect.expand2(vec2(t.pad(8.0), 0.0)), t.round(6.0), fill));
     }
     let sense = if style.link { Sense::click() } else { Sense::hover() };
@@ -331,5 +517,35 @@ mod tests {
         // Multi-byte text stays whole.
         let job = highlight("Rosé Pine", &["pine".to_owned()], FontId::proportional(12.0), Color32::WHITE, (Color32::RED, Color32::BLACK), 300.0);
         assert_eq!(job.text, "Rosé Pine");
+    }
+
+    /// The slider: a click on its track sets the value there, snapped to the step and kept
+    /// in the range.
+    #[test]
+    fn the_slider_snaps_and_stays_in_range() {
+        let ctx = egui::Context::default();
+        let mut v = 6.0_f32;
+        let frame = |v: &mut f32, events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                slider(ui, &Tokens::light(), v, 0.0..=16.0, 1.0, |x| format!("{x:.0} pt"));
+            });
+            out.textures_delta.clear();
+        };
+        frame(&mut v, vec![]);
+        // The track runs from x = 8 to x = 152 (knob radius in from the 160-point control).
+        let click = |x: f32| {
+            let at = pos2(x, 14.0);
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+            ]
+        };
+        frame(&mut v, click(152.0));
+        assert!((v - 16.0).abs() < f32::EPSILON, "the end: {v}");
+        frame(&mut v, click(8.0 + 144.0 * 0.52));
+        assert!((v - 8.0).abs() < f32::EPSILON, "snapped to a whole point: {v}");
+        frame(&mut v, click(500.0));
+        assert!(v <= 16.0, "never past the range: {v}");
     }
 }

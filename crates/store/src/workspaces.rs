@@ -26,6 +26,8 @@ use crate::paths::Paths;
 pub const MAX_NAME_CHARS: usize = 80;
 /// Longest folder path a client may name.
 pub const MAX_PATH_CHARS: usize = 4096;
+/// Most folders a workspace links besides its own.
+pub const MAX_LINKED_FOLDERS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceRow {
@@ -33,6 +35,10 @@ pub struct WorkspaceRow {
     pub name: String,
     /// Canonical folder; chats created here belong to this workspace.
     pub folder: PathBuf,
+    /// Other folders it works in (canonical, existing when linked): its chats may read and
+    /// change them too. Its own `folder` is never one of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<PathBuf>,
     #[serde(default)]
     pub created_at: Millis,
     /// Its own settings (see [`byob_types::config`]).
@@ -201,6 +207,7 @@ impl Workspaces {
             id: self.free_id(folder),
             name: default_name(folder),
             folder: folder.to_path_buf(),
+            folders: Vec::new(),
             created_at: now(),
             config: Layer::default(),
             plugin_trust: BTreeMap::new(),
@@ -234,6 +241,7 @@ impl Workspaces {
             id: self.free_id(folder),
             name,
             folder: folder.to_path_buf(),
+            folders: Vec::new(),
             created_at: now(),
             config,
             plugin_trust: BTreeMap::new(),
@@ -251,6 +259,28 @@ impl Workspaces {
     pub fn rename(&mut self, id: &str, name: &str) -> Result<()> {
         let name = clean_name(name)?;
         self.find_mut(id)?.name = name;
+        self.save()
+    }
+
+    /// Replace the other folders workspace `id` works in. Each must be absolute; its own
+    /// folder and repeats are dropped; at most [`MAX_LINKED_FOLDERS`] are kept (more is an
+    /// error, so nothing is silently lost). The caller checks they exist (and canonicalizes).
+    pub fn set_folders(&mut self, id: &str, folders: &[PathBuf]) -> Result<()> {
+        if folders.len() > MAX_LINKED_FOLDERS {
+            return Err(StoreError::Invalid(format!("a project links at most {MAX_LINKED_FOLDERS} folders")));
+        }
+        if let Some(f) = folders.iter().find(|f| !f.is_absolute()) {
+            return Err(StoreError::Invalid(format!("{} isn't a full path", f.display())));
+        }
+        let row = self.find_mut(id)?;
+        let own = row.folder.clone();
+        let mut kept: Vec<PathBuf> = Vec::new();
+        for f in folders {
+            if *f != own && !kept.contains(f) {
+                kept.push(f.clone());
+            }
+        }
+        row.folders = kept;
         self.save()
     }
 
@@ -345,6 +375,30 @@ mod tests {
         assert_eq!(gone.folder, Path::new("/srv/data"));
         assert!(back.remove(&b.id).is_err());
         assert_eq!(Workspaces::open(Some(&p)).value.list().len(), 1);
+    }
+
+    /// A project links other folders: kept across a restart, its own folder and repeats
+    /// dropped, relative paths and too many refused (nothing silently lost).
+    #[test]
+    fn a_project_keeps_the_other_folders_it_links() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(d.path());
+        let mut w = Workspaces::open(Some(&p)).value;
+        let a = w.create("App", Path::new("/srv/app"), Layer::default()).unwrap();
+        assert!(a.folders.is_empty());
+        let linked = [PathBuf::from("/srv/api"), PathBuf::from("/srv/app"), PathBuf::from("/srv/api"), PathBuf::from("/srv/docs")];
+        w.set_folders(&a.id, &linked).unwrap();
+        let back = Workspaces::open(Some(&p)).value;
+        assert_eq!(back.get(&a.id).unwrap().folders, [PathBuf::from("/srv/api"), PathBuf::from("/srv/docs")]);
+        assert!(w.set_folders(&a.id, &[PathBuf::from("relative")]).is_err());
+        let many: Vec<PathBuf> = (0..=MAX_LINKED_FOLDERS).map(|i| PathBuf::from(format!("/srv/f{i}"))).collect();
+        assert!(w.set_folders(&a.id, &many).is_err());
+        assert_eq!(w.get(&a.id).unwrap().folders.len(), 2, "a refused change leaves what was there");
+        assert!(w.set_folders("nope", &[]).is_err());
+        // Older files (no `folders`) load, and an empty list isn't written.
+        w.set_folders(&a.id, &[]).unwrap();
+        let text = std::fs::read_to_string(p.workspaces()).unwrap();
+        assert!(!text.contains("\"folders\""), "{text}");
     }
 
     /// Regression: a folder reached through a symlink (macOS's /var → /private/var, or

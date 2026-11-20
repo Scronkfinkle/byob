@@ -155,7 +155,41 @@ fn transcript(ui: &mut egui::Ui, t: &Tokens, th: Thread<'_>, cache: &mut markdow
             }
         }
     }
+    // Steps hidden by the layout: the files it made or changed still show, in one quiet
+    // line, so they can be kept in the Library.
+    if th.done && !crate::layout::visible(ui.ctx(), "message.steps", false) {
+        let files: Vec<&str> = th
+            .steps
+            .iter()
+            .filter(|s| s.status.finished())
+            .flat_map(|s| s.changes.iter())
+            .filter_map(|c| match c {
+                FileChange::Created { path } | FileChange::Modified { path } if !path.starts_with(".byob") => Some(path.as_str()),
+                _ => None,
+            })
+            .collect();
+        if !files.is_empty() {
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(if files.len() == 1 { "Changed" } else { "Changed files" }).small().color(t.text_faint));
+                for path in files {
+                    ui.label(RichText::new(path).small().monospace().color(t.text_dim));
+                    keep_link(ui, t, path);
+                }
+            });
+        }
+    }
     msg
+}
+
+/// "Keep in Library" for a file of the chat: the app sends it on.
+fn keep_link(ui: &mut egui::Ui, t: &Tokens, path: &str) {
+    let r = ui.add(egui::Label::new(RichText::new("Keep in Library").small().color(t.accent)).sense(egui::Sense::click()));
+    let r = r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("It stays your file; byob keeps a version each time it changes");
+    if r.clicked() {
+        ui.ctx().data_mut(|d| d.insert_temp(keep_live_id(), path.to_owned()));
+    }
 }
 
 /// Tool rows shown before a run of them scrolls.
@@ -443,9 +477,22 @@ fn row(ui: &mut egui::Ui, t: &Tokens, step: &Step) {
                 ui.add(egui::Label::new(RichText::new(&step.detail).small().monospace().color(t.text_dim)).selectable(true).wrap());
             }
             for change in &step.changes {
-                ui.label(RichText::new(change_text(change)).small().color(t.text));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(change_text(change)).small().color(t.text));
+                    // A file of yours byob made or changed: keep it in the Library, live.
+                    if let FileChange::Created { path } | FileChange::Modified { path } = change
+                        && !path.starts_with(".byob")
+                    {
+                        keep_link(ui, t, path);
+                    }
+                });
             }
         });
+}
+
+/// Where a "Keep in Library" click leaves its file's path for the app to send.
+pub fn keep_live_id() -> egui::Id {
+    egui::Id::unique("steps-keep-live-file")
 }
 
 fn change_text(c: &FileChange) -> String {

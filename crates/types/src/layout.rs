@@ -213,6 +213,137 @@ pub const PRESETS: &[(&str, &str)] = &[
 const MAX_ENTRIES: usize = 256;
 const MAX_ID: usize = 160;
 
+/// Most sections the chat list keeps, items in one, and characters in a section's name.
+const MAX_SECTIONS: usize = 64;
+/// Pinned projects (and, apart, pinned artifacts) the list keeps.
+const MAX_PINS: usize = 64;
+/// Spaces, and what one Space can hold.
+const MAX_SPACES: usize = 16;
+const MAX_SPACE_ITEMS: usize = 5000;
+const MAX_SECTION_ITEMS: usize = 512;
+const MAX_SECTION_NAME: usize = 80;
+
+/// A section of the chat list the person made: a name and what they moved into it
+/// (`chat:<id>`, `ws:<id>`). Only an arrangement: chats and projects stay what they are.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ListSection {
+    pub id: String,
+    pub name: String,
+    pub items: Vec<String>,
+}
+
+/// How the chat list groups what isn't in a section.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListGroup {
+    /// Chats without a project, then each project with its chats.
+    #[default]
+    Project,
+    /// Every chat by when it was last active.
+    Date,
+    /// One list.
+    None,
+}
+
+/// The order within the chat list's groups.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListSort {
+    #[default]
+    Updated,
+    Name,
+}
+
+/// The chat list's arrangement: the person's sections, the grouping and the order. Part of
+/// the layout so it is the same in every window and browser tab.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChatList {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<ListSection>,
+    pub group: ListGroup,
+    pub sort: ListSort,
+    /// Projects pinned to the top of the list, by id, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pinned_projects: Vec<String>,
+    /// Artifacts pinned to the top of the list, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pinned_artifacts: Vec<ListPin>,
+    /// Spaces (Work, Personal, a client): each shows only its own projects and chats. With
+    /// fewer than two there are none to switch between. What no Space claims is the first's.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub spaces: Vec<ListSpace>,
+}
+
+/// A Space: its name, its colour (`#rrggbb`), and the projects and chats it holds
+/// (`ws:<id>`, `chat:<id>`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ListSpace {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+    pub items: Vec<String>,
+}
+
+/// An artifact pinned to the chat list: the chat it's in, its id, and its title to show.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ListPin {
+    pub chat: String,
+    pub id: String,
+    pub title: String,
+}
+
+impl ChatList {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Within the limits: few enough sections and items, names and ids that are text.
+    #[must_use]
+    pub fn sanitized(mut self) -> Self {
+        let ok = |id: &String| !id.is_empty() && id.len() <= MAX_ID && !id.chars().any(char::is_control);
+        self.sections.retain(|s| ok(&s.id));
+        self.sections.truncate(MAX_SECTIONS);
+        for s in &mut self.sections {
+            s.name = s.name.chars().filter(|c| !c.is_control()).take(MAX_SECTION_NAME).collect::<String>().trim().to_owned();
+            if s.name.is_empty() {
+                "Section".clone_into(&mut s.name);
+            }
+            s.items.retain(&ok);
+            s.items.dedup();
+            s.items.truncate(MAX_SECTION_ITEMS);
+        }
+        self.pinned_projects.retain(&ok);
+        self.pinned_projects.dedup();
+        self.pinned_projects.truncate(MAX_PINS);
+        self.pinned_artifacts.retain(|p| ok(&p.chat) && ok(&p.id));
+        self.pinned_artifacts.dedup_by(|a, b| a.id == b.id);
+        self.pinned_artifacts.truncate(MAX_PINS);
+        self.spaces.retain(|sp| ok(&sp.id));
+        self.spaces.truncate(MAX_SPACES);
+        for sp in &mut self.spaces {
+            sp.name = sp.name.chars().filter(|c| !c.is_control()).take(MAX_SECTION_NAME).collect::<String>().trim().to_owned();
+            if sp.name.is_empty() {
+                "Space".clone_into(&mut sp.name);
+            }
+            let hex = sp.color.strip_prefix('#').unwrap_or("");
+            if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                sp.color.clear();
+            }
+            sp.items.retain(&ok);
+            sp.items.dedup();
+            sp.items.truncate(MAX_SPACE_ITEMS);
+        }
+        for p in &mut self.pinned_artifacts {
+            p.title = p.title.chars().filter(|c| !c.is_control()).take(MAX_SECTION_NAME * 2).collect::<String>().trim().to_owned();
+        }
+        self
+    }
+}
+
 /// What the interface shows: the modes and orders that differ from the defaults.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -224,11 +355,14 @@ pub struct Layout {
     /// those it has but the list doesn't name follow, in their default order.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub order: BTreeMap<String, Vec<String>>,
+    /// The chat list's sections and view.
+    #[serde(skip_serializing_if = "ChatList::is_default")]
+    pub chat_list: ChatList,
 }
 
 impl Layout {
     pub fn is_default(&self) -> bool {
-        self.show.is_empty() && self.order.is_empty()
+        self.show.is_empty() && self.order.is_empty() && self.chat_list.is_default()
     }
 
     /// How element (or plugin view) `id` is shown. Unknown ids are shown.
@@ -352,6 +486,7 @@ impl Layout {
         while self.order.len() > MAX_ENTRIES {
             self.order.pop_last();
         }
+        self.chat_list = self.chat_list.sanitized();
         self
     }
 }
@@ -359,6 +494,31 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chat_list_rides_in_the_layout_and_stays_within_limits() {
+        // Old layouts read as before; a default chat list writes nothing.
+        let l: Layout = serde_json::from_str(r#"{"show":{"reply.speed":"shown"}}"#).unwrap();
+        assert!(l.chat_list.is_default());
+        assert!(!serde_json::to_string(&l).unwrap().contains("chat_list"));
+        let mut l = Layout::default();
+        l.chat_list.group = ListGroup::Date;
+        l.chat_list.sections.push(ListSection {
+            id: "s1".into(),
+            name: "  Design\u{7} work  ".into(),
+            items: vec!["chat:a".into(), "chat:a".into(), String::new()],
+        });
+        let back: Layout = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+        let clean = back.sanitized();
+        assert_eq!(clean.chat_list.group, ListGroup::Date);
+        assert_eq!(clean.chat_list.sections[0].name, "Design work");
+        assert_eq!(clean.chat_list.sections[0].items, ["chat:a"]);
+        assert!(!clean.is_default());
+        let many = ChatList { sections: (0..100).map(|i| ListSection { id: format!("s{i}"), ..ListSection::default() }).collect(), ..ChatList::default() };
+        let many = many.sanitized();
+        assert_eq!(many.sections.len(), MAX_SECTIONS);
+        assert_eq!(many.sections[0].name, "Section");
+    }
 
     #[test]
     fn defaults_show_everything_but_speed_and_store_nothing() {

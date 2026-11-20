@@ -25,8 +25,8 @@ keys! {
     ModelList, VisionRole, SubagentRole, UtilityRole,
     Instructions, Approvals, ToolCalls, Subagents, Compaction, ModelImages, ToolCalling, WorkspaceSettings,
     PluginList,
-    Mode, ThemePair, Gallery, Accent, Radius, ChartColors, MessageLayout, UserBubble, ReplyBubble, BubblePadding, LineSpacing, ThinkingSize, ShownPreset, ShownList, Controls, Backdrop, Glass, Frost, PanelGap, Arrangement, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
-    Zoom, TextSize, CodeSize, Font, CodeFont, Density, ColumnWidth, ChatListWidth, ArtifactPane, HighContrast, ReduceMotion, ResetText,
+    Mode, ThemePair, Accent, Background, Foreground, Font, Radius, ChartColors, MessageLayout, UserBubble, ReplyBubble, BubblePadding, LineSpacing, ShownPreset, ShownList, ThinkingSize, Controls, Backdrop, Glass, Frost, PanelGap, Arrangement, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
+    Zoom, TextSize, CodeSize, CodeFont, Density, ColumnWidth, ChatListWidth, ArtifactPane, HighContrast, ReduceMotion, ResetText,
     ColorRoles,
 }
 
@@ -70,7 +70,7 @@ const fn sec(tab: Tab, id: &'static str, title: &'static str, blurb: &'static st
 }
 
 pub static SAVED_MODELS: Section =
-    sec(Tab::Models, "saved-models", "Saved models", "Chats use the default one unless their workspace or the chat picks another.");
+    sec(Tab::Models, "saved-models", "Saved models", "Chats use the default one unless their project or the chat picks another.");
 pub static ROLES: Section = sec(Tab::Models, "roles", "Roles", "Saved models that do jobs for the others.");
 pub static INSTRUCTIONS: Section = sec(Tab::Defaults, "instructions", "", "");
 pub static AUTONOMY: Section = sec(Tab::Defaults, "autonomy", "Permissions and limits", "What the model may do on its own before it has to ask or answer.");
@@ -78,18 +78,21 @@ pub static REQUESTS: Section = sec(Tab::Defaults, "requests", "Context and reque
 pub static SCOPES: Section = sec(
     Tab::Defaults,
     "workspaces",
-    "Workspaces and chats",
-    "A workspace can change each of these for its chats, and a chat for itself (the sliders next to its title in the header).",
+    "Projects and chats",
+    "A project can change each of these for its chats, and a chat for itself (the sliders next to its title in the header).",
 );
 pub static PLUGINS: Section = sec(Tab::Plugins, "plugins", "", "");
-pub static THEME: Section = sec(Tab::Appearance, "theme", "Theme", "");
-pub static STYLE: Section = sec(Tab::Appearance, "style", "Accent and shape", "Used across the whole app, on top of the theme.");
-pub static MESSAGES: Section = sec(Tab::Appearance, "messages", "Messages", "How the conversation is drawn.");
+// Appearance's page: what everyone sets.
+pub static THEME: Section = sec(Tab::Appearance, "theme", "Look", "");
+pub static MESSAGES: Section = sec(Tab::Appearance, "messages", "Messages", "");
+// Appearance's Advanced (folded on the page): fine-tuning, grouped by what it changes.
+pub static COLOURS_ADV: Section = sec(Tab::Appearance, "colours-advanced", "Colours", "Your own colours on top of the theme, for this theme only.");
+pub static MSG_STYLE: Section = sec(Tab::Appearance, "message-style", "Message style", "How messages are drawn.");
 pub static SHOWN: Section = sec(
     Tab::Appearance,
     "shown",
     "What's shown",
-    "Details, labels and hints, and the order of the header and of a reply's details. Kept for every window and browser tab. Or ask byob, e.g. \"hide the token counts\".",
+    "Which details appear around messages and in the window, and in what order. You can also ask byob, e.g. \"hide the token counts\".",
 );
 pub static SCENE: Section = sec(
     Tab::Appearance,
@@ -97,9 +100,19 @@ pub static SCENE: Section = sec(
     "Backdrop and glass (experimental)",
     "A scene drawn behind byob with the panels as glass, the parts placed anywhere, and controls to match. Or ask byob, e.g. \"put a rainy city behind the chat\".",
 );
-pub static THEME_FILES: Section =
-    sec(Tab::Appearance, "theme-files", "Theme files", "Keep the current look (colors and the settings above) as a .json theme file, or add someone else's.");
-pub static RESET_LOOK: Section = sec(Tab::Appearance, "reset", "Reset", "");
+pub static STYLE: Section = sec(Tab::Appearance, "style", "Shape", "");
+pub static THEME_FILES: Section = sec(Tab::Appearance, "theme-files", "Theme files", "Save this look to share it, or add a theme someone shared.");
+pub static RESET_ADV: Section = sec(Tab::Appearance, "reset-advanced", "", "");
+// After Advanced, the page's last row.
+pub static RESET_LOOK: Section = sec(Tab::Appearance, "reset", "", "");
+
+/// The sections under Appearance's Advanced (shown on the page when it's opened).
+pub static ADVANCED: &[&Section] = &[&COLOURS_ADV, &STYLE, &MSG_STYLE, &SHOWN, &THEME_FILES, &RESET_ADV];
+
+/// Is `sec` one of Advanced's (shown when Advanced is opened)?
+pub fn is_advanced(sec: &Section) -> bool {
+    ADVANCED.iter().any(|a| std::ptr::eq(*a, sec))
+}
 pub static SIZE: Section = sec(Tab::Text, "size", "Size", "");
 pub static FONTS: Section = sec(Tab::Text, "fonts", "Fonts", "");
 pub static LAYOUT: Section = sec(Tab::Text, "layout", "Layout", "How the window shares its space.");
@@ -117,11 +130,14 @@ pub static SECTIONS: &[&Section] = &[
     &SCOPES,
     &PLUGINS,
     &THEME,
-    &STYLE,
     &MESSAGES,
+    &COLOURS_ADV,
+    &STYLE,
+    &MSG_STYLE,
     &SHOWN,
     &SCENE,
     &THEME_FILES,
+    &RESET_ADV,
     &RESET_LOOK,
     &SIZE,
     &FONTS,
@@ -163,7 +179,7 @@ pub static SETTINGS: &[Setting] = &[
         "subagent-role",
         &ROLES,
         "Subagent model",
-        "The model delegated tasks run on, unless the call, the agent, a workspace or a chat picks another.",
+        "The model delegated tasks run on, unless the call, the agent, a project or a chat picks another.",
         "subagents delegate role",
         Row,
     ),
@@ -244,7 +260,7 @@ pub static SETTINGS: &[Setting] = &[
         Key::WorkspaceSettings,
         "workspace-settings",
         &SCOPES,
-        "This workspace",
+        "This project",
         "Its defaults for its chats, and where its commands run (Docker, Nix, this machine).",
         "workspace docker container nix environment folder project",
         Row,
@@ -259,37 +275,19 @@ pub static SETTINGS: &[Setting] = &[
         "plugins extensions tools mcp servers skills trust enable disable reload",
         Block,
     ),
-    // Appearance: this device only.
+    // Appearance: this device only. The page: what everyone sets.
     s(Key::Mode, "mode", &THEME, "Mode", "Light, dark, or follow the system.", "dark mode light mode night system appearance", Row),
     s(
         Key::ThemePair,
         "theme-pair",
         &THEME,
-        "Light and dark themes",
-        "The theme each mode uses; System switches between them with the computer.",
-        "scheme palette light theme dark theme",
+        "Theme",
+        "Its colours. Import a theme, or copy this look to share it.",
+        "scheme palette light theme dark theme import copy export catppuccin gruvbox nord solarized dracula tokyo rose pine",
         Row,
     ),
-    s(
-        Key::Gallery,
-        "gallery",
-        &THEME,
-        "Theme gallery",
-        "Click a theme to use it; right-click one you added to remove it.",
-        "themes scheme palette preset catppuccin gruvbox nord solarized dracula tokyo rose pine",
-        Block,
-    ),
-    s(Key::Accent, "accent", &STYLE, "Accent", "The color of buttons, links and the selection.", "color colour highlight tint brand", Row),
-    s(Key::Radius, "radius", &STYLE, "Corner radius", "How round buttons, cards and bubbles are.", "rounded corners shape roundness", Row),
-    s(
-        Key::ChartColors,
-        "chart-colors",
-        &STYLE,
-        "Chart colors",
-        "The theme's colors, or a palette people with color blindness can tell apart.",
-        "colorblind color blind colour colourblind palette graphs plots accessibility",
-        Row,
-    ),
+    s(Key::Accent, "accent", &THEME, "Accent", "Buttons, focus and what's selected.", "colour color highlight tint brand buttons", Row),
+    s(Key::Font, "font", &THEME, "Font", "The typeface of the interface and the chat.", "typeface inter ubuntu", Row),
     s(
         Key::MessageLayout,
         "message-layout",
@@ -299,18 +297,6 @@ pub static SETTINGS: &[Setting] = &[
         "align alignment stacked side right left bubbles",
         Row,
     ),
-    s(Key::UserBubble, "user-bubble", &MESSAGES, "Your messages", "How your messages are drawn.", "bubble user style filled outlined minimal", Row),
-    s(Key::ReplyBubble, "reply-bubble", &MESSAGES, "Replies", "How the model's replies are drawn.", "assistant bubble response answer style", Row),
-    s(
-        Key::BubblePadding,
-        "bubble-padding",
-        &MESSAGES,
-        "Bubble padding",
-        "Space between a message's edge and its text.",
-        "padding inset margin space bubble indent",
-        Row,
-    ),
-    s(Key::LineSpacing, "line-spacing", &MESSAGES, "Line spacing", "Space between the lines of messages.", "line height leading spacing density text", Row),
     s(
         Key::ThinkingSize,
         "thinking-size",
@@ -323,12 +309,37 @@ pub static SETTINGS: &[Setting] = &[
     s(
         Key::ShownPreset,
         "shown-preset",
-        &SHOWN,
+        &MESSAGES,
         "Detail",
         "Everything, or details on hover and fewer labels.",
         "layout minimal clean clutter busy details hide show preset simple",
         Row,
     ),
+    // Appearance's Advanced (on the page, folded).
+    s(Key::Background, "background", &COLOURS_ADV, "Background", "The colour behind everything.", "background colour color bg canvas", Row),
+    s(Key::Foreground, "foreground", &COLOURS_ADV, "Text colour", "The colour of text.", "foreground text colour color fg ink", Row),
+    s(
+        Key::ChartColors,
+        "chart-colors",
+        &COLOURS_ADV,
+        "Chart colours",
+        "The theme's colours, or a set people with colour blindness can tell apart.",
+        "colorblind colour blind palette graphs plots accessibility charts",
+        Row,
+    ),
+    s(Key::Radius, "radius", &STYLE, "Corner radius", "How round buttons, cards and messages are.", "rounded corners shape roundness", Row),
+    s(Key::UserBubble, "user-bubble", &MSG_STYLE, "Your messages", "Filled, outlined or plain.", "bubble user style filled outlined minimal", Row),
+    s(Key::ReplyBubble, "reply-bubble", &MSG_STYLE, "Replies", "Filled, outlined or plain.", "assistant bubble response answer style", Row),
+    s(
+        Key::BubblePadding,
+        "bubble-padding",
+        &MSG_STYLE,
+        "Message padding",
+        "Space between a message's edge and its text.",
+        "padding inset margin space bubble indent",
+        Row,
+    ),
+    s(Key::LineSpacing, "line-spacing", &MSG_STYLE, "Line spacing", "Space between the lines of messages.", "line height leading spacing density text", Row),
     s(
         Key::ShownList,
         "shown-list",
@@ -344,31 +355,38 @@ pub static SETTINGS: &[Setting] = &[
     s(Key::Frost, "frost", &SCENE, "Frosted glass", "Blur the backdrop behind the panels.", "blur frosted glass acrylic mica", Row),
     s(Key::PanelGap, "panel-gap", &SCENE, "Space between panels", "Where the backdrop shows around docked panels.", "gap margin spacing panels", Row),
     s(Key::Arrangement, "arrangement", &SCENE, "Arrangement", "Where the window's parts are.", "layout free floating move panels place drag focus docked", Row),
-    s(Key::ImportTheme, "import-theme", &THEME_FILES, "Add a theme", "Import a .json theme file.", "import load file json reload folder", Row),
     s(
         Key::ExportTheme,
         "export-theme",
         &THEME_FILES,
-        "Keep this look",
-        "Save the current look under a name, as a file or in the gallery.",
+        "Save as a theme",
+        "Keep this look under a name, as a file or in your themes.",
         "save export share json file",
         Row,
     ),
-    s(Key::ResetLook, "reset-look", &RESET_LOOK, "Reset the look", "Accent, corners, bubbles and chart colors back to the theme's.", "defaults restore", Row),
+    s(Key::ImportTheme, "import-theme", &THEME_FILES, "Add a theme", "From a .json theme file.", "import load file json reload folder", Row),
+    s(
+        Key::ResetLook,
+        "reset-look",
+        &RESET_ADV,
+        "Reset advanced",
+        "Colours, message style, corners and charts go back to the theme's.",
+        "defaults restore",
+        Row,
+    ),
     s(
         Key::ResetAppearance,
         "reset-appearance",
         &RESET_LOOK,
-        "Reset all appearance",
-        "Themes, accent, text, layout and colors back to the defaults. Imported themes stay.",
-        "defaults restore factory everything",
+        "Reset to default",
+        "Themes, accent, text, layout and colours back to the defaults. Imported themes stay.",
+        "defaults restore factory everything reset all",
         Row,
     ),
     // Text & layout: this device only.
     s(Key::Zoom, "zoom", &SIZE, "Zoom", "Everything bigger or smaller: text, icons and spacing.", "scale magnify interface size bigger smaller ui", Row),
     s(Key::TextSize, "text-size", &SIZE, "Text size", "Text in the chat and the interface.", "font size bigger larger smaller", Row),
     s(Key::CodeSize, "code-size", &SIZE, "Code size", "Code blocks and inline code.", "monospace font size", Row),
-    s(Key::Font, "font", &FONTS, "Font", "The typeface of the interface and the chat.", "typeface inter ubuntu", Row),
     s(Key::CodeFont, "code-font", &FONTS, "Code font", "The typeface of code.", "monospace typeface hack jetbrains mono", Row),
     s(Key::Density, "density", &LAYOUT, "Density", "How much space around and between things.", "compact spacious comfortable spacing padding", Row),
     s(

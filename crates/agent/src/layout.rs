@@ -250,7 +250,8 @@ impl Request {
 
     /// `layout` with this applied: the reset or preset first, then the modes and orders.
     fn apply(&self, layout: &Layout) -> Layout {
-        let mut l = if self.reset { Layout::default() } else { layout.clone() };
+        // A reset is about what's shown: the person's own chat list sections stay.
+        let mut l = if self.reset { Layout { chat_list: layout.chat_list.clone(), ..Layout::default() } } else { layout.clone() };
         if let Some(p) = &self.preset {
             l.show.clone_from(&p.show);
         }

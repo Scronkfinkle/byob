@@ -8,7 +8,7 @@
 //! menu pops up from it.
 
 use byob_protocol::{ClientMsg, NoticeLevel};
-use egui::{Color32, CornerRadius, Margin, Rect, Response, Sense, Stroke, Ui, vec2};
+use egui::{Color32, Margin, Rect, Response, Sense, Stroke, Ui, vec2};
 
 use crate::theme::Tokens;
 use crate::{ByobApp, icons, readable_column, slash};
@@ -31,13 +31,29 @@ pub struct Rects {
     pub send: Rect,
     /// The control beside it: Queue or Cancel (`Rect::NOTHING` when there is none).
     pub second: Rect,
+    /// A new chat's "where it works" picker under the field (`Rect::NOTHING` otherwise).
+    pub place: Rect,
+    /// The mic, rightmost when not busy (`Rect::NOTHING` otherwise).
+    pub mic: Rect,
+    /// The mode chip under the field (`Rect::NOTHING` until the chat's settings arrive).
+    pub mode: Rect,
     /// The send control's fill: the accent when it is the thing Enter does.
     pub send_fill: Color32,
 }
 
 impl Default for Rects {
     fn default() -> Self {
-        Self { frame: Rect::NOTHING, field: Rect::NOTHING, attach: Rect::NOTHING, send: Rect::NOTHING, second: Rect::NOTHING, send_fill: Color32::TRANSPARENT }
+        Self {
+            frame: Rect::NOTHING,
+            field: Rect::NOTHING,
+            attach: Rect::NOTHING,
+            send: Rect::NOTHING,
+            second: Rect::NOTHING,
+            place: Rect::NOTHING,
+            mode: Rect::NOTHING,
+            mic: Rect::NOTHING,
+            send_fill: Color32::TRANSPARENT,
+        }
     }
 }
 
@@ -52,6 +68,59 @@ impl ByobApp {
         ui.add_space(t.pad(6.0));
         readable_column(ui, &t, |ui| self.composer_column(ui, &t));
         ui.add_space(t.pad(8.0));
+    }
+
+    /// Under a new chat's field: where it will work. A project (its folder and settings),
+    /// or no project (a folder of its own that byob keeps, which can become a project later).
+    /// The chat's first message fixes the choice.
+    pub(crate) fn where_picker(&mut self, ui: &mut Ui, t: &Tokens, room: f32) {
+        use crate::menu;
+        let unattached_ok = self.engine_has(byob_protocol::version::CAP_UNATTACHED);
+        let here = self.sidebar.current_workspace().map(|w| (w.id.clone(), w.name.clone()));
+        let label = here.as_ref().map_or_else(|| "Choose folder".to_owned(), |(_, name)| name.clone());
+        let paint: icons::Paint = icons::folder;
+        let button = crate::chatbar::place_chip(ui, t, paint, &label, room);
+        let button = crate::tip::note(button, t, "Where this chat works", "A project's folder, or none. The first message fixes it");
+        self.composer_rects.place = button.rect;
+        let workspaces: Vec<(String, String)> = self.sidebar.workspaces().iter().take(12).map(|w| (w.id.clone(), w.name.clone())).collect();
+        let mut items: Vec<(&str, Option<&str>)> = vec![("Just chat, files stay with byob", None), ("Projects", None), ("Open a folder", None)];
+        items.extend(workspaces.iter().map(|(_, n)| (n.as_str(), None)));
+        let width = menu::fit(ui, &items).max(240.0);
+        let mut send = None;
+        let mut open_folder = false;
+        menu::from_left(&button, t, width).show(|ui| {
+            menu::tighten(ui);
+            // Not picking a folder: say what that means, not where byob keeps things.
+            if unattached_ok
+                && crate::chatbar::row_with_note(ui, t, "No folder", "Just chat, files stay with byob", false)
+                    .on_hover_text("Nothing on your disk is touched. Anything it makes is kept by byob; turn the chat into a project any time")
+                    .clicked()
+            {
+                send = Some(ClientMsg::NewUnattachedChat);
+                ui.close();
+            }
+            if !workspaces.is_empty() {
+                menu::heading(ui, t, "Projects");
+                for (id, name) in &workspaces {
+                    let mark = (here.as_ref().map(|(h, _)| h) == Some(id)).then_some("✓");
+                    if menu::item(ui, t, Some(icons::folder), name, mark).clicked() {
+                        send = Some(ClientMsg::NewChat { workspace: Some(id.clone()) });
+                        ui.close();
+                    }
+                }
+            }
+            menu::separator(ui, t);
+            if menu::item(ui, t, Some(icons::folder_plus), "Open a folder", None).clicked() {
+                open_folder = true;
+                ui.close();
+            }
+        });
+        if let Some(msg) = send {
+            self.conn.send(msg);
+        }
+        if open_folder {
+            self.workspaces.open_new(byob_protocol::workspace::EnvKind::Auto);
+        }
     }
 
     fn composer_column(&mut self, ui: &mut Ui, t: &Tokens) {
@@ -123,9 +192,13 @@ impl ByobApp {
         let has_content = !self.input.trim().is_empty() || self.uploads.has_ready();
         let ready = has_content && !self.uploads.busy();
         let d = control_size(ui);
-        let (outer_radius, control_radius) = radii(t, d);
+        let (outer_radius, _) = radii(t, d);
+        // The box is gently rounded; its buttons stay round (square only with corners off).
+        let control_radius = t.round(d / 2.0).min(d / 2.0);
+        // A filled field, a touch lighter than the page in dark themes: a surface, not an outline.
+        let fill = if t.dark { crate::theme::mix(t.field_bg, Color32::WHITE, 0.055) } else { t.field_bg };
         let frame = egui::Frame::new()
-            .fill(t.field_bg)
+            .fill(fill)
             .stroke(Stroke::new(FRAME_STROKE, t.field_border))
             .corner_radius(outer_radius)
             .inner_margin(Margin::same(FRAME_MARGIN));
@@ -153,7 +226,7 @@ impl ByobApp {
             // Without the paperclip (the layout's `composer.attach`) the text starts at the left.
             let text_left = if crate::layout::visible(ui.ctx(), "composer.attach", false) {
                 let attach_rect = Rect::from_min_size(egui::pos2(row.left(), row.bottom() - d), vec2(d, d));
-                rects.attach = ui.scope_builder(egui::UiBuilder::new().max_rect(attach_rect), |ui| self.uploads.button(ui, t, d, control_radius)).inner.rect;
+                rects.attach = ui.scope_builder(egui::UiBuilder::new().max_rect(attach_rect), |ui| self.add_menu(ui, t, d, control_radius)).inner.rect;
                 attach_rect.right() + gap
             } else {
                 row.left() + gap
@@ -163,41 +236,64 @@ impl ByobApp {
                 .scope_builder(egui::UiBuilder::new().max_rect(controls_rect).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
                     ui.spacing_mut().item_spacing.x = gap;
                     if editing.is_some() {
-                        let save = pill(ui, t, "Save", d, control_radius, true).on_hover_text("Save the queued message (Enter)");
+                        let save = crate::tip::keys(pill(ui, t, "Save", d, control_radius, true), t, &[("Save the queued message", &[crate::tip::ENTER])]);
                         send |= save.clicked();
                         rects.send = save.rect;
                         rects.send_fill = t.accent;
-                        let cancel = pill(ui, t, "Cancel", d, control_radius, false).on_hover_text("Stop editing (Esc)");
+                        let cancel = crate::tip::keys(pill(ui, t, "Cancel", d, control_radius, false), t, &[("Stop editing", &["Esc"])]);
                         cancel_edit |= cancel.clicked();
                         rects.second = cancel.rect;
                     } else if busy {
                         // Stop is the strong one until there's a follow-up to queue.
                         let fill = if ready { t.button_bg } else { t.text_strong };
                         let icon = if ready { t.text_strong } else { t.field_bg };
-                        let stop = round_button(ui, t, d, control_radius, fill, icon, icons::stop, true).on_hover_text("Stop the reply");
+                        let stop = crate::tip::note(
+                            round_button(ui, t, d, control_radius, fill, icon, icons::stop, true),
+                            t,
+                            "Stop the reply",
+                            "What it wrote so far stays",
+                        );
                         if stop.clicked() {
                             self.conn.send(ClientMsg::Cancel);
                         }
                         rects.send = stop.rect;
                         rects.send_fill = fill;
                         if ready {
-                            let queue = pill(ui, t, "Queue", d, control_radius, true).on_hover_text("Send this when the reply is done (Enter)");
+                            let queue =
+                                crate::tip::keys(pill(ui, t, "Queue", d, control_radius, true), t, &[("Send when the reply is done", &[crate::tip::ENTER])]);
                             send |= queue.clicked();
                             rects.second = queue.rect;
                         }
                     } else {
-                        let (fill, icon) = if ready { (t.accent, t.on_accent) } else { (t.button_bg, t.text_faint) };
-                        let tip = if ready {
-                            "Send (Enter; Shift+Enter for a new line)"
-                        } else if self.uploads.busy() {
-                            "Waiting for the files to upload"
+                        // Right to left: the mic at the end; "↵" beside it once there is
+                        // something to send; while listening, the voice just left of them.
+                        let listening = self.voice.is_some();
+                        let m = crate::chatbar::mic_button(ui, t, d, control_radius, listening);
+                        if m.clicked() {
+                            self.toggle_voice(ui.ctx());
+                        }
+                        rects.mic = m.rect;
+                        if has_content || self.uploads.busy() {
+                            let b = crate::chatbar::send_glyph(ui, t, d, control_radius, ready);
+                            let b = if ready {
+                                let sh = crate::tip::shift(ui.ctx());
+                                crate::tip::keys(b, t, &[("Send", &[crate::tip::ENTER]), ("New line", &[sh, crate::tip::ENTER])])
+                            } else {
+                                crate::tip::note(b, t, "Waiting for the files", "Send works once they've uploaded")
+                            };
+                            send |= b.clicked();
+                            rects.send = b.rect;
+                            rects.send_fill = if ready { t.text_strong } else { t.text_faint };
                         } else {
-                            "Type a message to send"
-                        };
-                        let b = round_button(ui, t, d, control_radius, fill, icon, icons::arrow_up, ready).on_hover_text(tip);
-                        send |= b.clicked();
-                        rects.send = b.rect;
-                        rects.send_fill = fill;
+                            rects.send = m.rect;
+                            rects.send_fill = t.button_bg;
+                        }
+                        if let Some(started) = self.voice {
+                            let secs = ui.input(|i| i.time) - started;
+                            let (r, _) = ui.allocate_exact_size(vec2(132.0, d), Sense::hover());
+                            crate::chatbar::wave(ui, t, r, secs);
+                            ui.ctx().request_repaint();
+                        }
                     }
                     ui.min_rect().left()
                 })
@@ -277,19 +373,12 @@ impl ByobApp {
                 }
             });
         }
-        let focused = ui.memory(|m| m.has_focus(id));
-        if focused {
-            prepared.frame.stroke = Stroke::new(1.0, t.accent);
-        }
+        // No glow on focus: the cursor says where you type.
         let outer = prepared.end(ui).rect;
-        if focused {
-            // A soft ring outside the border.
-            // Outside the frame, so its radius grows by the ring's offset (the same rule outwards).
-            let radius = CornerRadius::from(outer_radius + 0.5);
-            ui.painter().rect_stroke(outer.expand(0.5), radius, Stroke::new(3.0, t.accent.gamma_multiply(0.22)), egui::StrokeKind::Outside);
-        }
         rects.frame = outer;
         self.composer_rects = rects;
+        // Under the box: where it works; the model, the mode and the context.
+        self.chat_bar(ui, t);
 
         // Still open after this frame's typing (and not just picked): draw it over the field.
         if menu && picked.is_none() && slash::query(&self.input).is_some() {
@@ -357,7 +446,8 @@ const FRAME_STROKE: f32 = 1.0;
 /// concentric.
 pub fn radii(t: &Tokens, d: f32) -> (f32, f32) {
     let inset = f32::from(FRAME_MARGIN) + FRAME_STROKE;
-    let outer = t.round(d / 2.0 + inset).min(d / 2.0 + inset);
+    // Gently rounded, not a pill: a box you write in.
+    let outer = t.round(14.0).min(d / 2.0 + inset);
     (outer, crate::theme::inner_radius(outer, inset).min(d / 2.0))
 }
 

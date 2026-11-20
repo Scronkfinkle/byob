@@ -1,6 +1,6 @@
-//! The context meter in the header ("34k / 262k" and a bar that warms up as the chat nears
-//! its compaction threshold, with a breakdown and "Compact now"), and the "Context
-//! compacted" dividers in the transcript (expandable to read the summary).
+//! The context ring under the message box (it fills as the chat nears its compaction
+//! threshold; its menu has a bar with that mark, what the chat used, and "Compact now"), and
+//! the "Context compacted" dividers in the transcript (expandable to read the summary).
 
 use std::collections::HashMap;
 
@@ -11,8 +11,7 @@ use egui::{Color32, RichText, Sense, Stroke};
 use crate::markdown;
 use crate::theme::{Tokens, mix};
 
-/// Bar size in the header.
-const BAR_WIDTH: f32 = 56.0;
+/// The bar's height in the ring's menu.
 const BAR_HEIGHT: f32 = 7.0;
 
 /// Usage and compactions of the chat in view.
@@ -22,8 +21,6 @@ pub struct Usage {
     compactions: Vec<Compaction>,
     /// Rendered summaries, by compaction id.
     docs: HashMap<u64, markdown::Doc>,
-    /// Focus text typed in the meter's popup.
-    focus: String,
 }
 
 impl Usage {
@@ -66,48 +63,129 @@ impl Usage {
         }
     }
 
-    /// The header meter. Returns a message if the user asked to compact now.
-    /// The bar, and its numbers where the layout shows them (`header.usage_numbers`; never
-    /// on phones); they're always in its tooltip and popup.
-    pub fn meter(&mut self, ui: &mut egui::Ui, t: &Tokens) -> Option<ClientMsg> {
+    /// Under the message box: a small ring that fills as the context does, and its percent.
+    /// A click opens the same breakdown and "Compact now" as the meter.
+    pub fn ring(&mut self, ui: &mut egui::Ui, t: &Tokens) -> Option<ClientMsg> {
         let u = self.usage.as_ref()?;
-        let narrow = ui.ctx().content_rect().width() < crate::sidebar::NARROW;
-        let numbers = !narrow && crate::layout::in_header(ui.ctx(), "header.usage_numbers");
-        let row = ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            bar(ui, t, u, BAR_WIDTH);
-            if u.compacting {
-                ui.label(RichText::new("compacting…").small().color(t.text_dim));
-            } else if numbers {
-                ui.label(RichText::new(u.label()).small().color(t.text_dim));
-                if let Some(split) = u.split_label() {
-                    ui.label(RichText::new(split).small().color(t.text_faint));
-                }
+        let h = ui.spacing().interact_size.y;
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0..=100
+        let pct = (u.fraction().clamp(0.0, 1.0) * 100.0).round() as u32;
+        let text = if u.compacting { "compacting".to_owned() } else { format!("{pct}%") };
+        let galley = ui.painter().layout_no_wrap(text, font, t.text_dim);
+        let d = 13.0;
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(7.0 + d + 5.0 + galley.size().x + 7.0, h), Sense::click());
+        if ui.is_rect_visible(rect) {
+            let over = response.hovered();
+            if over {
+                crate::glass::row(ui.painter(), t, rect, crate::glass::RowState::Hovered);
             }
-        });
-        let response = row.response.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-        let popup_open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
-        let response = if popup_open { response } else { response.on_hover_ui(|ui| breakdown(ui, t, u)) };
+            let c = egui::pos2(rect.left() + 7.0 + d / 2.0, rect.center().y);
+            let p = ui.painter();
+            p.circle_stroke(c, d / 2.0 - 1.0, Stroke::new(2.0, t.border));
+            let fill = u.fraction().clamp(0.0, 1.0);
+            if fill > 0.0 {
+                let steps = 40;
+                let pts: Vec<egui::Pos2> = (0..=steps)
+                    .map(|i| {
+                        #[allow(clippy::cast_precision_loss)] // 0..=40
+                        let a = -std::f32::consts::FRAC_PI_2 + fill * std::f32::consts::TAU * (i as f32 / steps as f32);
+                        c + egui::vec2(a.cos(), a.sin()) * (d / 2.0 - 1.0)
+                    })
+                    .collect();
+                p.add(egui::Shape::line(pts, Stroke::new(2.0, bar_color(t, u.pressure()))));
+            }
+            let color = if over { t.text_strong } else { t.text_dim };
+            p.galley(egui::pos2(c.x + d / 2.0 + 5.0, rect.center().y - galley.size().y / 2.0), galley, color);
+        }
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        self.popup(ui, t, &response)
+    }
+
+    /// The ring's menu: how full the context is (a bar with the compaction mark), what the
+    /// chat has used so far, and "Compact now". Hovering only says the numbers.
+    fn popup(&mut self, ui: &egui::Ui, t: &Tokens, response: &egui::Response) -> Option<ClientMsg> {
+        let u = self.usage.clone()?;
+        let u = &u;
+        let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(response));
+        let response = if open { response.clone() } else { crate::tip::note(response.clone(), t, &in_use(u), "Click for details or to compact") };
         let mut out = None;
-        let busy = u.compacting;
-        egui::Popup::from_toggle_button_response(&response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-            ui.set_min_width(260.0);
-            breakdown(ui, t, u);
-            ui.separator();
-            ui.add(egui::TextEdit::singleline(&mut self.focus).hint_text("Keep in detail… (optional)").desired_width(f32::INFINITY));
+        crate::menu::below(&response, t, 300.0).show(|ui| {
+            crate::menu::tighten(ui);
+            let pad = 10.0;
+            let row = |ui: &mut egui::Ui, left: &str, right: &str, strong: bool| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), Sense::hover());
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let p = ui.painter();
+                p.text(
+                    egui::pos2(rect.left() + pad, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    left,
+                    font.clone(),
+                    if strong { t.text_strong } else { t.text_dim },
+                );
+                p.text(egui::pos2(rect.right() - pad, rect.center().y), egui::Align2::RIGHT_CENTER, right, font, if strong { t.text_strong } else { t.text });
+            };
+            crate::menu::heading(ui, t, &format!("Context · {} window", short_tokens(u.context_window)));
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0..=100
+            let pct = (u.fraction().clamp(0.0, 1.0) * 100.0).round() as u32;
+            let approx = if u.estimated { "≈" } else { "" };
+            row(ui, "In use", &format!("{approx}{} · {pct}%", short_tokens(u.context_used)), true);
             ui.horizontal(|ui| {
-                let button = ui.add_enabled(!busy, egui::Button::new("Compact now"));
-                if button.on_hover_text("Summarize the conversation so far; later requests start from the summary").clicked() {
-                    let focus = std::mem::take(&mut self.focus);
-                    let focus = focus.trim();
-                    out = Some(ClientMsg::Compact { focus: (!focus.is_empty()).then(|| focus.to_owned()) });
-                    ui.close();
-                }
-                ui.label(RichText::new("or type /compact").small().color(t.text_faint));
+                ui.add_space(pad);
+                bar(ui, t, u, ui.available_width() - pad);
             });
+            let note = if u.compacting {
+                "Compacting now".to_owned()
+            } else if u.compact_at == 0 {
+                "Never compacts by itself".to_owned()
+            } else {
+                format!("Compacts by itself at {} (the mark)", short_tokens(u.compact_at))
+            };
+            ui.horizontal(|ui| {
+                ui.add_space(pad);
+                ui.label(RichText::new(note).small().color(t.text_faint));
+            });
+            crate::menu::separator(ui, t);
+            crate::menu::heading(ui, t, "This chat so far");
+            row(ui, "Tokens read", &short_tokens(u.prompt_tokens), false);
+            row(ui, "Tokens written", &short_tokens(u.completion_tokens), false);
+            let calls = if u.model_calls == 1 { "1 call".to_owned() } else { format!("{} calls", u.model_calls) };
+            row(ui, "Model", &format!("{calls} · {}", duration(u.elapsed_ms)), false);
+            if u.compactions > 0 {
+                row(ui, "Compacted", &if u.compactions == 1 { "once".to_owned() } else { format!("{} times", u.compactions) }, false);
+            }
+            if u.agent_calls > 0 {
+                row(ui, "Subagents", &format!("{} read · {} written", short_tokens(u.agent_prompt_tokens), short_tokens(u.agent_completion_tokens)), false);
+            }
+            crate::menu::separator(ui, t);
+            if u.compacting {
+                row(ui, "Compacting", "", false);
+            } else if crate::menu::item(ui, t, Some(crate::icons::lines), "Compact now", Some("/compact"))
+                .on_hover_text("Summarise the chat so far so it takes less room. To say what to keep, type /compact and what matters")
+                .clicked()
+            {
+                out = Some(ClientMsg::Compact { focus: None });
+                ui.close();
+            }
         });
         out
     }
+}
+
+/// "5.8k of 200k tokens in use (3%)".
+fn in_use(u: &ChatUsage) -> String {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0..=100
+    let pct = (u.fraction().clamp(0.0, 1.0) * 100.0).round() as u32;
+    let est = if u.estimated { ", estimated" } else { "" };
+    format!("{} of {} tokens in use ({pct}%{est})", short_tokens(u.context_used), short_tokens(u.context_window))
+}
+
+/// "2.7 s", "4 min 10 s".
+fn duration(ms: u64) -> String {
+    #[allow(clippy::cast_precision_loss)] // display only
+    let secs = ms as f64 / 1000.0;
+    if secs >= 60.0 { format!("{} min {:.0} s", (secs / 60.0).floor(), secs % 60.0) } else { format!("{secs:.1} s") }
 }
 
 /// Color of the bar: accent while there is room, warning near the threshold, danger past it.
@@ -139,41 +217,6 @@ fn bar(ui: &mut egui::Ui, t: &Tokens, u: &ChatUsage, width: f32) {
         let x = rect.left() + rect.width() * (u.compact_at as f32 / u.context_window as f32);
         p.vline(x, rect.y_range().expand(2.0), Stroke::new(1.5, t.text_dim));
     }
-}
-
-/// The numbers behind the meter.
-fn breakdown(ui: &mut egui::Ui, t: &Tokens, u: &ChatUsage) {
-    let row = |ui: &mut egui::Ui, k: &str, v: String| {
-        ui.label(RichText::new(k).color(t.text_dim));
-        ui.label(RichText::new(v).color(t.text));
-        ui.end_row();
-    };
-    ui.label(RichText::new("Context").strong().color(t.text_strong));
-    egui::Grid::new("usage-breakdown").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // display only
-        let percent = (u.fraction() * 100.0).round() as u32;
-        let used =
-            format!("{} of {} ({percent}%){}", short_tokens(u.context_used), short_tokens(u.context_window), if u.estimated { ", estimated" } else { "" });
-        row(ui, "In use", used);
-        row(ui, "Compacts at", if u.compact_at == 0 { "off".into() } else { short_tokens(u.compact_at) });
-        if u.last_prompt_tokens > 0 || u.last_completion_tokens > 0 {
-            row(ui, "Last request", format!("{} in · {} out", u.last_prompt_tokens, u.last_completion_tokens));
-        }
-    });
-    ui.add_space(4.0);
-    ui.label(RichText::new("This chat").strong().color(t.text_strong));
-    egui::Grid::new("usage-totals").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
-        row(ui, "Prompt tokens", u.prompt_tokens.to_string());
-        row(ui, "Completion tokens", u.completion_tokens.to_string());
-        row(ui, "Model calls", u.model_calls.to_string());
-        row(ui, "Compactions", u.compactions.to_string());
-        if u.agent_calls > 0 {
-            row(ui, "Subagents", format!("{} in · {} out · {} calls", u.agent_prompt_tokens, u.agent_completion_tokens, u.agent_calls));
-        }
-        #[allow(clippy::cast_precision_loss)] // display only
-        let secs = u.elapsed_ms as f64 / 1000.0;
-        row(ui, "Time", if secs >= 60.0 { format!("{}m {:.0}s", (secs / 60.0).floor(), secs % 60.0) } else { format!("{secs:.1}s") });
-    });
 }
 
 /// "── Context compacted · 182k → 9k tokens ──", with the summary underneath on click.

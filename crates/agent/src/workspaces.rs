@@ -70,6 +70,23 @@ pub(crate) fn chosen_folder(path: &str) -> Result<PathBuf, String> {
     Ok(real)
 }
 
+/// A folder a project links besides its own: absolute, existing (never made, unlike a
+/// project's own folder), a folder, not the filesystem's root. Canonical.
+pub(crate) fn linked_folder(path: &str) -> Result<PathBuf, String> {
+    let p = byob_store::expand_home(Path::new(path.trim()));
+    if !p.is_absolute() {
+        return Err(format!("{path:?} isn't a full path (like /home/me/project)"));
+    }
+    let real = p.canonicalize().map_err(|_| format!("{} doesn't exist", p.display()))?;
+    if !real.is_dir() {
+        return Err(format!("{} isn't a folder", real.display()));
+    }
+    if real.parent().is_none() {
+        return Err("the root of the filesystem can't be linked".into());
+    }
+    Ok(real)
+}
+
 /// Create a fresh folder for workspace `name` in `root`: its slug, or slug-2, slug-3, …
 pub(crate) fn fresh_folder(root: &Path, name: &str) -> Result<PathBuf, String> {
     let slug = byob_store::folder_slug(name);
@@ -131,12 +148,15 @@ impl Engine {
         }
     }
 
-    /// Recount chats per folder; folders seen on chats become workspaces.
+    /// Recount chats per folder; folders seen on chats become workspaces, except those of
+    /// chats without a project.
     pub(crate) fn refresh_folder_stats(&mut self) {
         match self.store.folder_stats() {
             Ok(stats) => {
                 for s in &stats {
-                    self.ensure_workspace(&s.folder);
+                    if !self.is_unattached(&s.folder) {
+                        self.ensure_workspace(&s.folder);
+                    }
                 }
                 self.folder_stats = stats;
             }
@@ -146,10 +166,14 @@ impl Engine {
 
     fn summary_of(&self, w: &WorkspaceRow) -> WorkspaceSummary {
         let stats = self.folder_stats.iter().find(|s| s.folder == w.folder);
+        // What it's for: the start of its instructions (the whole text is in its settings).
+        let goal: String = w.config.instructions.as_deref().unwrap_or_default().trim().chars().take(byob_protocol::workspace::MAX_GOAL_CHARS).collect();
         WorkspaceSummary {
             id: w.id.clone(),
             name: w.name.clone(),
             folder: w.folder.display().to_string(),
+            folders: w.folders.iter().map(|f| f.display().to_string()).collect(),
+            goal,
             chats: stats.map_or(0, |s| s.chats),
             updated_at: stats.map_or(w.created_at, |s| s.updated_at.max(w.created_at)),
             env: w.config.env.unwrap_or_default(),
@@ -178,18 +202,86 @@ impl Engine {
     }
 
     /// The workspace client `id`'s next new chat goes into: the one it picked, else the
-    /// default one (registered or not: `None` means the default folder).
+    /// default one (registered or not: `None` means the default folder). `None` too for a
+    /// new chat without a project.
     pub(crate) fn new_chat_workspace(&self, id: ClientId) -> Option<WorkspaceRow> {
+        // A chat without a project has none, not even the default one.
+        if self.clients.get(&id).is_some_and(|c| c.new_unattached) {
+            return None;
+        }
         let picked = self.clients.get(&id).and_then(|c| c.new_in.as_deref()).and_then(|w| self.workspaces.get(w));
         picked.or_else(|| self.default_workspace_row()).cloned()
     }
 
+    /// Is `folder` one of a chat without a project ([`Engine::unattached_root`])?
+    pub(crate) fn is_unattached(&self, folder: &Path) -> bool {
+        folder.starts_with(&self.unattached_root) && self.workspaces.by_folder(folder).is_none()
+    }
+
+    /// The folder of chat `chat`, a chat without a project, created if needed.
+    pub(crate) fn unattached_folder(&self, chat: &str) -> Result<PathBuf, byob_store::StoreError> {
+        let dir = self.unattached_root.join(chat);
+        std::fs::create_dir_all(&dir).map_err(|source| byob_store::StoreError::Io { path: dir.clone(), source })?;
+        Ok(dir)
+    }
+
+    /// The folder client `client`'s new chat works in before its first message creates it:
+    /// its project's, else (no project) the shared drafts folder, else the default folder.
+    pub(crate) fn new_chat_folder(&self, client: ClientId) -> PathBuf {
+        if self.clients.get(&client).is_some_and(|c| c.new_unattached) {
+            let drafts = self.unattached_root.join("drafts");
+            let _ = std::fs::create_dir_all(&drafts);
+            return drafts;
+        }
+        self.new_chat_workspace(client).map_or_else(|| self.default_workspace.clone(), |w| w.folder)
+    }
+
+    /// `ClientMsg::NewUnattachedChat`: a new chat that belongs to no project.
+    pub(crate) fn new_unattached_chat(&mut self, client: ClientId) {
+        if let Some(c) = self.clients.get_mut(&client) {
+            c.new_in = None;
+            c.new_unattached = true;
+            c.new_layer = Layer::default();
+            c.new_key = None;
+        }
+        self.show_chat(client, None);
+    }
+
+    /// `ClientMsg::ChatToProject`: register a chat's own folder as a project named after
+    /// the chat; its chats then belong to it.
+    pub(crate) fn chat_to_project(&mut self, client: ClientId, chat: &str) {
+        let Some(folder) = self.chat_folder(chat) else {
+            self.notice(client, "that chat no longer exists".into());
+            return;
+        };
+        if self.workspaces.by_folder(&folder).is_some() {
+            self.notice(client, "that chat is in a project already".into());
+            return;
+        }
+        let title = self.summary(chat).map(|s| s.title).unwrap_or_else(|| "Project".into());
+        let name = byob_store::clean_name(&title).unwrap_or_else(|_| "Project".into());
+        match self.workspaces.create(&name, &folder, Layer::default()) {
+            Ok(row) => {
+                log::info!("chat {chat} is the project {:?} now, at {}", row.name, row.folder.display());
+                self.refresh_folder_stats();
+                self.broadcast_workspaces();
+                self.chat_changed(chat);
+            }
+            Err(e) => self.notice(client, format!("couldn't make it a project: {e}")),
+        }
+    }
+
     /// `ClientMsg::NewChat`: a new chat in `workspace`, else in the workspace of the chat
-    /// in view, else in the default one.
+    /// in view (or, for a chat without one, another chat without one), else in the default.
     pub(crate) fn new_chat(&mut self, client: ClientId, workspace: Option<String>) {
+        let in_view_unattached = workspace.is_none() && self.client_chat(client).and_then(|c| self.chat_folder(&c)).is_some_and(|f| self.is_unattached(&f));
+        if in_view_unattached {
+            self.new_unattached_chat(client);
+            return;
+        }
         let ws = match workspace {
             Some(id) if self.workspaces.get(&id).is_none() => {
-                self.notice(client, "that workspace no longer exists".into());
+                self.notice(client, "that project no longer exists".into());
                 return;
             }
             Some(id) => Some(id),
@@ -197,6 +289,7 @@ impl Engine {
         };
         if let Some(c) = self.clients.get_mut(&client) {
             c.new_in = ws;
+            c.new_unattached = false;
             c.new_layer = Layer::default();
             c.new_key = None;
         }
@@ -414,26 +507,32 @@ impl Engine {
 
     // ---- workspace messages -----------------------------------------------------------
 
-    pub(crate) fn create_workspace(&mut self, client: ClientId, name: &str, folder: NewFolder, config: Layer) {
+    pub(crate) fn create_workspace(&mut self, client: ClientId, name: &str, folder: NewFolder, config: Layer, folders: &[String]) {
         let result = (|| {
             let layer = config.validated(Level::Workspace)?;
             let name = byob_store::clean_name(name).map_err(|e| e.to_string())?;
+            // The other folders first: a bad one stops it before anything is made.
+            let linked = folders.iter().map(|f| linked_folder(f)).collect::<Result<Vec<_>, _>>()?;
             let folder = match folder {
                 NewFolder::Existing { path } => chosen_folder(&path)?,
                 NewFolder::Create => {
-                    let root = self.workspaces_root.clone().ok_or("byob has no folder for new workspaces here; pick an existing folder")?;
+                    let root = self.workspaces_root.clone().ok_or("byob has no folder for new projects here; pick an existing folder")?;
                     fresh_folder(&root, &name)?
                 }
             };
             let row = self.workspaces.create(&name, &folder, layer).map_err(|e| match e {
                 byob_store::StoreError::Exists(what) => format!("{what} pick it in the chat list"),
-                other => format!("couldn't save the workspace: {other}"),
+                other => format!("couldn't save the project: {other}"),
             })?;
-            Ok::<_, String>(row)
+            if !linked.is_empty() {
+                self.workspaces.set_folders(&row.id, &linked).map_err(|e| format!("couldn't save its folders: {e}"))?;
+            }
+            Ok::<_, String>(self.workspaces.get(&row.id).cloned().unwrap_or(row))
         })();
         match result {
             Ok(row) => {
-                log::info!("workspace {:?} at {}", row.name, row.folder.display());
+                log::info!("workspace {:?} at {} (+{} folders)", row.name, row.folder.display(), row.folders.len());
+                byob_tools::sandbox::set_linked(&row.folder, &row.folders);
                 self.record_env_choice(&row.folder, row.config.env);
                 self.broadcast_workspaces();
                 self.send_to(client, ServerMsg::WorkspaceCreated { id: Some(row.id.clone()), error: None });
@@ -443,10 +542,34 @@ impl Engine {
         }
     }
 
+    /// `ClientMsg::SetWorkspaceFolders`: the other folders a project works in. Each must
+    /// exist; a bad one changes nothing (the notice says which).
+    pub(crate) fn set_workspace_folders(&mut self, client: ClientId, id: &str, folders: &[String]) {
+        let Some(own) = self.workspaces.get(id).map(|w| w.folder.clone()) else {
+            self.notice(client, "that project no longer exists".into());
+            return;
+        };
+        let linked = match folders.iter().map(|f| linked_folder(f)).collect::<Result<Vec<_>, _>>() {
+            Ok(l) => l,
+            Err(e) => {
+                self.notice(client, format!("couldn't link that folder: {e}"));
+                return;
+            }
+        };
+        match self.workspaces.set_folders(id, &linked) {
+            Ok(()) => {
+                let kept = self.workspaces.get(id).map(|w| w.folders.clone()).unwrap_or_default();
+                byob_tools::sandbox::set_linked(&own, &kept);
+                self.broadcast_workspaces();
+            }
+            Err(e) => self.notice(client, format!("couldn't save the project's folders: {e}")),
+        }
+    }
+
     pub(crate) fn rename_workspace(&mut self, client: ClientId, id: &str, name: &str) {
         match self.workspaces.rename(id, name) {
             Ok(()) => self.broadcast_workspaces(),
-            Err(e) => self.notice(client, format!("couldn't rename the workspace: {e}")),
+            Err(e) => self.notice(client, format!("couldn't rename the project: {e}")),
         }
     }
 
@@ -468,13 +591,13 @@ impl Engine {
     /// stays). `clean`: also what byob keeps for it elsewhere (packages, its container).
     pub(crate) fn remove_workspace(&mut self, client: ClientId, id: &str, clean: bool) {
         let Some(row) = self.workspaces.get(id).cloned() else {
-            self.notice(client, "that workspace no longer exists".into());
+            self.notice(client, "that project no longer exists".into());
             return;
         };
         let chats = match self.chats_in(&row.folder) {
             Ok(c) => c,
             Err(e) => {
-                self.notice(client, format!("couldn't list the workspace's chats: {e}"));
+                self.notice(client, format!("couldn't list the project's chats: {e}"));
                 return;
             }
         };
@@ -489,13 +612,13 @@ impl Engine {
             }
         }
         if !failed.is_empty() {
-            self.notice(client, format!("couldn't delete {} of its chats ({}); the workspace stays", failed.len(), failed.join("; ")));
+            self.notice(client, format!("couldn't delete {} of its chats ({}); the project stays", failed.len(), failed.join("; ")));
             self.refresh_folder_stats();
             self.broadcast_workspaces();
             return;
         }
         if let Err(e) = self.workspaces.remove(id) {
-            self.notice(client, format!("couldn't remove the workspace: {e}"));
+            self.notice(client, format!("couldn't remove the project: {e}"));
             return;
         }
         self.set_scoped_key(&format!("workspace:{id}"), None);
@@ -513,19 +636,20 @@ impl Engine {
             self.show_chat(cid, None);
         }
         let n = chats.len();
-        let text = format!(
-            "Removed the workspace {:?} and its {n} chat{} from byob; {} and its files are untouched.",
-            row.name,
-            if n == 1 { "" } else { "s" },
-            row.folder.display()
-        );
+        let chats = match n {
+            0 => String::new(),
+            1 => " and its chat".to_owned(),
+            n => format!(" and its {n} chats"),
+        };
+        byob_tools::sandbox::set_linked(&row.folder, &[]);
+        let text = format!("Removed the project {:?}{chats} from byob; {} and its files are untouched.", row.name, row.folder.display());
         self.send_to(client, ServerMsg::Notice { level: NoticeLevel::Info, text });
         if clean && let Some(envs) = self.envs.clone() {
             let (inbox, folder) = (self.inbox.clone(), row.folder.clone());
             spawn_worker("byob-env", move || {
                 let (level, text) = match envs.forget(&folder) {
                     Ok(t) => (NoticeLevel::Info, t),
-                    Err(e) => (NoticeLevel::Error, format!("couldn't clean up after the workspace: {e}")),
+                    Err(e) => (NoticeLevel::Error, format!("couldn't clean up after the project: {e}")),
                 };
                 let _ = inbox.send(Input::Reply { client, msg: Box::new(ServerMsg::Notice { level, text }) });
             });
@@ -547,7 +671,7 @@ impl Engine {
                 }
             }
             ConfigScope::Workspace { id } => {
-                let ws = self.workspaces.get(id).ok_or("that workspace no longer exists")?;
+                let ws = self.workspaces.get(id).ok_or("that project no longer exists")?;
                 ConfigView {
                     scope: scope.clone(),
                     own: ws.config.clone(),
@@ -630,7 +754,7 @@ impl Engine {
             }
             ConfigScope::Workspace { id } => {
                 let mut layer = layer.validated(Level::Workspace)?;
-                let old = self.workspaces.get(id).ok_or("that workspace no longer exists")?.clone();
+                let old = self.workspaces.get(id).ok_or("that project no longer exists")?.clone();
                 layer.plugins.clone_from(&old.config.plugins);
                 self.check_subagent_profile(&layer, &old.config)?;
                 let scope_key = format!("workspace:{id}");
@@ -641,7 +765,7 @@ impl Engine {
                     }
                 };
                 let env_changed = old.config.env != layer.env;
-                self.workspaces.set_config(id, layer.clone()).map_err(|e| format!("couldn't save the workspace: {e}"))?;
+                self.workspaces.set_config(id, layer.clone()).map_err(|e| format!("couldn't save the project: {e}"))?;
                 self.set_scoped_key(&scope_key, key);
                 if env_changed {
                     self.record_env_choice(&old.folder, layer.env);
@@ -734,6 +858,22 @@ impl Engine {
     }
 }
 
+/// The instructions, and where the project's other folders are (the model reaches them by
+/// their full paths; relative paths stay in the project's own folder).
+fn with_linked_folders(instructions: String, workspace: &Path) -> String {
+    let linked = byob_tools::sandbox::linked(workspace);
+    if linked.is_empty() {
+        return instructions;
+    }
+    let list: Vec<String> = linked.iter().map(|f| format!("- {}", f.display())).collect();
+    let folders = format!(
+        "This project also works in these folders. Read and change files there by their full paths (relative paths are in the project's own folder, {}):\n{}",
+        workspace.display(),
+        list.join("\n")
+    );
+    if instructions.trim().is_empty() { folders } else { format!("{instructions}\n\n{folders}") }
+}
+
 /// What the `before_prompt` hooks build `chat`'s system prompt from: the engine's prompt (`base`),
 /// the plugins' parts of its last turn (`cp`), its workspace's AGENTS.md, the user's
 /// instructions of every level, and its artifacts.
@@ -752,7 +892,7 @@ pub(crate) fn prompt_inputs(
         plugin_sections: cp.plugin_sections.clone(),
         plugin_lines: cp.plugin_lines.clone(),
         agents_md: crate::extensions::agents_md(&live.workspace),
-        instructions: e.instructions_text(),
+        instructions: with_linked_folders(e.instructions_text(), &live.workspace),
         delegation: cp.delegation.clone(),
         artifacts: crate::artifact::prompt_list(types, &live.artifacts),
         app_context: crate::web::context_section(&live.app_context),

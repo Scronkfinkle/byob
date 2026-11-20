@@ -128,6 +128,24 @@ pub struct Artifact {
     pub network: bool,
 }
 
+/// One artifact in the Library: every chat's artifacts in one place (15+, cap
+/// [`crate::version::CAP_LIBRARY`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LibraryItem {
+    pub chat: String,
+    pub chat_title: String,
+    /// The project of its chat, if it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    pub artifact: Artifact,
+    /// The chat it was made in has been deleted: the thing itself was kept.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chat_gone: bool,
+    /// A live file: the person's own file it follows (relative to its folder).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<String>,
+}
+
 impl Artifact {
     /// Its content type: the one the engine sent if it is well-formed, else the one its
     /// [`ArtifactKind`] stands for.

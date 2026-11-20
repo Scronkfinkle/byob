@@ -40,6 +40,10 @@ pub(crate) enum Event {
     Pinned {
         pinned_at: Option<Millis>,
     },
+    /// The resulting archive time (`None` = not archived).
+    Archived {
+        archived_at: Option<Millis>,
+    },
     /// Sets the "last active" time exactly (written by imports).
     Touched {
         updated_at: Millis,

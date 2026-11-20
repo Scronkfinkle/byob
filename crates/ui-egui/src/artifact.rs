@@ -118,6 +118,9 @@ pub struct Artifacts {
     /// A widget (an app, a text field) had keyboard focus at the end of the last frame: Esc
     /// is its to take (egui drops the focus on Esc before we see the key).
     focus_held: bool,
+    /// Artifacts pinned to the sidebar (the app says, every frame), and a pin asked for here.
+    pub pinned: std::collections::BTreeSet<String>,
+    pin_toggle: Option<(String, String)>,
 }
 
 impl Default for Artifacts {
@@ -146,6 +149,8 @@ impl Default for Artifacts {
             actions: Vec::new(),
             ctx: egui::Context::default(),
             focus_held: false,
+            pinned: std::collections::BTreeSet::new(),
+            pin_toggle: None,
         }
     }
 }
@@ -173,6 +178,22 @@ impl Artifacts {
         self.pane.set_prefs(prefs);
         let list = &self.list;
         self.pane.retain(|id| list.iter().any(|a| a.id == id));
+    }
+
+    /// Open artifact `id` beside the chat, if this chat has it (a pinned artifact).
+    pub fn open(&mut self, id: &str) -> bool {
+        if self.get(id).is_none() {
+            return false;
+        }
+        // A tab first (activating only brings an existing tab forward).
+        self.pane.add_tab(id);
+        self.actions.push(Action::Activate(id.to_owned()));
+        true
+    }
+
+    /// The artifact (id, title) whose pin was clicked here, once.
+    pub fn take_pin_toggle(&mut self) -> Option<(String, String)> {
+        self.pin_toggle.take()
     }
 
     /// Show or collapse the pane (as the shortcut does).
@@ -271,6 +292,11 @@ impl Artifacts {
     }
 
     /// Something is still being fetched (for scripted screenshots).
+    /// The chat whose artifacts these are (they arrive after the chat opens).
+    pub fn chat(&self) -> Option<&str> {
+        self.chat.as_deref()
+    }
+
     pub fn loading(&self) -> bool {
         self.files.map.values().any(|f| matches!(f, File::Requested)) || self.views.loading()
     }
@@ -295,6 +321,11 @@ impl Artifacts {
     }
 
     /// The chat in view has no artifacts.
+    /// How many artifacts the chat in view has.
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.list.is_empty()
     }
@@ -516,28 +547,30 @@ impl Artifacts {
 
     // ---- header, rail, floating button ---------------------------------------------------
 
-    /// The header's "Artifacts N" toggle (wide windows; phones have the floating button).
-    pub fn header_toggle(&mut self, ui: &mut egui::Ui) {
+    /// The header's artifact pane toggle: the artifacts icon and how many there are, lit
+    /// while the pane is open (wide windows; phones have the floating button).
+    pub fn header_toggle(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         if self.list.is_empty() || self.narrow {
             return;
         }
         let open = self.pane.shown(false) == PaneShown::Open;
-        let label = format!("Artifacts {}", self.list.len());
+        let count = self.list.len().to_string();
         let shortcut = ui.ctx().format_shortcut(&PANE_SHORTCUT);
-        if ui.selectable_label(open, label).on_hover_text(format!("Show or hide the artifact pane ({shortcut})")).clicked() {
+        let tip = format!("{} artifact{}: show or hide the pane ({shortcut})", self.list.len(), if self.list.len() == 1 { "" } else { "s" });
+        if crate::icons::icon_button(ui, t, crate::icons::artifacts, Some(&count), open).on_hover_text(tip).clicked() {
             self.actions.push(Action::Toggle);
         }
     }
 
     /// The header's overflow menu entries: show the pane (phones), collapse or expand every
     /// artifact card. Nothing when the chat has no artifacts.
-    pub fn menu_items(&mut self, ui: &mut egui::Ui) {
+    pub fn menu_items(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         if self.list.is_empty() {
             return;
         }
         if self.narrow {
             let label = format!("Show artifacts ({})", self.list.len());
-            if ui.button(label).clicked() {
+            if crate::menu::item(ui, t, Some(crate::icons::artifacts), &label, None).clicked() {
                 self.actions.push(Action::Expand);
                 ui.close();
             }
@@ -548,7 +581,7 @@ impl Artifacts {
         } else {
             ("Collapse all artifacts", "Minimize every artifact in this chat to one line")
         };
-        if ui.button(label).on_hover_text(tip).clicked() {
+        if crate::menu::item(ui, t, Some(crate::icons::artifacts), label, None).on_hover_text(tip).clicked() {
             self.actions.push(Action::MinimizeAll(!all));
             ui.close();
         }
@@ -847,6 +880,19 @@ impl Artifacts {
                             self.actions.push(Action::Maximize(true));
                         }
                     }
+                    // Pin the artifact in view to the sidebar, to come back to it from any chat.
+                    if let Some((a, _)) = self.selected_artifact() {
+                        let pinned = self.pinned.contains(&a.id);
+                        let b = crate::icons::icon_button(ui, t, crate::icons::pin, None, pinned);
+                        let b = if pinned {
+                            crate::tip::note(b, t, "Unpin from the sidebar", "It stays in this chat")
+                        } else {
+                            crate::tip::note(b, t, "Pin to the sidebar", "Open it from any chat, in one click")
+                        };
+                        if b.clicked() {
+                            self.pin_toggle = Some((a.id.clone(), a.title.clone()));
+                        }
+                    }
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     egui::ScrollArea::horizontal().id_salt("artifact-tabs").auto_shrink([false, true]).show(ui, |ui| {
@@ -878,6 +924,20 @@ impl Artifacts {
             let resp = ui.add(egui::Label::new(RichText::new(title).color(color)).sense(egui::Sense::click())).on_hover_text(&a.title);
             if resp.clicked() {
                 self.actions.push(Action::Activate(a.id.clone()));
+            }
+            let pinned = self.pinned.contains(&a.id);
+            let mut toggle = false;
+            crate::menu::context(&resp, t, 190.0).show(|ui| {
+                crate::menu::tighten(ui);
+                if crate::menu::item(ui, t, Some(crate::icons::pin), if pinned { "Unpin from sidebar" } else { "Pin to sidebar" }, Some("P")).clicked()
+                    || crate::menu::key(ui, egui::Key::P)
+                {
+                    toggle = true;
+                    ui.close();
+                }
+            });
+            if toggle {
+                self.pin_toggle = Some((a.id.clone(), a.title.clone()));
             }
             let close =
                 ui.add(egui::Button::new(RichText::new("×").color(t.text_dim)).frame(false).small()).on_hover_text("Close the tab (the artifact stays)");

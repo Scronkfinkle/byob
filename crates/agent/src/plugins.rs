@@ -215,6 +215,20 @@ impl Engine {
     }
 
     /// Send client `id` the plugins of the chat it looks at.
+    /// A plugin's logo, read from its folder (the one this client's chat sees).
+    pub(crate) fn send_plugin_logo(&mut self, id: ClientId, plugin: String) {
+        let chat = self.client_chat(id);
+        let dir = self
+            .compose_for(chat.as_deref(), Some(id), false)
+            .and_then(|c| c.infos.into_iter().find(|p| p.id == plugin && p.shadowed_by.is_none()).map(|p| p.dir));
+        let data = dir
+            .and_then(|d| crate::extensions::logo_file(std::path::Path::new(&d)))
+            .and_then(|f| std::fs::read(f).ok())
+            .filter(|b| u64::try_from(b.len()).is_ok_and(|n| n <= crate::extensions::MAX_LOGO_BYTES))
+            .map(|b| byob_protocol::media::encode(&b));
+        self.send_to(id, ServerMsg::PluginLogo { plugin, data });
+    }
+
     pub(crate) fn send_extensions(&mut self, id: ClientId, refresh: bool) {
         let chat = self.client_chat(id);
         let Some(c) = self.compose_for(chat.as_deref(), Some(id), refresh) else { return };

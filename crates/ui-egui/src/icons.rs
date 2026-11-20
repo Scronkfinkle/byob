@@ -1,275 +1,381 @@
-//! Small icons drawn with shapes, for glyphs the UI fonts don't have (the app settings
-//! gear, chat settings sliders, the chat list and overflow buttons, a disclosure triangle,
-//! where a workspace runs its commands, the plugins puzzle piece, the chat list's plus,
-//! search, clear and folders, the settings tabs, and the composer's paperclip, send arrow and
-//! stop square).
+//! byob's icons: the Phosphor set (MIT, phosphoricons.com), drawn from its icon font so
+//! every icon comes from one designed family. Each function draws one glyph into a square
+//! (`Paint`), outlined (`phosphor`) or filled (`phosphor-fill`, for selected states and
+//! small marks). The fonts are installed with the UI fonts ([`install_fonts`]).
 
 use byob_protocol::workspace::EnvKind;
-use egui::{Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, pos2, vec2};
+use egui::{Color32, FontFamily, FontId, Rect, Response, Sense, Ui, pos2, vec2};
+use egui_phosphor::{fill, regular};
 
 use crate::theme::Tokens;
 
 /// A shape drawn into a square: (painter, rect, color).
 pub type Paint = fn(&egui::Painter, Rect, Color32);
 
-/// "Chat settings": three slider lines with knobs.
-pub fn sliders(painter: &egui::Painter, r: Rect, color: Color32) {
-    let stroke = Stroke::new(1.4, color);
-    let (l, w) = (r.left() + r.width() * 0.15, r.width() * 0.7);
-    for (i, knob) in [0.7_f32, 0.3, 0.55].into_iter().enumerate() {
-        #[allow(clippy::cast_precision_loss)] // 0..3
-        let y = r.top() + r.height() * (0.25 + 0.25 * i as f32);
-        painter.line_segment([pos2(l, y), pos2(l + w, y)], stroke);
-        painter.circle(pos2(l + w * knob, y), 2.2, color, Stroke::NONE);
+const OUTLINE: &str = "phosphor";
+const FILLED: &str = "phosphor-fill";
+
+/// Add the Phosphor fonts (outline and filled) as their own families, not mixed into text.
+/// Each family holds only its Phosphor font: the icons sit in Unicode's private-use range,
+/// where the text fonts (Inter) have glyphs of their own that would otherwise win.
+pub fn install_fonts(fonts: &mut egui::FontDefinitions) {
+    for (name, variant) in [(OUTLINE, egui_phosphor::Variant::Regular), (FILLED, egui_phosphor::Variant::Fill)] {
+        fonts.font_data.insert(name.into(), egui::FontData::from_static(variant.font_bytes()).into());
+        fonts.families.insert(FontFamily::Name(name.into()), vec![name.into()]);
     }
 }
 
-/// "App settings": a cog with eight teeth.
-pub fn gear(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let c = r.center();
-    let stroke = Stroke::new((s * 0.12).max(1.3), color);
-    for k in 0..8 {
-        #[allow(clippy::cast_precision_loss)] // 0..8
-        let a = k as f32 * std::f32::consts::TAU / 8.0;
-        let dir = vec2(a.cos(), a.sin());
-        painter.line_segment([c + dir * s * 0.3, c + dir * s * 0.47], Stroke::new((s * 0.17).max(1.8), color));
-    }
-    painter.circle_stroke(c, s * 0.3, stroke);
-    painter.circle_stroke(c, s * 0.1, Stroke::new((s * 0.09).max(1.0), color));
+/// One glyph of `family`, filling the square `r`.
+fn glyph(p: &egui::Painter, r: Rect, icon: &str, family: &str, color: Color32) {
+    let size = r.width().min(r.height());
+    p.text(r.center(), egui::Align2::CENTER_CENTER, icon, FontId::new(size, FontFamily::Name(family.into())), color);
 }
 
-/// "Chat list": a window with a sidebar.
-pub fn sidebar(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let stroke = Stroke::new((s * 0.09).max(1.2), color);
-    let b = Rect::from_center_size(r.center(), vec2(s * 0.92, s * 0.76));
-    painter.rect_stroke(b, s * 0.12, stroke, egui::StrokeKind::Inside);
-    let x = b.left() + b.width() * 0.36;
-    painter.line_segment([pos2(x, b.top()), pos2(x, b.bottom())], stroke);
-    for i in 0..3 {
-        #[allow(clippy::cast_precision_loss)] // 0..3
-        let y = b.top() + b.height() * (0.3 + 0.18 * i as f32);
-        painter.line_segment([pos2(b.left() + s * 0.12, y), pos2(x - s * 0.1, y)], Stroke::new(stroke.width * 0.8, color));
-    }
+/// An outlined icon.
+fn outline(p: &egui::Painter, r: Rect, icon: &str, color: Color32) {
+    glyph(p, r, icon, OUTLINE, color);
 }
 
-/// "More": three dots in a row.
-pub fn more(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let c = r.center();
-    for dx in [-0.32_f32, 0.0, 0.32] {
-        painter.circle_filled(c + vec2(dx * s, 0.0), (s * 0.085).max(1.4), color);
-    }
+/// A filled icon (the selected state of an outlined one, and small solid marks).
+pub fn filled(p: &egui::Painter, r: Rect, icon: &str, color: Color32) {
+    glyph(p, r, icon, FILLED, color);
 }
 
-/// "Plugins": a jigsaw piece with a knob on top and one on the right.
-pub fn puzzle(painter: &egui::Painter, r: Rect, color: Color32) {
-    use std::f32::consts::PI;
-    let s = r.width().min(r.height());
-    let stroke = Stroke::new((s * 0.1).max(1.2), color);
-    let o = r.center() - vec2(s * 0.47, s * 0.53);
-    let at = |x: f32, y: f32| o + vec2(x * s, y * s);
-    let (left, top, right, bottom, knob) = (0.1_f32, 0.32_f32, 0.72_f32, 0.92_f32, 0.11_f32);
-    let mut points = vec![at(left, bottom), at(left, top), at(0.41 - knob, top)];
-    for k in 0..=8 {
-        #[allow(clippy::cast_precision_loss)] // 0..=8
-        let a = PI + PI * k as f32 / 8.0;
-        points.push(at(0.41 + knob * a.cos(), top + knob * 1.3 * a.sin()));
-    }
-    points.extend([at(right, top), at(right, 0.62 - knob)]);
-    for k in 0..=8 {
-        #[allow(clippy::cast_precision_loss)] // 0..=8
-        let a = -PI / 2.0 + PI * k as f32 / 8.0;
-        points.push(at(right + knob * 1.3 * a.cos(), 0.62 + knob * a.sin()));
-    }
-    points.push(at(right, bottom));
-    painter.add(Shape::closed_line(points, stroke));
+/// "Chat settings".
+pub fn sliders(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::SLIDERS_HORIZONTAL, c);
 }
 
-/// "New": a plus.
-pub fn plus(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let c = r.center();
-    let (h, stroke) = (s * 0.36, Stroke::new((s * 0.11).max(1.3), color));
-    painter.line_segment([c - vec2(h, 0.0), c + vec2(h, 0.0)], stroke);
-    painter.line_segment([c - vec2(0.0, h), c + vec2(0.0, h)], stroke);
+/// "Settings".
+pub fn gear(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::GEAR_SIX, c);
 }
 
-/// "Search": a magnifying glass.
-pub fn search(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let stroke = Stroke::new((s * 0.1).max(1.3), color);
-    let c = r.center() - vec2(s * 0.08, s * 0.08);
-    let radius = s * 0.28;
-    painter.circle_stroke(c, radius, stroke);
-    let d = vec2(1.0, 1.0).normalized();
-    painter.line_segment([c + d * radius, c + d * s * 0.5], Stroke::new(stroke.width * 1.15, color));
+/// "Hide or show the sidebar".
+pub fn sidebar(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::SIDEBAR_SIMPLE, c);
 }
 
-/// "Clear" / "close": a small ×.
-pub fn cross(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let c = r.center();
-    let (h, stroke) = (s * 0.26, Stroke::new((s * 0.1).max(1.3), color));
-    painter.line_segment([c + vec2(-h, -h), c + vec2(h, h)], stroke);
-    painter.line_segment([c + vec2(-h, h), c + vec2(h, -h)], stroke);
+/// "More (overflow menus)".
+pub fn more(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::DOTS_THREE, c);
 }
 
-/// "Folder": a folder with a tab.
-pub fn folder(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let stroke = Stroke::new((s * 0.08).max(1.3), color);
-    let o = r.center() - vec2(s * 0.5, s * 0.5);
-    let at = |x: f32, y: f32| o + vec2(x * s, y * s);
-    let outline = vec![at(0.08, 0.2), at(0.38, 0.2), at(0.48, 0.32), at(0.92, 0.32), at(0.92, 0.82), at(0.08, 0.82)];
-    painter.add(Shape::closed_line(outline, stroke));
-    painter.line_segment([at(0.08, 0.42), at(0.92, 0.42)], stroke);
+/// "A plugin".
+pub fn puzzle(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::PUZZLE_PIECE, c);
 }
 
-/// "New folder": a folder with a plus in it.
-pub fn folder_plus(painter: &egui::Painter, r: Rect, color: Color32) {
-    folder(painter, r, color);
-    let s = r.width().min(r.height());
-    let c = r.center() + vec2(0.0, s * 0.12);
-    let (h, stroke) = (s * 0.13, Stroke::new((s * 0.08).max(1.3), color));
-    painter.line_segment([c - vec2(h, 0.0), c + vec2(h, 0.0)], stroke);
-    painter.line_segment([c - vec2(0.0, h), c + vec2(0.0, h)], stroke);
+/// "Artifacts".
+pub fn artifacts(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CARDS, c);
 }
 
-/// "Attach": a paperclip, leaning right.
-pub fn paperclip(painter: &egui::Painter, r: Rect, color: Color32) {
-    use std::f32::consts::PI;
-    let s = r.width().min(r.height());
-    let stroke = Stroke::new((s * 0.085).max(1.3), color);
-    // An upright clip in a unit square (three straight runs joined by U-turns), turned 40°.
-    let mut points: Vec<Pos2> = vec![pos2(0.44, 0.34)];
-    let mut arc = |c: Pos2, radius: f32, from: f32, to: f32| {
-        for k in 0..=10 {
-            #[allow(clippy::cast_precision_loss)] // 0..=10
-            let a = from + (to - from) * k as f32 / 10.0;
-            points.push(c + vec2(a.cos(), a.sin()) * radius);
-        }
+/// "Back".
+pub fn back(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CARET_LEFT, c);
+}
+
+/// "Forward".
+pub fn forward(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CARET_RIGHT, c);
+}
+
+/// "A list, a section".
+pub fn lines(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::LIST, c);
+}
+
+/// "Rename, edit".
+pub fn pencil(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::PENCIL_SIMPLE, c);
+}
+
+/// "Pin".
+pub fn pin(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::PUSH_PIN, c);
+}
+
+/// "Delete".
+pub fn trash(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::TRASH, c);
+}
+
+/// "Copy".
+pub fn copy(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::COPY, c);
+}
+
+/// "New, add".
+pub fn plus(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::PLUS, c);
+}
+
+/// "New chat".
+pub fn compose(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::NOTE_PENCIL, c);
+}
+
+/// "Search".
+pub fn search(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::MAGNIFYING_GLASS, c);
+}
+
+/// "Close, clear".
+pub fn cross(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::X, c);
+}
+
+/// "A folder, a project".
+pub fn folder(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::FOLDER, c);
+}
+
+/// "New project".
+pub fn folder_plus(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::FOLDER_PLUS, c);
+}
+
+/// "A model".
+pub fn chip(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CPU, c);
+}
+
+/// "Appearance".
+pub fn contrast(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CIRCLE_HALF, c);
+}
+
+/// "Text".
+pub fn text_size(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::TEXT_AA, c);
+}
+
+/// "Colors".
+pub fn colors(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::PALETTE, c);
+}
+
+/// "A chevron pointing down (menus, split buttons)".
+pub fn chevron_down(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CARET_DOWN, c);
+}
+
+/// "A chevron pointing right (a row that opens a page)".
+pub fn chevron_right(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CARET_RIGHT, c);
+}
+
+/// "Back to".
+pub fn arrow_left(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::ARROW_LEFT, c);
+}
+
+/// "Read only, open".
+pub fn eye(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::EYE, c);
+}
+
+/// "Kept safe".
+pub fn shield(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::SHIELD, c);
+}
+
+/// "Fast, power".
+pub fn bolt(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::LIGHTNING, c);
+}
+
+/// "Done, chosen".
+pub fn check(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CHECK, c);
+}
+
+/// "Attach".
+pub fn paperclip(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::PAPERCLIP, c);
+}
+
+/// "Slash commands".
+pub fn slash_box(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::COMMAND, c);
+}
+
+/// "Speak".
+pub fn mic(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::MICROPHONE, c);
+}
+
+/// "Send (Enter)".
+pub fn enter(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::ARROW_ELBOW_DOWN_LEFT, c);
+}
+
+/// "Archive".
+pub fn archive(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::ARCHIVE, c);
+}
+
+/// "A chat".
+pub fn bubble(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CHAT_CIRCLE, c);
+}
+
+/// "Mail".
+pub fn mail(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::ENVELOPE_SIMPLE, c);
+}
+
+/// "Calendar".
+pub fn calendar(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CALENDAR_BLANK, c);
+}
+
+/// "The web".
+pub fn globe(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::GLOBE_SIMPLE, c);
+}
+
+/// "An app".
+pub fn app_window(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::APP_WINDOW, c);
+}
+
+/// "A spreadsheet".
+pub fn sheet(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::TABLE, c);
+}
+
+/// "A chart".
+pub fn chart_column(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CHART_BAR, c);
+}
+
+/// "A document".
+pub fn file_text(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::FILE_TEXT, c);
+}
+
+/// "An image".
+pub fn image(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::IMAGE, c);
+}
+
+/// "Math".
+pub fn sigma(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::SIGMA, c);
+}
+
+/// "Memory, a brain".
+pub fn brain(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::BRAIN, c);
+}
+
+/// "Code, commands".
+pub fn terminal(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::TERMINAL, c);
+}
+
+/// "Helpers, people".
+pub fn users(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::USERS, c);
+}
+
+/// "A plan".
+pub fn list_checks(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::LIST_CHECKS, c);
+}
+
+/// "Help".
+pub fn life_buoy(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::LIFEBUOY, c);
+}
+
+/// "A skill".
+pub fn book_mark(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::BOOK_BOOKMARK, c);
+}
+
+/// "Apps".
+pub fn apps_grid(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::SQUARES_FOUR, c);
+}
+
+/// "Plugins".
+pub fn puzzle_piece(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::PUZZLE_PIECE, c);
+}
+
+/// "Models and connection".
+pub fn plug(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::PLUG, c);
+}
+
+/// "Get help".
+pub fn help_circle(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::QUESTION, c);
+}
+
+/// "Send feedback".
+pub fn megaphone(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::MEGAPHONE, c);
+}
+
+/// "Library".
+pub fn pages(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::FILES, c);
+}
+
+/// "Show and sort" (how a list is arranged).
+pub fn funnel(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::FUNNEL_SIMPLE, c);
+}
+
+/// "New section" (a group of your own in a list).
+pub fn list_plus(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::LIST_PLUS, c);
+}
+
+/// Two arrows going round (read again, refresh).
+pub fn refresh(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::ARROWS_CLOCKWISE, c);
+}
+
+/// A chevron pointing up (move earlier).
+pub fn chevron_up(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CARET_UP, c);
+}
+
+/// "Import" (a file into byob).
+pub fn download(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::DOWNLOAD_SIMPLE, c);
+}
+
+/// "Stop" (a running reply): a solid square.
+pub fn stop(p: &egui::Painter, r: Rect, c: Color32) {
+    filled(p, r, fill::STOP, c);
+}
+
+/// A chevron: down when `open`, right when not (a folding heading).
+pub fn chevron(p: &egui::Painter, r: Rect, open: bool, c: Color32) {
+    outline(p, r, if open { regular::CARET_DOWN } else { regular::CARET_RIGHT }, c);
+}
+
+/// A solid triangle pointing right (`open` = false) or down.
+pub fn disclosure(p: &egui::Painter, r: Rect, open: bool, c: Color32) {
+    filled(p, r, if open { fill::CARET_DOWN } else { fill::CARET_RIGHT }, c);
+}
+
+/// Where a workspace runs its commands: a cube (container), a snowflake (Nix dev shell), a
+/// desktop (this machine) or a sparkle (Auto: decided per folder).
+pub fn env(p: &egui::Painter, r: Rect, kind: EnvKind, c: Color32) {
+    let icon = match kind {
+        EnvKind::Container => regular::CUBE,
+        EnvKind::Nix => regular::SNOWFLAKE,
+        EnvKind::Host => regular::DESKTOP,
+        EnvKind::Auto => regular::SPARKLE,
     };
-    arc(pos2(0.52, 0.66), 0.08, PI, 0.0);
-    arc(pos2(0.47, 0.24), 0.13, 0.0, -PI);
-    arc(pos2(0.5, 0.74), 0.16, PI, 0.0);
-    points.push(pos2(0.66, 0.4));
-    let (sin, cos) = 0.7_f32.sin_cos();
-    let c = r.center();
-    let points = points
-        .into_iter()
-        .map(|p| {
-            let d = (p - pos2(0.5, 0.5)) * s * 1.08;
-            c + vec2(d.x * cos - d.y * sin, d.x * sin + d.y * cos)
-        })
-        .collect();
-    painter.add(Shape::line(points, stroke));
-}
-
-/// "Send": an arrow pointing up.
-pub fn arrow_up(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    // A whole number of pixels wide, on the pixel grid: an odd width centered on a pixel, an
-    // even one between two, so the stem is crisp instead of smeared over three columns.
-    let ppp = painter.pixels_per_point();
-    let px = (s * 0.11 * ppp).round().max(2.0);
-    let stroke = Stroke::new(px / ppp, color);
-    let cx = if px % 2.0 == 1.0 { painter.round_to_pixel_center(r.center().x) } else { (r.center().x * ppp).round() / ppp };
-    let snap = |y: f32| (y * ppp).round() / ppp;
-    let (top, bottom, wing) = (snap(r.center().y - s * 0.3), snap(r.center().y + s * 0.3), snap(s * 0.27));
-    painter.line_segment([pos2(cx, bottom), pos2(cx, top + stroke.width * 0.5)], stroke);
-    painter.add(egui::epaint::PathShape::line(vec![pos2(cx - wing, top + wing), pos2(cx, top), pos2(cx + wing, top + wing)], stroke));
-}
-
-/// "Stop": a filled square with softened corners.
-pub fn stop(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    painter.rect_filled(Rect::from_center_size(r.center(), vec2(s * 0.56, s * 0.56)), s * 0.1, color);
-}
-
-/// "Models": a chip with two pins on each side.
-pub fn chip(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let stroke = Stroke::new((s * 0.09).max(1.2), color);
-    let body = Rect::from_center_size(r.center(), vec2(s * 0.58, s * 0.58));
-    painter.rect_stroke(body, s * 0.08, stroke, egui::StrokeKind::Middle);
-    painter.rect_filled(Rect::from_center_size(r.center(), vec2(s * 0.2, s * 0.2)), s * 0.03, color);
-    for f in [0.36_f32, 0.64] {
-        let (x, y) = (r.left() + s * f + (r.width() - s) / 2.0, r.top() + s * f + (r.height() - s) / 2.0);
-        painter.line_segment([pos2(x, body.top()), pos2(x, body.top() - s * 0.14)], stroke);
-        painter.line_segment([pos2(x, body.bottom()), pos2(x, body.bottom() + s * 0.14)], stroke);
-        painter.line_segment([pos2(body.left(), y), pos2(body.left() - s * 0.14, y)], stroke);
-        painter.line_segment([pos2(body.right(), y), pos2(body.right() + s * 0.14, y)], stroke);
-    }
-}
-
-/// "Appearance": a circle, half filled (light and dark).
-pub fn contrast(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let (c, radius) = (r.center(), s * 0.38);
-    painter.circle_stroke(c, radius, Stroke::new((s * 0.09).max(1.2), color));
-    let half: Vec<Pos2> = (0..=16)
-        .map(|k| {
-            #[allow(clippy::cast_precision_loss)] // 0..=16
-            let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * k as f32 / 16.0;
-            c + vec2(a.cos(), a.sin()) * radius
-        })
-        .collect();
-    painter.add(Shape::convex_polygon(half, color, Stroke::NONE));
-}
-
-/// "Text and layout": a big and a small A.
-pub fn text_size(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let stroke = Stroke::new((s * 0.09).max(1.2), color);
-    let a = |left: f32, w: f32, h: f32| {
-        let base = r.center().y + s * 0.34;
-        let (l, rt, top) = (pos2(left, base), pos2(left + w, base), pos2(left + w / 2.0, base - h));
-        painter.line(vec![l, top, rt], stroke);
-        let y = base - h * 0.38;
-        let k = 0.38 * 0.5;
-        painter.line_segment([pos2(left + w * k, y), pos2(left + w * (1.0 - k), y)], stroke);
-    };
-    let x0 = r.center().x - s * 0.46;
-    a(x0, s * 0.52, s * 0.68);
-    a(x0 + s * 0.56, s * 0.36, s * 0.44);
-}
-
-/// "Colors": three overlapping circles.
-pub fn colors(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let stroke = Stroke::new((s * 0.08).max(1.1), color);
-    let c = r.center();
-    for (dx, dy) in [(0.0_f32, -0.14_f32), (-0.15, 0.12), (0.15, 0.12)] {
-        painter.circle_stroke(c + vec2(dx * s, dy * s), s * 0.24, stroke);
-    }
-}
-
-/// A small chevron pointing down (menus, split buttons), centered in `rect`.
-pub fn chevron_down(painter: &egui::Painter, rect: Rect, color: Color32) {
-    let c = rect.center();
-    let s = rect.width().min(rect.height()) * 0.22;
-    let stroke = Stroke::new(1.4, color);
-    painter.line(vec![pos2(c.x - s, c.y - s * 0.5), pos2(c.x, c.y + s * 0.5), pos2(c.x + s, c.y - s * 0.5)], stroke);
-}
-
-/// A small chevron pointing right (a row that opens a page), centered in `rect`.
-pub fn chevron_right(painter: &egui::Painter, rect: Rect, color: Color32) {
-    let c = rect.center();
-    let s = rect.width().min(rect.height()) * 0.22;
-    let stroke = Stroke::new(1.4, color);
-    painter.line(vec![pos2(c.x - s * 0.5, c.y - s), pos2(c.x + s * 0.5, c.y), pos2(c.x - s * 0.5, c.y + s)], stroke);
-}
-
-/// "Back": an arrow pointing left.
-pub fn arrow_left(painter: &egui::Painter, r: Rect, color: Color32) {
-    let s = r.width().min(r.height());
-    let c = r.center();
-    let stroke = Stroke::new((s * 0.1).max(1.3), color);
-    let (h, head) = (s * 0.32, s * 0.24);
-    painter.line_segment([c + vec2(-h, 0.0), c + vec2(h, 0.0)], stroke);
-    painter.line(vec![c + vec2(-h + head, -head), c + vec2(-h, 0.0), c + vec2(-h + head, head)], stroke);
+    outline(p, r, icon, c);
 }
 
 /// The height of a text button (what egui gives `ui.button`).
@@ -291,7 +397,16 @@ pub fn icon_button(ui: &mut Ui, t: &Tokens, paint: Paint, label: Option<&str>, s
     let size = vec2(pad + icon + text_w + pad, height);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
-        control_back(ui.painter(), rect, t, resp.hovered(), resp.is_pointer_button_down_on(), selected);
+        let state = if resp.is_pointer_button_down_on() {
+            crate::glass::RowState::Pressed
+        } else if selected {
+            crate::glass::RowState::Selected
+        } else if resp.hovered() {
+            crate::glass::RowState::Hovered
+        } else {
+            crate::glass::RowState::Idle
+        };
+        crate::glass::row(ui.painter(), t, rect, state);
         let icon_rect = Rect::from_min_size(pos2(rect.left() + pad, rect.center().y - icon / 2.0), vec2(icon, icon));
         let icon_color = if resp.hovered() || selected { t.text_strong } else { t.text_dim };
         paint(ui.painter(), icon_rect, icon_color);
@@ -301,153 +416,6 @@ pub fn icon_button(ui: &mut Ui, t: &Tokens, paint: Paint, label: Option<&str>, s
         }
     }
     resp
-}
-
-/// What's behind an icon button, in the controls' style ([`crate::theme::Controls`]).
-fn control_back(p: &egui::Painter, rect: Rect, t: &Tokens, hovered: bool, down: bool, selected: bool) {
-    use crate::theme::{Controls, mix};
-    use egui::{Color32, Stroke, StrokeKind};
-    let a = t.accent;
-    match t.knobs.controls {
-        Controls::Standard | Controls::Pill => {
-            let r = if t.knobs.controls == Controls::Pill { rect.height() / 2.0 } else { t.round(4.0) };
-            let fill = if down {
-                Some(t.pressed)
-            } else if hovered {
-                Some(t.hover)
-            } else {
-                selected.then_some(t.selection)
-            };
-            if let Some(fill) = fill {
-                p.rect_filled(rect, r, fill);
-            }
-        }
-        Controls::Hud => {
-            // Corner brackets always; lit when hovered, pressed or selected.
-            let lit = if down {
-                0.34
-            } else if hovered || selected {
-                0.18
-            } else {
-                0.0
-            };
-            if lit > 0.0 {
-                p.rect(rect, 0.0, a.gamma_multiply(lit), Stroke::new(1.0, a), StrokeKind::Inside);
-            }
-            let c = Stroke::new(1.0, a.gamma_multiply(if hovered { 1.0 } else { 0.45 }));
-            let k = 4.0;
-            for (corner, dx, dy) in
-                [(rect.left_top(), 1.0, 1.0), (rect.right_top(), -1.0, 1.0), (rect.left_bottom(), 1.0, -1.0), (rect.right_bottom(), -1.0, -1.0)]
-            {
-                p.line_segment([corner, corner + vec2(k * dx, 0.0)], c);
-                p.line_segment([corner, corner + vec2(0.0, k * dy)], c);
-            }
-        }
-        Controls::Plate => {
-            let base = mix(t.button_bg.to_opaque(), Color32::WHITE, if hovered { 0.15 } else { 0.07 });
-            let fill = if down {
-                mix(base, Color32::BLACK, 0.3)
-            } else if selected {
-                mix(base, a, 0.25)
-            } else {
-                base
-            };
-            p.rect(rect, 3.0, fill, Stroke::new(1.0, Color32::from_black_alpha(150)), StrokeKind::Inside);
-            // The bevel: lit on top, shaded below (the other way round when pressed in).
-            let (top, bottom) = if down {
-                (Color32::from_black_alpha(90), Color32::from_white_alpha(20))
-            } else {
-                (Color32::from_white_alpha(30), Color32::from_black_alpha(110))
-            };
-            p.line_segment([rect.left_top() + vec2(3.0, 1.5), rect.right_top() + vec2(-3.0, 1.5)], Stroke::new(1.0, top));
-            p.line_segment([rect.left_bottom() + vec2(3.0, -1.5), rect.right_bottom() + vec2(-3.0, -1.5)], Stroke::new(1.0, bottom));
-            if hovered && !down {
-                p.rect(rect.expand(1.0), 4.0, Color32::TRANSPARENT, Stroke::new(1.0, a.gamma_multiply(0.7)), StrokeKind::Outside);
-            }
-        }
-    }
-}
-
-/// A frameless button showing the chat settings icon.
-pub fn settings_button(ui: &mut Ui, t: &Tokens) -> Response {
-    let size = vec2(20.0, 20.0);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-    if ui.is_rect_visible(rect) {
-        let color = if resp.hovered() { t.text_strong } else { t.text_dim };
-        if resp.hovered() {
-            ui.painter().rect_filled(rect, t.round(4.0), t.hover);
-        }
-        sliders(ui.painter(), rect.shrink(3.0), color);
-    }
-    resp
-}
-
-/// A small triangle pointing right (`open` = false) or down, centered in `rect`.
-pub fn disclosure(painter: &egui::Painter, rect: Rect, open: bool, color: Color32) {
-    let c = rect.center();
-    let s = rect.width().min(rect.height()) * 0.28;
-    let points: Vec<Pos2> = if open {
-        vec![pos2(c.x - s, c.y - s * 0.6), pos2(c.x + s, c.y - s * 0.6), pos2(c.x, c.y + s * 0.8)]
-    } else {
-        vec![pos2(c.x - s * 0.6, c.y - s), pos2(c.x + s * 0.8, c.y), pos2(c.x - s * 0.6, c.y + s)]
-    };
-    painter.add(Shape::convex_polygon(points, color, Stroke::NONE));
-}
-
-/// Where a workspace runs its commands, as an icon: a box (container), a snowflake (Nix dev
-/// shell), a monitor (this machine) or a sparkle (Auto: decided per folder).
-pub fn env(painter: &egui::Painter, rect: Rect, kind: EnvKind, color: Color32) {
-    let r = rect.shrink(rect.width() * 0.1);
-    let s = r.width().min(r.height());
-    let stroke = Stroke::new((s * 0.11).max(1.2), color);
-    let at = |x: f32, y: f32| pos2(r.left() + x * s, r.top() + y * s);
-    match kind {
-        EnvKind::Container => {
-            // An isometric box: its outline, and the three edges meeting at the front corner.
-            let outline = vec![at(0.5, 0.06), at(0.92, 0.28), at(0.92, 0.74), at(0.5, 0.96), at(0.08, 0.74), at(0.08, 0.28)];
-            painter.add(Shape::closed_line(outline, stroke));
-            painter.line(vec![at(0.08, 0.28), at(0.5, 0.5), at(0.92, 0.28)], stroke);
-            painter.line_segment([at(0.5, 0.5), at(0.5, 0.96)], stroke);
-        }
-        EnvKind::Nix => {
-            // A snowflake: three bars through the center, each end with a small V.
-            let c = r.center();
-            for k in 0..6 {
-                #[allow(clippy::cast_precision_loss)] // 0..6
-                let a = k as f32 * std::f32::consts::TAU / 6.0 - std::f32::consts::FRAC_PI_2;
-                let dir = vec2(a.cos(), a.sin());
-                let tip = c + dir * s * 0.46;
-                painter.line_segment([c, tip], stroke);
-                let mid = c + dir * s * 0.3;
-                for side in [-1.0_f32, 1.0] {
-                    let b = a + side * 0.75;
-                    painter.line_segment([mid, mid + vec2(b.cos(), b.sin()) * s * 0.14], stroke);
-                }
-            }
-        }
-        EnvKind::Host => {
-            // A monitor on a stand.
-            painter.rect_stroke(Rect::from_min_max(at(0.06, 0.14), at(0.94, 0.7)), s * 0.06, stroke, egui::StrokeKind::Inside);
-            painter.line_segment([at(0.5, 0.7), at(0.5, 0.86)], stroke);
-            painter.line_segment([at(0.28, 0.88), at(0.72, 0.88)], stroke);
-        }
-        EnvKind::Auto => {
-            // A four-pointed sparkle.
-            let c = r.center();
-            let (o, i) = (s * 0.46, s * 0.12);
-            let points = vec![
-                c + vec2(0.0, -o),
-                c + vec2(i, -i),
-                c + vec2(o, 0.0),
-                c + vec2(i, i),
-                c + vec2(0.0, o),
-                c + vec2(-i, i),
-                c + vec2(-o, 0.0),
-                c + vec2(-i, -i),
-            ];
-            painter.add(Shape::closed_line(points, stroke));
-        }
-    }
 }
 
 /// The color an environment's icon is drawn in.
@@ -468,4 +436,32 @@ pub fn env_tip(kind: EnvKind) -> &'static str {
         EnvKind::Host => "This machine: commands run here, in byob's sandbox",
         EnvKind::Auto => "Auto: byob checks the folder (flake, devcontainer…) and asks once",
     }
+}
+
+/// The icon for a Lucide name a plugin declares (plugins name their icons the Lucide way).
+pub fn lucide(name: &str) -> Option<Paint> {
+    Some(match name {
+        "mail" | "inbox" => mail,
+        "calendar" | "calendar-days" => calendar,
+        "globe" | "search" => globe,
+        "app-window" | "layout" => app_window,
+        "sheet" | "table" => sheet,
+        "chart-column" | "chart-bar" | "bar-chart" => chart_column,
+        "file-text" | "scroll-text" | "book-open" => file_text,
+        "image" => image,
+        "sigma" => sigma,
+        "brain" => brain,
+        "terminal" | "code" => terminal,
+        "users" => users,
+        "list-checks" | "list" => list_checks,
+        "life-buoy" => life_buoy,
+        "message-circle-question" | "message-circle" => bubble,
+        "files" | "folder" => folder,
+        "layout-dashboard" | "palette" => colors,
+        "boxes" | "box" => chip,
+        "plug" => plug,
+        "fold-vertical" => lines,
+        "puzzle" => puzzle_piece,
+        _ => return None,
+    })
 }

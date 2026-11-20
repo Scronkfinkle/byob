@@ -1245,9 +1245,10 @@ fn ask_user_waits_for_the_users_answer() {
     assert_eq!(answered, [Some("Metric".to_owned()), Some("Use kg".to_owned()), None]);
 }
 
-/// Deleting a chat deletes its artifacts for good (they used to stay in `.byob/artifacts`).
+/// Deleting a chat keeps what it made: the Library still lists it (marked as from a deleted
+/// chat) and serves its file; deleting the thing itself is a separate choice.
 #[test]
-fn deleting_a_chat_deletes_its_artifacts() {
+fn deleting_a_chat_keeps_its_artifacts_until_you_delete_them() {
     let dir = tempfile::tempdir().unwrap();
     let ws = tempfile::tempdir().unwrap();
     let paths = byob_store::Paths::at(dir.path());
@@ -1262,7 +1263,102 @@ fn deleting_a_chat_deletes_its_artifacts() {
     let chat = meta["chat"].as_str().unwrap().to_owned();
     c.send(ClientMsg::DeleteChat { id: chat.clone() });
     while !matches!(recv(&mut c), ServerMsg::ChatDeleted { .. }) {}
-    assert!(!folder.exists(), "the artifact outlived its chat");
+    assert!(folder.exists(), "deleting the chat deleted what it made");
+    let library = |c: &mut crate::LocalConnection| loop {
+        if let ServerMsg::Library { items } = recv(c) {
+            break items;
+        }
+    };
+    c.send(ClientMsg::ListLibrary);
+    let items = library(&mut c);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].chat_gone && items[0].chat == chat);
+    c.send(ClientMsg::GetLibraryFile { chat: chat.clone(), id: updated[0].id.clone(), version: 1 });
+    let (data, error) = loop {
+        if let ServerMsg::LibraryFile { data, error, .. } = recv(&mut c) {
+            break (data, error);
+        }
+    };
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(byob_protocol::media::decode(&data.unwrap()).unwrap(), b"# hi");
+    // Deleting it yourself removes it for good.
+    c.send(ClientMsg::DeleteArtifact { chat, id: updated[0].id.clone() });
+    assert!(library(&mut c).is_empty());
+    assert!(!folder.exists());
+}
+
+/// "Keep in Library" on a file of the chat in view: it's in the Library as a live file,
+/// following the file; the file itself is untouched.
+#[test]
+fn a_kept_file_is_in_the_library_as_a_live_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = tempfile::tempdir().unwrap();
+    let paths = byob_store::Paths::at(dir.path());
+    let md = r##"{"title":"Notes","filename":"notes.md","content":"# hi"}"##;
+    let (engine, _) = artifact_engine(vec![call("create_artifact", md), Reply::Text("Made it")], ws.path(), paths);
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::hello("test"));
+    while !matches!(recv(&mut c), ServerMsg::Artifacts { .. }) {}
+    artifact_turn(&mut c, "write notes");
+    std::fs::write(ws.path().join("plan.md"), "# my plan").unwrap();
+    c.send(ClientMsg::AddLiveFile { path: "plan.md".into() });
+    let note = loop {
+        if let ServerMsg::Notice { level: byob_protocol::NoticeLevel::Info, text } = recv(&mut c) {
+            break text;
+        }
+    };
+    assert!(note.contains("plan.md"), "{note}");
+    c.send(ClientMsg::ListLibrary);
+    let items = loop {
+        if let ServerMsg::Library { items } = recv(&mut c) {
+            break items;
+        }
+    };
+    let kept = items.iter().find(|i| i.live.as_deref() == Some("plan.md")).expect("the kept file is listed");
+    assert_eq!(kept.artifact.title, "plan.md");
+    assert_eq!(std::fs::read_to_string(ws.path().join("plan.md")).unwrap(), "# my plan");
+}
+
+#[test]
+fn the_library_lists_every_chats_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = tempfile::tempdir().unwrap();
+    let paths = byob_store::Paths::at(dir.path());
+    let md = r##"{"title":"Notes","filename":"notes.md","content":"# hi"}"##;
+    let (engine, _) = artifact_engine(vec![call("create_artifact", md), Reply::Text("Made it")], ws.path(), paths);
+    let mut c = engine.connect(Arc::new(|| {}));
+    c.send(ClientMsg::hello("test"));
+    while !matches!(recv(&mut c), ServerMsg::Artifacts { .. }) {}
+    let (_, updated) = artifact_turn(&mut c, "write notes");
+    // From a new chat, the Library still has it, with the chat it came from.
+    c.send(ClientMsg::NewChat { workspace: None });
+    while !matches!(recv(&mut c), ServerMsg::Artifacts { .. }) {}
+    c.send(ClientMsg::ListLibrary);
+    let items = loop {
+        if let ServerMsg::Library { items } = recv(&mut c) {
+            break items;
+        }
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].artifact.id, updated[0].id);
+    assert_eq!(items[0].artifact.title, "Notes");
+    assert!(!items[0].chat.is_empty() && !items[0].chat_title.is_empty());
+    // Its file is served from any chat (the Library's previews).
+    c.send(ClientMsg::GetLibraryFile { chat: items[0].chat.clone(), id: items[0].artifact.id.clone(), version: 1 });
+    let (data, error) = loop {
+        if let ServerMsg::LibraryFile { data, error, .. } = recv(&mut c) {
+            break (data, error);
+        }
+    };
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(byob_protocol::media::decode(&data.unwrap()).unwrap(), b"# hi");
+    c.send(ClientMsg::GetLibraryFile { chat: "nope".into(), id: "x".into(), version: 1 });
+    let error = loop {
+        if let ServerMsg::LibraryFile { error, .. } = recv(&mut c) {
+            break error;
+        }
+    };
+    assert!(error.is_some());
 }
 
 /// A tool that shows the model an image (like `look_at_image`).

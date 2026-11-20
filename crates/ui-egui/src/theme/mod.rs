@@ -64,6 +64,7 @@ fn font_definitions(ui_font: UiFont, mono_font: MonoFont, color_emoji: Option<Ar
     }
     fonts.families.insert(bold_family(), std::iter::once("inter-semibold".to_owned()).chain(fallbacks).collect());
     crate::math::install_fonts(&mut fonts);
+    crate::icons::install_fonts(&mut fonts);
     fonts
 }
 
@@ -422,6 +423,11 @@ impl Tokens {
             ChartPalette::Accessible if dark => presets::ACCESSIBLE_CHART_DARK,
             ChartPalette::Accessible => presets::ACCESSIBLE_CHART_LIGHT,
         };
+        // A neutral accent (byob's black or white ink) leads buttons and focus; links and text
+        // selection still need a colour that reads as one: the scheme's blue.
+        let neutral = accent.r().max(accent.g()).max(accent.b()) - accent.r().min(accent.g()).min(accent.b()) < 24;
+        let link =
+            if neutral { p.accents.iter().find(|(n, _)| *n == "blue").map_or(accent, |(_, c)| ensure_contrast(rgb(*c), &surfaces, 4.5)) } else { accent };
         // Series are graphics: 3:1 against the chart's background (WCAG non-text contrast).
         let chart = chart_src.map(|c| ensure_contrast(rgb(c), &[assistant], 3.0));
         Tokens {
@@ -436,7 +442,9 @@ impl Tokens {
             button_bg: s0,
             hover: s1,
             pressed: mix(s1, s2, 0.5),
-            selection: accent.gamma_multiply(if dark { 0.4 } else { 0.28 }),
+            // What's selected (a menu's current page, an option, selected text): a soft grey,
+            // never the brand colour, so the screen stays calm.
+            selection: if dark { Color32::from_white_alpha(34) } else { Color32::from_black_alpha(20) },
             shadow: Color32::from_black_alpha(if dark { 96 } else { 40 }),
             user_bubble: user,
             assistant_bubble: assistant,
@@ -444,7 +452,7 @@ impl Tokens {
             text_strong: p.strong.map_or_else(|| mix(text, extreme, 0.45), rgb),
             text_dim: ensure_contrast(rgb(p.subtext), &surfaces, 4.5),
             text_faint: ensure_contrast(rgb(p.overlay), &[bg, panel, assistant], 3.0),
-            link: accent,
+            link,
             accent,
             accent_hover: mix(accent, extreme, 0.15),
             on_accent,
@@ -582,13 +590,14 @@ impl Tokens {
 
         w.hovered.bg_fill = self.hover;
         w.hovered.weak_bg_fill = self.hover;
-        w.hovered.bg_stroke = Stroke::new(1.0, self.accent);
+        // Hovered and pressed controls get a quiet border (a black accent outline is loud).
+        w.hovered.bg_stroke = Stroke::new(1.0, self.field_border);
         w.hovered.fg_stroke = Stroke::new(1.5, self.text_strong);
         w.hovered.corner_radius = r;
 
         w.active.bg_fill = self.pressed;
         w.active.weak_bg_fill = self.pressed;
-        w.active.bg_stroke = Stroke::new(1.0, self.accent);
+        w.active.bg_stroke = Stroke::new(1.0, self.field_border);
         w.active.fg_stroke = Stroke::new(2.0, self.text_strong);
         w.active.corner_radius = r;
 

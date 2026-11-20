@@ -134,7 +134,7 @@ impl Editor {
 
 /// The efforts a profile's model takes, what unset is called, and the field's tooltip; `None`
 /// when it takes none (OpenAI-compatible servers). Codex has no "max" (byob would send xhigh).
-fn effort_levels(p: &Profile) -> Option<(&'static [Effort], &'static str, &'static str)> {
+pub(crate) fn effort_levels(p: &Profile) -> Option<(&'static [Effort], &'static str, &'static str)> {
     const CODEX: [Effort; 4] = [Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh];
     match byob_types::cli_agent(&p.base_url) {
         Some("claude") => Some((&Effort::ALL, "Claude Code's default", "How hard Claude thinks (claude --effort): lower is faster and uses less of your plan")),
@@ -331,7 +331,7 @@ impl ModelsUi {
         let current = list.roles.get(role).cloned();
         let name = |id: &Option<String>| id.as_ref().and_then(|i| list.get(i)).map_or_else(|| none.to_owned(), |v| v.profile.label().to_owned());
         let mut picked = current.clone();
-        egui::ComboBox::from_id_salt((role, "role")).selected_text(name(&current)).width(200.0).show_ui(ui, |ui| {
+        crate::form::combo((role, "role")).selected_text(name(&current)).width(200.0).show_ui(ui, |ui| {
             ui.selectable_value(&mut picked, None, none);
             for v in &list.items {
                 ui.selectable_value(&mut picked, Some(v.profile.id.clone()), v.profile.label());
@@ -396,12 +396,11 @@ impl ModelsUi {
                     self.tests.insert(p.id.clone(), Tested::Running);
                     self.out.push(ClientMsg::TestProfile { id: p.id.clone() });
                 }
-                if !is_main && ui.small_button("Make default").on_hover_text("The model every chat uses unless its workspace or itself picks another").clicked()
-                {
+                if !is_main && ui.small_button("Make default").on_hover_text("The model every chat uses unless its project or itself picks another").clicked() {
                     self.out.push(ClientMsg::SetRole { role: ROLE_MAIN.into(), profile: Some(p.id.clone()) });
                 }
                 if self.deleting.as_deref() == Some(p.id.as_str()) {
-                    ui.label(RichText::new("Delete it? Chats and workspaces that use it go back to the default.").small().color(t.danger));
+                    ui.label(RichText::new("Delete it? Chats and projects that use it go back to the default.").small().color(t.danger));
                     if ui.small_button(RichText::new("Delete").color(t.danger)).clicked() {
                         self.out.push(ClientMsg::DeleteProfile { id: p.id.clone() });
                         self.deleting = None;
@@ -498,7 +497,7 @@ impl ModelsUi {
                 ui.end_row();
                 ui.label("Tool calling");
                 let shown = |m: Option<ToolMode>| m.map_or_else(|| "As each chat says".to_owned(), |m| m.label().to_owned());
-                egui::ComboBox::from_id_salt(("profile-tools", &e.profile.id))
+                crate::form::combo(("profile-tools", &e.profile.id))
                     .selected_text(shown(e.profile.tool_mode))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut e.profile.tool_mode, None, shown(None));
@@ -507,7 +506,7 @@ impl ModelsUi {
                         }
                     })
                     .response
-                    .on_hover_text("A property of the model: when set, it beats the chat's and workspace's tool calling setting");
+                    .on_hover_text("A property of the model: when set, it beats the chat's and project's tool calling setting");
                 ui.end_row();
             });
             let open = std::mem::take(&mut e.open_advanced).then_some(true);
@@ -543,7 +542,7 @@ impl ModelsUi {
                     if let Some((levels, default, tip)) = effort_levels(&e.profile) {
                         ui.label("Effort");
                         let shown = |v: Option<Effort>| v.map_or(default, Effort::as_str);
-                        egui::ComboBox::from_id_salt(("profile-effort", &e.profile.id))
+                        crate::form::combo(("profile-effort", &e.profile.id))
                             .selected_text(shown(e.profile.params.effort))
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut e.profile.params.effort, None, shown(None));

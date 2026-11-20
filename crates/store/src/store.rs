@@ -119,7 +119,15 @@ impl Store {
             "INSERT INTO chats (id, title, workspace, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
             params![id, title, path_text(workspace), now],
         )?;
-        Ok(Chat { id: id.to_owned(), title: title.to_owned(), workspace: workspace.to_owned(), created_at: now, updated_at: now, pinned_at: None })
+        Ok(Chat {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            workspace: workspace.to_owned(),
+            created_at: now,
+            updated_at: now,
+            pinned_at: None,
+            archived_at: None,
+        })
     }
 
     pub fn chat(&self, id: &str) -> Result<Option<Chat>> {
@@ -174,6 +182,16 @@ impl Store {
         found(n, || format!("chat {id}"))
     }
 
+    /// Archive a chat (`true`) or bring it back. Archiving also unpins it.
+    pub fn archive_chat(&self, id: &str, archived: bool) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE chats SET archived_at = CASE WHEN ?2 THEN coalesce(archived_at, ?3) ELSE NULL END, \
+             pinned_at = CASE WHEN ?2 THEN NULL ELSE pinned_at END WHERE id = ?1",
+            params![id, archived, now()],
+        )?;
+        found(n, || format!("chat {id}"))
+    }
+
     /// Delete a chat with its messages, steps, grants and undo journal entries. Returns the
     /// task ids whose journals were dropped, so the caller can remove their backup folders.
     pub fn delete_chat(&self, id: &str) -> Result<Vec<String>> {
@@ -204,7 +222,7 @@ impl Store {
     }
 }
 
-const CHAT_COLS: &str = "id, title, workspace, created_at, updated_at, pinned_at";
+const CHAT_COLS: &str = "id, title, workspace, created_at, updated_at, pinned_at, archived_at";
 
 fn chat_row(r: &Row<'_>) -> rusqlite::Result<Chat> {
     Ok(Chat {
@@ -214,6 +232,7 @@ fn chat_row(r: &Row<'_>) -> rusqlite::Result<Chat> {
         created_at: r.get(3)?,
         updated_at: r.get(4)?,
         pinned_at: r.get(5)?,
+        archived_at: r.get(6)?,
     })
 }
 

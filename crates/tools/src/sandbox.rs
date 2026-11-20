@@ -12,12 +12,52 @@
 //!   itself (write, move, delete) get the link, never its target. [`resolve_follow`] also
 //!   follows the last component and checks where it lands (read, list).
 //!
+//! - A workspace (project) can link other folders ([`set_linked`]). An absolute path inside
+//!   one of them resolves there, under the same rules with that folder as the root (a link
+//!   out of it is refused too). Relative paths always mean the workspace's own folder.
+//!
 //! Races (someone swapping a directory for a symlink between the check and the use) are
 //! out of scope: the model can't do that without an execute-level tool.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{PoisonError, RwLock};
+
+/// The other folders each workspace links, by its canonical root (see [`set_linked`]).
+static LINKED: RwLock<BTreeMap<PathBuf, Vec<PathBuf>>> = RwLock::new(BTreeMap::new());
+
+/// Record the other folders `workspace` works in, replacing what was recorded. Each is
+/// canonicalized; ones that don't exist, aren't folders, are a filesystem root, or are (or
+/// hold) the workspace's own folder are left out. Empty forgets them.
+pub fn set_linked(workspace: &Path, folders: &[PathBuf]) {
+    let Ok(root) = workspace.canonicalize() else { return };
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for f in folders {
+        let Ok(c) = f.canonicalize() else { continue };
+        if c.is_dir() && c.parent().is_some() && !root.starts_with(&c) && !kept.contains(&c) {
+            kept.push(c);
+        }
+    }
+    let mut map = LINKED.write().unwrap_or_else(PoisonError::into_inner);
+    if kept.is_empty() {
+        map.remove(&root);
+    } else {
+        map.insert(root, kept);
+    }
+}
+
+/// The other folders `workspace` works in (canonical), as [`set_linked`] recorded them.
+pub fn linked(workspace: &Path) -> Vec<PathBuf> {
+    let Ok(root) = workspace.canonicalize() else { return Vec::new() };
+    LINKED.read().unwrap_or_else(PoisonError::into_inner).get(&root).cloned().unwrap_or_default()
+}
+
+/// Is `root` a folder some workspace links (paths in it show in full)?
+fn is_linked_root(root: &Path) -> bool {
+    LINKED.read().unwrap_or_else(PoisonError::into_inner).values().any(|v| v.iter().any(|f| f == root))
+}
 
 /// Longest path we accept from the model, in bytes.
 pub const MAX_PATH_LEN: usize = 4096;
@@ -60,8 +100,12 @@ impl Resolved {
         }
     }
 
-    /// Display form of [`Resolved::rel`], with `/` separators on every platform.
+    /// Display form of [`Resolved::rel`], with `/` separators on every platform. A path in a
+    /// linked folder shows in full (relative, it would read as the workspace's own).
     pub fn show(&self) -> String {
+        if is_linked_root(&self.root) {
+            return slash(&self.abs);
+        }
         slash(&self.rel())
     }
 
@@ -91,10 +135,33 @@ pub fn root(workspace: &Path) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-/// Resolve `input` inside `workspace` without following its last component.
-pub fn resolve(workspace: &Path, input: &str) -> Result<Resolved, String> {
+/// Which root `input` is in and its components there: the workspace's own folder, else
+/// (for an absolute path outside it) the linked folder that holds it.
+fn locate(workspace: &Path, input: &str) -> Result<(PathBuf, Vec<OsString>), String> {
     let root = root(workspace)?;
-    let parts = normalize(workspace, &root, input)?;
+    match normalize(workspace, &root, input) {
+        Ok(parts) => Ok((root, parts)),
+        Err(e) => {
+            let trimmed = input.trim();
+            if !Path::new(trimmed).has_root() || trimmed.len() > MAX_PATH_LEN || trimmed.contains('\0') {
+                return Err(e);
+            }
+            for other in linked(&root) {
+                if Path::new(trimmed).starts_with(&other)
+                    && let Ok(parts) = normalize(&other, &other, input)
+                {
+                    return Ok((other, parts));
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Resolve `input` inside `workspace` (or a folder it links) without following its last
+/// component.
+pub fn resolve(workspace: &Path, input: &str) -> Result<Resolved, String> {
+    let (root, parts) = locate(workspace, input)?;
     let Some((name, dirs)) = parts.split_last() else {
         return Ok(Resolved { abs: root.clone(), root });
     };
@@ -217,6 +284,42 @@ mod tests {
         assert!(resolve(d.path(), "a/..").unwrap().is_root());
         assert_eq!(resolve(d.path(), "a/b").unwrap().show(), "a/b");
         assert_eq!(resolve(d.path(), ".").unwrap().show(), ".");
+    }
+
+    /// A workspace's linked folders: absolute paths inside them resolve there under the same
+    /// rules; relative paths still mean the workspace; nothing else opens up.
+    #[cfg(unix)]
+    #[test]
+    fn linked_folders_open_only_themselves() {
+        let home = ws();
+        let other = ws();
+        let elsewhere = ws();
+        let other_root = other.path().canonicalize().unwrap();
+        std::fs::create_dir(other_root.join("src")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), other_root.join("out")).unwrap();
+        let inside = other_root.join("src/main.rs");
+        // Not linked yet: outside.
+        assert!(resolve(home.path(), inside.to_str().unwrap()).is_err());
+        set_linked(home.path(), &[other.path().to_path_buf()]);
+        let r = resolve(home.path(), inside.to_str().unwrap()).unwrap();
+        assert_eq!((r.abs.clone(), r.root.clone()), (inside.clone(), other_root.clone()));
+        assert_eq!(r.show(), inside.display().to_string(), "shown in full, not as if it were the workspace's");
+        assert_eq!(linked(home.path()), std::slice::from_ref(&other_root));
+        // Relative paths are still the workspace's own.
+        assert_eq!(resolve(home.path(), "src/main.rs").unwrap().root, home.path().canonicalize().unwrap());
+        // Escapes from the linked folder are refused like escapes from the workspace.
+        for bad in [format!("{}/../x", other_root.display()), format!("{}/out/x", other_root.display()), format!("{}-evil/x", other_root.display())] {
+            assert!(resolve(home.path(), &bad).is_err(), "{bad} should be refused");
+        }
+        assert!(resolve_follow(home.path(), &format!("{}/out", other_root.display())).is_err(), "a link out of it");
+        // A filesystem root, the workspace itself or a folder holding it is never linked.
+        set_linked(home.path(), &[PathBuf::from("/"), home.path().to_path_buf(), home.path().parent().unwrap().to_path_buf(), other.path().to_path_buf()]);
+        assert_eq!(linked(home.path()), std::slice::from_ref(&other_root));
+        assert!(resolve(home.path(), "/etc/passwd").is_err());
+        // Unlinked: closed again.
+        set_linked(home.path(), &[]);
+        assert!(linked(home.path()).is_empty());
+        assert!(resolve(home.path(), inside.to_str().unwrap()).is_err());
     }
 
     #[test]

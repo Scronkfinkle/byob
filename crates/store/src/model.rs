@@ -25,6 +25,8 @@ pub struct Chat {
     pub updated_at: Millis,
     /// When it was pinned, if it is.
     pub pinned_at: Option<Millis>,
+    /// When it was archived, if it is: kept, but out of the way in the list.
+    pub archived_at: Option<Millis>,
 }
 
 impl Chat {

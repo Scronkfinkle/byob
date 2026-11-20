@@ -37,6 +37,7 @@ pub(crate) fn info(id: &str, scope: PluginScope, origin: PluginOrigin) -> Plugin
         renderers: vec![],
         starters: vec![],
         superseded_by: None,
+        logo: false,
     }
 }
 
@@ -138,7 +139,7 @@ fn the_card_takes_a_secret_once_and_never_shows_it() {
     // Keep it: the scratch plugin is kept under its tool's name.
     click(&ctx, &after, "Keep everywhere", &mut |ui| p.card(ui, &t, 9, &c, true));
     assert_eq!(p.take(), [ClientMsg::KeepPlugin { plugin: SCRATCH.into(), scope: PluginScope::Global, new_id: Some("get-weather".into()) }]);
-    click(&ctx, &after, "Keep in this workspace", &mut |ui| p.card(ui, &t, 9, &c, true));
+    click(&ctx, &after, "Keep in this project", &mut |ui| p.card(ui, &t, 9, &c, true));
     assert_eq!(p.take(), [ClientMsg::KeepPlugin { plugin: SCRATCH.into(), scope: PluginScope::Workspace, new_id: Some("get-weather".into()) }]);
     // Files: the panel, on this plugin.
     click(&ctx, &after, "Files", &mut |ui| p.card(ui, &t, 9, &c, true));
@@ -177,7 +178,7 @@ fn the_panel_switches_resets_removes_and_shows_errors() {
     p.focus = Some("lint".into());
     frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::All));
     let open = frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::All));
-    assert!(has(&open, "Off: set in this workspace") && has(&open, "exited"));
+    assert!(has(&open, "Off: set in this project") && has(&open, "exited"));
     click(&ctx, &open, "Reset", &mut |ui| p.panel(ui, &t, &Filter::All));
     assert_eq!(p.take(), [ClientMsg::SetPluginEnabled { scope: ConfigScope::Workspace { id: "w".into() }, plugin: "lint".into(), enabled: None }]);
     // Remove asks first.
@@ -190,7 +191,7 @@ fn the_panel_switches_resets_removes_and_shows_errors() {
     let only = frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::Workspace("w".into())));
     assert!(has(&only, "lint") && !has(&only, "pdf") && !has(&only, "bad JSON") && has(&only, "0 of 1 on"));
     let other = frame(&ctx, vec![], &mut |ui| p.panel(ui, &t, &Filter::Workspace("x".into())));
-    assert!(has(&other, "Open a chat in this workspace"));
+    assert!(has(&other, "Open a chat in this project"));
     // The chat popover's switches act for the chat.
     frame(&ctx, vec![], &mut |ui| p.chat_switches(ui, &t));
     let sw = frame(&ctx, vec![], &mut |ui| p.chat_switches(ui, &t));
@@ -212,7 +213,7 @@ fn the_first_open_card_asks_once_and_not_beside_the_approval_card() {
     let mut entries: Vec<Entry> = Vec::new();
     frame(&ctx, vec![], &mut |ui| p.trust_card(ui, &t, &entries));
     let texts = frame(&ctx, vec![], &mut |ui| p.trust_card(ui, &t, &entries));
-    assert!(has(&texts, "This workspace brings plugins") && has(&texts, "servers: k8s · uses the internet"));
+    assert!(has(&texts, "This project brings plugins") && has(&texts, "servers: k8s · uses the internet"));
     click(&ctx, &texts, "Enable all", &mut |ui| p.trust_card(ui, &t, &entries));
     let all = vec!["deploy".to_owned(), "docs".to_owned()];
     assert_eq!(p.take(), [ClientMsg::TrustPlugins { workspace: "w".into(), plugins: all, trust: true }]);
@@ -233,7 +234,7 @@ fn the_first_open_card_asks_once_and_not_beside_the_approval_card() {
     let waiting = Step {
         id: 1,
         tool: TRUST_STEP.into(),
-        title: "Turn on this workspace's plugins".into(),
+        title: "Turn on this project's plugins".into(),
         access: byob_protocol::ToolAccess::Execute,
         status: StepStatus::Waiting,
         detail: String::new(),
@@ -260,7 +261,7 @@ fn the_first_open_card_asks_once_and_not_beside_the_approval_card() {
         attachments: vec![],
     });
     let hidden = frame(&ctx, vec![], &mut |ui| p.trust_card(ui, &t, &entries));
-    assert!(!has(&hidden, "This workspace brings"));
+    assert!(!has(&hidden, "This project brings"));
     // Answered (either way): the engine's next list has them decided, and the card is gone.
     entries.clear();
     let mut decided = a;
@@ -269,7 +270,7 @@ fn the_first_open_card_asks_once_and_not_beside_the_approval_card() {
     declined.declined = true;
     p.apply(&ext(vec![decided, declined]));
     let gone = frame(&ctx, vec![], &mut |ui| p.trust_card(ui, &t, &entries));
-    assert!(!has(&gone, "This workspace brings") && p.undecided().is_empty());
+    assert!(!has(&gone, "This project brings") && p.undecided().is_empty());
 }
 
 fn step_with(id: u64, views: Vec<View>) -> Step {
@@ -401,4 +402,130 @@ fn bundled_plugins_are_built_in_locked_or_switchable_and_forkable() {
     let sw = frame(&ctx, vec![], &mut |ui| p.chat_switches(ui, &t));
     assert!(has(&sw, "Charts") && !has(&sw, "Files and code"));
     assert_eq!(p.starters().len(), 1);
+}
+
+/// Plugins sort into what people think they are: connections, what byob can make, yours;
+/// byob's own abilities fold away; a broken connection asks to be set up.
+#[test]
+fn plugins_sort_into_connections_makes_yours_and_abilities() {
+    let bundled = |id: &str| info(id, PluginScope::Bundled, PluginOrigin::Bundled);
+    assert_eq!(group_of(&bundled("mail")), Group::Connections);
+    assert_eq!(group_of(&bundled("sheets")), Group::Makes);
+    assert_eq!(group_of(&bundled("ask-user")), Group::Abilities);
+    assert_eq!(group_of(&bundled("help")), Group::Abilities);
+    assert_eq!(group_of(&info("weather", PluginScope::Global, PluginOrigin::Agent)), Group::Yours);
+    let mut mail = bundled("mail");
+    mail.problems = vec!["needs settings: Server".into()];
+    assert_eq!(group_of(&mail), Group::NeedsSetup);
+}
+
+/// The Plugins page: a header with Add, search, tabs; groups of rows with their state; byob's
+/// own abilities folded; a click on a row opens the plugin's page.
+#[test]
+fn the_plugins_page_lists_groups_and_opens_a_plugin() {
+    let ctx = egui::Context::default();
+    let mut ui_state = PluginsUi::default();
+    let mut mine = info("weather", PluginScope::Global, PluginOrigin::Agent);
+    mine.description = "Today's weather".into();
+    mine.icon = "globe".into();
+    let help = info("help", PluginScope::Bundled, PluginOrigin::Bundled);
+    ui_state.apply(&ext(vec![mine, help]));
+    let mut query = String::new();
+    let mut draw = |ui: &mut egui::Ui| {
+        ui_state.page(ui, &Tokens::dark(), &mut query);
+    };
+    let texts = frame(&ctx, vec![], &mut draw);
+    for s in ["Plugins", "Add", "Search plugins", "Skills", "Made for you", "Today's weather", "Built into byob · 1"] {
+        assert!(has(&texts, s), "{s:?} isn't on the page: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
+    }
+    assert!(!has(&texts, "The help plugin"), "abilities start folded");
+    // What comes after a board starts below it (tiles never sit under the next heading).
+    assert!(find(&texts, "Built into byob · 1").top() > find(&texts, "Today's weather").bottom() + 20.0, "the fold overlaps the board");
+    let row = find(&texts, "Today's weather");
+    click_at(&ctx, Pos2::new(row.left() + 20.0, row.center().y), &mut draw);
+    assert_eq!(ui_state.detail(), Some("weather"));
+}
+
+/// A plugin's page: who made it, what to ask it, what it brings; Try in chat starts one.
+#[test]
+fn a_plugins_page_shows_what_it_brings_and_tries_in_chat() {
+    let ctx = egui::Context::default();
+    let mut ui_state = PluginsUi::default();
+    let mut p = info("weather", PluginScope::Global, PluginOrigin::Agent);
+    p.tools = vec!["get_weather".into()];
+    p.skills = vec!["forecasts".into()];
+    p.starters = vec![byob_protocol::StarterDecl { title: "Weather in Lisbon".into(), prompt: "What's the weather in Lisbon?".into() }];
+    ui_state.apply(&ext(vec![p]));
+    ui_state.show_detail(Some("weather"));
+    let mut query = String::new();
+    let mut got = None;
+    let mut draw = |ui: &mut egui::Ui| {
+        if let Some(a) = ui_state.page(ui, &Tokens::dark(), &mut query) {
+            got = Some(a);
+        }
+    };
+    frame(&ctx, vec![], &mut draw);
+    let texts = frame(&ctx, vec![], &mut draw);
+    for s in ["‹ Plugins", "By byob, on your request", "Try in chat", "Weather in Lisbon", "Tools", "get_weather", "Skills", "forecasts", "Information"] {
+        assert!(has(&texts, s), "{s:?} isn't on its page: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
+    }
+    let texts = click(&ctx, &texts, "Try in chat", &mut draw);
+    drop(texts);
+    assert_eq!(got, Some(PageAction::Start("What's the weather in Lisbon?".into())));
+}
+
+/// A plugin that needs setup is an outlined slot naming what's missing; "Set up" opens a dialog with
+/// only what it can't work without (the rest on an Advanced step); one Save sends it all.
+#[test]
+fn a_plugin_that_needs_setup_is_set_up_in_a_dialog_with_one_save() {
+    let ctx = egui::Context::default();
+    let mut ui_state = PluginsUi::default();
+    let mut p = weather(false);
+    p.scope = PluginScope::Global;
+    p.settings.push(PluginSetting {
+        key: "CITY".into(),
+        label: "Home city".into(),
+        help: Some("Where you live".into()),
+        secret: false,
+        required: false,
+        set: false,
+    });
+    ui_state.apply(&ext(vec![p]));
+    let mut query = String::new();
+    let mut draw = |ui: &mut egui::Ui| {
+        ui_state.page(ui, &Tokens::dark(), &mut query);
+    };
+    let texts = frame(&ctx, vec![], &mut draw);
+    assert!(has(&texts, "Needs your API key"), "its tile names what's missing");
+    assert!(has(&texts, "scratch is waiting for you"), "and the line under the title says so");
+    assert!(has(&texts, "Set up"), "{:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
+    let texts = click(&ctx, &texts, "Set up", &mut draw);
+    drop(texts);
+    assert!(ui_state.setup_open.is_some(), "Set up opens the dialog");
+    let mut draw = |ui: &mut egui::Ui| {
+        ui_state.page(ui, &Tokens::dark(), &mut query);
+    };
+    frame(&ctx, vec![], &mut draw); // a new window measures itself first
+    let texts = frame(&ctx, vec![], &mut draw);
+    assert!(!has(&texts, "Home city"), "what it can work without waits on the Advanced step");
+    for s in ["Set up scratch", "API key", "Show", "Advanced settings", "Kept on this computer only", "Cancel", "Save"] {
+        assert!(has(&texts, s), "{s:?} isn't in the form: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
+    }
+    assert_eq!(ui_state.detail(), None, "setting up stays on the list");
+    ui_state.drafts.insert((SCRATCH.into(), "API_KEY".into()), " k-123 ".into());
+    ui_state.drafts.insert((SCRATCH.into(), "CITY".into()), "Lisbon".into());
+    let mut draw = |ui: &mut egui::Ui| {
+        ui_state.page(ui, &Tokens::dark(), &mut query);
+    };
+    let texts = frame(&ctx, vec![], &mut draw);
+    let texts = click(&ctx, &texts, "Save", &mut draw);
+    drop(texts);
+    let sent: Vec<_> = ui_state
+        .out
+        .iter()
+        .filter_map(|m| if let ClientMsg::SetPluginSetting { key, value, .. } = m { Some((key.clone(), value.clone())) } else { None })
+        .collect();
+    assert_eq!(sent, [("API_KEY".to_owned(), Some("k-123".to_owned())), ("CITY".to_owned(), Some("Lisbon".to_owned()))]);
+    assert!(ui_state.setup_open.is_none(), "saving closes the dialog");
+    assert!(ui_state.drafts.values().all(String::is_empty) || ui_state.drafts.is_empty());
 }

@@ -6,6 +6,7 @@ pub mod appview;
 pub mod artifact;
 pub mod capture;
 pub mod chart;
+mod chatbar;
 pub mod cockpit;
 pub mod compose_md;
 pub mod composer;
@@ -13,18 +14,23 @@ pub mod connect;
 pub mod count;
 mod envpanel;
 pub mod export;
+mod fit;
 mod form;
+pub mod glass;
 pub mod header;
 mod highlight;
 mod icons;
 pub mod layout;
+mod library;
 pub mod look;
 pub mod markdown;
 pub mod math;
 pub mod media;
+mod menu;
 pub mod models;
 pub mod pane;
 pub mod plugins;
+mod projects;
 pub mod queue;
 pub mod renderers;
 mod settings;
@@ -33,6 +39,7 @@ pub mod sites;
 pub mod slash;
 pub mod steps;
 pub mod theme;
+mod tip;
 pub mod tree;
 pub mod upload;
 pub mod usage;
@@ -48,6 +55,28 @@ const THINKING_MAX_HEIGHT: f32 = 320.0;
 
 /// Notices kept on screen.
 const MAX_NOTICES: usize = 3;
+
+/// What fills the space beside the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Page {
+    Chat,
+    Projects,
+    Apps,
+    Library,
+    Plugins,
+}
+
+/// What "Hide details" hides in a chat's replies.
+const DETAILS: [&str; 8] = [
+    "message.thinking",
+    "message.thought_size",
+    "message.steps",
+    "message.step_files",
+    "message.subagent_details",
+    "reply.tokens",
+    "reply.time",
+    "reply.speed",
+];
 
 pub struct ByobApp {
     conn: Box<dyn Connection>,
@@ -69,6 +98,34 @@ pub struct ByobApp {
     appearance: settings::AppearanceUi,
     markdown: markdown::Cache,
     sidebar: sidebar::Sidebar,
+    /// The chat list is beside the chat this frame (drawn before the header, full height,
+    /// with the window controls in it); else the header has them.
+    sidebar_docked: bool,
+    /// Tucks the sidebar and pane away when the chat would get too narrow.
+    fit: fit::Fit,
+    /// The title menu's rename or delete dialog.
+    chat_edit: Option<header::ChatEdit>,
+    /// A pinned artifact to open once its chat is in view (chat, artifact).
+    pending_artifact: Option<(String, String)>,
+    /// The Apps and Library pages (one list of every chat's artifacts, shown two ways).
+    library: library::Library,
+    projects: projects::Projects,
+    /// What fills the space beside the list: the chat, or one of the pages.
+    pub(crate) page: Page,
+    /// The Plugins page's search.
+    plugins_query: String,
+    /// Text for the composer once a new chat opens ("Make an app that ").
+    pending_draft: Option<String>,
+    /// Show the pending artifact full page (an app opened from Apps).
+    pending_full: bool,
+    /// Bumped when the sidebar is dragged shut, so it reopens at its normal width.
+    sidebar_gen: u32,
+    /// The list's width last frame, and whether you've been dragging its edge: only a drag
+    /// you let go of narrow shuts it (not a first frame that comes out narrow).
+    sidebar_last_w: f32,
+    sidebar_resized: bool,
+    /// A layout came from the engine since connecting (see `ServerMsg::Layout`).
+    layout_seen: bool,
     state: Option<EngineState>,
     entries: Vec<Entry>,
     notices: Vec<(NoticeLevel, String)>,
@@ -82,6 +139,11 @@ pub struct ByobApp {
     header_rects: header::Rects,
     /// Where the composer's parts were last drawn.
     composer_rects: composer::Rects,
+    chat_config: chatbar::ChatConfig,
+    /// Listening for speech since this time (the voice UI under the box).
+    voice: Option<f64>,
+    /// Until when the row says speech to text isn't connected.
+    voice_note: Option<f64>,
     /// Charts and images shown in the transcript.
     media: media::Cache,
     /// Files attached in the composer.
@@ -171,6 +233,8 @@ impl ByobApp {
             appearance: settings::AppearanceUi::default(),
             markdown: markdown::Cache::default(),
             sidebar: sidebar::Sidebar::default(),
+            sidebar_docked: false,
+            layout_seen: false,
             state: None,
             entries: Vec::new(),
             notices: Vec::new(),
@@ -180,6 +244,21 @@ impl ByobApp {
             models: models::ModelsUi::default(),
             header_rects: header::Rects::default(),
             composer_rects: composer::Rects::default(),
+            chat_config: chatbar::ChatConfig::default(),
+            fit: fit::Fit::default(),
+            chat_edit: None,
+            pending_artifact: None,
+            library: library::Library::default(),
+            projects: projects::Projects::default(),
+            page: Page::Chat,
+            plugins_query: String::new(),
+            pending_draft: None,
+            pending_full: false,
+            sidebar_gen: 0,
+            sidebar_last_w: 0.0,
+            sidebar_resized: false,
+            voice: None,
+            voice_note: None,
             media: media::Cache::default(),
             uploads: upload::Uploads::default(),
             artifacts: artifact::Artifacts::default(),
@@ -215,6 +294,143 @@ impl ByobApp {
     /// Register renderers for more artifact content types (or replace byob's own).
     pub fn artifact_renderers_mut(&mut self) -> &mut renderers::ArtifactRenderers {
         self.artifacts.renderers_mut()
+    }
+
+    /// Show artifact `id` beside chat `chat`, opening the chat first if it isn't in view;
+    /// `full`: the whole window (an app opened from the Apps page).
+    pub(crate) fn open_artifact_in(&mut self, chat: String, id: String, full: bool) {
+        self.page = Page::Chat;
+        if self.sidebar.current().is_some_and(|c| c.id == chat) {
+            if self.artifacts.open(&id) && full && !self.artifacts.is_maximized() {
+                self.artifacts.toggle_maximized();
+            }
+        } else {
+            self.conn.send(ClientMsg::OpenChat { id: chat.clone() });
+            self.pending_artifact = Some((chat, id));
+            self.pending_full = full;
+        }
+    }
+
+    /// The Apps or Library page (asks the engine for the list each time one opens).
+    pub(crate) fn open_page(&mut self, mode: library::Mode) {
+        if self.engine_has(byob_protocol::version::CAP_LIBRARY) {
+            let msg = self.library.ask(mode);
+            self.conn.send(msg);
+            self.page = match mode {
+                library::Mode::Apps => Page::Apps,
+                library::Mode::Library => Page::Library,
+            };
+            self.close_settings();
+        } else if !self.artifacts.is_empty() {
+            // An older engine: this chat's artifacts, as before.
+            self.artifacts.toggle_pane();
+        }
+    }
+
+    /// A new chat of its own with its first words written (the person finishes them).
+    pub(crate) fn begin_chat_with(&mut self, words: String) {
+        let msg = if self.engine_has(byob_protocol::version::CAP_UNATTACHED) { ClientMsg::NewUnattachedChat } else { ClientMsg::NewChat { workspace: None } };
+        self.conn.send(msg);
+        self.pending_draft = Some(words);
+        self.page = Page::Chat;
+    }
+
+    /// The Projects page in place of the chat.
+    fn projects_page(&mut self, ui: &mut egui::Ui, t: &theme::Tokens) {
+        let frame = egui::Frame::central_panel(ui.style()).fill(t.app_bg).inner_margin(0);
+        let all = self.sidebar.workspaces().to_vec();
+        let pinned = self.sidebar.pinned_projects.clone();
+        let root = self.workspaces.root.clone();
+        let scope = self.sidebar.space_scope();
+        let action =
+            egui::CentralPanel::default().frame(frame).show(ui, |ui| self.projects.ui(ui, t, &all, &pinned, &root, scope.as_ref(), sidebar::now_ms())).inner;
+        match action {
+            Some(projects::Action::Open(id)) => {
+                self.page = Page::Chat;
+                let latest = self.sidebar.latest_chat_in(&id);
+                self.conn.send(match latest {
+                    Some(chat) => ClientMsg::OpenChat { id: chat },
+                    None => ClientMsg::NewChat { workspace: Some(id) },
+                });
+            }
+            Some(projects::Action::NewChat(id)) => {
+                self.page = Page::Chat;
+                self.conn.send(ClientMsg::NewChat { workspace: Some(id) });
+            }
+            Some(projects::Action::TogglePin(id)) => self.sidebar.toggle_project_pin(&id),
+            Some(projects::Action::Settings(id)) => self.workspaces.open_settings(&id, false),
+            Some(projects::Action::Remove(id)) => self.workspaces.open_settings(&id, true),
+            Some(projects::Action::New(start)) => self.workspaces.open_start(start),
+            Some(projects::Action::Close) => self.page = Page::Chat,
+            None => {}
+        }
+    }
+
+    /// The Plugins page.
+    pub(crate) fn open_plugins_page(&mut self) {
+        self.page = Page::Plugins;
+        self.close_settings();
+    }
+
+    /// The Plugins page in place of the chat.
+    fn plugins_page(&mut self, ui: &mut egui::Ui, t: &theme::Tokens) {
+        let frame = egui::Frame::central_panel(ui.style()).fill(t.app_bg).inner_margin(0);
+        let mut query = std::mem::take(&mut self.plugins_query);
+        let action = egui::CentralPanel::default().frame(frame).show(ui, |ui| self.plugins.page(ui, t, &mut query)).inner;
+        self.plugins_query = query;
+        match action {
+            Some(plugins::PageAction::Start(words)) => self.begin_chat_with(words),
+            Some(plugins::PageAction::Close) => self.page = Page::Chat,
+            None => {}
+        }
+    }
+
+    /// The Library in place of the chat; what it asked for.
+    fn library_page(&mut self, ui: &mut egui::Ui, t: &theme::Tokens) {
+        let pinned: std::collections::BTreeSet<String> = self.sidebar.pins.iter().map(|p| p.id.clone()).collect();
+        let frame = egui::Frame::central_panel(ui.style()).fill(t.app_bg).inner_margin(0);
+        let action = egui::CentralPanel::default().frame(frame).show(ui, |ui| self.library.ui(ui, t, &pinned, sidebar::now_ms())).inner;
+        match action {
+            Some(library::Action::Open { chat, id }) => {
+                let full = self.library.mode == library::Mode::Apps;
+                self.open_artifact_in(chat, id, full);
+            }
+            Some(library::Action::Start(words)) => self.begin_chat_with(words),
+            Some(library::Action::TogglePin { chat, id, title }) => {
+                if self.sidebar.artifact_pinned(&id) {
+                    self.sidebar.unpin_artifact(&id);
+                } else {
+                    self.sidebar.pin_artifact(&chat, &id, &title);
+                }
+            }
+            Some(library::Action::Close) => self.page = Page::Chat,
+            None => {}
+        }
+    }
+
+    /// The sidebar footer's line: whether the model answers, which one, where it runs.
+    fn footer_status(&self) -> Option<sidebar::Status> {
+        let state = self.state.as_ref()?;
+        let (link, model) = match &state.chat_endpoint {
+            Some(e) => (&e.link, &e.model),
+            None => (&state.link, &state.inference_model),
+        };
+        let t = &self.tokens;
+        // In plain words: can it answer, and is it doing something now?
+        let working = self.busy() || self.sidebar.any_busy();
+        let (dot, state) = match link {
+            byob_protocol::Link::Failed { .. } => (t.danger, "Can't reach the model"),
+            byob_protocol::Link::Checking => (t.warning, "Connecting…"),
+            _ if steps::awaiting_approval(&self.entries) => (t.warning, "Waiting for you"),
+            _ if working => (t.accent, "Working…"),
+            byob_protocol::Link::Ok => (t.success, "Ready"),
+            byob_protocol::Link::Unknown => (t.text_faint, "Ready"),
+        };
+        let state = state.to_owned();
+        let profile = self.chat_profile();
+        let model = profile.as_ref().map_or_else(|| model.clone(), |p| p.label().to_owned());
+        let place = profile.as_ref().map_or("", chatbar::place).to_owned();
+        Some(sidebar::Status { dot, state, model, place })
     }
 
     /// The engine lists `cap` (see `byob_protocol::version`); `false` until it said.
@@ -254,6 +470,8 @@ impl ByobApp {
     /// persist.
     pub fn sidebar_prefs(&self) -> sidebar::SidebarPrefs {
         let mut p = self.sidebar.prefs();
+        p.projects_view = self.projects.view;
+        p.projects_sort = self.projects.sort;
         let current = (!self.draft_key.is_empty() && !self.input.trim().is_empty()).then(|| (self.draft_key.clone(), self.input.clone()));
         p.drafts = self.drafts.iter().map(|(k, v)| (k.clone(), v.clone())).chain(current).take(MAX_DRAFTS).collect();
         p
@@ -262,6 +480,7 @@ impl ByobApp {
     /// Restore them (at startup, before the engine said which chat is in view).
     pub fn set_sidebar_prefs(&mut self, prefs: &sidebar::SidebarPrefs) {
         self.sidebar.set_prefs(prefs);
+        self.projects.set_prefs(prefs.projects_view, prefs.projects_sort);
         self.drafts = prefs.drafts.iter().filter(|(_, v)| !v.trim().is_empty()).take(MAX_DRAFTS).map(|(k, v)| (k.clone(), v.clone())).collect();
     }
 
@@ -291,6 +510,12 @@ impl ByobApp {
     }
 
     /// Where the desktop app serves artifacts for "Open in browser" (may start a server).
+    /// The app draws the title bar (macOS, with the window's content under a transparent
+    /// title bar): the top bar leaves room for the window buttons and moves the window.
+    pub fn set_titlebar(&mut self, titlebar: Option<sidebar::Titlebar>) {
+        self.sidebar.titlebar = titlebar;
+    }
+
     pub fn set_link_base(&mut self, base: artifact::LinkBase) {
         self.artifacts.set_link_base(base);
     }
@@ -322,9 +547,13 @@ impl ByobApp {
                 self.end_edit();
                 // Each chat keeps its unsent text (and the new chat its own).
                 self.switch_draft(draft_key(chat.as_ref().map(|c| c.id.as_str()), workspace.as_deref()), chat.is_some());
-                // A new chat: its composer is the form, ready to type in.
+                // A new chat: its composer is the form, ready to type in (with the first words
+                // when a page started it).
                 if chat.is_none() {
                     self.focus_composer = true;
+                    if let Some(words) = self.pending_draft.take() {
+                        self.input = words;
+                    }
                 }
             }
             if self.queue.apply(&msg) {
@@ -340,7 +569,20 @@ impl ByobApp {
             if let ServerMsg::Profiles(l) = &msg {
                 self.workspaces.set_profiles(l);
             }
+            if let ServerMsg::Config(v) = &msg {
+                self.chat_config.received(v);
+            }
             if self.models.apply(&msg) {
+                continue;
+            }
+            if let ServerMsg::ChatOpened { .. } = &msg {
+                // A chat opened (from the list, the palette, a page): it takes the space.
+                self.page = Page::Chat;
+            }
+            if let ServerMsg::Library { items } = &msg {
+                self.sidebar.library.clone_from(items);
+            }
+            if self.library.apply(&msg) || self.plugins.apply_logo(&msg) {
                 continue;
             }
             if self.usage.apply(&msg) || self.workspaces.apply(&msg) || self.sidebar.apply(&msg) || self.artifacts.apply(&msg) || self.plugins.apply(&msg) {
@@ -348,8 +590,10 @@ impl ByobApp {
             }
             match msg {
                 ServerMsg::Welcome(w) => {
+                    self.chat_config.reset();
                     log::info!("engine speaks protocol {}.{} with caps {:?}", w.protocol, w.minor, w.caps);
                     self.engine = Some(w);
+                    self.layout_seen = false;
                     let sites = self.engine_has(byob_protocol::sites::CAP_VIEW_SITES);
                     self.plugins.sites.set_enabled(sites);
                     self.artifacts.set_views_enabled(sites);
@@ -409,7 +653,20 @@ impl ByobApp {
                 }
                 // Handled by the models section above.
                 ServerMsg::Profiles(_) | ServerMsg::ProfileTested(_) => {}
-                ServerMsg::Layout(l) => self.layout = std::sync::Arc::new(l.sanitized()),
+                ServerMsg::Layout(l) => {
+                    let l = l.sanitized();
+                    // The chat list's sections and view live in the layout, the same in every
+                    // window. Sections made on this device before the engine kept them go up,
+                    // once: on the first layout after connecting. Later ones always apply, or
+                    // two windows would hand an old arrangement back and forth.
+                    let first = !std::mem::replace(&mut self.layout_seen, true);
+                    if first && l.chat_list.is_default() && !self.sidebar.chat_list().is_default() {
+                        self.sidebar.share_list();
+                    } else {
+                        self.sidebar.set_chat_list(&l.chat_list);
+                    }
+                    self.layout = std::sync::Arc::new(l);
+                }
                 ServerMsg::SetLook { request, changes } => {
                     let mut prefs = self.prefs.clone();
                     let problems = look::change(&mut prefs, &mut self.look_history, &changes, self.tokens.dark, &self.user_themes, self.stage.available());
@@ -429,7 +686,10 @@ impl ByobApp {
                 | ServerMsg::Config(_)
                 | ServerMsg::Folders(_)
                 | ServerMsg::ContainersChecked { .. }
-                | ServerMsg::WorkspaceCreated { .. } => {}
+                | ServerMsg::WorkspaceCreated { .. }
+                | ServerMsg::Library { .. }
+                | ServerMsg::LibraryFile { .. }
+                | ServerMsg::PluginLogo { .. } => {}
             }
         }
     }
@@ -604,7 +864,9 @@ impl ByobApp {
     /// the chat list's `new-chat-menu` (New chat's caret menu), `workspace-menu` (the current
     /// workspace's "⋯" menu), `sidebar-hover` (its rows as if hovered), `chat-list` (the list
     /// open, on phones too), `new-chat` (as New chat does), `search:<text>` (typed
-    /// into its search), and `new-workspace-folder:<path>` (the form as if that folder was
+    /// into its search), `palette` / `palette:<text>` (the search palette), `footer-menu`,
+    /// `projects` / `projects-grid` (the Projects page), `new-project-empty` (New project,
+    /// started empty), and `new-workspace-folder:<path>` (the form as if that folder was
     /// dropped). False for an unknown name, or a workspace view before the workspace list arrived.
     pub fn open_panel(&mut self, name: &str) -> bool {
         use byob_protocol::workspace::EnvKind;
@@ -620,14 +882,34 @@ impl ByobApp {
                 self.conn.send(msg);
             }
             _ if name.starts_with("search:") => self.sidebar.set_search(name.trim_start_matches("search:")),
+            _ if name.starts_with("palette:") => self.sidebar.open_palette(name.trim_start_matches("palette:")),
+            "palette" => self.sidebar.open_palette(""),
+            "footer-menu" => self.sidebar.open_footer_menu(),
+            "projects" => self.page = Page::Projects,
+            "projects-grid" => {
+                self.projects.view = projects::View::Grid;
+                self.page = Page::Projects;
+            }
+            "new-project-empty" => self.workspaces.open_start(projects::Start::Empty),
             "new-workspace-container" => {
                 self.workspaces.open_new(EnvKind::Container);
                 self.conn.send(ClientMsg::CheckContainers);
             }
-            "workspace-settings" => match self.sidebar.current_workspace().map(|w| w.id.clone()) {
-                Some(id) => self.workspaces.open_settings(&id, false),
-                None => return false,
-            },
+            // "workspace-settings" or "workspace-settings:chats" (a part of it).
+            _ if name == "workspace-settings" || name.starts_with("workspace-settings:") => {
+                match self.sidebar.current_workspace().or_else(|| self.sidebar.workspaces().first()).map(|w| w.id.clone()) {
+                    Some(id) => {
+                        self.workspaces.open_settings(&id, false);
+                        let part = name.trim_start_matches("workspace-settings").trim_start_matches(':');
+                        if let Some(w) = &mut self.workspaces.window
+                            && let Some(tab) = workspace::ProjectTab::find(part)
+                        {
+                            w.tab = tab;
+                        }
+                    }
+                    None => return false,
+                }
+            }
             "more-menu" => self.header_rects.open_menu = true,
             "model-menu" => self.header_rects.open_model_menu = true,
             "models" => self.open_connection(),
@@ -677,10 +959,10 @@ impl ByobApp {
     }
 
     /// The names [`ByobApp::open_panel`] knows.
-    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu, model-menu, models, plugins, new-chat-menu, workspace-menu, sidebar-hover, chat-list, new-chat";
+    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu, model-menu, models, plugins, new-chat-menu, workspace-menu, sidebar-hover, chat-list, new-chat, palette, footer-menu, projects, projects-grid, new-project-empty";
     /// Names [`ByobApp::open_panel`] takes with an argument: `search:<text>`,
     /// `new-workspace-folder:<path>`.
-    pub const ARG_PANELS: &'static str = "search:<text>, new-workspace-folder:<path>";
+    pub const ARG_PANELS: &'static str = "search:<text>, palette:<text>, new-workspace-folder:<path>, workspace-settings:<part>";
     /// Names [`ByobApp::open_panel`] takes once plugins are known: `plugin-pane` (the first
     /// plugin pane), `plugin-pane:<plugin>[/<view>]`, `plugin:<id>` (Settings → Plugins, open
     /// on that plugin).
@@ -857,16 +1139,66 @@ impl ByobApp {
         self.artifacts.network_switch = self.engine_has(byob_protocol::version::CAP_ARTIFACT_NETWORK);
         self.artifacts.begin_frame(ui.ctx(), &self.tokens, narrow);
         let list_open = self.sidebar.is_open(narrow);
+        // The chat comes first: as the window narrows, the sidebar and then the pane make way.
+        let list_open = if narrow || self.show_settings {
+            self.fit.reset();
+            list_open
+        } else {
+            let mut open = list_open;
+            for d in self.fit.step(ui.available_width(), list_open, self.artifacts.is_open()) {
+                match d {
+                    fit::Do::CloseSidebar => {
+                        self.sidebar.set_open(false);
+                        open = false;
+                    }
+                    fit::Do::OpenSidebar => {
+                        self.sidebar.set_open(true);
+                        open = true;
+                    }
+                    fit::Do::CollapsePane | fit::Do::OpenPane => self.artifacts.toggle_pane(),
+                }
+            }
+            open
+        };
         self.header_shortcuts(ui.ctx());
+        let t = self.tokens;
+        self.sidebar.set_artifacts(self.artifacts.len());
+        self.sidebar.unattached = self.engine_has(byob_protocol::version::CAP_UNATTACHED);
+        self.sidebar.archive = self.engine_has(byob_protocol::version::CAP_ARCHIVE);
+        self.sidebar.status = self.footer_status();
+        self.sidebar.page = match self.page {
+            Page::Chat => sidebar::NavPage::None,
+            Page::Projects => sidebar::NavPage::Projects,
+            Page::Apps => sidebar::NavPage::Apps,
+            Page::Library => sidebar::NavPage::Library,
+            Page::Plugins => sidebar::NavPage::Plugins,
+        };
+        self.sidebar.plugins_attention = self.plugins.needs_attention();
+        self.artifacts.pinned = self.sidebar.pins.iter().map(|p| p.id.clone()).collect();
+        // A pinned artifact asked for from another chat: open it once its chat has loaded.
+        // (The chat's artifact list comes last when a chat opens: wait for that one.)
+        if let Some((chat, id)) = self.pending_artifact.clone()
+            && self.artifacts.chat() == Some(chat.as_str())
+        {
+            if self.artifacts.open(&id) && std::mem::take(&mut self.pending_full) && !self.artifacts.is_maximized() {
+                self.artifacts.toggle_maximized();
+            }
+            self.pending_artifact = None;
+        }
         if self.free_now(narrow) {
             // A free arrangement: the header is one of its modules.
             self.free_frame(ui);
             self.end_frame(ui.ctx());
             return;
         }
+        // Beside the chat, the list runs the full height and carries the window controls;
+        // the header spans only the chat. Settings and maximized views have no list.
+        self.sidebar_docked = list_open && !narrow && !self.show_settings && !self.artifacts.is_maximized() && self.artifacts.web_mut().maximized().is_none();
+        if self.sidebar_docked {
+            self.chat_list_panel(ui, &t);
+        }
         self.header(ui);
         upload::drop_overlay(ui.ctx(), &self.tokens);
-        let t = self.tokens;
         if self.show_settings {
             self.settings_keys(ui.ctx(), narrow);
         }
@@ -910,12 +1242,34 @@ impl ByobApp {
             self.end_frame(ui.ctx());
             return;
         }
-        if list_open {
-            self.chat_list_panel(ui, &t);
+        match self.page {
+            Page::Apps | Page::Library => {
+                self.library_page(ui, &t);
+                let msgs = self.library.take();
+                self.send_all(msgs);
+                self.end_frame(ui.ctx());
+                return;
+            }
+            Page::Projects => {
+                self.projects_page(ui, &t);
+                self.end_frame(ui.ctx());
+                return;
+            }
+            Page::Plugins => {
+                self.plugins_page(ui, &t);
+                self.end_frame(ui.ctx());
+                return;
+            }
+            Page::Chat => {}
         }
         if !narrow {
             // The pane, or its rail when collapsed; then the plugins' pane beside it.
+            let before = ui.available_width();
+            let open = self.artifacts.is_open();
             self.artifacts.side_panel(ui, &t);
+            if open {
+                self.fit.pane_w = (before - ui.available_width()).max(crate::pane::MIN_WIDTH);
+            }
             self.plugins.sites.side_panel(ui, &t, self.artifacts.web_mut());
         }
         // The chat and its composer sit on the window background (app_bg); the header, chat
@@ -940,15 +1294,37 @@ impl ByobApp {
         // The id carries the width knob so changing it resizes the panel (egui remembers dragged sizes per id).
         let w = t.knobs.sidebar_width;
         #[allow(clippy::cast_possible_truncation)] // a few hundred points
-        let shown = egui::Panel::left(("sidebar", w as i32))
+        // Dragged narrower than this and let go, it closes (and reopens at its normal width).
+        const SHUT: f32 = 170.0;
+        let r = egui::Panel::left(("sidebar", w as i32, self.sidebar_gen))
             .resizable(true)
             .default_size(w)
-            .size_range(180.0..=420.0)
-            .frame(cockpit::framed(ui.ctx(), egui::Frame::side_top_panel(ui.style()).fill(t.sidebar_bg)))
-            .show_separator_line(cockpit::gap(ui.ctx()) <= 0.0)
+            .size_range(130.0..=420.0)
+            // Edge to edge; the list draws its glass and the hairline where it meets the chat.
+            .show_separator_line(false)
+            .frame(cockpit::framed(ui.ctx(), egui::Frame::NONE.fill(glass::fill(t))))
             .show(ui, |ui| self.sidebar.show(ui, t, false));
-        cockpit::mark(ui.ctx(), shown.response.rect);
-        self.send_all(shown.inner);
+        cockpit::mark(ui.ctx(), r.response.rect);
+        let width = r.response.rect.width();
+        let dragging = ui.input(|i| i.pointer.any_down());
+        if dragging && self.sidebar_last_w > 0.0 && (width - self.sidebar_last_w).abs() > 0.5 {
+            self.sidebar_resized = true;
+        }
+        // Let go: a drag that ended narrow shuts it (the flag is spent either way). Narrow
+        // without a drag (it came up while the window was still opening small): back to
+        // its normal width once there's room.
+        let resized = !dragging && std::mem::take(&mut self.sidebar_resized);
+        if resized && width < SHUT {
+            self.sidebar.set_open(false);
+            self.sidebar_gen = self.sidebar_gen.wrapping_add(1);
+        } else if !dragging && !resized && width < SHUT && ui.ctx().content_rect().width() >= w + fit::CHAT_MIN {
+            self.sidebar_gen = self.sidebar_gen.wrapping_add(1);
+        }
+        if width >= SHUT {
+            self.fit.sidebar_w = width;
+        }
+        self.sidebar_last_w = width;
+        self.send_all(r.inner);
     }
 
     /// A folder dropped on the window (desktop) opens the New workspace form on it; files
@@ -962,29 +1338,95 @@ impl ByobApp {
             i.raw.dropped_files = files;
             folders
         });
-        if let Some(f) = folders.first() {
-            self.workspaces.open_with_folder(&f.path().display().to_string());
+        // Folders dropped on the window: a new project from them, or more folders for the one
+        // being made (what was typed stays).
+        match &mut self.workspaces.form {
+            Some(form) => folders.iter().for_each(|f| form.add_folder(&f.path().display().to_string())),
+            None => {
+                if let Some((first, rest)) = folders.split_first() {
+                    self.workspaces.open_with_folder(&first.path().display().to_string());
+                    if let Some(form) = &mut self.workspaces.form {
+                        rest.iter().for_each(|f| form.add_folder(&f.path().display().to_string()));
+                    }
+                }
+            }
         }
     }
 
     /// After drawing: artifact actions and overlays, and what they want sent or shown.
     fn end_frame(&mut self, ctx: &egui::Context) {
+        // The chat list's arrangement changed here: shared through the layout.
+        if let Some(list) = self.sidebar.take_list_change()
+            && self.engine_has(byob_protocol::layout::CAP_LAYOUT)
+        {
+            let mut layout = (*self.layout).clone();
+            layout.chat_list = list;
+            self.layout = std::sync::Arc::new(layout.clone());
+            self.conn.send(ClientMsg::SetLayout { layout });
+        }
         self.end_backdrop(ctx);
         for r in self.sidebar.take_requests() {
             match r {
                 sidebar::Request::NewWorkspace => self.workspaces.open_new(byob_protocol::workspace::EnvKind::Auto),
                 sidebar::Request::WorkspaceSettings { id, remove } => self.workspaces.open_settings(&id, remove),
                 sidebar::Request::AppSettings => self.open_settings(),
+                sidebar::Request::Plugins => self.open_plugins_page(),
+                sidebar::Request::Artifacts => {
+                    if !self.artifacts.is_empty() {
+                        self.artifacts.toggle_pane();
+                    }
+                }
+                sidebar::Request::OpenArtifact { chat, id } => self.open_artifact_in(chat, id, false),
+                sidebar::Request::Library => self.open_page(library::Mode::Library),
+                sidebar::Request::Apps => self.open_page(library::Mode::Apps),
+                sidebar::Request::Connection => self.open_connection(),
+                sidebar::Request::Projects => {
+                    self.page = Page::Projects;
+                    self.close_settings();
+                }
+                sidebar::Request::LeavePage => self.page = Page::Chat,
+                sidebar::Request::Help => self.begin_chat_with("How do I ".to_owned()),
+                sidebar::Request::Feedback => ctx.open_url(egui::OpenUrl::new_tab("https://github.com/Scronkfinkle/byob/issues")),
+                sidebar::Request::Compose(words) => self.begin_chat_with(words),
+                sidebar::Request::OpenFile => {
+                    // A new chat with the file picker open: what's picked is attached to it.
+                    self.begin_chat_with(String::new());
+                    self.uploads.pick(ctx);
+                }
+                sidebar::Request::LibraryList => {
+                    if self.engine_has(byob_protocol::version::CAP_LIBRARY) {
+                        self.conn.send(ClientMsg::ListLibrary);
+                    }
+                }
             }
         }
         let t = self.tokens;
         let title = self.sidebar.current().map_or("New chat", |c| c.title.as_str()).to_owned();
+        self.chat_edit_dialog(ctx);
+        self.sidebar.space_dialog(ctx, &t);
+        // "Keep in Library" on a changed file (in a reply's steps).
+        if let Some(path) = ctx.data_mut(|d| d.remove_temp::<String>(steps::keep_live_id()))
+            && self.engine_has(byob_protocol::version::CAP_LIBRARY)
+        {
+            self.conn.send(ClientMsg::AddLiveFile { path });
+        }
+        let msgs = self.sidebar.palette_ui(ctx, &t);
+        self.send_all(msgs);
+        // The sheet hangs from the settings button, right edges lined up.
         let gear = self.header_rects.chat_settings;
-        let anchor = egui::pos2(gear.left(), gear.bottom() + 6.0);
+        let anchor = egui::pos2(gear.right(), gear.bottom() + 6.0);
         let anchor = if gear.is_positive() { anchor } else { egui::pos2(ctx.content_rect().center().x - 200.0, 48.0) };
         let msgs = self.workspaces.windows(ctx, &t, self.sidebar.workspaces(), &title, anchor, &mut self.plugins);
         self.send_all(msgs);
         self.artifacts.end_frame(ctx);
+        // The pane's pin: on the sidebar, or off it again.
+        if let Some((id, title)) = self.artifacts.take_pin_toggle() {
+            if self.sidebar.artifact_pinned(&id) {
+                self.sidebar.unpin_artifact(&id);
+            } else if let Some(chat) = self.sidebar.current().map(|c| c.id.clone()) {
+                self.sidebar.pin_artifact(&chat, &id, &title);
+            }
+        }
         let (msgs, notices) = self.artifacts.take_output();
         self.send_all(msgs);
         let msgs = self.connect.take();
@@ -1049,6 +1491,19 @@ impl ByobApp {
         let busy = self.state.as_ref().is_some_and(|s| s.busy);
         let retry_id = self.entries.last().filter(|e| retryable(e) && !busy).map(|e| e.id);
         let editing = &mut self.editing;
+        // "Hide details" on this chat: its replies without thinking, tool steps, tokens and
+        // time (questions and approvals still show); the layout is put back after.
+        let chat_id = self.sidebar.current().map(|c| c.id.clone());
+        let quiet = chat_id.as_ref().is_some_and(|id| self.sidebar.quiet.contains(id));
+        if quiet {
+            let mut l = (*self.layout).clone();
+            for id in DETAILS {
+                l.set_show(id, byob_protocol::layout::Show::Hidden);
+            }
+            layout::store(ui.ctx(), &std::sync::Arc::new(l));
+        }
+        let has_reply = self.entries.iter().any(|e| e.role == byob_protocol::EntryRole::Assistant);
+        let mut flip = false;
         egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
             readable_column(ui, &t, |ui| {
                 ui.add_space(t.pad(8.0));
@@ -1069,8 +1524,32 @@ impl ByobApp {
                     ui.add_space(t.pad(8.0));
                     usage.dividers(ui, &t, entry.id);
                 }
+                // Under the latest reply: show or hide the replies' details for this chat.
+                if has_reply && chat_id.is_some() {
+                    // One row high: a right-to-left layout would otherwise take all the height left.
+                    let row = egui::vec2(ui.available_width(), ui.text_style_height(&egui::TextStyle::Small) + 4.0);
+                    ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = if quiet { "Show details" } else { "Hide details" };
+                        let r = ui.add(egui::Label::new(egui::RichText::new(label).small().color(t.text_faint)).sense(egui::Sense::click()));
+                        let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        let r = tip::note(r, &t, label, "Thinking, tool steps, tokens and time, for this chat");
+                        if r.clicked() {
+                            flip = true;
+                        }
+                    });
+                    ui.add_space(t.pad(8.0));
+                }
             });
         });
+        if quiet {
+            layout::store(ui.ctx(), &self.layout);
+        }
+        if flip
+            && let Some(id) = chat_id
+            && !self.sidebar.quiet.remove(&id)
+        {
+            self.sidebar.quiet.insert(id);
+        }
         answers.extend(self.media.take_requests());
         match card {
             Some(connect::CardAction::Retry) => answers.push(ClientMsg::Retry),
@@ -1488,11 +1967,12 @@ mod app_tests {
         let title = "A chat with a remarkably long title that would never fit in any header at all, really".to_owned();
         let ws = byob_protocol::WorkspaceSummary {
             id: "w".into(),
-            name: "A workspace whose name is also much longer than anyone would reasonably type".into(),
+            name: "A project whose name is also much longer than anyone would reasonably type".into(),
             folder: "/w".into(),
             chats: 1,
             updated_at: 1,
             env: byob_protocol::workspace::EnvKind::Container,
+            ..Default::default()
         };
         let mut s = state(Link::Ok, true);
         s.chat_endpoint = Some(byob_protocol::ChatEndpoint {
@@ -1521,7 +2001,7 @@ mod app_tests {
             ServerMsg::State(s),
             ServerMsg::Workspaces { items: vec![ws], current: None, root: String::new(), support: Default::default() },
             ServerMsg::ChatOpened {
-                chat: Some(ChatSummary { id: "c".into(), title, updated_at: 1, pinned_at: None, busy: false, workspace: Some("w".into()) }),
+                chat: Some(ChatSummary { id: "c".into(), title, updated_at: 1, pinned_at: None, busy: false, workspace: Some("w".into()), archived_at: None }),
                 workspace: Some("w".into()),
             },
             ServerMsg::Usage(byob_protocol::usage::ChatUsage {
@@ -1554,12 +2034,15 @@ mod app_tests {
                 frame(&ctx, &mut app, width);
             }
             let r = app.header_rects;
-            for (name, rect) in [("chat list", r.chats), ("chat settings", r.chat_settings), ("more", r.more)] {
+            // The chat list toggle is in the header while the list is closed (phones), else at
+            // the top of the list itself.
+            let toggle = if r.chats.is_positive() { r.chats } else { app.sidebar.rects.toggle };
+            for (name, rect) in [("chat list", toggle), ("chat settings", r.chat_settings), ("more", r.more)] {
                 assert!(rect.is_positive() && rect.min.x >= 0.0 && rect.max.x <= width + 0.5, "width {width}: {name} at {rect:?}");
             }
-            assert!(r.chats.max.x <= r.chat_settings.min.x, "width {width}: {r:?}");
-            // The plugins chip, between the chat's settings and the "⋯" menu.
-            assert!(r.plugins.is_positive() && r.chat_settings.max.x <= r.plugins.min.x && r.plugins.max.x <= r.more.min.x, "width {width}: {r:?}");
+            assert!(toggle.max.x <= r.plugins.min.x, "width {width}: {r:?}");
+            // At the right: the plugins chip, the chat's settings, then the "⋯" menu.
+            assert!(r.plugins.is_positive() && r.plugins.max.x <= r.chat_settings.min.x && r.chat_settings.max.x <= r.more.min.x, "width {width}: {r:?}");
         }
     }
 
@@ -1596,7 +2079,10 @@ mod app_tests {
                 }
                 // One row: paperclip at the left, the text, send at the right, all on one
                 // bottom edge (one line of text is as tall as the controls).
-                assert!(r.attach.left() - r.frame.left() < 12.0 && r.frame.right() - r.send.right() < 12.0, "{at}");
+                // The mic, when there is one, is rightmost and send sits just left of it.
+                let last = if r.mic.is_positive() { r.mic } else { r.send };
+                assert!(r.attach.left() - r.frame.left() < 12.0 && r.frame.right() - last.right() < 12.0, "{at}");
+                assert!(r.send == last || r.send.right() <= last.left() + 0.5, "{at}");
                 assert!((r.attach.center().y - r.send.center().y).abs() < 0.5 && r.frame.bottom() - r.send.bottom() < 12.0, "{at}");
                 assert!((r.field.bottom() - r.send.bottom()).abs() < 1.5, "{at}");
                 let right_of_text = if r.second.is_positive() { r.second.left() } else { r.send.left() };
@@ -1625,12 +2111,27 @@ mod app_tests {
     fn send_turns_the_accent_color_once_something_is_typed() {
         let ctx = egui::Context::default();
         let mut app = crowded_app();
-        let accent = app.tokens.accent;
         for (input, lit) in [("", false), ("   \n", false), ("hello", true), ("", false)] {
             let r = composer_in(&ctx, &mut app, 1000.0, false, false, input);
-            assert_eq!(r.send_fill == accent, lit, "{input:?}: {r:?}");
+            assert_eq!(r.send_fill == app.tokens.text_strong, lit, "{input:?}: {r:?}");
             assert_eq!(r.second, egui::Rect::NOTHING);
         }
+    }
+
+    /// In a light theme too, send is a quiet strong "↵" once something is typed (no blue
+    /// circle); empty, only the quiet mic.
+    #[test]
+    fn send_is_quiet_in_a_light_theme() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        app.set_prefs(theme::Prefs { theme: theme::ThemeKind::Light, ..theme::Prefs::default() });
+        frame(&ctx, &mut app, 1000.0);
+        assert!(!app.tokens.dark, "the light theme is on");
+        let r = composer_in(&ctx, &mut app, 1000.0, false, false, "hello");
+        assert_eq!(r.send_fill, app.tokens.text_strong);
+        assert!((r.send.width() - r.send.height()).abs() < 0.5, "round: {:?}", r.send);
+        let r = composer_in(&ctx, &mut app, 1000.0, false, false, "");
+        assert_eq!(r.send_fill, app.tokens.button_bg);
     }
 
     #[test]
@@ -1739,6 +2240,131 @@ mod app_tests {
         frame(ctx, app, width);
     }
 
+    /// The mode chip under the box sets the chat's approvals: its menu's "Edit freely" sends
+    /// the chat's own settings with that mode.
+    #[test]
+    fn the_mode_chip_sets_the_chats_approvals() {
+        use byob_protocol::workspace::{Approvals, Layer};
+        let fake = Fake::default();
+        let mut app = crowded_with(fake.clone());
+        let view = crate::workspace::tests::view(byob_protocol::ConfigScope::Chat, Layer::default(), None);
+        let ctx = egui::Context::default();
+        // The bar asks for the chat's settings; the engine answers.
+        frame(&ctx, &mut app, 1000.0);
+        assert!(fake.sent.lock().unwrap().contains(&ClientMsg::GetConfig { scope: byob_protocol::ConfigScope::Chat }));
+        fake.inbox.lock().unwrap().push(ServerMsg::Config(Box::new(view)));
+        for _ in 0..3 {
+            frame(&ctx, &mut app, 1000.0);
+        }
+        let chip = app.composer_rects.mode;
+        assert!(chip.is_positive(), "the mode chip is drawn");
+        click(&ctx, &mut app, 1000.0, chip.center());
+        // While its menu is open, 3 picks the third mode, "Edit freely".
+        let three = egui::Event::Key { key: egui::Key::Num3, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+                events: vec![three],
+                ..Default::default()
+            },
+            |ui| app.ui(ui),
+        );
+        out.textures_delta.clear();
+        let sent = fake.sent.lock().unwrap();
+        let set = sent.iter().find_map(|m| match m {
+            ClientMsg::SetConfig { scope: byob_protocol::ConfigScope::Chat, layer, .. } => Some(layer.approvals),
+            _ => None,
+        });
+        assert_eq!(set, Some(Some(Approvals::AllowEdits)), "{sent:?}");
+    }
+
+    /// The mic starts listening, a second click ends it, and the row then says speech to text
+    /// isn't connected (nothing is put in the message).
+    #[test]
+    fn the_mic_listens_and_ends_without_inventing_text() {
+        let fake = Fake::default();
+        let mut app = crowded_with(fake);
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut app, 1000.0);
+        app.toggle_voice(&ctx);
+        assert!(app.voice.is_some() && app.voice_note.is_none());
+        frame(&ctx, &mut app, 1000.0);
+        app.toggle_voice(&ctx);
+        assert!(app.voice.is_none() && app.voice_note.is_some());
+        assert!(app.input.is_empty());
+    }
+
+    /// The sidebar's Library row asks the engine for every chat's artifacts and shows the
+    /// page in place of the chat; picking one opens it in its chat, and opening any chat
+    /// leaves the page.
+    #[test]
+    fn the_library_opens_from_the_sidebar_and_leaves_for_a_chat() {
+        let fake = Fake::default();
+        fake.inbox.lock().unwrap().push(ServerMsg::Welcome(byob_protocol::version::Welcome::current()));
+        let mut app = crowded_with(fake.clone());
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut app, 1000.0);
+        app.sidebar.request(sidebar::Request::Library);
+        frame(&ctx, &mut app, 1000.0);
+        assert_eq!(app.page, Page::Library);
+        assert!(fake.sent.lock().unwrap().contains(&ClientMsg::ListLibrary));
+        // Picking an artifact of another chat opens that chat and waits for it.
+        app.open_artifact_in("other".into(), "calc".into(), false);
+        assert_eq!(app.page, Page::Chat);
+        assert!(fake.sent.lock().unwrap().contains(&ClientMsg::OpenChat { id: "other".into() }));
+        assert_eq!(app.pending_artifact, Some(("other".into(), "calc".into())));
+        // The chat opens first; the artifact waits for that chat's list, then shows.
+        let other = ChatSummary { id: "other".into(), title: "Other".into(), updated_at: 2, pinned_at: None, busy: false, workspace: None, archived_at: None };
+        fake.inbox.lock().unwrap().push(ServerMsg::ChatOpened { chat: Some(other), workspace: None });
+        frame(&ctx, &mut app, 1000.0);
+        assert!(app.pending_artifact.is_some(), "its list hasn't come yet");
+        let calc = byob_protocol::artifact::Artifact {
+            id: "calc".into(),
+            kind: byob_protocol::artifact::ArtifactKind::Markdown,
+            content_type: byob_protocol::artifact::TYPE_MARKDOWN.into(),
+            title: "Calc".into(),
+            filename: "calc.md".into(),
+            versions: vec![byob_protocol::artifact::ArtifactVersion {
+                n: 1,
+                path: "a/v1.md".into(),
+                created_at: 1,
+                note: String::new(),
+                size: 1,
+                turn: String::new(),
+            }],
+            network: false,
+        };
+        fake.inbox.lock().unwrap().push(ServerMsg::Artifacts { chat: Some("other".into()), artifacts: vec![calc] });
+        frame(&ctx, &mut app, 1000.0);
+        frame(&ctx, &mut app, 1000.0);
+        assert!(app.pending_artifact.is_none(), "taken once its list came");
+        assert!(app.artifacts.is_open(), "shown beside its chat");
+        // Any chat opening leaves the page.
+        app.open_page(library::Mode::Apps);
+        assert_eq!(app.page, Page::Apps);
+        fake.inbox.lock().unwrap().push(ServerMsg::ChatOpened { chat: None, workspace: None });
+        frame(&ctx, &mut app, 1000.0);
+        assert_eq!(app.page, Page::Chat);
+        // Plugins is a page too.
+        app.sidebar.request(sidebar::Request::Plugins);
+        frame(&ctx, &mut app, 1000.0);
+        assert_eq!(app.page, Page::Plugins);
+        assert!(!app.show_settings);
+        // The page uses the whole width beside the list (no room kept for a pane).
+        fake.inbox.lock().unwrap().push(crate::plugins::tests::ext(vec![]));
+        frame(&ctx, &mut app, 1400.0);
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 700.0))), ..Default::default() };
+        let out = ctx.run_ui(input, |ui| app.ui(ui));
+        let texts = crate::plugins::tests::texts_of(&out);
+        // The column is centered in what the list leaves, however wide the window.
+        let add = texts.iter().find(|t| t.0 == "Add").map(|t| t.1);
+        let title = texts.iter().filter(|t| t.0 == "Plugins").map(|t| t.1).max_by(|a, b| a.height().total_cmp(&b.height()));
+        let (Some(add), Some(title)) = (add, title) else { panic!("no page header: {texts:?}") };
+        let left = title.left() - 250.0;
+        let right = 1400.0 - add.right();
+        assert!((left - right).abs() < 60.0, "off center: {left} on the left, {right} on the right");
+    }
+
     #[test]
     fn ctrl_plus_minus_and_zero_zoom_the_whole_interface_and_are_remembered() {
         let ctx = egui::Context::default();
@@ -1782,11 +2408,12 @@ mod app_tests {
         assert!(app.show_settings && app.workspaces.chat.is_none());
         app.close_settings();
         frame(&ctx, &mut app, 1600.0);
-        // Without the settings, the title opens the chat's settings.
-        let at = app.header_rects.title.center();
+        // Without the settings, the button at the top right opens the chat's settings (the
+        // title opens the chat's menu).
+        let at = app.header_rects.chat_settings.center();
         click(&ctx, &mut app, 1600.0, at);
         assert!(app.workspaces.chat.is_some());
-        // The wordmark closes both.
+        // The back chevron closes both.
         app.show_settings = true;
         frame(&ctx, &mut app, 1600.0);
         assert!(app.header_rects.home.is_positive());
@@ -1804,42 +2431,26 @@ mod app_tests {
         assert!(!app.show_settings);
     }
 
+    /// The chat's settings hang from their button at the top right, right edges lined up,
+    /// and open with the advanced ones folded away; Esc closes them.
     #[test]
-    fn the_chat_settings_window_can_be_dragged_and_reopens_in_place() {
+    fn the_chat_settings_hang_under_their_button_with_advanced_folded() {
         let ctx = egui::Context::default();
         let mut app = crowded_app();
         frame(&ctx, &mut app, 1000.0);
-        app.workspaces.toggle_chat();
+        let gear = app.header_rects.chat_settings;
+        assert!(gear.is_positive() && gear.right() > 900.0, "at the top right: {gear:?}");
+        click(&ctx, &mut app, 1000.0, gear.center());
+        assert!(app.workspaces.chat.is_some());
         frame(&ctx, &mut app, 1000.0);
-        frame(&ctx, &mut app, 1000.0);
-        let rect = |ctx: &egui::Context, app: &ByobApp| ctx.memory(|m| m.area_rect(app.workspaces.chat_window_id())).unwrap();
-        let start = rect(&ctx, &app);
-        // Press on the title bar, drag by (-150, 120), let go.
+        let sheet = ctx.memory(|m| m.area_rect(app.workspaces.chat_window_id())).unwrap();
+        assert!((sheet.right() - gear.right()).abs() < 2.0 && sheet.top() >= gear.bottom(), "{sheet:?} under {gear:?}");
+        assert!(!ctx.data(|d| d.get_temp::<bool>(egui::Id::unique("chat-settings-advanced"))).unwrap_or(false), "advanced starts folded");
+        let esc = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
-        let grab = start.min + egui::vec2(40.0, 12.0);
-        let to = grab + egui::vec2(-150.0, 120.0);
-        let press = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
-        let steps = [
-            vec![egui::Event::PointerMoved(grab)],
-            vec![press(grab, true)],
-            vec![egui::Event::PointerMoved(grab + egui::vec2(-50.0, 40.0))],
-            vec![egui::Event::PointerMoved(to)],
-            vec![press(to, false)],
-        ];
-        for events in steps {
-            let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| app.ui(ui));
-            out.textures_delta.clear();
-        }
-        frame(&ctx, &mut app, 1000.0);
-        let moved = rect(&ctx, &app);
-        assert!((moved.min - start.min - egui::vec2(-150.0, 120.0)).length() < 2.0, "{start:?} -> {moved:?}");
-        // Closed and opened again: back under its button.
-        app.workspaces.toggle_chat();
-        frame(&ctx, &mut app, 1000.0);
-        app.workspaces.toggle_chat();
-        frame(&ctx, &mut app, 1000.0);
-        frame(&ctx, &mut app, 1000.0);
-        assert!((rect(&ctx, &app).min - start.min).length() < 2.0, "{start:?} vs {:?}", rect(&ctx, &app));
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events: vec![esc], ..Default::default() }, |ui| app.ui(ui));
+        out.textures_delta.clear();
+        assert!(app.workspaces.chat.is_none(), "Esc closes it");
     }
 
     #[test]
@@ -1862,6 +2473,7 @@ mod app_tests {
             chats: 0,
             updated_at: 1,
             env: byob_protocol::workspace::EnvKind::Auto,
+            ..Default::default()
         };
         fake.inbox.lock().unwrap().extend([
             ServerMsg::State(state(Link::Ok, true)),
@@ -1876,6 +2488,8 @@ mod app_tests {
             assert!(app.open_panel(panel), "{panel}");
         }
         assert!(!app.open_panel("nope"));
+        // The project's environment is asked for when its part is shown.
+        assert!(app.open_panel("workspace-settings:environment"));
         for _ in 0..2 {
             frame(&ctx, &mut app, 1000.0);
         }
@@ -1886,7 +2500,7 @@ mod app_tests {
         assert!(sent.contains(&ClientMsg::CheckContainers));
         app.create_workspace("Fresh", byob_protocol::workspace::EnvKind::Container);
         let last = fake.sent.lock().unwrap().last().cloned();
-        let Some(ClientMsg::CreateWorkspace { name, folder, config }) = last else { panic!("{last:?}") };
+        let Some(ClientMsg::CreateWorkspace { name, folder, config, .. }) = last else { panic!("{last:?}") };
         assert_eq!((name.as_str(), folder, config.env), ("Fresh", byob_protocol::NewFolder::Create, Some(byob_protocol::workspace::EnvKind::Container)));
     }
 
@@ -1940,7 +2554,7 @@ mod app_tests {
     }
 
     fn chat_in(id: &str, ws: &str) -> ChatSummary {
-        ChatSummary { id: id.into(), title: id.to_uppercase(), updated_at: 1, pinned_at: None, busy: false, workspace: Some(ws.into()) }
+        ChatSummary { id: id.into(), title: id.to_uppercase(), updated_at: 1, pinned_at: None, busy: false, workspace: Some(ws.into()), archived_at: None }
     }
 
     /// Workspaces w1 and w2, chat "a" (in w1) in view.
@@ -1953,6 +2567,7 @@ mod app_tests {
             chats: 1,
             updated_at: 1,
             env: byob_protocol::workspace::EnvKind::Auto,
+            ..Default::default()
         };
         fake.inbox.lock().unwrap().extend([
             ServerMsg::State(state(Link::Ok, true)),
@@ -1994,10 +2609,15 @@ mod app_tests {
         frame(&ctx, &mut app, 1000.0);
         frame(&ctx, &mut app, 1000.0);
         assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("composer"))));
-        // Ctrl+F: the chat search.
+        // Ctrl+F (or Ctrl+K): search, as a palette with the keyboard in its field.
         shortcut(&ctx, &mut app, egui::Key::F, egui::Modifiers::COMMAND);
         frame(&ctx, &mut app, 1000.0);
-        assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("sidebar-search"))));
+        frame(&ctx, &mut app, 1000.0);
+        assert!(app.sidebar.palette.is_some());
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("search-palette-field"))));
+        app.sidebar.palette = None;
+        shortcut(&ctx, &mut app, egui::Key::K, egui::Modifiers::COMMAND);
+        assert!(app.sidebar.palette.is_some());
     }
 
     #[test]
@@ -2038,6 +2658,92 @@ mod app_tests {
         assert_eq!(again.input, "half a thought for a");
     }
 
+    /// New project is centred over the window; the Projects page can start it either way;
+    /// a stray click outside closes it only while nothing is chosen.
+    #[test]
+    fn new_project_is_centred_and_starts_either_way() {
+        let ctx = egui::Context::default();
+        let (_, mut app) = two_workspaces();
+        frame(&ctx, &mut app, 1000.0);
+        app.sidebar.request(sidebar::Request::NewWorkspace);
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+            out.textures_delta.clear();
+            texts = crate::plugins::tests::texts_of(&out);
+        }
+        let title = texts.iter().find(|t| t.0 == "Create project" && t.1.top() > 60.0).map(|t| t.1).unwrap_or_else(|| panic!("{texts:?}"));
+        let name = texts.iter().find(|t| t.0 == "Project name").map(|t| t.1).unwrap_or_else(|| panic!("{texts:?}"));
+        let cancel = texts.iter().find(|t| t.0 == "Cancel").map(|t| t.1).unwrap();
+        // The dialog's middle (its first heading's left edge to its buttons' right) is the
+        // window's middle.
+        let middle = (name.left() + cancel.right() + 100.0) / 2.0;
+        assert!((middle - 500.0).abs() < 60.0, "centred across: {middle}");
+        let down = (title.top() + cancel.bottom()) / 2.0;
+        assert!((down - 350.0).abs() < 60.0, "centred down, not pinned to the top: {title:?} … {cancel:?}");
+        // A click on the dimmed window outside it closes it while nothing is chosen.
+        let outside = egui::pos2(30.0, 650.0);
+        for pressed in [true, false] {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+                events: vec![
+                    egui::Event::PointerMoved(outside),
+                    egui::Event::PointerButton { pos: outside, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+            out.textures_delta.clear();
+        }
+        assert!(app.workspaces.form.is_none(), "nothing typed: a click outside closes it");
+        // Typed something: a stray click keeps it.
+        app.workspaces.open_start(projects::Start::Empty);
+        assert_eq!(app.workspaces.form.as_ref().map(workspace::NewWorkspaceForm::source), Some(workspace::Source::Empty));
+        if let Some(f) = &mut app.workspaces.form {
+            f.goal = "Plan the trip".into();
+        }
+        assert!(!app.workspaces.form.as_ref().unwrap().untouched());
+    }
+
+    /// A very long projects folder can't push New project wider than the window (it did:
+    /// the new folder's path was one line that never wrapped).
+    #[test]
+    fn a_long_projects_folder_keeps_new_project_inside_the_window() {
+        let ctx = egui::Context::default();
+        let (_, mut app) = two_workspaces();
+        frame(&ctx, &mut app, 1000.0);
+        app.workspaces.root = format!("/private/tmp/{}/byob-home/projects", "very-long-folder-name-".repeat(8));
+        app.workspaces.open_start(projects::Start::Empty);
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+            out.textures_delta.clear();
+            texts = crate::plugins::tests::texts_of(&out);
+        }
+        let dialog: Vec<_> = texts.iter().filter(|t| t.0 == "Add folder…" || t.0 == "Folders" || t.0 == "Cancel" || t.0 == "Create project").collect();
+        assert!(dialog.len() >= 3, "{texts:?}");
+        for t in dialog {
+            assert!(t.1.left() >= 0.0 && t.1.right() <= 1000.0, "{:?} is off the window at {:?}", t.0, t.1);
+        }
+    }
+
+    /// The Projects page's view and order are remembered on the device.
+    #[test]
+    fn the_projects_view_is_remembered() {
+        let (_, mut app) = two_workspaces();
+        app.projects.view = projects::View::Grid;
+        app.projects.sort = projects::Sort::Name;
+        let prefs = app.sidebar_prefs();
+        let (_, mut again) = two_workspaces();
+        again.set_sidebar_prefs(&serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap());
+        assert_eq!((again.projects.view, again.projects.sort), (projects::View::Grid, projects::Sort::Name));
+        // Prefs saved before the page had a view still load.
+        let old: sidebar::SidebarPrefs = serde_json::from_str("{\"space\":null}").unwrap();
+        assert_eq!(old.projects_view, projects::View::List);
+    }
+
     #[test]
     fn a_new_workspace_opens_from_the_list_and_a_dropped_folder_fills_the_form() {
         let ctx = egui::Context::default();
@@ -2046,7 +2752,7 @@ mod app_tests {
         app.sidebar.request(sidebar::Request::NewWorkspace);
         frame(&ctx, &mut app, 1000.0);
         let form = app.workspaces.form.as_ref().unwrap();
-        assert_eq!((form.source, form.env), (workspace::Source::Choose, byob_protocol::workspace::EnvKind::Auto));
+        assert_eq!((form.source(), form.env), (workspace::Source::Empty, byob_protocol::workspace::EnvKind::Auto));
         // A folder dropped on the window.
         let dir = std::env::temp_dir().join("byob-drop-test-Alpha");
         std::fs::create_dir_all(&dir).unwrap();
@@ -2068,7 +2774,10 @@ mod app_tests {
         let mut out = ctx.run_ui(input, |ui| app.ui(ui));
         out.textures_delta.clear();
         let form = app.workspaces.form.as_ref().unwrap();
-        assert_eq!((form.source, form.name.as_str(), form.path.as_str()), (workspace::Source::Folder, "byob-drop-test-Alpha", dir.to_str().unwrap()));
+        assert_eq!(
+            (form.source(), form.name.as_str(), form.folders.clone()),
+            (workspace::Source::Folder, "byob-drop-test-Alpha", vec![dir.display().to_string()])
+        );
         assert!(app.notices.is_empty(), "not attached as a file: {:?}", app.notices);
         let _ = std::fs::remove_dir(&dir);
     }

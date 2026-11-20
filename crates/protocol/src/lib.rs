@@ -25,7 +25,7 @@ pub mod workspace;
 
 use serde::{Deserialize, Serialize};
 
-pub use artifact::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion};
+pub use artifact::{Artifact, ArtifactKind, ArtifactRef, ArtifactVersion, LibraryItem};
 pub use connect::{Detected, InferenceTest, Link, PRESETS, Preset, Problem};
 pub use delegation::{Delegation, DelegationState, DelegationUpdate};
 pub use env::{ContainerEnv, EnvAction, EnvSupport, WorkspaceEnv};
@@ -155,6 +155,17 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
     },
+    /// Start a new, empty chat in this client that belongs to no project: it works in a
+    /// folder of its own in byob's data folder (created with the chat), so nothing lands
+    /// in whatever folder byob was started in. [`ClientMsg::ChatToProject`] can make that
+    /// folder a project later (13.14, engine cap [`version::CAP_UNATTACHED`]).
+    NewUnattachedChat,
+    /// Make chat `chat`'s folder a project named after the chat (its chats, this one
+    /// included, then belong to it). For a chat without a project; answered with
+    /// [`ServerMsg::Workspaces`] (13.14, engine cap [`version::CAP_UNATTACHED`]).
+    ChatToProject {
+        chat: String,
+    },
     /// Look at another chat. Only this client switches; a turn running elsewhere goes on.
     OpenChat {
         id: String,
@@ -170,6 +181,50 @@ pub enum ClientMsg {
     PinChat {
         id: String,
         pinned: bool,
+    },
+    /// Archive a chat (kept, listed apart; also unpins it) or bring it back (15+, cap
+    /// [`version::CAP_ARCHIVE`]).
+    ArchiveChat {
+        id: String,
+        archived: bool,
+    },
+    /// Every chat's artifacts, for the Library; answered with [`ServerMsg::Library`] (15+,
+    /// cap [`version::CAP_LIBRARY`]).
+    ListLibrary,
+    /// A plugin's logo (its folder's `logo.png` / `logo.jpg`); answered with
+    /// [`ServerMsg::PluginLogo`] (15+, cap [`version::CAP_PLUGIN_LOGOS`]).
+    GetPluginLogo {
+        plugin: String,
+    },
+    /// A file of any chat's artifact, for the Library's previews (images); answered with
+    /// [`ServerMsg::LibraryFile`] (15+, cap [`version::CAP_LIBRARY`]).
+    GetLibraryFile {
+        chat: String,
+        id: String,
+        version: u32,
+    },
+    /// Delete one artifact for good (deleting its chat keeps it); the Library is sent again
+    /// (15+, cap [`version::CAP_LIBRARY`]).
+    DeleteArtifact {
+        chat: String,
+        id: String,
+    },
+    /// Show an artifact's folder in the file manager of the machine byob runs on (15+, cap
+    /// [`version::CAP_LIBRARY`]).
+    RevealArtifact {
+        chat: String,
+        id: String,
+    },
+    /// Show the folder a chat works in, in the file manager of the machine byob runs on (a
+    /// chat without a project keeps its files in byob's own folder) (15+).
+    RevealChatFolder {
+        chat: String,
+    },
+    /// Keep a file of the chat in view in the Library as a live file (`path` relative to the
+    /// chat's folder): byob snapshots it now and whenever it changes; the file stays yours
+    /// (15+, cap [`version::CAP_LIBRARY`]).
+    AddLiveFile {
+        path: String,
     },
     /// One chunk of a file the user attaches. `upload` is chosen by the client (unique per
     /// connection); chunks arrive in order, `offset` is where `data` (base64, at most
@@ -222,6 +277,16 @@ pub enum ClientMsg {
         folder: NewFolder,
         #[serde(default)]
         config: workspace::Layer,
+        /// Other folders it works in besides `folder` (13.16+, cap `project_folders`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        folders: Vec<String>,
+    },
+    /// Replace the other folders a project works in (13.16+, cap `project_folders`). Each must
+    /// exist on the engine's machine; its own folder can't be one. Answered by
+    /// [`ServerMsg::Workspaces`] (or a notice saying why not).
+    SetWorkspaceFolders {
+        id: String,
+        folders: Vec<String>,
     },
     RenameWorkspace {
         id: String,
@@ -447,6 +512,13 @@ pub enum ServerMsg {
     /// Every artifact of the chat this client looks at (`chat`, `None` for a new chat).
     /// Sent after [`ServerMsg::Transcript`]; replaces the client's list.
     Artifacts { chat: Option<String>, artifacts: Vec<Artifact> },
+    /// Answer to [`ClientMsg::ListLibrary`]: every chat's artifacts, newest change first
+    /// (15+, cap [`version::CAP_LIBRARY`]).
+    Library { items: Vec<LibraryItem> },
+    /// Answer to [`ClientMsg::GetPluginLogo`]: base64 image bytes, or `None` (15+).
+    PluginLogo { plugin: String, data: Option<String> },
+    /// Answer to [`ClientMsg::GetLibraryFile`]: base64 bytes, or why not (15+).
+    LibraryFile { chat: String, id: String, version: u32, data: Option<String>, error: Option<String> },
     /// An artifact of the chat in view was created or got a new version.
     ArtifactUpdated(Artifact),
     /// Answer to [`ClientMsg::GetArtifact`]: the file, base64 (see [`media::encode`]), or why not.
@@ -536,6 +608,9 @@ pub struct ChatSummary {
     /// The workspace it belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// When it was archived (ms since the epoch), if it is: listed apart (15+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<i64>,
 }
 
 impl ChatSummary {
@@ -1225,7 +1300,8 @@ mod tests {
 
     #[test]
     fn chat_messages_round_trip() {
-        let summary = ChatSummary { id: "c1".into(), title: "Plans".into(), updated_at: 5, pinned_at: None, busy: true, workspace: Some("w1".into()) };
+        let summary =
+            ChatSummary { id: "c1".into(), title: "Plans".into(), updated_at: 5, pinned_at: None, busy: true, workspace: Some("w1".into()), archived_at: None };
         for m in [
             ServerMsg::Chats { pinned: vec![], recent: vec![summary.clone()], after: None, next: Some(summary.cursor()) },
             ServerMsg::ChatUpdated(summary.clone()),
@@ -1356,6 +1432,8 @@ mod tests {
             ClientMsg::DetectEndpoints,
             ClientMsg::Retry,
             ClientMsg::Rewind { entry: 7, text: "again, differently".into() },
+            ClientMsg::NewUnattachedChat,
+            ClientMsg::ChatToProject { chat: "c1".into() },
         ] {
             assert_eq!(ClientMsg::from_json(&m.to_json()).unwrap(), m);
         }

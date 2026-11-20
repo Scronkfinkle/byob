@@ -54,7 +54,7 @@ Ids are `Folder:UID`, e.g. `INBOX:42` (the last `:` splits, so folders may conta
 `mail_send` declares `"confirm"` in the manifest (see `docs/plugins-backend.md`): its calls
 are must-confirm (`Tool::always_ask`), so the approval card (warning: "Sends this email from
 your account. It can't be unsent.", preview: the arguments in full, body as a block, scrolling) waits for a
-person even under "Allow everything", after an "always allow" answer, with `--auto-approve`,
+person even under "Work freely", after an "always allow" answer, with `--auto-approve`,
 and when a `before_tool_call` hook says allow. Only switching network tools off refuses it.
 `crates/agent/src/native_backend_tests.rs`
 (`mail_send_always_waits_for_a_person_even_when_everything_is_allowed`) holds this.

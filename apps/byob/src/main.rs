@@ -56,7 +56,9 @@
 //!                             (Settings → Plugins) once the messages are done; the chat
 //!                             list's new-chat-menu, workspace-menu, sidebar-hover (rows as
 //!                             if hovered), chat-list (open, phones too), new-chat,
-//!                             search:TEXT, new-workspace-folder:PATH (the form as if that
+//!                             search:TEXT, palette[:TEXT] (the search palette), footer-menu,
+//!                             projects, projects-grid, new-project-empty,
+//!                             new-workspace-folder:PATH (the form as if that
 //!                             folder was dropped); also
 //!                             plugin-pane[:PLUGIN[/VIEW]] (a plugin's pane) and plugin:ID
 //!                             (Settings → Plugins open on that plugin), artifact:PREFIX (the
@@ -280,7 +282,9 @@ fn parse_args() -> Result<Args, String> {
                     || v.starts_with("artifact:")
                     || v.starts_with("add-models:")
                     || v.starts_with("search:")
+                    || v.starts_with("palette:")
                     || v.starts_with("new-workspace-folder:")
+                    || v.starts_with("workspace-settings:")
                     || v.starts_with("edit-model:");
                 if !plugin_panel && !byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == v) {
                     return Err(format!(
@@ -612,8 +616,17 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
 
     // Scripted (screenshot) runs must not read or overwrite the user's saved window/appearance.
     let scratch_state = args.script.screenshot.as_ref().map(|_| std::env::temp_dir().join(format!("byob-headless-{}.ron", std::process::id())));
+    // No smaller than the top bar fits (window buttons, title, badges, menu): smaller, it
+    // broke apart and the chat was a sliver of wrapped words.
+    let viewport =
+        egui::ViewportBuilder::default().with_inner_size(args.window_size.unwrap_or([1100.0, 750.0])).with_min_inner_size([560.0, 520.0]).with_title("byob");
+    // macOS: the content runs under a transparent title bar, so the chat list's toggle and
+    // Back/Forward sit beside the window buttons (the UI leaves room for them and moves the
+    // window from empty space). Windows and Linux keep the system's title bar.
+    #[cfg(target_os = "macos")]
+    let viewport = viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size(args.window_size.unwrap_or([1100.0, 750.0])).with_title("byob"),
+        viewport,
         wgpu_options: gpu::options(),
         persistence_path: scratch_state.clone().or_else(|| window_state_in(std::env::var_os(byob_store::HOME_ENV))),
         ..Default::default()
@@ -637,6 +650,9 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
             let ctx = cc.egui_ctx.clone();
             let conn = engine.connect(Arc::new(move || ctx.request_repaint()));
             let mut ui = byob_ui_egui::ByobApp::new(Box::new(conn), "desktop");
+            if cfg!(target_os = "macos") {
+                ui.set_titlebar(Some(byob_ui_egui::sidebar::Titlebar::MACOS));
+            }
             ui.set_link_base(link_base(engine.clone(), serving));
             if let Some(dir) = themes_dir {
                 ui.set_themes_dir(dir);
