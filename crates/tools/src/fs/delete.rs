@@ -130,8 +130,9 @@ impl DeleteFile {
         if !lexists(&target.abs) {
             return Err(format!("{} doesn't exist; use list_files to see what's there", target.show()));
         }
-        // every folder on the way to the trash is checked like any other path
-        let dest = sandbox::resolve(ctx.workspace, &self.trash_dir.join(trash_id()).join(&rel).to_string_lossy())
+        // every folder on the way to the trash is checked like any other path; the trash is
+        // in the folder the file is in (the workspace's own, or a folder it links)
+        let dest = sandbox::resolve(&target.root, &self.trash_dir.join(trash_id()).join(&rel).to_string_lossy())
             .map_err(|e| format!("the trash folder is not usable: {e}"))?;
         if dest.abs.starts_with(&target.abs) {
             return Err(format!("can't delete {}: it contains the trash folder", target.show()));

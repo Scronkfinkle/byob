@@ -520,7 +520,7 @@ pub fn chip(ui: &mut egui::Ui, t: &Tokens, state: &EngineState, detail: ChipDeta
     }
     let height = ui.spacing().interact_size.y;
     let radius = t.round(height / 2.0).min(height / 2.0);
-    let button = egui::Button::new(job).fill(t.button_bg).stroke(Stroke::new(1.0, t.border)).corner_radius(radius).min_size(vec2(0.0, height));
+    let button = egui::Button::new(job).truncate().fill(t.button_bg).stroke(Stroke::new(1.0, t.border)).corner_radius(radius).min_size(vec2(0.0, height));
     let resp = ui.add(if detail == ChipDetail::Dot { button.frame(false) } else { button }).on_hover_text(tip);
     if menu {
         let pad = ui.spacing().button_padding.x;

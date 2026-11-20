@@ -78,7 +78,7 @@ fn project_rows(ui: &mut egui::Ui, t: &Tokens, env: &WorkspaceEnv) -> Option<Env
         });
         if env.project_env_forced.is_none() {
             ui.horizontal(|ui| {
-                if env.project_env != Some(true) && ui.button("Load it").on_hover_text("Load it for every command in this workspace").clicked() {
+                if env.project_env != Some(true) && ui.button("Load it").on_hover_text("Load it for every command in this project").clicked() {
                     out = Some(EnvAction::ProjectEnv { load: Some(true) });
                 }
                 if env.project_env != Some(false) && ui.button("Don't load it").clicked() {
@@ -91,7 +91,7 @@ fn project_rows(ui: &mut egui::Ui, t: &Tokens, env: &WorkspaceEnv) -> Option<Env
         }
     }
     if let Some(i) = &env.installer {
-        ui.label(RichText::new(format!("install_packages uses {i}, kept per workspace in byob's data folder.")).small().color(t.text_dim));
+        ui.label(RichText::new(format!("install_packages uses {i}, kept per project in byob's data folder.")).small().color(t.text_dim));
     }
     out
 }

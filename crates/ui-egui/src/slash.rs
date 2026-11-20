@@ -136,7 +136,7 @@ impl SlashMenu {
     }
 }
 
-/// "this workspace · skill", "built in".
+/// "this project · skill", "built in".
 fn origin(item: &SlashItem) -> String {
     let kind = match item.kind {
         SlashKind::Builtin => return "built in".into(),

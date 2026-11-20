@@ -669,6 +669,9 @@ fn import_lines(e: &ChatExport) -> Result<Vec<Line>> {
     if c.pinned_at.is_some() {
         lines.push(Line::new(c.updated_at, Event::Pinned { pinned_at: c.pinned_at }));
     }
+    if c.archived_at.is_some() {
+        lines.push(Line::new(c.updated_at, Event::Archived { archived_at: c.archived_at }));
+    }
     lines.push(Line::new(c.updated_at, Event::Touched { updated_at: c.updated_at }));
     Ok(lines)
 }
@@ -749,6 +752,24 @@ impl ChatStore for FolderStore {
             return Ok(());
         }
         inner.write(id, vec![Event::Pinned { pinned_at }], true, true)
+    }
+
+    fn archive_chat(&self, id: &str, archived: bool) -> Result<()> {
+        let mut inner = self.lock();
+        let chat = &inner.state_or_404(id)?.chat;
+        let current = chat.archived_at;
+        let archived_at = if archived { current.or_else(|| Some(now())) } else { None };
+        let mut events = Vec::new();
+        if archived && chat.pinned_at.is_some() {
+            events.push(Event::Pinned { pinned_at: None });
+        }
+        if archived_at != current {
+            events.push(Event::Archived { archived_at });
+        }
+        if events.is_empty() {
+            return Ok(());
+        }
+        inner.write(id, events, true, true)
     }
 
     fn delete_chat(&self, id: &str) -> Result<Vec<String>> {

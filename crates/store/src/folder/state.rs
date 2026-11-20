@@ -110,6 +110,8 @@ pub(crate) struct Summary {
     #[serde(default)]
     pub pinned_at: Option<Millis>,
     #[serde(default)]
+    pub archived_at: Option<Millis>,
+    #[serde(default)]
     pub tasks: Vec<String>,
     /// Replies still marked streaming.
     #[serde(default)]
@@ -125,6 +127,7 @@ impl Summary {
             created_at: self.created_at,
             updated_at: self.updated_at,
             pinned_at: self.pinned_at,
+            archived_at: self.archived_at,
         }
     }
 }
@@ -146,7 +149,15 @@ pub(crate) fn split_id(id: MessageId) -> Option<(u32, u32)> {
 impl ChatState {
     pub(crate) fn new(id: &str, title: &str, workspace: &Path, ts: Millis) -> Self {
         Self {
-            chat: Chat { id: id.to_owned(), title: title.to_owned(), workspace: workspace.to_owned(), created_at: ts, updated_at: ts, pinned_at: None },
+            chat: Chat {
+                id: id.to_owned(),
+                title: title.to_owned(),
+                workspace: workspace.to_owned(),
+                created_at: ts,
+                updated_at: ts,
+                pinned_at: None,
+                archived_at: None,
+            },
             deleted: false,
             messages: BTreeMap::new(),
             last_m: 0,
@@ -199,6 +210,7 @@ impl ChatState {
             Event::Renamed { title } => self.chat.title.clone_from(title),
             Event::WorkspaceSet { workspace } => self.chat.workspace.clone_from(workspace),
             Event::Pinned { pinned_at } => self.chat.pinned_at = *pinned_at,
+            Event::Archived { archived_at } => self.chat.archived_at = *archived_at,
             Event::Touched { updated_at } => self.chat.updated_at = *updated_at,
             Event::MessageAdded { m, role, content, reasoning, done, task } => {
                 let msg = Msg {
@@ -331,6 +343,7 @@ impl ChatState {
             created_at: c.created_at,
             updated_at: c.updated_at,
             pinned_at: c.pinned_at,
+            archived_at: c.archived_at,
             tasks: self.tasks.iter().cloned().collect(),
             open: u32::try_from(self.messages.values().filter(|m| !m.done).count()).unwrap_or(u32::MAX),
         }

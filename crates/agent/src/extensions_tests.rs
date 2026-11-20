@@ -585,3 +585,17 @@ fn a_broken_global_plugin_can_be_read_and_fixed_from_a_chat() {
     assert!(!h.home.path().join("chats").read_dir().is_ok_and(|mut d| d.any(|e| e.is_ok_and(|e| e.path().join("plugins/hello").exists()))));
     assert!(!fs::read_to_string(h.home.path().join("plugins/hello/byob-plugin.json")).unwrap().contains(",,"), "fixed in place");
 }
+
+/// A plugin's logo is its folder's logo.png (or .jpg), when small enough to send.
+#[test]
+fn a_plugin_logo_is_a_small_image_in_its_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(crate::extensions::logo_file(dir.path()).is_none());
+    std::fs::write(dir.path().join("logo.jpg"), b"jpg").unwrap();
+    assert_eq!(crate::extensions::logo_file(dir.path()), Some(dir.path().join("logo.jpg")));
+    std::fs::write(dir.path().join("logo.png"), b"png").unwrap();
+    assert_eq!(crate::extensions::logo_file(dir.path()), Some(dir.path().join("logo.png")), "png first");
+    let big = usize::try_from(crate::extensions::MAX_LOGO_BYTES + 1).unwrap();
+    std::fs::write(dir.path().join("logo.png"), vec![0u8; big]).unwrap();
+    assert_eq!(crate::extensions::logo_file(dir.path()), Some(dir.path().join("logo.jpg")), "too big: the next one");
+}

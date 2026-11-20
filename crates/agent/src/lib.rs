@@ -436,6 +436,9 @@ struct Client {
     /// The new chat this client is about to start (`chat: None`): its workspace (else the
     /// default one), and the settings and key given to it before its first message.
     new_in: Option<String>,
+    /// The new chat belongs to no project: it gets a folder of its own
+    /// ([`Engine::unattached_root`]) when its first message creates it.
+    new_unattached: bool,
     new_layer: Layer,
     new_key: Option<String>,
     /// Its look as it last reported it, and when (`Engine::look_seq`; see [`look`]).
@@ -444,7 +447,18 @@ struct Client {
 
 impl Client {
     fn new(tx: Sender<ServerMsg>, wake: Waker) -> Self {
-        Self { tx, wake, chat: None, attached: false, caps: Vec::new(), new_in: None, new_layer: Layer::default(), new_key: None, look: None }
+        Self {
+            tx,
+            wake,
+            chat: None,
+            attached: false,
+            caps: Vec::new(),
+            new_in: None,
+            new_unattached: false,
+            new_layer: Layer::default(),
+            new_key: None,
+            look: None,
+        }
     }
 }
 
@@ -532,6 +546,8 @@ struct Engine {
     /// them per run): never persist one, use positions or the store's own references.
     store: Box<dyn ChatStore>,
     paths: Option<Paths>,
+    /// Where chats without a project keep their folders (`<data>/chats-files/<chat>`).
+    unattached_root: PathBuf,
     default_workspace: PathBuf,
     live: BTreeMap<String, Live>,
     turns: BTreeMap<u64, Running>,
@@ -667,6 +683,11 @@ impl Engine {
         let slots = Arc::new(delegate::Slots::new(config.subagents.parallel(None)));
         let detect = config.detect_local && !config.onboarded;
         let workspaces = byob_store::Workspaces::open(config.paths.as_ref()).value;
+        // The sandbox learns each project's other folders (its file tools and commands may
+        // reach them).
+        for w in workspaces.list() {
+            byob_tools::sandbox::set_linked(&w.folder, &w.folders);
+        }
         let forced = byob_types::config::Forced { approvals: None, tool_mode: Some(config.adapt.tool_mode).filter(|m| *m != ToolMode::Auto) };
         let mut tools = config.tools;
         if let Some(p) = &config.plugins {
@@ -725,6 +746,7 @@ impl Engine {
             clients: BTreeMap::new(),
             inbox,
             store,
+            unattached_root: config.paths.as_ref().map_or_else(|| std::env::temp_dir().join("byob-chats-files"), |p| p.data_dir.join("chats-files")),
             paths: config.paths,
             default_workspace: config.workspace,
             live: BTreeMap::new(),
@@ -904,10 +926,12 @@ impl Engine {
     /// it, with the settings it gave it beforehand.
     fn create_chat(&mut self, client: ClientId, first_message: &str) -> Result<String, StoreError> {
         let title = chats::heuristic_title(first_message);
-        let folder = self.new_chat_workspace(client).map_or_else(|| self.default_workspace.clone(), |w| w.folder);
+        let unattached = self.clients.get(&client).is_some_and(|c| c.new_unattached);
         let mut attempt = 0;
         let chat = loop {
             let id = chats::new_chat_id();
+            // A chat without a project works in a folder of its own, named after it.
+            let folder = if unattached { self.unattached_folder(&id)? } else { self.new_chat_folder(client) };
             match self.store.create_chat(&id, &title, &folder) {
                 Ok(chat) => break chat,
                 // Id collision (clock went backwards): try another.
@@ -929,7 +953,7 @@ impl Engine {
         };
         self.live.insert(chat.id.clone(), live);
         self.adopt_new_chat_settings(client, &chat.id);
-        let new_workspace = self.ensure_workspace(&chat.workspace);
+        let new_workspace = !self.is_unattached(&chat.workspace) && self.ensure_workspace(&chat.workspace);
         self.broadcast(ServerMsg::ChatUpdated(self.chat_summary(&chat)));
         self.refresh_folder_stats();
         if new_workspace {
@@ -988,9 +1012,9 @@ impl Engine {
             }
             Err(e) => return Err(format!("couldn't delete the chat: {e}")),
         }
-        if let Some(ws) = workspace {
-            byob_tools::artifact::remove_chat(&ws, chat);
-        }
+        // What the chat made stays (an artifact is the thing you keep): it's still in the
+        // Library, marked as from a deleted chat, until you delete it yourself.
+        let _ = workspace;
         self.live.remove(chat);
         self.queues.remove(chat);
         self.provisional.remove(chat);
@@ -1014,6 +1038,162 @@ impl Engine {
         match self.store.pin_chat(chat, pinned) {
             Ok(()) => self.chat_changed(chat),
             Err(e) => self.notice(client, format!("couldn't pin the chat: {e}")),
+        }
+    }
+
+    /// The Library: every chat's artifacts, read from each folder chats work in, newest
+    /// change first (capped).
+    fn send_library(&mut self, client: ClientId) {
+        const MAX_CHATS: usize = 5000;
+        const MAX_ITEMS: usize = 500;
+        let mut chats: std::collections::HashMap<String, byob_store::Chat> = std::collections::HashMap::new();
+        let mut after = None;
+        while chats.len() < MAX_CHATS {
+            let Ok(page) = self.store.list_chats(200, after.as_ref()) else { break };
+            let next = page.next.clone();
+            for c in page.chats {
+                chats.insert(c.id.clone(), c);
+            }
+            match next {
+                Some(n) => after = Some(n),
+                None => break,
+            }
+        }
+        // Every folder an artifact can be in: chats' folders, projects' folders (a deleted
+        // chat's things stay there), and the folders of deleted chats without a project.
+        let mut folders: std::collections::BTreeSet<std::path::PathBuf> = chats.values().map(|c| c.workspace.clone()).collect();
+        folders.extend(self.workspaces.list().iter().map(|w| w.folder.clone()));
+        folders.extend(self.unattached_folders());
+        let mut items: Vec<byob_protocol::LibraryItem> = Vec::new();
+        for folder in &folders {
+            // Live files that changed get their new snapshot first.
+            artifact::refresh_live(&self.artifact_types, folder);
+            for meta in artifact::list_all_meta(folder) {
+                let (chat, artifact, live) = (meta.chat, meta.artifact, meta.live);
+                let workspace = self.workspaces.by_folder(folder).map(|w| w.id.clone());
+                match chats.get(&chat) {
+                    // Listed once: in the folder its chat works in.
+                    Some(c) if c.workspace == *folder => {
+                        items.push(byob_protocol::LibraryItem { chat, chat_title: c.title.clone(), workspace, artifact, chat_gone: false, live });
+                    }
+                    Some(_) => {}
+                    None => items.push(byob_protocol::LibraryItem { chat, chat_title: String::new(), workspace, artifact, chat_gone: true, live }),
+                }
+            }
+        }
+        items.sort_by_key(|i| std::cmp::Reverse(i.artifact.latest().map_or(0, |v| v.created_at)));
+        items.truncate(MAX_ITEMS);
+        self.send_to(client, ServerMsg::Library { items });
+    }
+
+    /// A file of any chat's artifact (the Library shows images from every chat). Read off
+    /// this thread; capped like the chat's own artifact files.
+    fn serve_library_file(&mut self, client: ClientId, chat: String, artifact: String, version: u32) {
+        let Some(workspace) = self.artifact_folder(&chat, &artifact) else {
+            self.send_to(client, ServerMsg::LibraryFile { chat, id: artifact, version, data: None, error: Some("it no longer exists".into()) });
+            return;
+        };
+        let types = self.artifact_types.clone();
+        let Some(c) = self.clients.get(&client) else { return };
+        let (tx, wake) = (c.tx.clone(), Arc::clone(&c.wake));
+        let spawned = thread::Builder::new().name("byob-library-file".into()).spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| attachments::artifact_for_client(&types, &workspace, &chat, &artifact, version)))
+                .unwrap_or_else(|_| Err("internal error while loading".into()));
+            let (data, error) = match result {
+                Ok(bytes) => (Some(byob_protocol::media::encode(&bytes)), None),
+                Err(e) => (None, Some(e)),
+            };
+            if tx.send(ServerMsg::LibraryFile { chat, id: artifact, version, data, error }).is_ok() {
+                wake();
+            }
+        });
+        if let Err(e) = spawned {
+            log::error!("could not start a library file thread: {e}");
+        }
+    }
+
+    /// The folders of chats without a project (deleted ones included: their things stay).
+    fn unattached_folders(&self) -> Vec<std::path::PathBuf> {
+        const MAX: usize = 5000;
+        let Ok(entries) = std::fs::read_dir(&self.unattached_root) else { return Vec::new() };
+        entries
+            .take(MAX)
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter(|e| e.file_name().to_str().is_some_and(|n| n != "drafts"))
+            .map(|e| e.path())
+            .collect()
+    }
+
+    /// The folder artifact `id` of `chat` is in: its chat's folder, or (the chat deleted)
+    /// that chat's own folder or one of the projects'.
+    fn artifact_folder(&self, chat: &str, id: &str) -> Option<std::path::PathBuf> {
+        if let Some(row) = self.store.chat(chat).ok().flatten() {
+            return Some(row.workspace);
+        }
+        let mut candidates = vec![self.unattached_root.join(chat)];
+        candidates.extend(self.workspaces.list().iter().map(|w| w.folder.clone()));
+        candidates.into_iter().find(|f| artifact::load_in_chat(f, chat, id).is_ok())
+    }
+
+    /// `ClientMsg::AddLiveFile`: keep a file of the chat in view as a live file.
+    fn add_live_file(&mut self, client: ClientId, path: &str) {
+        let Some(chat) = self.client_chat(client) else {
+            self.notice(client, "open the chat the file belongs to first".into());
+            return;
+        };
+        let Some(folder) = self.store.chat(&chat).ok().flatten().map(|r| r.workspace) else { return };
+        match artifact::add_live(&self.artifact_types, &folder, &chat, path) {
+            Ok(a) => {
+                let artifacts = artifact::list(&folder, &chat);
+                self.send_to(client, ServerMsg::Artifacts { chat: Some(chat), artifacts });
+                let text = format!("\u{201c}{}\u{201d} is in your Library: it follows the file as it changes", a.title);
+                self.send_to(client, ServerMsg::Notice { level: NoticeLevel::Info, text });
+            }
+            Err(e) => self.notice(client, format!("couldn't add it: {e}")),
+        }
+    }
+
+    /// `ClientMsg::DeleteArtifact`: delete one thing for good, then send the Library again.
+    fn delete_artifact(&mut self, client: ClientId, chat: &str, id: &str) {
+        let result = self.artifact_folder(chat, id).ok_or_else(|| "it no longer exists".to_owned()).and_then(|f| artifact::remove(&f, chat, id));
+        match result {
+            Ok(()) => {
+                if self.store.chat(chat).ok().flatten().is_some() {
+                    self.chat_changed(chat);
+                }
+                self.send_library(client);
+            }
+            Err(e) => self.notice(client, format!("couldn't delete it: {e}")),
+        }
+    }
+
+    /// `ClientMsg::RevealArtifact`: open the file manager at an artifact's folder.
+    fn reveal_artifact(&mut self, client: ClientId, chat: &str, id: &str) {
+        let Some(dir) = self.artifact_folder(chat, id).and_then(|f| artifact::folder_of(&f, chat, id).ok()) else {
+            self.notice(client, "couldn't find it on disk".into());
+            return;
+        };
+        self.reveal_folder(client, dir);
+    }
+
+    /// Open the file manager at `dir` (on the machine byob runs on).
+    fn reveal_folder(&mut self, client: ClientId, dir: std::path::PathBuf) {
+        let _ = std::fs::create_dir_all(&dir);
+        let (program, args): (&str, Vec<std::ffi::OsString>) = match std::env::consts::OS {
+            "macos" => ("open", vec![dir.into_os_string()]),
+            "windows" => ("explorer", vec![dir.into_os_string()]),
+            _ => ("xdg-open", vec![dir.into_os_string()]),
+        };
+        if let Err(e) = std::process::Command::new(program).args(args).spawn() {
+            self.notice(client, format!("couldn't open the folder: {e}"));
+        }
+    }
+
+    fn archive_chat(&mut self, client: ClientId, chat: &str, archived: bool) {
+        match self.store.archive_chat(chat, archived) {
+            Ok(()) => self.chat_changed(chat),
+            Err(e) => self.notice(client, format!("couldn't archive the chat: {e}")),
         }
     }
 
@@ -1190,10 +1370,23 @@ impl Engine {
             ClientMsg::Undo { entry } => self.undo(id, entry),
             ClientMsg::ListChats { after, limit } => self.send_chats(id, after, usize::try_from(limit).unwrap_or(FIRST_PAGE)),
             ClientMsg::NewChat { workspace } => self.new_chat(id, workspace),
+            ClientMsg::NewUnattachedChat => self.new_unattached_chat(id),
+            ClientMsg::ChatToProject { chat } => self.chat_to_project(id, &chat),
             ClientMsg::OpenChat { id: chat } => self.show_chat(id, Some(chat)),
             ClientMsg::RenameChat { id: chat, title } => self.rename_chat(id, &chat, &title),
             ClientMsg::DeleteChat { id: chat } => self.delete_chat(id, &chat),
             ClientMsg::PinChat { id: chat, pinned } => self.pin_chat(id, &chat, pinned),
+            ClientMsg::ArchiveChat { id: chat, archived } => self.archive_chat(id, &chat, archived),
+            ClientMsg::ListLibrary => self.send_library(id),
+            ClientMsg::GetPluginLogo { plugin } => self.send_plugin_logo(id, plugin),
+            ClientMsg::GetLibraryFile { chat, id: artifact, version } => self.serve_library_file(id, chat, artifact, version),
+            ClientMsg::DeleteArtifact { chat, id: artifact } => self.delete_artifact(id, &chat, &artifact),
+            ClientMsg::RevealArtifact { chat, id: artifact } => self.reveal_artifact(id, &chat, &artifact),
+            ClientMsg::AddLiveFile { path } => self.add_live_file(id, &path),
+            ClientMsg::RevealChatFolder { chat } => match self.store.chat(&chat).ok().flatten() {
+                Some(row) => self.reveal_folder(id, row.workspace),
+                None => self.notice(id, "that chat no longer exists".into()),
+            },
             ClientMsg::Upload { upload, name, size, offset, data, done } => {
                 let workspace = self.client_workspace(id);
                 let chunk = attachments::Chunk { upload, name: &name, size, offset, data: &data, done };
@@ -1205,7 +1398,8 @@ impl Engine {
             ClientMsg::GetArtifact { id: artifact, version } => self.serve_artifact(id, artifact, version),
             ClientMsg::Compact { focus } => self.compact_chat(id, focus),
             ClientMsg::WorkspaceEnv { action, workspace } => self.workspace_env(id, action, workspace),
-            ClientMsg::CreateWorkspace { name, folder, config } => self.create_workspace(id, &name, folder, config),
+            ClientMsg::CreateWorkspace { name, folder, config, folders } => self.create_workspace(id, &name, folder, config, &folders),
+            ClientMsg::SetWorkspaceFolders { id: ws, folders } => self.set_workspace_folders(id, &ws, &folders),
             ClientMsg::RenameWorkspace { id: ws, name } => self.rename_workspace(id, &ws, &name),
             ClientMsg::RemoveWorkspace { id: ws, clean } => self.remove_workspace(id, &ws, clean),
             ClientMsg::GetConfig { scope } => self.send_config(id, scope),
@@ -1260,7 +1454,7 @@ impl Engine {
             Some(id) => match self.workspaces.get(&id) {
                 Some(w) => (Arc::new(w.folder.clone()), self.workspace_plan(&id)),
                 None => {
-                    self.notice(client, "that workspace no longer exists".into());
+                    self.notice(client, "that project no longer exists".into());
                     return;
                 }
             },
@@ -1311,7 +1505,7 @@ impl Engine {
         if let Some(ws) = chat.and_then(|c| self.live(&c).ok().map(|l| Arc::clone(&l.workspace))) {
             return ws;
         }
-        Arc::new(self.new_chat_workspace(client).map_or_else(|| self.default_workspace.clone(), |w| w.folder))
+        Arc::new(self.new_chat_folder(client))
     }
 
     /// Load a chart or image for one client off the engine thread (decoding can take a while).

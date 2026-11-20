@@ -69,7 +69,7 @@ fn turn(c: &mut LocalConnection, text: &str) -> Entry {
 }
 
 fn create(c: &mut LocalConnection, name: &str, folder: &Path, config: Layer) -> String {
-    c.send(ClientMsg::CreateWorkspace { name: name.into(), folder: NewFolder::Existing { path: folder.display().to_string() }, config });
+    c.send(ClientMsg::CreateWorkspace { name: name.into(), folder: NewFolder::Existing { path: folder.display().to_string() }, config, folders: Vec::new() });
     let id = wait(c, |m| if let ServerMsg::WorkspaceCreated { id, error } = m { Some(id.ok_or(error)) } else { None }).unwrap();
     // The creator now looks at a new chat in it.
     let opened = wait(c, |m| if let ServerMsg::ChatOpened { chat: None, workspace } = m { Some(workspace) } else { None });
@@ -185,10 +185,20 @@ fn chats_group_by_their_folder_and_workspaces_can_be_renamed_and_removed() {
     assert!(items.iter().any(|w| w.id == wb && w.name == "Bee"));
 
     // Problems are refused clearly.
-    c.send(ClientMsg::CreateWorkspace { name: "x".into(), folder: NewFolder::Existing { path: "relative".into() }, config: Layer::default() });
+    c.send(ClientMsg::CreateWorkspace {
+        name: "x".into(),
+        folder: NewFolder::Existing { path: "relative".into() },
+        config: Layer::default(),
+        folders: Vec::new(),
+    });
     let err = wait(&mut c, |m| if let ServerMsg::WorkspaceCreated { error, .. } = m { Some(error) } else { None });
     assert!(err.is_some_and(|e| e.contains("full path")));
-    c.send(ClientMsg::CreateWorkspace { name: "again".into(), folder: NewFolder::Existing { path: b.path().display().to_string() }, config: Layer::default() });
+    c.send(ClientMsg::CreateWorkspace {
+        name: "again".into(),
+        folder: NewFolder::Existing { path: b.path().display().to_string() },
+        config: Layer::default(),
+        folders: Vec::new(),
+    });
     let err = wait(&mut c, |m| if let ServerMsg::WorkspaceCreated { error, .. } = m { Some(error) } else { None });
     assert!(err.is_some_and(|e| e.contains("already")));
     let bad = Layer { env: Some(EnvKind::Nix), ..Layer::default() };
@@ -292,4 +302,151 @@ fn a_container_workspace_runs_commands_in_its_container_and_a_chat_can_opt_out()
     assert_eq!(step.status, StepStatus::Done, "{step:?}");
     assert!(step.detail.contains("ran-on-host"), "{}", step.detail);
     assert!(!log.exists(), "docker wasn't called");
+}
+
+#[test]
+fn chats_without_a_project_get_their_own_folder_and_can_become_one() {
+    let home = tempfile::tempdir().unwrap();
+    let started_in = tempfile::tempdir().unwrap();
+    let paths = Paths::at(home.path());
+    let (url, _) = fake_llm(vec![Reply::Text("ok"); 4], "x");
+    let engine = engine(url, Some(paths), Registry::default(), started_in.path());
+    let (mut c, items) = hello(&engine);
+    assert!(items.is_empty(), "nothing is a project yet: {items:?}");
+    // A chat where byob was started makes that folder the default project.
+    turn(&mut c, "Hello");
+    c.send(ClientMsg::NewChat { workspace: None });
+    let default = wait(&mut c, |m| if let ServerMsg::ChatOpened { chat: None, workspace } = m { Some(workspace) } else { None });
+    let default = default.expect("the start folder is a project now");
+    wait(&mut c, |m| matches!(m, ServerMsg::Artifacts { .. }).then_some(()));
+
+    // A chat without a project: opened with no workspace (not the default one), and it
+    // stays without one.
+    c.send(ClientMsg::NewUnattachedChat);
+    let opened = wait(&mut c, |m| if let ServerMsg::ChatOpened { chat: None, workspace } = m { Some(workspace) } else { None });
+    assert_eq!(opened, None);
+    wait(&mut c, |m| matches!(m, ServerMsg::Artifacts { .. }).then_some(()));
+    turn(&mut c, "Sketch a plan");
+    let chat = wait(&mut c, |m| if let ServerMsg::ChatUpdated(s) = m { Some(s) } else { None });
+    assert_eq!(chat.workspace, None, "not registered as a project");
+    // Nothing landed in the folder byob was started in.
+    assert_eq!(std::fs::read_dir(started_in.path()).unwrap().count(), 0);
+
+    // New chat from there: another chat without a project.
+    c.send(ClientMsg::NewChat { workspace: None });
+    let opened = wait(&mut c, |m| if let ServerMsg::ChatOpened { chat: None, workspace } = m { Some(workspace) } else { None });
+    assert_eq!(opened, None);
+    c.send(ClientMsg::OpenChat { id: chat.id.clone() });
+    wait(&mut c, |m| matches!(m, ServerMsg::Artifacts { .. }).then_some(()));
+
+    // Turned into a project: its own folder, named after the chat; the chat belongs to it.
+    c.send(ClientMsg::ChatToProject { chat: chat.id.clone() });
+    let items = wait(&mut c, |m| if let ServerMsg::Workspaces { items, .. } = m { (items.len() == 2).then_some(items) } else { None });
+    let project = items.iter().find(|w| w.id != default).unwrap();
+    assert_eq!(project.name, chat.title);
+    assert!(Path::new(&project.folder).starts_with(home.path()) && project.folder.ends_with(&chat.id), "{}", project.folder);
+    assert!(Path::new(&project.folder).is_dir());
+    let moved = wait(&mut c, |m| if let ServerMsg::ChatUpdated(s) = m { (s.id == chat.id).then_some(s) } else { None });
+    assert_eq!(moved.workspace.as_deref(), Some(project.id.as_str()));
+    // Twice is refused.
+    c.send(ClientMsg::ChatToProject { chat: chat.id.clone() });
+    let notice = wait(&mut c, |m| if let ServerMsg::Notice { text, .. } = m { Some(text) } else { None });
+    assert!(notice.contains("already"), "{notice}");
+}
+
+#[test]
+fn start_empty_makes_a_fresh_folder_named_after_the_project_and_opens_a_chat_in_it() {
+    let home = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let started_in = tempfile::tempdir().unwrap();
+    let (url, _) = fake_llm(vec![Reply::Text("ok")], "x");
+    let mut config = EngineConfig::new(InferenceConfig { base_url: url, model: "m".into(), api_key: None, api: None, ..Default::default() });
+    config.workspace = started_in.path().to_path_buf();
+    config.paths = Some(Paths::at(home.path()));
+    config.workspaces_root = Some(root.path().to_path_buf());
+    config.auto_title = false;
+    config.detect_local = false;
+    let engine = EngineHandle::spawn_with(config).unwrap();
+    let (mut c, _) = hello(&engine);
+
+    c.send(ClientMsg::CreateWorkspace { name: "Data analysis".into(), folder: NewFolder::Create, config: Layer::default(), folders: Vec::new() });
+    // The engine sends the project list first, then says it was made, then opens a chat in it.
+    let items = wait(&mut c, |m| if let ServerMsg::Workspaces { items, .. } = m { (!items.is_empty()).then_some(items) } else { None });
+    let id = wait(&mut c, |m| if let ServerMsg::WorkspaceCreated { id, error } = m { Some(id.ok_or(error)) } else { None }).unwrap();
+    let opened = wait(&mut c, |m| if let ServerMsg::ChatOpened { chat: None, workspace } = m { Some(workspace) } else { None });
+    assert_eq!(opened.as_deref(), Some(id.as_str()));
+    let project = items.iter().find(|w| w.id == id).unwrap();
+    assert_eq!(project.name, "Data analysis");
+    // Its folder is new, empty, and in the projects folder.
+    // (Canonical: on macOS the temp folder is reached through a link.)
+    let root_path = root.path().canonicalize().unwrap();
+    let folder = Path::new(&project.folder);
+    assert!(folder.starts_with(&root_path) && folder.is_dir() && folder.ends_with("data-analysis"), "{}", project.folder);
+    assert_eq!(std::fs::read_dir(folder).unwrap().count(), 0);
+    // A second one with the same name gets a folder of its own, never the first one's.
+    c.send(ClientMsg::CreateWorkspace { name: "Data analysis".into(), folder: NewFolder::Create, config: Layer::default(), folders: Vec::new() });
+    let items = wait(&mut c, |m| if let ServerMsg::Workspaces { items, .. } = m { (items.len() == 2).then_some(items) } else { None });
+    let second = wait(&mut c, |m| if let ServerMsg::WorkspaceCreated { id, error } = m { Some(id.ok_or(error)) } else { None }).unwrap();
+    let other = items.iter().find(|w| w.id == second).unwrap();
+    assert_ne!(other.folder, project.folder);
+    assert!(Path::new(&other.folder).starts_with(&root_path) && other.folder.ends_with("data-analysis-2"), "{}", other.folder);
+}
+
+/// A project beyond one folder: created with a goal (its instructions) and other folders;
+/// the list shows both; the model is told where the folders are; they can be changed, a
+/// folder that doesn't exist changes nothing, and removing the project forgets them.
+#[test]
+fn a_project_has_a_goal_and_more_than_one_folder() {
+    let home = tempfile::tempdir().unwrap();
+    let own = tempfile::tempdir().unwrap();
+    let api = tempfile::tempdir().unwrap();
+    let docs = tempfile::tempdir().unwrap();
+    let (own, api, docs) = (own.path().canonicalize().unwrap(), api.path().canonicalize().unwrap(), docs.path().canonicalize().unwrap());
+    let (url, reqs) = fake_llm(vec![Reply::Text("ok")], "x");
+    let engine = engine(url, Some(Paths::at(home.path())), Registry::default(), home.path());
+    let (mut c, _) = hello(&engine);
+    let goal = Layer { instructions: Some("Ship the vinyl player app by June.".into()), ..Layer::default() };
+    c.send(ClientMsg::CreateWorkspace {
+        name: "Vinyl".into(),
+        folder: NewFolder::Existing { path: own.display().to_string() },
+        config: goal,
+        folders: vec![api.display().to_string()],
+    });
+    // The list goes out first, then the answer.
+    let items = wait(&mut c, |m| if let ServerMsg::Workspaces { items, .. } = m { items.iter().any(|w| w.name == "Vinyl").then_some(items) } else { None });
+    let id = wait(&mut c, |m| if let ServerMsg::WorkspaceCreated { id, error } = m { Some(id.ok_or(error)) } else { None }).unwrap();
+    let w = items.iter().find(|w| w.id == id).unwrap();
+    assert_eq!(w.goal, "Ship the vinyl player app by June.");
+    assert_eq!(w.folders, [api.display().to_string()]);
+    assert_eq!(byob_tools::sandbox::linked(&own), std::slice::from_ref(&api), "the sandbox knows it");
+    wait(&mut c, |m| matches!(m, ServerMsg::Artifacts { .. }).then_some(()));
+    // Its chats are told the goal and where the other folder is.
+    turn(&mut c, "hello");
+    let system = reqs.lock().unwrap()[0]["messages"][0]["content"].as_str().unwrap().to_owned();
+    assert!(system.contains("Ship the vinyl player app by June."), "{system}");
+    assert!(system.contains(&api.display().to_string()), "{system}");
+    // Changed later: another folder added.
+    c.send(ClientMsg::SetWorkspaceFolders { id: id.clone(), folders: vec![api.display().to_string(), docs.display().to_string()] });
+    let items = wait(&mut c, |m| if let ServerMsg::Workspaces { items, .. } = m { Some(items) } else { None });
+    assert_eq!(items.iter().find(|w| w.id == id).unwrap().folders.len(), 2);
+    assert_eq!(byob_tools::sandbox::linked(&own), [api.clone(), docs.clone()]);
+    // A folder that doesn't exist: refused, nothing changed.
+    c.send(ClientMsg::SetWorkspaceFolders { id: id.clone(), folders: vec![own.join("not-there").display().to_string()] });
+    let text = wait(&mut c, |m| if let ServerMsg::Notice { text, .. } = m { Some(text) } else { None });
+    assert!(text.contains("doesn't exist"), "{text}");
+    assert_eq!(byob_tools::sandbox::linked(&own).len(), 2);
+    // A bad folder at creation makes nothing.
+    let other = tempfile::tempdir().unwrap();
+    c.send(ClientMsg::CreateWorkspace {
+        name: "Nope".into(),
+        folder: NewFolder::Existing { path: other.path().display().to_string() },
+        config: Layer::default(),
+        folders: vec!["relative/path".into()],
+    });
+    let err = wait(&mut c, |m| if let ServerMsg::WorkspaceCreated { id: None, error } = m { error } else { None });
+    assert!(err.contains("full path"), "{err}");
+    // Removed: its folders are forgotten by the sandbox.
+    c.send(ClientMsg::RemoveWorkspace { id: id.clone(), clean: false });
+    wait(&mut c, |m| if let ServerMsg::Workspaces { items, .. } = m { (!items.iter().any(|w| w.id == id)).then_some(()) } else { None });
+    assert!(byob_tools::sandbox::linked(&own).is_empty());
 }

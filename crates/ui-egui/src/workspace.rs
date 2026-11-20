@@ -27,6 +27,61 @@ pub const CHAT_FIELDS: &[Field] = &[
     Field::ModelImages,
     Field::Instructions,
 ];
+/// How the chat answers: a name, what it means, and the line put first in the chat's
+/// instructions (empty: as it comes). Kept in the instructions, so any engine honours it;
+/// the editor shows the person's own text without it.
+pub const STYLES: [(&str, &str, &str); 4] = [
+    ("Normal", "As it comes", ""),
+    ("Short", "Brief answers, no extra detail", "Answer style: short. Keep replies brief and to the point; skip background unless asked."),
+    ("Explain more", "Says the why as it goes", "Answer style: explain more. Explain your reasoning and the why behind each step, in plain words."),
+    (
+        "Teach me",
+        "Walks you through it so you learn",
+        "Answer style: teach me. Teach as you go: explain ideas simply, check understanding, and suggest small steps to try.",
+    ),
+];
+
+/// Which style instructions start with, and the person's own text after it.
+pub fn split_style(text: &str) -> (usize, &str) {
+    for (i, (_, _, line)) in STYLES.iter().enumerate().skip(1) {
+        if let Some(rest) = text.strip_prefix(line)
+            && (rest.is_empty() || rest.starts_with('\n'))
+        {
+            return (i, rest.trim_start_matches('\n'));
+        }
+    }
+    (0, text)
+}
+
+/// Instructions from a style and the person's own text (`None` when both are empty).
+pub fn join_style(style: usize, own: &str) -> Option<String> {
+    let line = STYLES.get(style).map_or("", |s| s.2);
+    let own = own.trim();
+    match (line.is_empty(), own.is_empty()) {
+        (true, true) => None,
+        (true, false) => Some(own.to_owned()),
+        (false, true) => Some(line.to_owned()),
+        (false, false) => Some(format!("{line}\n\n{own}")),
+    }
+}
+
+/// A field's name as people say it (the types crate keeps the technical one).
+pub fn plain_label(f: Field) -> &'static str {
+    match f {
+        Field::Endpoint => "Model",
+        Field::Approvals => "Mode",
+        Field::Env => "Commands run on",
+        Field::Image => "Container image",
+        Field::ToolMode => "Tool calling",
+        Field::Compaction => "Shorten long chats",
+        Field::Subagents => "Helpers",
+        Field::SubagentModel => "Helpers' model",
+        Field::ToolCalls => "Steps per reply",
+        Field::ModelImages => "Images it sees",
+        Field::Instructions => "Instructions",
+    }
+}
+
 /// Settings of a workspace.
 pub const WORKSPACE_FIELDS: &[Field] = &[
     Field::Env,
@@ -54,10 +109,23 @@ const IMAGE_QUALITIES: [u8; 5] = [0, 95, 85, 70, 50];
 fn image_quality_label(q: u8) -> String {
     match q {
         0 => "As they are".into(),
-        85 => "JPEG 85 % (light)".into(),
-        q => format!("JPEG {q} %"),
+        85 => "Smaller (JPEG 85%)".into(),
+        q => format!("JPEG {q}%"),
     }
 }
+
+/// What a select shows while it follows the level above: "Default · Ask before changes".
+fn inherit(value: impl std::fmt::Display) -> String {
+    format!("Default · {value}")
+}
+
+/// "On" or "Off".
+fn on_off(on: bool) -> &'static str {
+    if on { "On" } else { "Off" }
+}
+
+/// How full the context gets before a chat is shortened: the choices.
+const COMPACT_AT: [u8; 5] = [50, 60, 70, 80, 90];
 
 fn level_of(scope: &ConfigScope) -> Level {
     match scope {
@@ -110,8 +178,16 @@ pub struct LayerEditor {
     key: String,
     instructions: String,
     image: String,
+    /// The answer style at the start of this level's instructions ([`STYLES`]).
+    style: usize,
+    /// The label column's width when several groups are drawn one under another (the chat
+    /// settings sheet), so their controls line up.
+    pub label_w: f32,
     /// The engine's model profiles (`None`: an engine without them; the endpoint is typed).
     pub profiles: Option<ProfileList>,
+    /// Leave out "default" / "from global settings" beside each control (its select
+    /// already says "Default · …"); Reset still shows where this level sets one.
+    pub quiet: bool,
 }
 
 impl LayerEditor {
@@ -127,7 +203,10 @@ impl LayerEditor {
             key: String::new(),
             instructions: String::new(),
             image: String::new(),
+            style: 0,
+            label_w: 0.0,
             profiles: None,
+            quiet: false,
         }
     }
 
@@ -141,7 +220,9 @@ impl LayerEditor {
         self.url = v.own.base_url.clone().unwrap_or_else(|| v.effective.base_url.value.clone());
         self.model = v.own.model.clone().unwrap_or_else(|| v.effective.model.value.clone());
         self.key.clear();
-        self.instructions = v.own.instructions.clone().unwrap_or_default();
+        let (style, own) = split_style(v.own.instructions.as_deref().unwrap_or_default());
+        self.style = style;
+        self.instructions = own.to_owned();
         self.image = v.own.image.clone().unwrap_or_default();
         self.view = Some(v.clone());
         true
@@ -174,16 +255,17 @@ impl LayerEditor {
         let level = level_of(&self.scope);
         let mut out = None;
         let avail = ui.available_width();
-        let id = egui::Id::unique(("layer", format!("{:?}", self.scope)));
+        let id = egui::Id::unique(("layer", format!("{:?}", self.scope), format!("{:?}", fields.first())));
         // The settings' rhythm (crate::form): the same label column and row gaps as the app settings.
         let grid = crate::form::grid(id, t, avail);
         let grid = if avail < 420.0 { grid.min_col_width(70.0) } else { grid };
+        let grid = if self.label_w > 0.0 { grid.min_col_width(self.label_w) } else { grid };
         grid.show(ui, |ui| {
             for &f in fields {
                 if f == Field::Image && view.effective.env.value != EnvKind::Container || f == Field::Instructions {
                     continue;
                 }
-                ui.label(RichText::new(f.label()).color(t.text));
+                ui.label(RichText::new(plain_label(f)).color(t.text));
                 ui.vertical(|ui| {
                     if let Some(m) = self.field(ui, t, &view, level, f) {
                         out = Some(m);
@@ -195,13 +277,45 @@ impl LayerEditor {
         // Instructions are long text: under the rows, the form's whole width.
         if fields.contains(&Field::Instructions) {
             ui.add_space(t.pad(10.0));
-            ui.label(RichText::new(Field::Instructions.label()).color(t.text));
+            // A project's instructions are its goal: what it's for, which every chat gets.
+            let label = if level == Level::Workspace { "Goal and instructions" } else { Field::Instructions.label() };
+            ui.label(RichText::new(label).color(t.text));
             ui.add_space(t.pad(4.0));
             if let Some(m) = self.field(ui, t, &view, level, Field::Instructions) {
                 out = Some(m);
             }
         }
         out
+    }
+
+    /// "How it answers": the styles as a menu; returns the message that saves a change.
+    pub fn answer_style(&mut self, ui: &mut egui::Ui, t: &Tokens) -> Option<ClientMsg> {
+        self.view.as_ref()?;
+        let mut picked = None;
+        let id = egui::Id::unique(("layer", format!("{:?}", self.scope), "style"));
+        let grid = crate::form::grid(id, t, ui.available_width());
+        let grid = if self.label_w > 0.0 { grid.min_col_width(self.label_w) } else { grid };
+        grid.show(ui, |ui| {
+            ui.label(RichText::new("How it answers").color(t.text));
+            let now = STYLES.get(self.style).map_or("Normal", |s| s.0);
+            crate::form::combo(("answer-style", format!("{:?}", self.scope))).selected_text(now).width(200.0).show_ui(ui, |ui| {
+                for (i, (name, what, _)) in STYLES.iter().enumerate() {
+                    let mut job = egui::text::LayoutJob::default();
+                    let body = egui::TextStyle::Body.resolve(ui.style());
+                    let small = egui::TextStyle::Small.resolve(ui.style());
+                    job.append(name, 0.0, egui::TextFormat::simple(body, t.text_strong));
+                    job.append(&format!("   {what}"), 0.0, egui::TextFormat::simple(small, t.text_dim));
+                    if ui.selectable_label(self.style == i, job).clicked() {
+                        picked = Some(i);
+                    }
+                }
+            });
+            ui.end_row();
+        });
+        let i = picked.filter(|i| *i != self.style)?;
+        self.style = i;
+        self.draft.instructions = join_style(i, &self.instructions);
+        Some(self.send(None))
     }
 
     /// Draw one field's control (and where its value comes from), for pages that lay out
@@ -239,13 +353,14 @@ impl LayerEditor {
             if from == Level::Flag {
                 ui.label(RichText::new("overridden on the command line").small().color(t.warning));
             }
-            let reset = ui.small_button("Reset").on_hover_text(format!("Use the inherited value again (stop setting it per {})", level.label()));
+            let reset =
+                crate::form::button(ui, t, "Reset", true).on_hover_text(format!("Use the inherited value again (stop setting it per {})", level.label()));
             if reset.clicked() {
                 self.draft.reset(f);
                 self.endpoint_open = self.draft.base_url.is_some();
                 return Some(self.send(if f == Field::Endpoint { Some(String::new()) } else { None }));
             }
-        } else if f != Field::Instructions && f != Field::Image && !(level == Level::Global && from == Level::Default) {
+        } else if !self.quiet && f != Field::Instructions && f != Field::Image && !(level == Level::Global && from == Level::Default) {
             ui.label(RichText::new(inherited(from)).small().color(t.text_faint));
         }
         None
@@ -253,8 +368,6 @@ impl LayerEditor {
 
     fn field(&mut self, ui: &mut egui::Ui, t: &Tokens, view: &ConfigView, level: Level, f: Field) -> Option<ClientMsg> {
         let e = &view.effective;
-        // The global level inherits only the built-in defaults.
-        let inh = if level == Level::Global { "Default" } else { "Inherit" };
         if f == Field::Instructions {
             return self.instructions(ui, t, view, level);
         }
@@ -265,8 +378,8 @@ impl LayerEditor {
                 Field::SubagentModel => out = self.subagent_model(ui, t, view),
                 Field::ToolMode => {
                     let mut v = self.draft.tool_mode;
-                    let shown = |m: Option<ToolMode>| m.map_or_else(|| format!("{inh} ({})", e.tool_mode.value.label()), |m| m.label().to_owned());
-                    egui::ComboBox::from_id_salt(("tool_mode", level)).selected_text(shown(v)).show_ui(ui, |ui| {
+                    let shown = |m: Option<ToolMode>| m.map_or_else(|| inherit(e.tool_mode.value.label()), |m| m.label().to_owned());
+                    crate::form::combo(("tool_mode", level)).selected_text(shown(v)).show_ui(ui, |ui| {
                         ui.selectable_value(&mut v, None, shown(None));
                         for m in ToolMode::ALL {
                             ui.selectable_value(&mut v, Some(m), m.label());
@@ -279,8 +392,8 @@ impl LayerEditor {
                 }
                 Field::Approvals => {
                     let mut v = self.draft.approvals;
-                    let shown = |a: Option<Approvals>| a.map_or_else(|| format!("{inh} ({})", e.approvals.value.label()), |a| a.label().to_owned());
-                    egui::ComboBox::from_id_salt(("approvals", level)).selected_text(shown(v)).show_ui(ui, |ui| {
+                    let shown = |a: Option<Approvals>| a.map_or_else(|| inherit(e.approvals.value.label()), |a| a.label().to_owned());
+                    crate::form::combo(("approvals", level)).selected_text(shown(v)).show_ui(ui, |ui| {
                         ui.selectable_value(&mut v, None, shown(None));
                         for a in Approvals::ALL {
                             ui.selectable_value(&mut v, Some(a), a.label());
@@ -292,46 +405,39 @@ impl LayerEditor {
                     }
                 }
                 Field::Compaction => {
-                    let mut auto = self.draft.auto_compact;
-                    let shown = |a: Option<bool>| match a {
-                        None => format!("{inh} ({})", if e.auto_compact.value { "on" } else { "off" }),
-                        Some(true) => "On".into(),
-                        Some(false) => "Off".into(),
+                    // One select for both: off, or on once the context is this full.
+                    let now = (self.draft.auto_compact, self.draft.compact_percent);
+                    let label = |v: (Option<bool>, Option<u8>)| match v {
+                        (None, None) if e.auto_compact.value => inherit(format!("On at {}%", e.compact_percent.value)),
+                        (None, None) => inherit("Off"),
+                        (Some(false), _) => "Off".to_owned(),
+                        (_, p) => format!("On at {}%", p.unwrap_or(e.compact_percent.value)),
                     };
-                    egui::ComboBox::from_id_salt(("compact", level)).width(110.0).selected_text(shown(auto)).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut auto, None, shown(None));
-                        ui.selectable_value(&mut auto, Some(true), "On");
-                        ui.selectable_value(&mut auto, Some(false), "Off");
-                    });
-                    if auto != self.draft.auto_compact {
-                        self.draft.auto_compact = auto;
+                    let mut v = now;
+                    crate::form::combo(("compact", level))
+                        .selected_text(label(v))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut v, (None, None), label((None, None)));
+                            for at in COMPACT_AT {
+                                ui.selectable_value(&mut v, (Some(true), Some(at)), format!("On at {at}%"));
+                            }
+                            ui.selectable_value(&mut v, (Some(false), None), "Off");
+                        })
+                        .response
+                        .on_hover_text("Summarise older messages once a request fills this much of the model's context");
+                    if v != now {
+                        (self.draft.auto_compact, self.draft.compact_percent) = v;
                         out = Some(self.send(None));
-                    }
-                    if e.auto_compact.value || auto == Some(true) {
-                        let mut p = self.draft.compact_percent.unwrap_or(e.compact_percent.value);
-                        let r = ui
-                            .scope(|ui| {
-                                ui.spacing_mut().slider_width = 80.0;
-                                ui.add(egui::Slider::new(&mut p, 10..=95).suffix("%"))
-                            })
-                            .inner
-                            .on_hover_text("Summarise older messages when a request passes this much of the context window");
-                        if (r.drag_stopped() || (r.changed() && !r.dragged())) && Some(p) != self.draft.compact_percent {
-                            self.draft.compact_percent = Some(p);
-                            out = Some(self.send(None));
-                        } else if r.dragged() {
-                            self.draft.compact_percent = Some(p);
-                        }
                     }
                 }
                 Field::Subagents => {
                     let mut v = self.draft.subagents;
                     let shown = |s: Option<bool>| match s {
-                        None => format!("{inh} ({})", if e.subagents.value { "on" } else { "off" }),
+                        None => inherit(on_off(e.subagents.value)),
                         Some(true) => "On".into(),
                         Some(false) => "Off".into(),
                     };
-                    egui::ComboBox::from_id_salt(("subagents", level))
+                    crate::form::combo(("subagents", level))
                         .selected_text(shown(v))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut v, None, shown(None));
@@ -347,8 +453,8 @@ impl LayerEditor {
                 }
                 Field::ToolCalls => {
                     let mut v = self.draft.max_tool_calls;
-                    let shown = |n: Option<u32>| n.map_or_else(|| format!("{inh} ({})", tool_calls_label(e.max_tool_calls.value)), tool_calls_label);
-                    egui::ComboBox::from_id_salt(("tool_calls", level))
+                    let shown = |n: Option<u32>| n.map_or_else(|| inherit(tool_calls_label(e.max_tool_calls.value)), tool_calls_label);
+                    crate::form::combo(("tool_calls", level))
                         .selected_text(shown(v))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut v, None, shown(None));
@@ -365,8 +471,8 @@ impl LayerEditor {
                 }
                 Field::ModelImages => {
                     let mut v = self.draft.image_quality;
-                    let shown = |q: Option<u8>| q.map_or_else(|| format!("{inh} ({})", image_quality_label(e.image_quality.value)), image_quality_label);
-                    egui::ComboBox::from_id_salt(("image_quality", level))
+                    let shown = |q: Option<u8>| q.map_or_else(|| inherit(image_quality_label(e.image_quality.value)), image_quality_label);
+                    crate::form::combo(("image_quality", level))
                         .selected_text(shown(v))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut v, None, shown(None));
@@ -390,11 +496,11 @@ impl LayerEditor {
                     let chat = level == Level::Chat;
                     let mut v = self.draft.env;
                     let shown = |k: Option<EnvKind>| match k {
-                        None if chat => format!("{inh} ({})", e.env.value.label()),
+                        None if chat => inherit(e.env.value.label()),
                         None => "Auto".to_owned(),
                         Some(k) => k.label().to_owned(),
                     };
-                    egui::ComboBox::from_id_salt(("env", level))
+                    crate::form::combo(("env", level))
                         .selected_text(shown(v))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut v, None, shown(None));
@@ -475,9 +581,9 @@ impl LayerEditor {
                     });
             }
             let hint = match level {
-                Level::Global => "Added to the system prompt of every chat",
-                Level::Workspace => "Added to the system prompt of this workspace's chats",
-                _ => "Added to the system prompt of this chat",
+                Level::Global => "What every chat should know",
+                Level::Workspace => "What every chat in this project should know",
+                _ => "What this chat should know",
             };
             // Tall enough for its lines (wrapped ones scroll), 4 to 18 of them.
             let row_h = ui.text_style_height(&egui::TextStyle::Body);
@@ -497,7 +603,7 @@ impl LayerEditor {
                     )
                 })
                 .inner;
-            let text = Some(self.instructions.trim().to_owned()).filter(|s| !s.is_empty());
+            let text = join_style(self.style, &self.instructions);
             if r.lost_focus() && text != self.draft.instructions {
                 self.draft.instructions = text;
                 out = Some(self.send(None));
@@ -530,19 +636,21 @@ impl LayerEditor {
             .chain(&list.items)
             .find(|v| v.profile.points_at(&e.base_url.value, &e.model.value))
             .map_or_else(|| e.model.value.clone(), |v| v.profile.label().to_owned());
+        // A server whose model is literally called "default" reads as its own default.
+        let inherited = if inherited.eq_ignore_ascii_case("default") { "the server's model".to_owned() } else { inherited };
         let typed = own.is_none() && (view.own.base_url.is_some() || view.own.model.is_some());
         let current = match &own {
             Some(id) => list.get(id).map_or_else(|| "A deleted model".to_owned(), |v| named(&v.profile)),
             None if typed => format!("{} · {}", e.model.value, short_url(&e.base_url.value)),
-            None => format!("Inherit ({inherited})"),
+            None => inherit(&inherited),
         };
         let mut out = None;
         ui.vertical(|ui| {
             let mut picked: Option<Option<String>> = None;
             let mut custom = false;
-            let width = ui.available_width().min(300.0);
-            egui::ComboBox::from_id_salt(("profile", format!("{:?}", self.scope))).selected_text(current).width(width).show_ui(ui, |ui| {
-                if ui.selectable_label(own.is_none() && !typed, format!("Inherit ({inherited})")).clicked() {
+            let width = ui.available_width().min(crate::form::SELECT_W);
+            crate::form::combo(("profile", format!("{:?}", self.scope))).selected_text(current).width(width).show_ui(ui, |ui| {
+                if ui.selectable_label(own.is_none() && !typed, inherit(&inherited)).clicked() {
                     picked = Some(None);
                 }
                 for v in &list.items {
@@ -605,20 +713,22 @@ impl LayerEditor {
     fn subagent_model(&mut self, ui: &mut egui::Ui, t: &Tokens, view: &ConfigView) -> Option<ClientMsg> {
         const SAME: &str = "Same as the chat";
         let Some(list) = self.profiles.clone().filter(|l| !l.items.is_empty()) else {
-            ui.label(RichText::new(SAME).color(t.text_dim)).on_hover_text("Save models under Settings → Models to run subagents on another one");
+            // Nothing to choose from: the same box as the others, quiet, saying why.
+            crate::form::static_select(ui, t, SAME, crate::form::SELECT_W.min(ui.available_width()))
+                .on_hover_text("Save models under Settings → Models to run helpers on another one");
             return None;
         };
         let name = |id: &str| list.get(id).map_or_else(|| "A deleted model".to_owned(), |v| v.profile.label().to_owned());
         let own = self.draft.subagent_profile.clone();
         let inherited = match (&own, &view.effective.subagent_profile) {
-            (None, Some(s)) => format!("Inherit ({})", name(&s.value)),
-            (None, None) => format!("Inherit ({})", SAME.to_lowercase()),
-            (Some(_), _) => "Inherit".to_owned(),
+            (None, Some(s)) => inherit(name(&s.value)),
+            (None, None) => inherit(SAME),
+            (Some(_), _) => "Default".to_owned(),
         };
         let mut v = own.clone();
-        egui::ComboBox::from_id_salt(("subagent_model", format!("{:?}", self.scope)))
+        crate::form::combo(("subagent_model", format!("{:?}", self.scope)))
             .selected_text(own.as_deref().map_or_else(|| inherited.clone(), name))
-            .width(ui.available_width().min(260.0))
+            .width(ui.available_width().min(crate::form::SELECT_W))
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut v, None, inherited.clone());
                 for p in &list.items {
@@ -696,34 +806,89 @@ fn slug(name: &str) -> String {
         }
     }
     let s = s.trim_end_matches('-').chars().take(48).collect::<String>();
-    if s.is_empty() { "workspace".into() } else { s }
+    if s.is_empty() { "project".into() } else { s }
+}
+
+/// `path` as [`short_home`] writes it, kept to about `max` characters by dropping folders
+/// from the front: the end (the project's own folder) is the part people look for.
+/// `/very/long/…/projects/alpha` → `…/projects/alpha`.
+pub fn short_path(path: &str, max: usize) -> String {
+    let short = short_home(path);
+    if short.chars().count() <= max {
+        return short;
+    }
+    let parts: Vec<&str> = short.split(['/', '\\']).filter(|p| !p.is_empty()).collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut len = 1;
+    for part in parts.iter().rev() {
+        let n = part.chars().count() + 1;
+        if !kept.is_empty() && len + n > max {
+            break;
+        }
+        kept.push(part);
+        len += n;
+    }
+    kept.reverse();
+    let tail = kept.join("/");
+    // One folder longer than everything: its end.
+    if tail.chars().count() > max {
+        let skip = tail.chars().count() - max.saturating_sub(1);
+        return format!("…{}", tail.chars().skip(skip).collect::<String>());
+    }
+    format!("…/{tail}")
 }
 
 /// The last part of a folder path (`/home/me/Projects/Alpha/` → `Alpha`): a new
 /// workspace's name until the user types one.
+/// `path` with the home folder written `~`, as people read it. The browser UI can't ask
+/// where home is, so the usual home folders (`/Users/<name>`, `/home/<name>`,
+/// `C:\Users\<name>`) are recognised by their shape too.
+pub fn short_home(path: &str) -> String {
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
+    let home = home.trim_end_matches(['/', '\\']);
+    if let Some(rest) = path.strip_prefix(home).filter(|r| !home.is_empty() && (r.is_empty() || r.starts_with(['/', '\\']))) {
+        return format!("~{rest}");
+    }
+    let parts: Vec<&str> = path.split(['/', '\\']).collect();
+    let user_root = match parts.as_slice() {
+        ["", "Users" | "home", _, ..] => Some(3),
+        [drive, "Users", _, ..] if drive.ends_with(':') => Some(3),
+        _ => None,
+    };
+    match user_root.filter(|&n| parts.len() >= n) {
+        Some(n) if parts.len() == n => "~".to_owned(),
+        Some(n) => format!("~/{}", parts[n..].join("/")),
+        None => path.to_owned(),
+    }
+}
+
 pub fn folder_name(path: &str) -> String {
     path.trim().trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or_default().to_owned()
 }
 
-/// Where a new workspace's folder comes from: the one decision the form asks for.
+/// Where a new project's own folder comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    /// Not chosen yet.
-    Choose,
-    /// A folder that exists (or is made) where the user says.
+    /// The first folder the person added: chats work there.
     Folder,
-    /// A fresh folder under the workspaces folder.
+    /// None added: byob makes one for it in its projects folder.
     Empty,
 }
 
-/// "New workspace": which folder (one you have, or a fresh one); its name defaults to the
-/// folder's. Where its commands run waits under Advanced (Auto unless changed).
+/// Longest goal the form takes (it becomes the project's instructions).
+const MAX_GOAL: usize = 4000;
+
+/// "New project": its name, the instructions every chat in it gets (its
+/// goal: the instructions every chat in it gets), and the folders it works in, if any. With
+/// none, byob keeps its files in a folder of its own. Where commands run waits under
+/// Advanced (Auto unless changed).
 pub struct NewWorkspaceForm {
     pub name: String,
-    /// The user typed the name: picking another folder keeps it.
+    /// The user typed the name: adding a folder doesn't rename it.
     name_edited: bool,
-    pub source: Source,
-    pub path: String,
+    pub goal: String,
+    /// Folders it works in; the first is where its chats run.
+    pub folders: Vec<String>,
     browser: Option<FolderList>,
     browsing: bool,
     pub env: EnvKind,
@@ -737,6 +902,10 @@ pub struct NewWorkspaceForm {
     error: Option<String>,
     /// Put the keyboard in the name field on the next frame.
     focus_name: bool,
+    /// Open the system's folder picker on the next frame (started from "From a folder").
+    pick_now: bool,
+    /// Enter was pressed in the name (the buttons, drawn after, act on it).
+    enter: bool,
     #[cfg(not(target_arch = "wasm32"))]
     picked: (std::sync::mpsc::Sender<Option<String>>, std::sync::mpsc::Receiver<Option<String>>),
 }
@@ -746,8 +915,8 @@ impl Default for NewWorkspaceForm {
         Self {
             name: String::new(),
             name_edited: false,
-            source: Source::Choose,
-            path: String::new(),
+            goal: String::new(),
+            folders: Vec::new(),
             browser: None,
             browsing: false,
             env: EnvKind::Auto,
@@ -758,7 +927,9 @@ impl Default for NewWorkspaceForm {
             checking: false,
             creating: false,
             error: None,
-            focus_name: false,
+            focus_name: true,
+            pick_now: false,
+            enter: false,
             #[cfg(not(target_arch = "wasm32"))]
             picked: std::sync::mpsc::channel(),
         }
@@ -773,35 +944,54 @@ pub struct FormOutput {
 }
 
 impl NewWorkspaceForm {
-    /// Start with an environment chosen (scripted runs): another than Auto starts empty,
-    /// with Advanced open on it.
+    /// Start with an environment chosen (scripted runs): another than Auto opens Advanced.
     pub fn with_env(env: EnvKind) -> Self {
-        let other = env != EnvKind::Auto;
-        Self { env, advanced: other, source: if other { Source::Empty } else { Source::Choose }, ..Self::default() }
+        Self { env, advanced: env != EnvKind::Auto, ..Self::default() }
     }
 
     /// Start on a folder (dropped on the window, or scripted): named after it.
     pub fn with_folder(path: &str) -> Self {
-        let mut f = Self { source: Source::Folder, ..Self::default() };
-        f.set_path(path);
+        let mut f = Self::default();
+        f.add_folder(path);
         f
     }
 
-    /// The folder changed (picked, browsed, typed): the name follows it until typed.
-    pub fn set_path(&mut self, path: &str) {
-        path.clone_into(&mut self.path);
-        if !self.name_edited {
+    /// Start one way: from a folder (the picker opens straight away on the desktop), or
+    /// with the keyboard in the name.
+    pub fn with_start(start: crate::projects::Start) -> Self {
+        match start {
+            crate::projects::Start::Link => Self { pick_now: true, focus_name: false, ..Self::default() },
+            crate::projects::Start::Choose | crate::projects::Start::Empty => Self::default(),
+        }
+    }
+
+    /// Where its own folder comes from.
+    pub fn source(&self) -> Source {
+        if self.folders.is_empty() { Source::Empty } else { Source::Folder }
+    }
+
+    /// Nothing typed or added yet: closing loses nothing.
+    pub fn untouched(&self) -> bool {
+        self.name.trim().is_empty() && self.goal.trim().is_empty() && self.folders.is_empty()
+    }
+
+    /// Add a folder (picked, browsed, dropped). The first names the project until a name is
+    /// typed; a repeat or an empty path is ignored; at most [`MAX_LINKED_FOLDERS`] besides
+    /// the first.
+    pub fn add_folder(&mut self, path: &str) {
+        let path = path.trim();
+        if path.is_empty() || self.folders.iter().any(|f| f == path) || self.folders.len() > byob_protocol::workspace::MAX_LINKED_FOLDERS {
+            return;
+        }
+        if self.folders.is_empty() && !self.name_edited {
             self.name = folder_name(path);
         }
+        self.folders.push(path.to_owned());
     }
 
     fn apply(&mut self, msg: &ServerMsg) -> bool {
         match msg {
             ServerMsg::Folders(list) => {
-                if list.error.is_none() {
-                    let path = list.path.clone();
-                    self.set_path(&path);
-                }
                 self.browser = Some(list.clone());
                 self.browsing = false;
             }
@@ -818,34 +1008,31 @@ impl NewWorkspaceForm {
         true
     }
 
-    /// The layer the new workspace starts with.
+    /// The layer the new project starts with: its goal is its instructions.
     fn layer(&self) -> Layer {
         Layer {
+            instructions: Some(self.goal.trim().to_owned()).filter(|g| !g.is_empty()),
             env: Some(self.env).filter(|e| *e != EnvKind::Auto),
             image: Some(self.image.trim().to_owned()).filter(|i| self.env == EnvKind::Container && self.use_image && !i.is_empty()),
             ..Layer::default()
         }
     }
 
-    /// Create was pressed: the message for the engine.
+    /// Create was pressed: the message for the engine. The first folder is its own (chats
+    /// run there); the others are linked. No folder: byob makes one.
     pub fn create_msg(&mut self) -> ClientMsg {
         self.creating = true;
         self.error = None;
-        let folder = match self.source {
-            Source::Folder => NewFolder::Existing { path: self.path.trim().to_owned() },
-            Source::Empty | Source::Choose => NewFolder::Create,
+        let folder = match self.folders.first() {
+            Some(f) => NewFolder::Existing { path: f.clone() },
+            None => NewFolder::Create,
         };
-        ClientMsg::CreateWorkspace { name: self.name.trim().to_owned(), folder, config: self.layer() }
+        let folders = self.folders.iter().skip(1).cloned().collect();
+        ClientMsg::CreateWorkspace { name: self.name.trim().to_owned(), folder, config: self.layer(), folders }
     }
 
     /// Why Create can't be pressed yet, if so.
     fn problem(&self, support: &EnvSupport) -> Option<String> {
-        if self.source == Source::Choose {
-            return Some("Open a folder, or start empty.".into());
-        }
-        if self.source == Source::Folder && self.path.trim().is_empty() {
-            return Some("Pick a folder.".into());
-        }
         if self.name.trim().is_empty() {
             return Some("Give it a name.".into());
         }
@@ -860,167 +1047,174 @@ impl NewWorkspaceForm {
         None
     }
 
+    /// The whole form: its fields, then its buttons (tests, and anywhere it isn't split).
     pub fn show(&mut self, ui: &mut egui::Ui, t: &Tokens, root: &str, support: &EnvSupport) -> FormOutput {
+        let mut out = self.body(ui, t, root, support);
+        let actions = self.actions(ui, t, support);
+        out.msgs.extend(actions.msgs);
+        out.close |= actions.close;
+        out
+    }
+
+    /// Its fields (they scroll when the window is short; the buttons stay in view). One
+    /// rhythm: label, 6 points, field, its help under it, 20 points to the next group.
+    pub fn body(&mut self, ui: &mut egui::Ui, t: &Tokens, root: &str, support: &EnvSupport) -> FormOutput {
         let mut out = FormOutput::default();
         #[cfg(not(target_arch = "wasm32"))]
         while let Ok(p) = self.picked.1.try_recv() {
             if let Some(p) = p {
-                self.set_path(&p);
+                self.add_folder(&p);
                 self.browser = None;
-                self.focus_name = true;
             }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::mem::take(&mut self.pick_now) && crate::export::dialog_unavailable_reason().is_none() {
+            pick_folder(ui.ctx(), self.picked.0.clone());
         }
         let field_w = ui.available_width().min(520.0);
-        ui.label(
-            RichText::new("A workspace is a folder byob works in, with its own settings. Its chats can read and change the files there.").color(t.text_dim),
+        ui.spacing_mut().item_spacing.y = 0.0;
+        // Its name: the field says what it is, a folder at its start.
+        let name_id = egui::Id::unique("new-project-name");
+        let name = form_field_margin(ui, t, name_id, egui::Margin { left: 40, right: 12, top: 11, bottom: 11 }, |frame| {
+            egui::TextEdit::singleline(&mut self.name).id(name_id).hint_text("Project name").char_limit(80).desired_width(field_w).frame(frame)
+        });
+        crate::icons::folder(
+            ui.painter(),
+            egui::Rect::from_center_size(egui::pos2(name.rect.left() + 20.0, name.rect.center().y), egui::vec2(16.0, 16.0)),
+            t.text_dim,
         );
-        ui.add_space(10.0);
-        // The one decision: which folder.
-        let root_shown = if root.is_empty() { "~/byob-workspaces".to_owned() } else { root.trim_end_matches('/').to_owned() };
-        let cards = [
-            (Source::Folder, crate::icons::folder as crate::icons::Paint, "Open a folder…", "A folder you already have".to_owned()),
-            (Source::Empty, crate::icons::folder_plus, "Start empty", format!("New folder in {}", folder_name(&root_shown))),
-        ];
-        let side_by_side = field_w >= 400.0;
-        let card_w = if side_by_side { (field_w - 8.0) / 2.0 } else { field_w };
-        let mut clicked = None;
-        let draw_cards = |ui: &mut egui::Ui, clicked: &mut Option<Source>| {
-            for (source, icon, title, sub) in &cards {
-                if choice_card(ui, t, card_w, self.source == *source, *icon, title, sub).clicked() {
-                    *clicked = Some(*source);
-                }
-            }
-        };
-        if side_by_side {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                draw_cards(ui, &mut clicked);
-            });
-        } else {
-            ui.vertical(|ui| draw_cards(ui, &mut clicked));
+        if std::mem::take(&mut self.focus_name) {
+            name.request_focus();
         }
-        match clicked {
-            Some(Source::Folder) => {
-                self.source = Source::Folder;
-                // On the desktop the system's folder dialog opens straight away.
-                #[cfg(not(target_arch = "wasm32"))]
-                if crate::export::dialog_unavailable_reason().is_none() {
-                    pick_folder(ui.ctx(), self.picked.0.clone());
-                }
-            }
-            Some(Source::Empty) => {
-                self.source = Source::Empty;
-                self.focus_name = true;
-            }
-            _ => {}
+        if name.changed() {
+            self.name_edited = !self.name.trim().is_empty();
         }
-        ui.add_space(10.0);
-        let label_w = 64.0;
-        let mut enter = false;
-        match self.source {
-            Source::Choose => {}
-            Source::Folder => {
-                form_row(ui, t, label_w, field_w, "Folder", |ui| {
-                    // The buttons on the right; the path takes the rest.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Browse…").on_hover_text("List folders on the machine byob runs on").clicked() {
-                            self.browsing = true;
-                            let path = Some(self.path.trim().to_owned()).filter(|p| !p.is_empty());
-                            out.msgs.push(ClientMsg::ListFolders { path });
-                        }
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if crate::export::dialog_unavailable_reason().is_none() && ui.button("Choose…").on_hover_text("The system's folder dialog").clicked()
-                        {
-                            pick_folder(ui.ctx(), self.picked.0.clone());
-                        }
-                        let before = self.path.clone();
-                        let mut path = self.path.clone();
-                        ui.add(egui::TextEdit::singleline(&mut path).hint_text("/home/me/project").desired_width(ui.available_width()));
-                        if path != before {
-                            self.set_path(&path);
-                        }
-                    });
-                });
-                if self.browsing {
-                    theme::spinner(ui, t, None);
-                }
-                if let Some(list) = self.browser.clone()
-                    && let Some(go) = browser(ui, t, &list, field_w)
-                {
-                    match go {
-                        Some(path) => {
-                            self.browsing = true;
-                            out.msgs.push(ClientMsg::ListFolders { path: Some(path) });
-                        }
-                        None => {
-                            self.browser = None;
-                            self.focus_name = true;
-                        }
-                    }
-                }
-                ui.add_space(4.0);
-                enter = self.name_row(ui, t, label_w, field_w, "Named after the folder");
-            }
-            Source::Empty => {
-                enter = self.name_row(ui, t, label_w, field_w, "e.g. Data analysis");
-                form_row(ui, t, label_w, field_w, "", |ui| {
-                    ui.label(RichText::new(format!("{root_shown}/{}", slug(&self.name))).small().monospace().color(t.text_faint));
-                });
-            }
+        self.enter |= name.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.add_space(20.0);
+        // What every chat in it should know: added to each one's instructions.
+        form_label(ui, t, "Instructions", true);
+        let goal_id = egui::Id::unique("new-project-goal");
+        form_field(ui, t, goal_id, |frame| {
+            egui::TextEdit::multiline(&mut self.goal)
+                .id(goal_id)
+                .hint_text("What every chat in this project should know")
+                .char_limit(MAX_GOAL)
+                .desired_rows(3)
+                .desired_width(field_w)
+                .frame(frame)
+        });
+        ui.add_space(20.0);
+        // The folders it works in, if any.
+        form_label(ui, t, "Folders", true);
+        self.folder_list(ui, t, root, field_w, &mut out);
+        ui.add_space(16.0);
+        // Where commands run, folded: most people never change it.
+        if advanced_row(ui, t, self.advanced, self.env.label()).clicked() {
+            self.advanced = !self.advanced;
         }
-        if self.source != Source::Choose {
+        if self.advanced {
             ui.add_space(8.0);
-            let summary = format!("Advanced  ·  commands run: {}", self.env.label());
-            let header = egui::CollapsingHeader::new(RichText::new(summary).color(t.text_dim))
-                .id_salt("new-workspace-advanced")
-                .open(Some(self.advanced))
-                .show(ui, |ui| {
-                    self.advanced_rows(ui, t, support, field_w, &mut out);
-                });
-            if header.header_response.clicked() {
-                self.advanced = !self.advanced;
-            }
+            ui.spacing_mut().item_spacing.y = 4.0;
+            self.advanced_rows(ui, t, support, field_w, &mut out);
         }
-        ui.add_space(12.0);
+        out
+    }
+
+    /// Why it can't be made yet (if so), then Cancel and Create project.
+    pub fn actions(&mut self, ui: &mut egui::Ui, t: &Tokens, support: &EnvSupport) -> FormOutput {
+        let mut out = FormOutput::default();
+        let enter = std::mem::take(&mut self.enter);
+        ui.add_space(20.0);
         let problem = self.problem(support);
         if let Some(e) = &self.error {
-            ui.label(RichText::new(e).color(t.danger));
+            ui.add(egui::Label::new(RichText::new(e).size(t.text_size(12.0)).color(t.danger)).wrap());
+            ui.add_space(8.0);
         }
-        ui.horizontal(|ui| {
+        // The action on the right, Cancel beside it (as desktop dialogs do).
+        let h = (ui.text_style_height(&egui::TextStyle::Button) + 18.0).max(36.0).ceil();
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), h + 4.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
             let can = problem.is_none() && !self.creating;
-            if self.source != Source::Choose {
-                let label = RichText::new("Create workspace").color(if can { t.on_accent } else { t.text_dim });
-                let create = ui.add_enabled(can, egui::Button::new(label).fill(if can { t.accent } else { t.button_bg }));
-                let create = match &problem {
-                    Some(p) => create.on_disabled_hover_text(p),
-                    None => create.on_hover_text("Then a new chat opens in it"),
-                };
-                if create.clicked() || (enter && can) {
-                    out.msgs.push(self.create_msg());
-                }
+            let create = dialog_button(ui, t, "Create project", true, can, h);
+            let create = match &problem {
+                Some(p) => create.on_hover_text(p.as_str()),
+                None => create.on_hover_text("Creates it and opens a new chat in it"),
+            };
+            if can && (create.clicked() || enter) {
+                out.msgs.push(self.create_msg());
             }
-            if ui.button("Cancel").clicked() {
+            if dialog_button(ui, t, "Cancel", false, true, h).clicked() {
                 out.close = true;
             }
             if self.creating {
                 theme::spinner(ui, t, None);
             }
         });
+        // Room under the buttons: the scroll area around the form clips at its content's edge.
+        ui.add_space(4.0);
         out
     }
 
-    /// "Name [field]"; returns whether Enter was pressed in it.
-    fn name_row(&mut self, ui: &mut egui::Ui, t: &Tokens, label_w: f32, field_w: f32, hint: &str) -> bool {
-        form_row(ui, t, label_w, field_w, "Name", |ui| {
-            let name = ui.add(egui::TextEdit::singleline(&mut self.name).hint_text(hint).desired_width(ui.available_width()));
-            if std::mem::take(&mut self.focus_name) {
-                name.request_focus();
+    /// The folders it works in: what they're for, each one (the first is where its chats
+    /// run) with a way to take it off, then one Add folder button (the system's dialog; the
+    /// engine's folder list where there's none, as in the browser).
+    fn folder_list(&mut self, ui: &mut egui::Ui, t: &Tokens, root: &str, width: f32, out: &mut FormOutput) {
+        let root_shown = if root.is_empty() { "~/byob-workspaces".to_owned() } else { root.trim_end_matches('/').to_owned() };
+        let leaf = if self.name.trim().is_empty() { "<name>".to_owned() } else { slug(&self.name) };
+        let mut remove = None;
+        for (i, f) in self.folders.iter().enumerate() {
+            if folder_row(ui, t, f, width, i == 0, true) {
+                remove = Some(i);
             }
-            if name.changed() {
-                self.name_edited = !self.name.trim().is_empty();
+            ui.add_space(6.0);
+        }
+        if let Some(i) = remove {
+            self.folders.remove(i);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = crate::export::dialog_unavailable_reason().is_none();
+        #[cfg(target_arch = "wasm32")]
+        let native = false;
+        let mut add = false;
+        if self.folders.is_empty() {
+            // None yet: one quiet box that says what to do, with its button.
+            add = empty_folders(ui, t, width).on_hover_text(format!("Without a folder, byob keeps its files in {root_shown}/{leaf}")).clicked();
+        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if !self.folders.is_empty() {
+                add = small_button(ui, t, crate::icons::folder_plus, "Add another").on_hover_text("Its files stay where they are").clicked();
             }
-            name.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
-        })
+            if add {
+                #[cfg(not(target_arch = "wasm32"))]
+                if native {
+                    pick_folder(ui.ctx(), self.picked.0.clone());
+                }
+                if !native {
+                    self.browsing = true;
+                    out.msgs.push(ClientMsg::ListFolders { path: self.folders.last().cloned() });
+                }
+            }
+            if self.browsing {
+                theme::spinner(ui, t, None);
+            }
+        });
+        if let Some(list) = self.browser.clone()
+            && let Some(go) = browser(ui, t, &list, width)
+        {
+            match go {
+                Some(path) => {
+                    self.browsing = true;
+                    out.msgs.push(ClientMsg::ListFolders { path: Some(path) });
+                }
+                None => {
+                    if list.error.is_none() {
+                        self.add_folder(&list.path);
+                    }
+                    self.browser = None;
+                }
+            }
+        }
     }
 
     /// Where commands run: one aligned row per choice (radio, icon, name), what it means,
@@ -1085,59 +1279,6 @@ impl NewWorkspaceForm {
     }
 }
 
-/// A form line: `label` in a left-aligned column `label_w` wide, then `add` filling the
-/// rest of `width`.
-fn form_row<R>(ui: &mut egui::Ui, t: &Tokens, label_w: f32, width: f32, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let h = crate::icons::button_height(ui);
-    ui.allocate_ui_with_layout(vec2(width, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.allocate_ui_with_layout(vec2(label_w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.set_width(label_w);
-            ui.label(RichText::new(label).color(t.text));
-        });
-        add(ui)
-    })
-    .inner
-}
-
-/// One of the form's two big choices: an icon, a title and a line under it.
-fn choice_card(ui: &mut egui::Ui, t: &Tokens, width: f32, selected: bool, icon: crate::icons::Paint, title: &str, sub: &str) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 58.0), egui::Sense::click());
-    if ui.is_rect_visible(rect) {
-        let p = ui.painter();
-        let fill = if resp.is_pointer_button_down_on() {
-            t.pressed
-        } else if selected {
-            t.selection
-        } else if resp.hovered() {
-            t.hover
-        } else {
-            t.button_bg
-        };
-        let stroke = egui::Stroke::new(1.0, if selected { t.accent } else { t.border });
-        p.rect(rect, t.round(8.0), fill, stroke, egui::StrokeKind::Inside);
-        let icon_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 14.0 + 10.0, rect.center().y), vec2(20.0, 20.0));
-        icon(p, icon_rect, if selected || resp.hovered() { t.text_strong } else { t.text_dim });
-        let x = icon_rect.right() + 12.0;
-        let w = (rect.right() - 10.0 - x).max(10.0);
-        let title_font = egui::FontId::new(egui::TextStyle::Button.resolve(ui.style()).size, theme::bold_or_regular(ui.ctx()));
-        let mut job =
-            egui::text::LayoutJob::single_section(title.to_owned(), egui::TextFormat { font_id: title_font, color: t.text_strong, ..Default::default() });
-        job.wrap = egui::text::TextWrapping::truncate_at_width(w);
-        let title = p.layout_job(job);
-        let mut job = egui::text::LayoutJob::single_section(
-            sub.to_owned(),
-            egui::TextFormat { font_id: egui::TextStyle::Small.resolve(ui.style()), color: t.text_dim, ..Default::default() },
-        );
-        job.wrap = egui::text::TextWrapping::truncate_at_width(w);
-        let sub = p.layout_job(job);
-        let top = rect.center().y - (title.size().y + 2.0 + sub.size().y) / 2.0;
-        let title_h = title.size().y;
-        p.galley(egui::pos2(x, top), title, t.text_strong);
-        p.galley(egui::pos2(x, top + title_h + 2.0), sub, t.text_dim);
-    }
-    resp
-}
-
 /// One "where commands run" choice: a radio dot, the environment's icon and its name, all
 /// on one line (the whole row is the click target).
 fn env_row(ui: &mut egui::Ui, t: &Tokens, width: f32, kind: EnvKind, on: bool) -> egui::Response {
@@ -1159,6 +1300,184 @@ fn env_row(ui: &mut egui::Ui, t: &Tokens, width: f32, kind: EnvKind, on: bool) -
         p.galley(egui::pos2(icon.right() + 8.0, rect.center().y - label.size().y / 2.0), label, color);
     }
     resp.on_hover_text(env_help(kind))
+}
+
+/// A form field's label: 13 points, strong; "optional" faint beside it.
+fn form_label(ui: &mut egui::Ui, t: &Tokens, text: &str, optional: bool) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(RichText::new(text).size(t.text_size(13.0)).color(t.text_strong));
+        if optional {
+            ui.label(RichText::new("optional").size(t.text_size(12.0)).color(t.text_faint));
+        }
+    });
+    ui.add_space(6.0);
+}
+
+/// No folders yet: an outlined box, "Add a folder on this computer" and an Add pill. The
+/// whole box is the button.
+fn empty_folders(ui: &mut egui::Ui, t: &Tokens, width: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 104.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let edge = if resp.hovered() { t.text_faint } else { t.field_border };
+        p.rect_stroke(rect, t.round(crate::form::CONTROL_R + 2.0), egui::Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        let g = p.layout_no_wrap("Add a folder on this computer".to_owned(), body.clone(), t.text_dim);
+        p.galley(egui::pos2(rect.center().x - g.size().x / 2.0, rect.top() + 24.0), g, t.text_dim);
+        let label = p.layout_no_wrap("Add".to_owned(), body, t.text);
+        let pill = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 68.0), egui::vec2(label.size().x + 50.0, 32.0));
+        p.rect_filled(pill, pill.height() / 2.0, if resp.hovered() { crate::form::soft_hover(t) } else { crate::form::soft(t) });
+        crate::icons::folder_plus(p, egui::Rect::from_center_size(egui::pos2(pill.left() + 20.0, pill.center().y), egui::vec2(15.0, 15.0)), t.text);
+        p.galley(egui::pos2(pill.left() + 32.0, pill.center().y - label.size().y / 2.0), label, t.text);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A text field in the form's style: the field colours, a 1-point border and 8-point corners;
+/// focused, an accent border and a soft accent ring around it (no heavy outline).
+pub(crate) fn form_field<'t>(ui: &mut egui::Ui, t: &Tokens, id: egui::Id, edit: impl FnOnce(egui::Frame) -> egui::TextEdit<'t>) -> egui::Response {
+    form_field_margin(ui, t, id, egui::Margin::symmetric(12, 9), edit)
+}
+
+/// [`form_field`] with its own inner margins (room for an icon inside it).
+pub(crate) fn form_field_margin<'t>(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    id: egui::Id,
+    margin: egui::Margin,
+    edit: impl FnOnce(egui::Frame) -> egui::TextEdit<'t>,
+) -> egui::Response {
+    let focused = ui.memory(|m| m.has_focus(id));
+    let radius = t.round(crate::form::CONTROL_R);
+    let frame = egui::Frame::new()
+        .fill(t.field_bg)
+        .stroke(egui::Stroke::new(1.0, if focused { t.accent } else { t.field_border }))
+        .corner_radius(radius)
+        .inner_margin(margin);
+    let r = ui.add(edit(frame));
+    if focused {
+        ui.painter().rect_stroke(r.rect.expand(2.0), radius + 2.0, egui::Stroke::new(3.0, t.accent.gamma_multiply(0.22)), egui::StrokeKind::Outside);
+    }
+    r
+}
+
+/// One folder of the project: its icon, its path (shortened from the front; in full on
+/// hover), "Chats start here" on the first, and × to take it off. Returns whether × was
+/// clicked.
+fn folder_row(ui: &mut egui::Ui, t: &Tokens, path: &str, width: f32, first: bool, removable: bool) -> bool {
+    let h = 40.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, h), egui::Sense::hover());
+    let radius = t.round(crate::form::CONTROL_R);
+    ui.painter().rect(rect, radius, t.field_bg, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+    crate::icons::folder(ui.painter(), egui::Rect::from_center_size(egui::pos2(rect.left() + 20.0, rect.center().y), egui::vec2(16.0, 16.0)), t.text_dim);
+    let x_rect = if removable {
+        egui::Rect::from_center_size(egui::pos2(rect.right() - 20.0, rect.center().y), egui::vec2(26.0, 26.0))
+    } else {
+        egui::Rect::from_min_max(egui::pos2(rect.right() - 4.0, rect.top()), rect.max)
+    };
+    let x = ui.interact(x_rect, egui::Id::unique(("folder-row-x", path)), if removable { egui::Sense::click() } else { egui::Sense::hover() });
+    if removable {
+        if x.hovered() {
+            ui.painter().rect_filled(x_rect, t.round(6.0), t.hover);
+        }
+        crate::icons::cross(ui.painter(), x_rect.shrink(7.0), if x.hovered() { t.text_strong } else { t.text_dim });
+    }
+    let small = egui::FontId::proportional(t.text_size(12.0));
+    let note = first.then(|| ui.painter().layout_no_wrap("Chats start here".to_owned(), small, t.text_faint));
+    let note_w = note.as_ref().map_or(0.0, |g| g.size().x + 12.0);
+    if let Some(g) = note {
+        let gy = rect.center().y - g.size().y / 2.0;
+        ui.painter().galley(egui::pos2(x_rect.left() - 8.0 - g.size().x, gy), g, t.text_faint);
+    }
+    // The folder's own name first (what people recognise), where it is after it, dimmer;
+    // whatever doesn't fit goes from the end of the location, never from the name.
+    let left = rect.left() + 38.0;
+    let room = (x_rect.left() - 8.0 - note_w - left).max(20.0);
+    let name = folder_name(path);
+    let parent = path.trim_end_matches(['/', '\\']).strip_suffix(name.as_str()).unwrap_or_default().trim_end_matches(['/', '\\']);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&name, 0.0, egui::TextFormat::simple(egui::TextStyle::Body.resolve(ui.style()), t.text_strong));
+    if !parent.is_empty() {
+        job.append(&format!("  {}", short_path(parent, 40)), 0.0, egui::TextFormat::simple(egui::FontId::proportional(t.text_size(12.0)), t.text_faint));
+    }
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+    let g = ui.painter().layout_job(job);
+    let gy = rect.center().y - g.size().y / 2.0;
+    ui.painter().galley(egui::pos2(left, gy), g, t.text);
+    let tip = ui.interact(
+        egui::Rect::from_min_max(rect.min, egui::pos2(x_rect.left() - 4.0, rect.max.y)),
+        egui::Id::unique(("folder-row", path)),
+        egui::Sense::hover(),
+    );
+    tip.on_hover_text(path);
+    removable && x.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Take it off this project (the folder stays)").clicked()
+}
+
+/// A small outlined button with an icon (Add folder…).
+fn small_button(ui: &mut egui::Ui, t: &Tokens, icon: crate::icons::Paint, label: &str) -> egui::Response {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let g = ui.painter().layout_no_wrap(label.to_owned(), font, t.text);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(g.size().x + 44.0, 34.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fill = if resp.is_pointer_button_down_on() {
+            t.pressed
+        } else if resp.hovered() {
+            t.hover
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        ui.painter().rect(rect, t.round(crate::form::CONTROL_R), fill, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+        icon(ui.painter(), egui::Rect::from_center_size(egui::pos2(rect.left() + 20.0, rect.center().y), egui::vec2(15.0, 15.0)), t.text_dim);
+        let gy = rect.center().y - g.size().y / 2.0;
+        ui.painter().galley(egui::pos2(rect.left() + 34.0, gy), g, t.text);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// "Advanced", folded: a caret, the word, and what's set there now, faint on the right.
+fn advanced_row(ui: &mut egui::Ui, t: &Tokens, open: bool, env: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        if resp.hovered() {
+            ui.painter().rect_filled(rect, t.round(6.0), t.hover);
+        }
+        let color = if resp.hovered() { t.text_strong } else { t.text_dim };
+        crate::icons::chevron(ui.painter(), egui::Rect::from_center_size(egui::pos2(rect.left() + 10.0, rect.center().y), egui::vec2(12.0, 12.0)), open, color);
+        let g = ui.painter().layout_no_wrap("Advanced".to_owned(), egui::TextStyle::Body.resolve(ui.style()), color);
+        let gy = rect.center().y - g.size().y / 2.0;
+        ui.painter().galley(egui::pos2(rect.left() + 24.0, gy), g, color);
+        let v = ui.painter().layout_no_wrap(format!("Commands run: {env}"), egui::FontId::proportional(t.text_size(12.0)), t.text_faint);
+        let vy = rect.center().y - v.size().y / 2.0;
+        ui.painter().galley(egui::pos2(rect.right() - 8.0 - v.size().x, vy), v, t.text_faint);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Where its commands run")
+}
+
+/// A dialog button: the main action in the accent (faded while it can't be pressed), the
+/// other quiet with an outline. Same height and corners for both.
+pub(crate) fn dialog_button(ui: &mut egui::Ui, t: &Tokens, label: &str, primary: bool, enabled: bool, h: f32) -> egui::Response {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let (text, fill, stroke) = match (primary, enabled) {
+        (true, true) => (t.on_accent, t.accent, egui::Stroke::NONE),
+        (true, false) => (t.on_accent.gamma_multiply(0.75), t.accent.gamma_multiply(0.38), egui::Stroke::NONE),
+        (false, _) => (t.text, egui::Color32::TRANSPARENT, egui::Stroke::new(1.0, t.field_border)),
+    };
+    let g = ui.painter().layout_no_wrap(label.to_owned(), font, text);
+    let w = (g.size().x + 32.0).max(88.0);
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), sense);
+    if ui.is_rect_visible(rect) {
+        let fill = match (primary, enabled, resp.hovered(), resp.is_pointer_button_down_on()) {
+            (true, true, true, _) => t.accent_hover,
+            (false, _, _, true) => t.pressed,
+            (false, _, true, _) => t.hover,
+            _ => fill,
+        };
+        ui.painter().rect(rect, t.round(crate::form::CONTROL_R), fill, stroke, egui::StrokeKind::Inside);
+        ui.painter().galley(rect.center() - g.size() / 2.0, g, text);
+    }
+    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
 /// The engine's folders: up, the subfolders, Use this folder. Returns `Some(Some(path))`
@@ -1204,7 +1523,7 @@ fn browser(ui: &mut egui::Ui, t: &Tokens, list: &FolderList, width: f32) -> Opti
 fn pick_folder(ctx: &egui::Context, tx: std::sync::mpsc::Sender<Option<String>>) {
     let ctx = ctx.clone();
     let _ = std::thread::Builder::new().name("byob-folder-picker".into()).spawn(move || {
-        let picked = pollster::block_on(rfd::AsyncFileDialog::new().set_title("Workspace folder").pick_folder());
+        let picked = pollster::block_on(rfd::AsyncFileDialog::new().set_title("Project folder").pick_folder());
         let _ = tx.send(picked.map(|f| f.path().display().to_string()));
         ctx.request_repaint();
     });
@@ -1212,93 +1531,424 @@ fn pick_folder(ctx: &egui::Context, tx: std::sync::mpsc::Sender<Option<String>>)
 
 /// One workspace's settings window: name, folder, its settings, its environment's state,
 /// and Remove.
+/// The parts of a project's settings, one at a time beside its nav.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectTab {
+    General,
+    Folders,
+    Chats,
+    Environment,
+    Plugins,
+}
+
+impl ProjectTab {
+    const ALL: [ProjectTab; 5] = [ProjectTab::General, ProjectTab::Folders, ProjectTab::Chats, ProjectTab::Environment, ProjectTab::Plugins];
+
+    /// By its name, any case ("chats").
+    pub fn find(name: &str) -> Option<ProjectTab> {
+        Self::ALL.into_iter().find(|t| t.label().eq_ignore_ascii_case(name))
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ProjectTab::General => "General",
+            ProjectTab::Folders => "Folders",
+            ProjectTab::Chats => "Chats",
+            ProjectTab::Environment => "Environment",
+            ProjectTab::Plugins => "Plugins",
+        }
+    }
+
+    fn icon(self) -> crate::icons::Paint {
+        match self {
+            ProjectTab::General => crate::icons::gear,
+            ProjectTab::Folders => crate::icons::folder,
+            ProjectTab::Chats => crate::icons::bubble,
+            ProjectTab::Environment => crate::icons::terminal,
+            ProjectTab::Plugins => crate::icons::puzzle_piece,
+        }
+    }
+
+    /// What the part is for, under its title.
+    fn blurb(self) -> &'static str {
+        match self {
+            ProjectTab::General => "Its name, and what every chat in it should know.",
+            ProjectTab::Folders => "Its chats can read and edit files in these. They start in the first one.",
+            ProjectTab::Chats => "How its chats work. Default follows your settings for all chats.",
+            ProjectTab::Environment => "Where its commands run, and what's installed for it.",
+            ProjectTab::Plugins => "From its .byob/plugins folder. Switches here apply to its chats.",
+        }
+    }
+}
+
 pub struct WorkspaceWindow {
     pub id: String,
+    pub tab: ProjectTab,
     name: String,
     editor: LayerEditor,
     env: EnvPanel,
     removing: bool,
     clean: bool,
+    /// A folder path typed to link (the browser UI, or a machine without a folder dialog).
+    link_path: String,
+    /// The path field is out (Add folder → Paste a path).
+    typing_path: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    picked: (std::sync::mpsc::Sender<Option<String>>, std::sync::mpsc::Receiver<Option<String>>),
 }
 
 impl WorkspaceWindow {
     pub fn new(id: &str, remove: bool) -> Self {
+        let mut editor = LayerEditor::new(ConfigScope::Workspace { id: id.to_owned() });
+        editor.quiet = true;
         Self {
             id: id.to_owned(),
+            tab: ProjectTab::General,
             name: String::new(),
-            editor: LayerEditor::new(ConfigScope::Workspace { id: id.to_owned() }),
+            editor,
             env: EnvPanel::default(),
             removing: remove,
             clean: false,
+            link_path: String::new(),
+            typing_path: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            picked: std::sync::mpsc::channel(),
         }
     }
 
-    /// Draw; returns messages and whether to close.
-    fn show(&mut self, ui: &mut egui::Ui, t: &Tokens, ws: Option<&WorkspaceSummary>, plugins: &mut crate::plugins::PluginsUi) -> FormOutput {
+    /// Its folders: its own (where chats run), then the ones it links, each with a way to
+    /// take it off; then a way to add one. Changes go to the engine as the whole list.
+    fn folders(&mut self, ui: &mut egui::Ui, t: &Tokens, ws: &WorkspaceSummary, out: &mut FormOutput) {
+        let mut next: Option<Vec<String>> = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        while let Ok(p) = self.picked.1.try_recv() {
+            if let Some(p) = p {
+                let mut list = ws.folders.clone();
+                if p != ws.folder && !list.contains(&p) {
+                    list.push(p);
+                    next = Some(list);
+                }
+            }
+        }
+        // A path being typed: a field on top, Add and Cancel beside it.
+        if self.typing_path {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let field_id = egui::Id::unique(("project-link-path", ws.id.as_str()));
+                let room = (ui.available_width() - 170.0).max(160.0);
+                let field = form_field(ui, t, field_id, |frame| {
+                    egui::TextEdit::singleline(&mut self.link_path)
+                        .id(field_id)
+                        .hint_text("/path/to/a/folder")
+                        .char_limit(4096)
+                        .desired_width(room)
+                        .frame(frame)
+                });
+                let typed = self.link_path.trim().to_owned();
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (crate::form::button(ui, t, "Add", !typed.is_empty()).clicked() || enter) && !typed.is_empty() {
+                    let mut list = ws.folders.clone();
+                    if typed != ws.folder && !list.contains(&typed) {
+                        list.push(typed);
+                        next = Some(list);
+                    }
+                    self.link_path.clear();
+                    self.typing_path = false;
+                }
+                if crate::form::button(ui, t, "Cancel", true).clicked() {
+                    self.link_path.clear();
+                    self.typing_path = false;
+                }
+            });
+            ui.add_space(12.0);
+        }
+        // Each folder a row of the card: its name, where it is, and either where chats
+        // start or a way to take it off.
+        crate::form::card(t).show(ui, |ui| {
+            let width = ui.available_width();
+            folder_line(ui, t, &ws.folder, width, true, false);
+            for (i, f) in ws.folders.iter().enumerate() {
+                if folder_line(ui, t, f, width, false, true) {
+                    let mut list = ws.folders.clone();
+                    list.remove(i);
+                    next = Some(list);
+                }
+            }
+        });
+        if let Some(folders) = next {
+            out.msgs.push(ClientMsg::SetWorkspaceFolders { id: ws.id.clone(), folders });
+        }
+    }
+
+    /// The nav on the left (one entry per part), the part in view on the right. Returns
+    /// messages and whether to close.
+    fn show(&mut self, ui: &mut egui::Ui, t: &Tokens, ws: Option<&WorkspaceSummary>, plugins: &mut crate::plugins::PluginsUi, height: f32) -> FormOutput {
         let mut out = FormOutput::default();
         let Some(ws) = ws else {
-            ui.label(RichText::new("This workspace was removed.").color(t.text_dim));
-            out.close = ui.button("Close").clicked();
+            ui.label(RichText::new("This project was removed.").color(t.text_dim));
+            out.close = crate::form::button(ui, t, "Close", true).clicked();
             return out;
         };
         if self.name.is_empty() {
             self.name.clone_from(&ws.name);
         }
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Name").color(t.text));
-            ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(220.0));
-            if self.name.trim() != ws.name && !self.name.trim().is_empty() && ui.button("Rename").clicked() {
-                out.msgs.push(ClientMsg::RenameWorkspace { id: ws.id.clone(), name: self.name.trim().to_owned() });
+        // A narrow nav: its items fill it, a short gap to the hairline, then the part.
+        let nav_w = 156.0;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.allocate_ui_with_layout(egui::vec2(nav_w, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_min_size(egui::vec2(nav_w, height));
+                ui.spacing_mut().item_spacing.y = 2.0;
+                for tab in ProjectTab::ALL {
+                    if project_nav_item(ui, t, tab, self.tab == tab, nav_w - 4.0).clicked() {
+                        self.tab = tab;
+                    }
+                }
+            });
+            // A hairline between the nav and the part in view.
+            let x = ui.cursor().left();
+            ui.painter().vline(x, ui.cursor().top()..=ui.cursor().top() + height, egui::Stroke::new(1.0, t.separator.gamma_multiply(0.7)));
+            ui.add_space(20.0);
+            let w = ui.available_width();
+            ui.allocate_ui_with_layout(egui::vec2(w, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt(("project-part", ws.id.as_str(), self.tab.label()))
+                    .max_height(height)
+                    .min_scrolled_height(height)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(w - 10.0);
+                        // The part's title and what it's for; its main action (if any) on the right.
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(self.tab.label()).size(t.text_size(16.0)).family(theme::bold_or_regular(ui.ctx())).color(t.text_strong));
+                                ui.add_space(2.0);
+                                ui.label(RichText::new(self.tab.blurb()).size(t.text_size(13.0)).color(t.text_dim));
+                            });
+                            if self.tab == ProjectTab::Folders {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| self.add_folder_menu(ui, t));
+                            }
+                        });
+                        ui.add_space(16.0);
+                        crate::form::outlined_controls(ui, t);
+                        match self.tab {
+                            ProjectTab::General => self.general(ui, t, ws, &mut out),
+                            ProjectTab::Folders => self.folders(ui, t, ws, &mut out),
+                            ProjectTab::Chats => self.chats(ui, t, &mut out),
+                            ProjectTab::Environment => {
+                                self.env_kind(ui, t, &mut out);
+                                ui.add_space(16.0);
+                                crate::form::card(t).show(ui, |ui| {
+                                    ui.add_space(12.0);
+                                    ui.set_width(ui.available_width());
+                                    if let Some(m) = self.env.show(ui, t, &ws.id) {
+                                        out.msgs.push(m);
+                                    }
+                                    ui.add_space(12.0);
+                                });
+                            }
+                            ProjectTab::Plugins => {
+                                crate::form::card(t).show(ui, |ui| {
+                                    ui.add_space(8.0);
+                                    ui.set_width(ui.available_width());
+                                    plugins.panel(ui, t, &crate::plugins::Filter::Workspace(ws.id.clone()));
+                                    ui.add_space(8.0);
+                                });
+                            }
+                        }
+                        ui.add_space(8.0);
+                    });
+            });
+        });
+        out
+    }
+
+    /// "Add folder" with its menu: choose one on this computer, or paste a path.
+    fn add_folder_menu(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let b = small_button(ui, t, crate::icons::folder_plus, "Add folder").on_hover_text("Its files stay where they are");
+        crate::menu::below(&b, t, 220.0).show(|ui| {
+            crate::menu::tighten(ui);
+            #[cfg(not(target_arch = "wasm32"))]
+            if crate::export::dialog_unavailable_reason().is_none() && crate::menu::item(ui, t, Some(crate::icons::folder), "Choose a folder…", None).clicked()
+            {
+                pick_folder(ui.ctx(), self.picked.0.clone());
+                ui.close();
+            }
+            if crate::menu::item(ui, t, Some(crate::icons::pencil), "Paste a path…", None).clicked() {
+                self.typing_path = true;
+                ui.close();
             }
         });
-        ui.label(RichText::new(&ws.folder).small().monospace().color(t.text_dim))
-            .on_hover_text("Its folder on the machine byob runs on; byob never writes its settings there");
-        ui.add_space(6.0);
-        let before = self.editor.view().map(|v| v.own.env);
-        if let Some(m) = self.editor.show(ui, t, WORKSPACE_FIELDS) {
-            out.msgs.push(m);
-        }
-        if before.is_some() && self.editor.view().map(|v| v.own.env) != before {
-            self.env.refresh();
-        }
-        ui.add_space(6.0);
-        egui::CollapsingHeader::new(RichText::new("Environment state").color(t.text)).id_salt(("envstate", &ws.id)).default_open(true).show(ui, |ui| {
-            if let Some(m) = self.env.show(ui, t, &ws.id) {
-                out.msgs.push(m);
-            }
+    }
+
+    /// Name and instructions, then Remove project (asks first) in its own card.
+    fn general(&mut self, ui: &mut egui::Ui, t: &Tokens, ws: &WorkspaceSummary, out: &mut FormOutput) {
+        use crate::form::{RowStyle, card, setting_row};
+        let id = |what: &str| egui::Id::unique(("project-settings", ws.id.as_str(), what.to_owned()));
+        let first = RowStyle { first: true, ..RowStyle::default() };
+        card(t).show(ui, |ui| {
+            setting_row(ui, t, id("name"), "Name", "How it shows in the sidebar.", first, |ui| {
+                let changed = self.name.trim() != ws.name && !self.name.trim().is_empty();
+                if changed && crate::form::button(ui, t, "Save", true).clicked() {
+                    out.msgs.push(ClientMsg::RenameWorkspace { id: ws.id.clone(), name: self.name.trim().to_owned() });
+                }
+                let field_id = id("name-field");
+                let r = form_field(ui, t, field_id, |frame| {
+                    egui::TextEdit::singleline(&mut self.name).id(field_id).char_limit(80).desired_width(180.0).frame(frame)
+                });
+                if changed && r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    out.msgs.push(ClientMsg::RenameWorkspace { id: ws.id.clone(), name: self.name.trim().to_owned() });
+                }
+            });
+            let wide = RowStyle { wide: true, ..RowStyle::default() };
+            setting_row(ui, t, id("instructions"), "Instructions", "Added to every chat in this project.", wide, |ui| {
+                if let Some(m) = self.editor.control(ui, t, Field::Instructions) {
+                    out.msgs.push(m);
+                }
+            });
         });
-        ui.add_space(6.0);
-        egui::CollapsingHeader::new(RichText::new("Plugins").color(t.text)).id_salt(("wsplugins", &ws.id)).default_open(true).show(ui, |ui| {
-            ui.label(RichText::new("Its .byob/plugins folder, committed with the repository; switches here apply to its chats.").small().color(t.text_faint));
-            plugins.panel(ui, t, &crate::plugins::Filter::Workspace(ws.id.clone()));
-        });
-        ui.add_space(8.0);
-        if self.removing {
-            egui::Frame::new().stroke(egui::Stroke::new(1.0, t.danger)).corner_radius(t.round(6.0)).inner_margin(8.0).show(ui, |ui| {
-                let n = ws.chats;
-                ui.label(
-                    RichText::new(format!(
-                        "Remove \u{201c}{}\u{201d} and its {n} chat{} from byob? The folder and its files stay.",
-                        ws.name,
-                        if n == 1 { "" } else { "s" }
-                    ))
-                    .color(t.text),
-                );
-                ui.checkbox(&mut self.clean, "Also delete what byob keeps for it elsewhere: installed packages, its container");
-                ui.horizontal(|ui| {
-                    if ui.button(RichText::new("Remove").color(t.danger)).clicked() {
+        ui.add_space(16.0);
+        card(t).show(ui, |ui| {
+            let desc = "Its chats leave byob. The folders and their files stay.";
+            setting_row(ui, t, id("remove"), "Remove project", desc, first, |ui| {
+                if self.removing {
+                    if crate::form::danger_button(ui, t, "Remove").clicked() {
                         out.msgs.push(ClientMsg::RemoveWorkspace { id: ws.id.clone(), clean: self.clean });
                         out.close = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if crate::form::button(ui, t, "Cancel", true).clicked() {
                         self.removing = false;
                     }
-                });
+                } else if crate::form::danger_button(ui, t, "Remove…").clicked() {
+                    self.removing = true;
+                }
             });
-        } else if ui.button(RichText::new("Remove workspace…").color(t.danger)).clicked() {
-            self.removing = true;
+            if self.removing {
+                ui.horizontal(|ui| {
+                    crate::form::switch(ui, t, &mut self.clean);
+                    ui.label(RichText::new("Also delete its installed packages and container").size(t.text_size(13.0)).color(t.text_dim));
+                });
+                ui.add_space(14.0);
+            }
+        });
+    }
+
+    /// Its chats' settings, one row each.
+    fn chats(&mut self, ui: &mut egui::Ui, t: &Tokens, out: &mut FormOutput) {
+        let fields: Vec<Field> = WORKSPACE_FIELDS.iter().copied().filter(|f| !matches!(f, Field::Instructions | Field::Env | Field::Image)).collect();
+        self.rows(ui, t, &fields, out);
+    }
+
+    /// Where its commands run (and the container image, for a container).
+    fn env_kind(&mut self, ui: &mut egui::Ui, t: &Tokens, out: &mut FormOutput) {
+        let before = self.editor.view().map(|v| v.own.env);
+        let container = self.editor.view().is_some_and(|v| v.effective.env.value == EnvKind::Container);
+        let fields: Vec<Field> = if container { vec![Field::Env, Field::Image] } else { vec![Field::Env] };
+        self.rows(ui, t, &fields, out);
+        if before.is_some() && self.editor.view().map(|v| v.own.env) != before {
+            self.env.refresh();
         }
-        out
+    }
+
+    /// A card of setting rows, one per field.
+    fn rows(&mut self, ui: &mut egui::Ui, t: &Tokens, fields: &[Field], out: &mut FormOutput) {
+        use crate::form::{RowStyle, card, setting_row};
+        let id = self.id.clone();
+        card(t).show(ui, |ui| {
+            for (i, &f) in fields.iter().enumerate() {
+                let style = RowStyle { first: i == 0, ..RowStyle::default() };
+                setting_row(ui, t, egui::Id::unique(("project-row", id.as_str(), plain_label(f))), plain_label(f), field_help(f), style, |ui| {
+                    if let Some(m) = self.editor.control(ui, t, f) {
+                        out.msgs.push(m);
+                    }
+                });
+            }
+        });
+    }
+}
+
+/// One folder as a row of a card: its icon, its name, where it is (dimmer); on the right,
+/// a "Chats start here" chip for the first, a remove button (on hover) for the others; a
+/// soft line above each but the first. Returns whether it was taken off.
+fn folder_line(ui: &mut egui::Ui, t: &Tokens, path: &str, width: f32, first: bool, removable: bool) -> bool {
+    let h = 52.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, h), egui::Sense::hover());
+    let p = ui.painter();
+    if !first {
+        p.hline(rect.x_range(), rect.top(), egui::Stroke::new(1.0, t.separator.gamma_multiply(0.7)));
+    }
+    crate::icons::folder(p, egui::Rect::from_center_size(egui::pos2(rect.left() + 9.0, rect.center().y), egui::vec2(16.0, 16.0)), t.text_dim);
+    let x_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 14.0, rect.center().y), egui::vec2(28.0, 28.0));
+    let small = egui::FontId::proportional(t.text_size(12.0));
+    let note = first.then(|| p.layout_no_wrap("Chats start here".to_owned(), small.clone(), t.text_dim));
+    let right_room = note.as_ref().map_or(40.0, |g| g.size().x + 16.0);
+    if let Some(g) = note {
+        let chip =
+            egui::Rect::from_min_size(egui::pos2(rect.right() - g.size().x - 16.0, rect.center().y - g.size().y / 2.0 - 3.0), g.size() + egui::vec2(16.0, 6.0));
+        p.rect_filled(chip, chip.height() / 2.0, crate::form::soft(t));
+        p.galley(chip.min + egui::vec2(8.0, 3.0), g, t.text_dim);
+    }
+    let left = rect.left() + 30.0;
+    let room = (rect.right() - right_room - 12.0 - left).max(40.0);
+    let name = folder_name(path);
+    let parent = path.trim_end_matches(['/', '\\']).strip_suffix(name.as_str()).unwrap_or_default().trim_end_matches(['/', '\\']);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&name, 0.0, egui::TextFormat::simple(egui::TextStyle::Body.resolve(ui.style()), t.text_strong));
+    if !parent.is_empty() {
+        job.append(&format!("  {}", short_path(parent, 48)), 0.0, egui::TextFormat::simple(small, t.text_faint));
+    }
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+    let g = p.layout_job(job);
+    p.galley(egui::pos2(left, rect.center().y - g.size().y / 2.0), g, t.text);
+    resp.on_hover_text(path);
+    if !removable {
+        return false;
+    }
+    let row_over = ui.rect_contains_pointer(rect);
+    let x = ui.interact(x_rect, egui::Id::unique(("folder-line-x", path)), egui::Sense::click());
+    if row_over || x.hovered() {
+        if x.hovered() {
+            ui.painter().rect_filled(x_rect, t.round(crate::form::CONTROL_R), crate::form::soft_hover(t));
+        }
+        crate::icons::cross(ui.painter(), x_rect.shrink(8.0), if x.hovered() { t.text_strong } else { t.text_dim });
+    }
+    x.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Take it off this project (the folder stays)").clicked()
+}
+
+/// One entry of the project settings' nav: icon and name; the one in view on a soft grey.
+fn project_nav_item(ui: &mut egui::Ui, t: &Tokens, tab: ProjectTab, on: bool, width: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 34.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fill = if on {
+            t.selection
+        } else if resp.hovered() {
+            crate::form::row_hover(t)
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        ui.painter().rect_filled(rect, t.round(crate::form::CONTROL_R), fill);
+        let color = if on || resp.hovered() { t.text_strong } else { t.text_dim };
+        (tab.icon())(ui.painter(), egui::Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), egui::vec2(15.0, 15.0)), color);
+        let g = ui.painter().layout_no_wrap(tab.label().to_owned(), egui::TextStyle::Body.resolve(ui.style()), color);
+        ui.painter().galley(egui::pos2(rect.left() + 32.0, rect.center().y - g.size().y / 2.0), g, color);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// What a project's chat setting does, under its name.
+fn field_help(f: Field) -> &'static str {
+    match f {
+        Field::Env => "Where its commands run: this computer, a container or a dev shell.",
+        Field::Image => "The container its commands run in.",
+        Field::Endpoint => "The model its chats use.",
+        Field::Approvals => "What it may do without asking you first.",
+        Field::ToolMode => "How the model calls tools.",
+        Field::Compaction => "Summarise older messages when a chat gets long.",
+        Field::Subagents => "Let a chat hand side tasks to helpers.",
+        Field::SubagentModel => "The model the helpers use.",
+        Field::ToolCalls => "How many steps one reply can take.",
+        Field::ModelImages => "How pictures are sent to the model.",
+        Field::Instructions => "Added to every chat in this project.",
     }
 }
 
@@ -1407,6 +2057,12 @@ impl WorkspaceUi {
         self.opens += 1;
     }
 
+    /// The New project dialog, started one way (from the Projects page).
+    pub fn open_start(&mut self, start: crate::projects::Start) {
+        self.form = Some(NewWorkspaceForm::with_start(start));
+        self.opens += 1;
+    }
+
     /// The New workspace form on `path` (a folder dropped on the window).
     pub fn open_with_folder(&mut self, path: &str) {
         self.form = Some(NewWorkspaceForm::with_folder(path));
@@ -1453,32 +2109,50 @@ impl WorkspaceUi {
         let max_w = (screen.width() - 24.0).clamp(240.0, 520.0);
         let max_h = (screen.height() - 80.0).max(200.0);
         let opens = self.opens;
-        // Centred near the top at first; movable by the title bar (and kept on screen).
-        let top_centre = |dy: f32| egui::pos2(screen.center().x, screen.top() + dy);
         if let Some(form) = &mut self.form {
             let mut open = true;
             let (root, support) = (self.root.clone(), self.support.clone());
             let mut close = false;
-            egui::Window::new("New workspace")
-                .id(egui::Id::unique(("new-workspace", opens)))
-                .open(&mut open)
-                .collapsible(false)
-                .fade_in(false)
-                .resizable(false)
-                .default_width(max_w.min(500.0))
-                .max_width(max_w)
-                .max_height(max_h)
-                .pivot(egui::Align2::CENTER_TOP)
-                .default_pos(top_centre(60.0))
-                .movable(true)
-                .constrain(true)
-                .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().max_height(max_h - 40.0).min_scrolled_height((max_h - 40.0).min(560.0)).show(ui, |ui| {
-                        let o = form.show(ui, t, &root, &support);
-                        msgs.extend(o.msgs);
-                        close = o.close;
+            // Centred over the window, the rest dimmed: one thing to decide. A click outside
+            // closes it only while nothing is chosen or typed (no work lost to a stray click).
+            let w = max_w.min(480.0);
+            // 10-point corners, 24 points of room inside: crisp, with the fields' 6-point
+            // corners sitting within them.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a few points
+            let corner = t.round(crate::form::CARD_R + 2.0).round().clamp(0.0, 255.0) as u8;
+            let dialog = crate::menu::frame(t).inner_margin(egui::Margin::same(24)).corner_radius(egui::CornerRadius::same(corner));
+            let modal = egui::Modal::new(egui::Id::unique(("new-workspace", opens))).frame(dialog).show(ctx, |ui| {
+                ui.set_width(w);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Create project").strong().size(t.text_size(20.0)).color(t.text_strong));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let size = crate::icons::button_height(ui);
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+                        let x = crate::sidebar::window_button(ui, t, rect, egui::Id::unique(("new-workspace-close", opens)), crate::icons::cross, true);
+                        if x.on_hover_text("Close (Esc)").clicked() {
+                            open = false;
+                        }
                     });
                 });
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    open = false;
+                }
+                ui.add_space(20.0);
+                // As tall as what it shows; the fields scroll when that outgrows the window,
+                // the buttons stay in view under them.
+                let button_room = 70.0;
+                egui::ScrollArea::vertical().max_height((max_h - 60.0 - button_room).max(120.0)).auto_shrink([false, true]).show(ui, |ui| {
+                    let o = form.body(ui, t, &root, &support);
+                    msgs.extend(o.msgs);
+                    close = o.close;
+                });
+                let o = form.actions(ui, t, &support);
+                msgs.extend(o.msgs);
+                close |= o.close;
+            });
+            if modal.backdrop_response.clicked() && form.untouched() {
+                open = false;
+            }
             if !open || close {
                 self.form = None;
             }
@@ -1487,68 +2161,140 @@ impl WorkspaceUi {
             let mut open = true;
             let mut close = false;
             let ws = workspaces.iter().find(|x| x.id == w.id);
-            let title = ws.map_or_else(|| "Workspace".to_owned(), |x| format!("Workspace \u{201c}{}\u{201d}", x.name));
-            egui::Window::new(title)
-                .id(egui::Id::unique(("workspace-settings", opens)))
-                .open(&mut open)
-                .collapsible(false)
-                .fade_in(false)
-                .resizable(false)
-                .default_width(max_w)
-                .max_width(max_w)
-                .max_height(max_h)
-                .pivot(egui::Align2::CENTER_TOP)
-                .default_pos(top_centre(50.0))
-                .movable(true)
-                .constrain(true)
-                .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().max_height(max_h - 40.0).min_scrolled_height((max_h - 40.0).min(560.0)).show(ui, |ui| {
-                        let o = w.show(ui, t, ws, plugins);
-                        msgs.extend(o.msgs);
-                        close = o.close;
+            // Centred like New project, the rest dimmed: its name and what it holds on top,
+            // then its settings in cards, scrolling under the title.
+            // Wider than the other dialogs: its rows keep their controls beside their names.
+            let w_dialog = (screen.width() - 48.0).clamp(240.0, 860.0);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a few points
+            let corner = t.round(crate::form::CARD_R + 2.0).round().clamp(0.0, 255.0) as u8;
+            // 12 points on the left (the nav's items reach close to the edge), 24 elsewhere; the
+            // title and subtitle are indented back to 24.
+            let dialog =
+                crate::menu::frame(t).inner_margin(egui::Margin { left: 12, right: 24, top: 24, bottom: 24 }).corner_radius(egui::CornerRadius::same(corner));
+            let modal = egui::Modal::new(egui::Id::unique(("workspace-settings", opens))).frame(dialog).show(ctx, |ui| {
+                ui.set_width(w_dialog);
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    let name = ws.map_or("Project", |x| x.name.as_str());
+                    ui.label(RichText::new(name).strong().size(t.text_size(20.0)).color(t.text_strong));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let size = crate::icons::button_height(ui);
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+                        let x = crate::sidebar::window_button(ui, t, rect, egui::Id::unique(("workspace-settings-close", opens)), crate::icons::cross, true);
+                        if x.on_hover_text("Close (Esc)").clicked() {
+                            open = false;
+                        }
                     });
                 });
+                if let Some(x) = ws {
+                    ui.add_space(2.0);
+                    let chats = crate::sidebar::chats_label(x.chats);
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        ui.label(RichText::new(format!("Project settings · {chats}")).size(t.text_size(13.0)).color(t.text_dim));
+                    });
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.memory(|m| m.focused().is_some()) {
+                    open = false;
+                }
+                ui.add_space(8.0);
+                // One height for every part, so the dialog doesn't jump between them.
+                let room = (max_h - 120.0).clamp(240.0, 600.0);
+                ui.add_space(8.0);
+                let o = w.show(ui, t, ws, plugins, room);
+                msgs.extend(o.msgs);
+                close = o.close;
+            });
+            if modal.backdrop_response.clicked() && !w.removing {
+                open = false;
+            }
             if !open || close {
                 self.window = None;
             }
         }
         if let Some(editor) = &mut self.chat {
-            let mut open = true;
-            let w = max_w.min(440.0);
-            let x = anchor.x.clamp(8.0, (screen.right() - w - 8.0).max(8.0));
-            egui::Window::new("Chat settings")
-                .id(egui::Id::unique(("chat-settings", opens)))
-                .open(&mut open)
-                .collapsible(false)
-                .fade_in(false)
-                .resizable(false)
-                .title_bar(true)
-                .default_width(w)
-                .max_width(w)
-                .max_height(max_h)
-                // Opens under its button; drag it by the title bar.
-                .default_pos(egui::pos2(x, anchor.y))
-                .movable(true)
-                .constrain(true)
-                .show(ctx, |ui| {
+            // A sheet under the settings button (right edges lined up): what most people
+            // change first, where it works next, and the rest folded under Advanced.
+            let w = max_w.min(400.0);
+            let x = (anchor.x - w).clamp(8.0, (screen.right() - w - 8.0).max(8.0));
+            let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !ctx.memory(|m| m.focused().is_some());
+            let id = egui::Id::unique(("chat-settings", opens));
+            let advanced_id = egui::Id::unique("chat-settings-advanced");
+            let mut advanced = ctx.data(|d| d.get_temp::<bool>(advanced_id)).unwrap_or(false);
+            egui::Area::new(id).order(egui::Order::Foreground).fixed_pos(egui::pos2(x, anchor.y)).constrain(true).show(ctx, |ui| {
+                crate::menu::frame(t).inner_margin(egui::Margin::symmetric(16, 14)).show(ui, |ui| {
+                    // The frame adds its margins (16 each side) and its 1-point border.
+                    ui.set_width(w - 34.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Chat settings").strong().color(t.text_strong));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if crate::icons::icon_button(ui, t, crate::icons::cross, None, false).on_hover_text("Close (Esc)").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
                     let ws = editor.view().and_then(|v| v.workspace.as_ref()).map(|w| w.name.clone());
                     let line = match ws {
-                        Some(ws) => format!("{chat_title} · in {ws}"),
-                        None => chat_title.to_owned(),
+                        Some(ws) => format!("{chat_title} · in {ws} · changes apply to this chat only"),
+                        None => format!("{chat_title} · changes apply to this chat only"),
                     };
                     ui.add(egui::Label::new(RichText::new(line).small().color(t.text_dim)).truncate());
-                    ui.label(
-                        RichText::new("Only for this chat; everything else comes from its workspace and the global settings.").small().color(t.text_faint),
-                    );
-                    ui.add_space(4.0);
-                    egui::ScrollArea::vertical().max_height(max_h - 60.0).min_scrolled_height((max_h - 60.0).min(520.0)).show(ui, |ui| {
-                        if let Some(m) = editor.show(ui, t, CHAT_FIELDS) {
-                            msgs.push(m);
-                        }
-                        plugins.chat_switches(ui, t);
-                    });
+                    ui.add_space(8.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(max_h - 90.0)
+                        // Without this a floating sheet scrolls after a few rows; shorter content still shrinks it.
+                        .min_scrolled_height((max_h - 90.0).min(560.0))
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            // One label column for every group, as wide as the longest label.
+                            let font = egui::TextStyle::Body.resolve(ui.style());
+                            editor.label_w =
+                                ["How it answers", "Commands run on", "Shorten long chats", "Container image", "Steps per reply", "Images it sees"]
+                                    .iter()
+                                    .map(|l| ui.painter().layout_no_wrap((*l).to_owned(), font.clone(), t.text).size().x)
+                                    .fold(0.0, f32::max);
+                            let section = |ui: &mut egui::Ui, title: &str| {
+                                ui.add_space(6.0);
+                                ui.label(RichText::new(title).small().color(t.text_faint));
+                                ui.add_space(2.0);
+                            };
+                            section(ui, "Basics");
+                            if let Some(m) = editor.show(ui, t, &[Field::Endpoint, Field::Approvals]) {
+                                msgs.push(m);
+                            }
+                            if let Some(m) = editor.answer_style(ui, t) {
+                                msgs.push(m);
+                            }
+                            if let Some(m) = editor.show(ui, t, &[Field::Instructions]) {
+                                msgs.push(m);
+                            }
+                            section(ui, "Where it works");
+                            if let Some(m) = editor.show(ui, t, &[Field::Env, Field::Image]) {
+                                msgs.push(m);
+                            }
+                            ui.add_space(8.0);
+                            // Advanced: folded until asked for.
+                            let label = if advanced { "Hide advanced" } else { "Advanced: tools, memory, helpers, plugins" };
+                            let r = ui
+                                .add(egui::Label::new(RichText::new(label).color(t.text_dim)).sense(egui::Sense::click()))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if r.clicked() {
+                                advanced = !advanced;
+                            }
+                            if advanced {
+                                ui.add_space(4.0);
+                                let fields = [Field::ToolMode, Field::Compaction, Field::Subagents, Field::SubagentModel, Field::ToolCalls, Field::ModelImages];
+                                if let Some(m) = editor.show(ui, t, &fields) {
+                                    msgs.push(m);
+                                }
+                                ui.add_space(6.0);
+                                plugins.chat_switches(ui, t);
+                            }
+                        });
                 });
-            if !open {
+            });
+            ctx.data_mut(|d| d.insert_temp(advanced_id, advanced));
+            if close {
                 self.chat = None;
             }
         }
@@ -1561,6 +2307,33 @@ pub(crate) mod tests {
     use byob_types::config::{Forced, Keys, Levels, resolve};
 
     use super::*;
+
+    #[test]
+    fn answer_styles_sit_first_in_the_instructions_and_come_off_again() {
+        assert_eq!(join_style(0, "  be kind "), Some("be kind".into()));
+        assert_eq!(join_style(0, ""), None);
+        let short = join_style(1, "").unwrap();
+        assert_eq!(split_style(&short), (1, ""));
+        let both = join_style(3, "Use metric units.").unwrap();
+        assert_eq!(split_style(&both), (3, "Use metric units."));
+        // Text that only mentions a style isn't one.
+        assert_eq!(split_style("Answer style: short please").0, 0);
+    }
+
+    #[test]
+    fn home_folders_read_as_tilde() {
+        assert_eq!(short_home("/Users/ana/byob-workspaces"), "~/byob-workspaces");
+        // Long paths keep their end.
+        assert_eq!(short_path("/srv/a/b/c/projects/alpha", 20), "…/b/c/projects/alpha", "as many folders as fit in 20");
+        assert_eq!(short_path("/srv/x", 20), "/srv/x");
+        assert!(short_path(&format!("/srv/{}", "y".repeat(80)), 20).chars().count() <= 20, "one huge folder is cut too");
+        assert_eq!(short_path("/srv/ünïcödé/földer", 12), "…/földer");
+        assert_eq!(short_home("/home/ana/work/x"), "~/work/x");
+        assert_eq!(short_home(r"C:\Users\ana\byob-workspaces"), "~/byob-workspaces");
+        assert_eq!(short_home("/Users/ana"), "~");
+        assert_eq!(short_home("/srv/data"), "/srv/data");
+        assert_eq!(short_home("relative/path"), "relative/path");
+    }
 
     pub(crate) fn view(scope: ConfigScope, own: Layer, ws: Option<&Layer>) -> ConfigView {
         let global = Layer { base_url: Some("http://g/v1".into()), model: Some("gm".into()), ..Layer::default() };
@@ -1601,7 +2374,7 @@ pub(crate) mod tests {
         assert_eq!(headline("- a list item first", 6), "a list…");
         assert_eq!(headline("", 10), "");
         let global = "# House rules\n\nYou are careful.\n\n- Short paragraphs.\n- Metric units.";
-        let own = Layer { instructions: Some(format!("# Workspace rules\n\n{}", "A long line that has to wrap. ".repeat(20))), ..Layer::default() };
+        let own = Layer { instructions: Some(format!("# Project rules\n\n{}", "A long line that has to wrap. ".repeat(20))), ..Layer::default() };
         let id = ConfigScope::Workspace { id: "w".into() };
         let mut v = view(id.clone(), own, None);
         v.effective.instructions.insert(0, (Level::Global, global.to_owned()));
@@ -1629,18 +2402,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_new_workspace_form_checks_before_creating() {
+    fn the_new_project_form_checks_before_creating() {
         let support = EnvSupport { nix: false, installer: None, runtime: Some("docker".into()) };
         let mut f = NewWorkspaceForm::default();
-        assert!(f.problem(&support).is_some_and(|p| p.contains("start empty")), "first, which folder");
-        f.source = Source::Empty;
+        // A name is all it needs: no folder means byob keeps its files.
         assert!(f.problem(&support).is_some_and(|p| p.contains("name")));
+        assert_eq!(f.source(), Source::Empty);
         f.name = "Data".into();
         f.name_edited = true;
         assert!(f.problem(&support).is_none());
-        f.source = Source::Folder;
-        assert!(f.problem(&support).is_some_and(|p| p.contains("folder")));
-        f.path = "/srv/data".into();
         f.env = EnvKind::Container;
         f.use_image = true;
         f.image = "bad image!".into();
@@ -1648,9 +2418,14 @@ pub(crate) mod tests {
         f.image = "debian:stable-slim".into();
         assert_eq!(f.layer(), Layer { env: Some(EnvKind::Container), image: Some("debian:stable-slim".into()), ..Layer::default() });
         assert!(f.problem(&EnvSupport::default()).is_some_and(|p| p.contains("Docker")));
+        // The goal is its instructions (trimmed; blank is none).
+        f.goal = "  Ship the app by June.  ".into();
+        assert_eq!(f.layer().instructions.as_deref(), Some("Ship the app by June."));
+        f.goal = "   ".into();
+        assert_eq!(f.layer().instructions, None);
         // Answers from the engine land in the form.
         f.apply(&ServerMsg::Folders(FolderList { path: "/srv".into(), parent: Some("/".into()), dirs: vec!["data".into()], truncated: false, error: None }));
-        assert_eq!((f.path.as_str(), f.name.as_str()), ("/srv", "Data"), "a typed name stays");
+        assert!(f.browser.is_some() && f.folders.is_empty(), "listing a folder doesn't add it");
         f.apply(&ServerMsg::ContainersChecked { ok: false, message: "Docker isn't running".into() });
         assert_eq!(f.check, Some((false, "Docker isn't running".to_owned())));
         assert_eq!(slug("My Data!"), "my-data");
@@ -1660,41 +2435,62 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_new_workspace_needs_only_its_folder() {
+    fn a_new_project_takes_a_name_a_goal_and_any_folders() {
         assert_eq!(folder_name("/home/me/Projects/Alpha/"), "Alpha");
         assert_eq!(folder_name(r"C:\Users\me\Beta"), "Beta");
         assert_eq!(folder_name("  "), "");
-        // A folder picked (or dropped): named after it, commands run Auto, nothing else asked.
         let support = EnvSupport::default();
+        // No folder: byob makes one; the goal travels as its instructions.
+        let mut f = NewWorkspaceForm { name: "Notes".into(), goal: "Plan the trip".into(), ..NewWorkspaceForm::default() };
+        assert_eq!(
+            f.create_msg(),
+            ClientMsg::CreateWorkspace {
+                name: "Notes".into(),
+                folder: NewFolder::Create,
+                config: Layer { instructions: Some("Plan the trip".into()), ..Layer::default() },
+                folders: Vec::new()
+            }
+        );
+        // A folder picked (or dropped): named after it; chats run there.
         let mut f = NewWorkspaceForm::with_folder("/home/me/Projects/Alpha");
-        assert_eq!((f.source, f.name.as_str(), f.env, f.advanced), (Source::Folder, "Alpha", EnvKind::Auto, false));
+        assert_eq!((f.source(), f.name.as_str(), f.env, f.advanced), (Source::Folder, "Alpha", EnvKind::Auto, false));
         assert!(f.problem(&support).is_none());
+        // More folders: linked; a repeat or a blank is ignored; the name stays the first's.
+        f.add_folder("/srv/api");
+        f.add_folder("/srv/api");
+        f.add_folder("  ");
+        assert_eq!(f.folders, ["/home/me/Projects/Alpha", "/srv/api"]);
+        assert_eq!(f.name, "Alpha");
         assert_eq!(
             f.create_msg(),
             ClientMsg::CreateWorkspace {
                 name: "Alpha".into(),
                 folder: NewFolder::Existing { path: "/home/me/Projects/Alpha".into() },
-                config: Layer::default()
+                config: Layer::default(),
+                folders: vec!["/srv/api".into()]
             }
         );
-        // Another folder: the name follows, until the user types one.
-        f.set_path("/srv/beta");
-        assert_eq!(f.name, "beta");
-        f.name = "My beta".into();
-        f.name_edited = true;
-        f.set_path("/srv/gamma");
-        assert_eq!(f.name, "My beta");
-        // The form opens on the choice, Advanced closed; Container (scripted) opens it.
-        let f = NewWorkspaceForm::default();
-        assert_eq!((f.source, f.env, f.advanced), (Source::Choose, EnvKind::Auto, false));
-        let f = NewWorkspaceForm::with_env(EnvKind::Container);
-        assert_eq!((f.source, f.advanced), (Source::Empty, true));
+        // A typed name stays when the first folder changes.
+        let mut f = NewWorkspaceForm { name: "Mine".into(), name_edited: true, ..NewWorkspaceForm::default() };
+        f.add_folder("/srv/gamma");
+        assert_eq!(f.name, "Mine");
+        // No more than the engine takes.
+        let mut f = NewWorkspaceForm::default();
+        for i in 0..40 {
+            f.add_folder(&format!("/srv/f{i}"));
+        }
+        assert_eq!(f.folders.len(), byob_protocol::workspace::MAX_LINKED_FOLDERS + 1);
+        // Untouched until something is typed or added.
+        assert!(NewWorkspaceForm::default().untouched());
+        assert!(!NewWorkspaceForm { goal: "x".into(), ..NewWorkspaceForm::default() }.untouched());
+        // Container (scripted) opens Advanced.
+        assert!(NewWorkspaceForm::with_env(EnvKind::Container).advanced);
         // Every state draws, narrow and wide, without sending anything.
-        for source in [Source::Choose, Source::Folder, Source::Empty] {
-            let mut f = NewWorkspaceForm { source, advanced: true, ..NewWorkspaceForm::default() };
+        for folders in [vec![], vec!["/srv/a".to_owned()], vec!["/srv/a".to_owned(), "/srv/b".to_owned()]] {
+            let mut f = NewWorkspaceForm { folders: folders.clone(), advanced: true, goal: "A goal\nover lines".into(), ..NewWorkspaceForm::default() };
             let mut sent = vec![ClientMsg::Cancel];
             render(|ui| sent = f.show(ui, &Tokens::light(), "", &support).msgs);
-            assert!(sent.is_empty(), "{source:?}: {sent:?}");
+            assert!(sent.is_empty(), "{folders:?}: {sent:?}");
         }
     }
 
@@ -1702,8 +2498,8 @@ pub(crate) mod tests {
     fn created_workspaces_close_the_form_and_errors_stay() {
         let mut w = WorkspaceUi::default();
         w.open_new(EnvKind::Container);
-        assert!(w.apply(&ServerMsg::WorkspaceCreated { id: None, error: Some("already a workspace".into()) }));
-        assert_eq!(w.form.as_ref().and_then(|f| f.error.as_deref()), Some("already a workspace"));
+        assert!(w.apply(&ServerMsg::WorkspaceCreated { id: None, error: Some("already a project".into()) }));
+        assert_eq!(w.form.as_ref().and_then(|f| f.error.as_deref()), Some("already a project"));
         w.apply(&ServerMsg::WorkspaceCreated { id: Some("w1".into()), error: None });
         assert!(w.form.is_none());
         w.toggle_chat();

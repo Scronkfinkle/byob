@@ -1,4 +1,4 @@
-//! Attaching files in the composer: its paperclip (a file picker), drag and drop onto
+//! Attaching files in the composer: the "+" menu's file picker, drag and drop onto
 //! the window, pasting an image (or, in the browser, copied files), upload in chunks over
 //! the protocol, and chips for what is attached.
 //!
@@ -228,17 +228,15 @@ impl Uploads {
         errors
     }
 
-    /// The composer's paperclip, `d` across.
-    pub fn button(&mut self, ui: &mut egui::Ui, t: &Tokens, d: f32, radius: f32) -> egui::Response {
-        let b =
-            crate::composer::ghost_icon(ui, t, d, radius, crate::icons::paperclip, !self.picking).on_hover_text("Attach files (or drop them onto the window)");
-        if b.clicked() {
-            // A browser doesn't tell us reliably when its dialog is cancelled, so the button
-            // only waits for the desktop dialog.
-            self.picking = cfg!(not(target_arch = "wasm32"));
-            pick_files(ui.ctx(), self.tx.clone());
+    /// Open the file picker (the "+" menu's first item, and Cmd/Ctrl+U).
+    pub fn pick(&mut self, ctx: &egui::Context) {
+        if self.picking {
+            return;
         }
-        b
+        // A browser doesn't tell us reliably when its dialog is cancelled, so this only
+        // waits for the desktop dialog.
+        self.picking = cfg!(not(target_arch = "wasm32"));
+        pick_files(ctx, self.tx.clone());
     }
 
     /// Chips for attached and uploading files; × removes one. Returns whether there were any.
@@ -320,7 +318,7 @@ pub fn drop_overlay(ctx: &egui::Context, t: &Tokens) {
     painter.rect_stroke(rect.shrink(24.0), 12.0, Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
     // A folder (desktop: the window knows its path) becomes a workspace instead.
     let folder = ctx.input(|i| i.raw.hovered_files.iter().any(|f| f.path.as_ref().is_some_and(|p| p.is_dir())));
-    let text = if folder { "Drop the folder to make it a workspace" } else { "Drop files to attach" };
+    let text = if folder { "Drop the folder to make it a project" } else { "Drop files to attach" };
     painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(t.text_size(22.0)), t.text_strong);
 }
 

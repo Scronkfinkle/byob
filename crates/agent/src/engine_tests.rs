@@ -403,6 +403,16 @@ fn chats_can_be_renamed_pinned_listed_and_deleted() {
     a.send(ClientMsg::PinChat { id: one.clone(), pinned: true });
     let (ServerMsg::ChatUpdated(s), _) = recv_until(&mut b, |m| matches!(m, ServerMsg::ChatUpdated(_))) else { panic!() };
     assert!(s.pinned_at.is_some());
+    // Archived: every viewer hears it, and it's no longer pinned; then brought back.
+    a.send(ClientMsg::ArchiveChat { id: one.clone(), archived: true });
+    let (ServerMsg::ChatUpdated(s), _) = recv_until(&mut b, |m| matches!(m, ServerMsg::ChatUpdated(_))) else { panic!() };
+    assert!(s.archived_at.is_some() && s.pinned_at.is_none());
+    a.send(ClientMsg::ArchiveChat { id: one.clone(), archived: false });
+    let (ServerMsg::ChatUpdated(s), _) = recv_until(&mut b, |m| matches!(m, ServerMsg::ChatUpdated(_))) else { panic!() };
+    assert!(s.archived_at.is_none());
+    a.send(ClientMsg::PinChat { id: one.clone(), pinned: true });
+    let (ServerMsg::ChatUpdated(s), _) = recv_until(&mut b, |m| matches!(m, ServerMsg::ChatUpdated(_))) else { panic!() };
+    assert!(s.pinned_at.is_some());
 
     // Paging: pinned chats come separately on the first page.
     b.send(ClientMsg::ListChats { after: None, limit: 1 });

@@ -23,6 +23,7 @@ macro_rules! for_each_backend {
 }
 
 for_each_backend!(
+    archiving,
     chats_crud,
     pinning,
     list_is_recent_first_and_paginates,
@@ -240,6 +241,7 @@ fn import_keeps_everything(s: &dyn ChatStore) {
             created_at: 1_700_000_000_000,
             updated_at: 1_700_000_009_000,
             pinned_at: Some(1_700_000_005_000),
+            archived_at: None,
         },
         messages: vec![msg("Q?", Role::User, 1_700_000_001_000), reply, streaming],
         grants: vec!["a_tool".into(), "b_tool".into()],
@@ -386,6 +388,23 @@ fn pinning(s: &dyn ChatStore) {
     s.pin_chat("a", false).unwrap();
     assert!(!s.chat("a").unwrap().unwrap().pinned());
     assert!(s.pinned_chats().unwrap().is_empty());
+}
+
+fn archiving(s: &dyn ChatStore) {
+    chat(s, "a");
+    s.pin_chat("a", true).unwrap();
+    s.archive_chat("a", true).unwrap();
+    let c = s.chat("a").unwrap().unwrap();
+    let first = c.archived_at.unwrap();
+    assert!(!c.pinned(), "archiving unpins");
+    s.archive_chat("a", true).unwrap();
+    assert_eq!(s.chat("a").unwrap().unwrap().archived_at, Some(first), "archiving again keeps the time");
+    // Still listed (the client sorts it into its own group), and exported with the flag.
+    assert_eq!(s.list_chats(10, None).unwrap().chats.len(), 1);
+    assert_eq!(s.export_chat("a").unwrap().unwrap().chat.archived_at, Some(first));
+    s.archive_chat("a", false).unwrap();
+    assert!(s.chat("a").unwrap().unwrap().archived_at.is_none());
+    assert!(matches!(s.archive_chat("nope", true), Err(StoreError::NotFound(_))));
 }
 
 fn list_is_recent_first_and_paginates(s: &dyn ChatStore) {

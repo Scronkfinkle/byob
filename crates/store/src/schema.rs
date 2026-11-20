@@ -120,7 +120,12 @@ const V5: &str = "
 ALTER TABLE steps ADD COLUMN card TEXT;
 ";
 
-pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
+/// v6: archived chats (kept, listed apart).
+const V6: &str = "
+ALTER TABLE chats ADD COLUMN archived_at INTEGER;
+";
+
+pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
 
 /// Schema version this build reads and writes.
 pub const LATEST: i64 = MIGRATIONS.len() as i64;

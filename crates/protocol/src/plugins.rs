@@ -205,6 +205,10 @@ pub struct PluginInfo {
     /// is switched off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
+    /// Its folder has a logo (`logo.png` or `logo.jpg`); ask for it with
+    /// [`crate::ClientMsg::GetPluginLogo`] (15+, cap [`crate::version::CAP_PLUGIN_LOGOS`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub logo: bool,
 }
 
 impl PluginInfo {
@@ -446,6 +450,7 @@ mod tests {
             renderers: vec![],
             starters: vec![],
             superseded_by: None,
+            logo: false,
         }
     }
 

@@ -220,7 +220,17 @@ fn every_setting_is_drawn_on_exactly_one_page() {
     for tab in Tab::ALL {
         app.open_settings_at(tab);
         settle(&ctx, &mut app, 1200.0);
-        for (key, rect) in &app.appearance.drawn {
+        let mut drawn = app.appearance.drawn.clone();
+        // Appearance's Advanced settings are in a dialog over the page: open it too (they
+        // still belong to Appearance, and nothing of the page is drawn twice).
+        if tab == Tab::Appearance {
+            assert!(!drawn.iter().any(|(k, _)| *k == Key::ShownList), "fine-tuning isn't on the page");
+            app.appearance.advanced = true;
+            settle(&ctx, &mut app, 1200.0);
+            drawn.extend(app.appearance.drawn.iter().filter(|(k, _)| registry::is_advanced(registry::get(*k).unwrap().section)).copied());
+            app.appearance.advanced = false;
+        }
+        for (key, rect) in &drawn {
             assert!(rect.is_positive() || rect.height() > 0.0, "{key:?} has no room: {rect:?}");
             seen.push((*key, tab));
         }
@@ -431,4 +441,20 @@ fn ctrl_f_in_the_settings_searches_them() {
     frame(&ctx, &mut app, 1000.0);
     assert!(app.show_settings);
     assert_eq!(ctx.memory(|m| m.focused()), Some(egui::Id::unique("settings-search")));
+}
+
+/// Appearance's fine-tuning is folded under Advanced on the page: a jump to one of its
+/// settings (a search result) opens it there; a page setting leaves it as it is.
+#[test]
+fn advanced_appearance_opens_in_place() {
+    let ctx = egui::Context::default();
+    let mut app = full_app();
+    app.open_settings_at(Tab::Appearance);
+    settle(&ctx, &mut app, 1000.0);
+    assert!(!app.appearance.advanced && !app.appearance.drawn.iter().any(|(k, _)| *k == Key::Radius), "folded at first");
+    app.jump_to(Key::Radius);
+    settle(&ctx, &mut app, 1000.0);
+    assert!(app.show_settings && app.appearance.advanced, "Corner radius is under Advanced");
+    assert!(app.appearance.drawn.iter().any(|(k, _)| *k == Key::Radius));
+    assert!(app.appearance.drawn.iter().any(|(k, _)| *k == Key::Mode), "on the same page as the rest");
 }

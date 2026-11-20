@@ -79,7 +79,7 @@ fn by_default_every_detail_is_shown() {
     pears(&fake);
     let ctx = egui::Context::default();
     let text = away(&ctx, &mut app);
-    for want in ["Seven pears.", "You\n", "byob\n", "Thought · 25 chars", "1234 in · 56 out tokens · 2.5 s", "Shift+Enter for a new line", "3.4k"] {
+    for want in ["Seven pears.", "You\n", "byob\n", "Thought · 25 chars", "1234 in · 56 out tokens · 2.5 s", "Shift+Enter for a new line", "1%"] {
         assert!(text.contains(want), "{want:?} isn't drawn: {text}");
     }
     assert!(!text.contains("tokens/s"), "speed is off by default: {text}");
@@ -121,29 +121,17 @@ fn a_replys_details_follow_the_layouts_order() {
     assert!(!text.contains("out tokens"), "{text}");
 }
 
-/// The header follows the layout: the meter before the model chip, and its numbers only
-/// while the pointer is on the header.
+/// The model and the context ring sit under the message box (they moved out of the
+/// header). They're drawn right to left, so the text has the ring first.
 #[test]
-fn the_header_follows_the_layout() {
-    use byob_protocol::layout::{HEADER, Layout, Show};
+fn the_model_and_context_sit_under_the_message_box() {
     let fake = Fake::default();
     let mut app = crowded_with(fake.clone());
-    let mut l = Layout::default();
-    l.set_show("header.usage_numbers", Show::Hover);
-    l.set_order(HEADER, vec!["header.usage".into()]);
-    fake.inbox.lock().unwrap().push(ServerMsg::Layout(l));
     let ctx = egui::Context::default();
-    let below = egui::pos2(500.0, 400.0);
-    for _ in 0..4 {
-        drawn(&ctx, &mut app, below);
-    }
-    assert!(!drawn(&ctx, &mut app, below).contains("3.4k"));
-    // On the header (its rect is last frame's): the numbers, left of the model.
-    let on = egui::pos2(500.0, 10.0);
-    drawn(&ctx, &mut app, on);
-    let text = drawn(&ctx, &mut app, on);
-    let (meter, model) = (text.find("3.4k / 262k"), text.find("yet-another-extremely-long-model-name"));
-    assert!(meter.zip(model).is_some_and(|(a, b)| a < b), "{text}");
+    let text = away(&ctx, &mut app);
+    let (box_, ring, model) = (text.find("Message byob…"), text.find("1%\n"), text.rfind("yet-another-extremely-long-model-name"));
+    assert!(box_.zip(ring).zip(model).is_some_and(|((b, r), m)| b < r && r < m), "{text}");
+    assert!(!text.contains("3.4k / 262k"), "the header meter is gone: {text}");
 }
 
 /// Every detail of a busy reply can be hidden: the thinking row, a tool's row and its file
@@ -214,4 +202,44 @@ fn a_replys_tokens_are_its_context_not_every_request_added_up() {
     assert_eq!(tokens_detail(&s(11, 134_400, 2_008, 12_400)), "12k context · 2k out · 11 calls read 134k");
     assert_eq!(tokens_detail(&s(1, 9_000, 300, 9_300)), "9.3k context · 300 out");
     assert_eq!(tokens_detail(&s(3, 1234, 56, 0)), "1234 in · 56 out tokens", "saved before the context was recorded");
+}
+
+/// The chat's settings show their groups: the basics (model, mode, instructions), where it
+/// works, and the advanced ones behind one line until asked for.
+#[test]
+fn the_chat_settings_show_basics_where_and_advanced_folded() {
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    let ctx = egui::Context::default();
+    away(&ctx, &mut app);
+    app.workspaces.toggle_chat();
+    away(&ctx, &mut app);
+    let view = crate::workspace::tests::view(byob_protocol::ConfigScope::Chat, byob_protocol::workspace::Layer::default(), None);
+    fake.inbox.lock().unwrap().push(ServerMsg::Config(Box::new(view)));
+    let text = away(&ctx, &mut app);
+    for want in ["Basics", "Model", "Mode", "How it answers", "Instructions", "Where it works", "Commands run on", "Advanced: tools, memory, helpers, plugins"]
+    {
+        assert!(text.contains(want), "{want:?} isn't drawn: {text}");
+    }
+    assert!(!text.contains("Steps per reply"), "advanced starts folded: {text}");
+}
+
+/// "Hide details" under the latest reply hides its thinking, tokens and time in this chat
+/// (and only this one); "Show details" brings them back.
+#[test]
+fn hide_details_quiets_this_chats_replies() {
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    pears(&fake);
+    let ctx = egui::Context::default();
+    let text = away(&ctx, &mut app);
+    assert!(text.contains("Hide details") && text.contains("1234 in · 56 out tokens · 2.5 s") && text.contains("Thought"), "{text}");
+    let id = app.sidebar.current().map(|c| c.id.clone()).unwrap();
+    app.sidebar.quiet.insert(id.clone());
+    let text = away(&ctx, &mut app);
+    assert!(text.contains("Show details") && text.contains("Seven pears."), "{text}");
+    for gone in ["out tokens", "Thought"] {
+        assert!(!text.contains(gone), "{gone:?} still drawn: {text}");
+    }
+    assert!(app.sidebar.prefs().quiet.contains(&id), "remembered on this device");
 }

@@ -137,10 +137,10 @@ impl Approvals {
     pub fn label(self) -> &'static str {
         match self {
             Self::Ask => "Ask before changes",
-            Self::AllowEdits => "Allow file edits",
-            Self::AllowAll => "Allow everything",
+            Self::AllowEdits => "Edit freely",
+            Self::AllowAll => "Work freely",
             Self::ReadOnly => "Read only",
-            Self::Yolo => "YOLO: never ask",
+            Self::Yolo => "Never ask",
         }
     }
 }

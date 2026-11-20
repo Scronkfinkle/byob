@@ -26,6 +26,7 @@ ratex-katex-fonts.workspace = true
 lyon_tessellation.workspace = true
 byob-types.workspace = true
 image.workspace = true
+egui-pop-phosphor = { version = "0.15.0", features = ["regular", "fill"] }
 
 # Browser-only: the file picker and reading dropped files (async browser APIs).
 [target.'cfg(target_arch = "wasm32")'.dependencies]

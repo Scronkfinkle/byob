@@ -149,7 +149,12 @@ fn a_level_picks_a_profile_and_a_deleted_one_falls_back() {
     let (main, _) = create(&mut c, new_profile("Main", &global_url, "global-model"), None);
     let (id, list) = create(&mut c, new_profile("Other", &other_url, "small"), Some("sk-other"));
     assert_eq!(list.role("main").map(|v| v.profile.id.clone()), Some(main));
-    c.send(ClientMsg::CreateWorkspace { name: "Data".into(), folder: NewFolder::Existing { path: folder.display().to_string() }, config: Layer::default() });
+    c.send(ClientMsg::CreateWorkspace {
+        name: "Data".into(),
+        folder: NewFolder::Existing { path: folder.display().to_string() },
+        config: Layer::default(),
+        folders: Vec::new(),
+    });
     let ws = wait(&mut c, |m| if let ServerMsg::WorkspaceCreated { id, .. } = m { id } else { None });
     c.send(ClientMsg::SetLevelProfile { scope: ConfigScope::Workspace { id: ws.clone() }, profile: Some(id.clone()) });
     let view = config_view(&mut c);

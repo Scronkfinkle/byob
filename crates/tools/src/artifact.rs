@@ -58,6 +58,10 @@ const MAX_READ_CHARS: usize = 200_000;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Meta {
     pub chat: String,
+    /// A live file: the person's own file (relative to the workspace) this artifact follows.
+    /// Its versions are snapshots of it; removing the artifact never touches the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<String>,
     #[serde(flatten)]
     pub artifact: Artifact,
 }
@@ -174,7 +178,98 @@ pub fn list(workspace: &Path, chat: &str) -> Vec<Artifact> {
     out
 }
 
-/// Delete every artifact of `chat` in `workspace` for good (when the chat is deleted).
+/// Every artifact in `workspace`, with the chat it belongs to (the Library).
+pub fn list_all(workspace: &Path) -> Vec<(String, Artifact)> {
+    let Ok(r) = sandbox::resolve(workspace, ARTIFACT_DIR) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&r.abs) else { return Vec::new() };
+    entries
+        .take(MAX_LISTED)
+        .filter_map(Result::ok)
+        .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+        .filter(|id| valid_id(id))
+        .filter_map(|id| load(workspace, &id).ok())
+        .map(|m| (m.chat, m.artifact))
+        .collect()
+}
+
+/// Every artifact in `workspace` with its index (chat, live file).
+pub fn list_all_meta(workspace: &Path) -> Vec<Meta> {
+    let Ok(r) = sandbox::resolve(workspace, ARTIFACT_DIR) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&r.abs) else { return Vec::new() };
+    entries
+        .take(MAX_LISTED)
+        .filter_map(Result::ok)
+        .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+        .filter(|id| valid_id(id))
+        .filter_map(|id| load(workspace, &id).ok())
+        .collect()
+}
+
+/// Add the person's own file `path` (relative to `workspace`, inside it, not in `.byob`) to
+/// the Library as a live file of `chat`: a first snapshot now, a new one whenever it changes
+/// ([`refresh_live`]). The file itself is never written or removed by this.
+pub fn add_live(types: &ArtifactTypes, workspace: &Path, chat: &str, path: &str) -> Result<Artifact, String> {
+    let rel = path.trim().trim_start_matches("./").to_owned();
+    if rel.is_empty() || rel.split(['/', '\\']).next() == Some(sandbox::RESERVED_DIR) {
+        return Err("that file can't be added".into());
+    }
+    let r = sandbox::resolve(workspace, &rel)?;
+    let info = std::fs::symlink_metadata(&r.abs).map_err(|_| format!("there is no file {rel:?}"))?;
+    if !info.is_file() {
+        return Err(format!("{rel:?} isn't a file"));
+    }
+    if let Some(m) = list_all_meta(workspace).into_iter().find(|m| m.chat == chat && m.live.as_deref() == Some(rel.as_str())) {
+        return Ok(m.artifact);
+    }
+    let bytes = read_capped(&r.abs, MAX_FILE_BYTES)?;
+    let name = rel.rsplit(['/', '\\']).next().unwrap_or(&rel).to_owned();
+    let saved = save_bytes(
+        types,
+        workspace,
+        &SaveBytes { chat, id: None, title: Some(&name), filename: Some(&name), bytes: &bytes, note: "Your file", replace: None, turn: None },
+    )?;
+    let (_, dir) = artifact_dir(workspace, &saved.artifact.id)?;
+    let mut meta = load(workspace, &saved.artifact.id)?;
+    meta.live = Some(rel);
+    save(&dir, &meta)?;
+    Ok(meta.artifact)
+}
+
+/// Live files that changed since their latest snapshot (by byob or in another app) get a new
+/// snapshot, so no change is ever lost. Returns how many changed.
+pub fn refresh_live(types: &ArtifactTypes, workspace: &Path) -> usize {
+    let mut changed = 0;
+    for meta in list_all_meta(workspace) {
+        let Some(rel) = meta.live.as_deref() else { continue };
+        let Ok(r) = sandbox::resolve(workspace, rel) else { continue };
+        let Ok(now) = read_capped(&r.abs, MAX_FILE_BYTES) else { continue };
+        let latest = meta.artifact.latest().and_then(|v| version_file(workspace, &v.path)).and_then(|f| read_capped(&f, MAX_FILE_BYTES).ok());
+        if latest.as_deref() == Some(now.as_slice()) || now.is_empty() {
+            continue;
+        }
+        let s =
+            SaveBytes { chat: &meta.chat, id: Some(&meta.artifact.id), title: None, filename: None, bytes: &now, note: "Changed", replace: None, turn: None };
+        if save_bytes(types, workspace, &s).is_ok() {
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// Delete artifact `id` of `chat` in `workspace` for good (you chose to delete it).
+pub fn remove(workspace: &Path, chat: &str, id: &str) -> Result<(), String> {
+    load_in_chat(workspace, chat, id)?;
+    let (_, dir) = artifact_dir(workspace, id)?;
+    std::fs::remove_dir_all(&dir).map_err(|e| format!("couldn't delete it: {e}"))
+}
+
+/// The folder artifact `id` of `chat` keeps its versions in (to show it in the file manager).
+pub fn folder_of(workspace: &Path, chat: &str, id: &str) -> Result<PathBuf, String> {
+    load_in_chat(workspace, chat, id)?;
+    artifact_dir(workspace, id).map(|(_, dir)| dir)
+}
+
+/// Delete every artifact of `chat` in `workspace` for good.
 /// Returns how many were removed; ones whose index can't be read are left alone.
 pub fn remove_chat(workspace: &Path, chat: &str) -> usize {
     let Ok(r) = sandbox::resolve(workspace, ARTIFACT_DIR) else { return 0 };
@@ -332,7 +427,7 @@ fn adopt(workspace: &Path, chat: &str, media: &[MediaRef]) -> Vec<ArtifactRef> {
                 filename: name.clone(),
                 versions: vec![version],
             };
-            save(&dir, &Meta { chat: chat.to_owned(), artifact }).map(|()| id)
+            save(&dir, &Meta { chat: chat.to_owned(), live: None, artifact }).map(|()| id)
         });
         match result {
             Ok(id) => out.push(ArtifactRef { id, version: 1 }),
@@ -421,7 +516,7 @@ pub fn save_bytes(types: &ArtifactTypes, workspace: &Path, s: &SaveBytes<'_>) ->
                 ArtifactVersion { n: 1, path: rel(&root, &file), created_at: now_ms(), note: note.clone(), size: s.bytes.len() as u64, turn: turn.clone() };
             let artifact =
                 Artifact { id: id.clone(), kind: ty.kind, content_type: ty.content_type.clone(), title: title.clone(), filename, versions: vec![version] };
-            save(&dir, &Meta { chat: s.chat.to_owned(), artifact: artifact.clone() })?;
+            save(&dir, &Meta { chat: s.chat.to_owned(), live: None, artifact: artifact.clone() })?;
             Ok::<_, String>(Saved { artifact, version: 1, file, created: true, replaced: false })
         })();
         if result.is_err() {
@@ -639,7 +734,7 @@ fn create(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
             filename: filename.clone(),
             versions: vec![version],
         };
-        save(&dir, &Meta { chat: chat.to_owned(), artifact })?;
+        save(&dir, &Meta { chat: chat.to_owned(), live: None, artifact })?;
         Ok::<_, String>(file)
     })();
     let file = match result {
@@ -1162,5 +1257,33 @@ mod tests {
         assert!(save(SaveBytes { chat: "other", id: Some(&id), bytes: b"x", ..Default::default() }).is_err());
         assert!(save(SaveBytes { chat: "c", id: Some(&id), bytes: b"", ..Default::default() }).is_err());
         assert!(save(SaveBytes { chat: "c", id: Some("nope"), bytes: b"x", ..Default::default() }).is_err());
+    }
+
+    /// A live file: added from inside the folder only (never `.byob`, never outside), its
+    /// first snapshot taken; a change becomes a new version; removing it from the Library
+    /// leaves the file itself alone.
+    #[test]
+    fn live_files_follow_the_persons_file_and_never_touch_it() {
+        let types = ArtifactTypes::builtin();
+        let d = tempfile::tempdir().unwrap();
+        let ws = d.path();
+        std::fs::write(ws.join("budget.csv"), "a,b\n1,2\n").unwrap();
+        assert!(add_live(&types, ws, "c1", "../escape.csv").is_err(), "outside the folder");
+        assert!(add_live(&types, ws, "c1", ".byob/artifacts/x/v1.md").is_err(), "byob's own folder");
+        assert!(add_live(&types, ws, "c1", "missing.csv").is_err());
+        let a = add_live(&types, ws, "c1", "budget.csv").unwrap();
+        assert_eq!(a.versions.len(), 1);
+        assert_eq!(add_live(&types, ws, "c1", "./budget.csv").unwrap().id, a.id, "added once");
+        assert_eq!(refresh_live(&types, ws), 0, "nothing changed yet");
+        // Changed (by byob or in another app): a new version, the old one kept.
+        std::fs::write(ws.join("budget.csv"), "a,b\n1,3\n").unwrap();
+        assert_eq!(refresh_live(&types, ws), 1);
+        let meta = list_all_meta(ws).into_iter().find(|m| m.artifact.id == a.id).unwrap();
+        assert_eq!(meta.live.as_deref(), Some("budget.csv"));
+        assert_eq!(meta.artifact.versions.len(), 2);
+        // Removed from the Library: the snapshots go, the file stays.
+        remove(ws, "c1", &a.id).unwrap();
+        assert!(list_all_meta(ws).is_empty());
+        assert_eq!(std::fs::read_to_string(ws.join("budget.csv")).unwrap(), "a,b\n1,3\n");
     }
 }

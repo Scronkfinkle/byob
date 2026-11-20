@@ -31,7 +31,15 @@ const TITLE_MAX_BYTES: usize = 400;
 const TITLE_MAX_REASONING: usize = 8 * 1024;
 
 pub fn summary(chat: &Chat, busy: bool, workspace: Option<String>) -> ChatSummary {
-    ChatSummary { id: chat.id.clone(), title: chat.title.clone(), updated_at: chat.updated_at, pinned_at: chat.pinned_at, busy, workspace }
+    ChatSummary {
+        id: chat.id.clone(),
+        title: chat.title.clone(),
+        updated_at: chat.updated_at,
+        pinned_at: chat.pinned_at,
+        busy,
+        workspace,
+        archived_at: chat.archived_at,
+    }
 }
 
 pub fn store_cursor(c: &byob_protocol::ChatCursor) -> byob_store::ChatCursor {

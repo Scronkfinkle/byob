@@ -18,14 +18,26 @@ pub const MAX_NAME_CHARS: usize = 200;
 pub const MAX_PATH_CHARS: usize = 4096;
 /// Most folders listed by one [`ServerMsg::Folders`](crate::ServerMsg::Folders).
 pub const MAX_LISTED_FOLDERS: usize = 500;
+/// Most folders a project links besides its own (13.16+).
+pub const MAX_LINKED_FOLDERS: usize = 16;
+/// Longest goal a project summary carries (its full text is the project's instructions).
+pub const MAX_GOAL_CHARS: usize = 280;
 
-/// A workspace in the chat list.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A project (workspace) in the chat list: a name, what it's for, and the folders it works
+/// in. Its own folder is where its chats run (one byob made, or one the person has); it can
+/// link more.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceSummary {
     pub id: String,
     pub name: String,
-    /// Its folder on the engine's machine.
+    /// Its own folder on the engine's machine: where its chats run.
     pub folder: String,
+    /// Other folders it works in (13.16+): its chats may read and change them too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
+    /// What it's for (13.16+): the start of its instructions, at most [`MAX_GOAL_CHARS`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub goal: String,
     /// How many chats it has.
     #[serde(default)]
     pub chats: u64,
@@ -127,17 +139,26 @@ impl ClientMsg {
         let id = |s: &str| if long(s, MAX_ID_CHARS) || s.is_empty() { Err("bad id".to_owned()) } else { Ok(()) };
         let name = |s: &str| if long(s, MAX_NAME_CHARS) { Err("the name is too long".to_owned()) } else { Ok(()) };
         let path = |s: &str| if long(s, MAX_PATH_CHARS) { Err("the path is too long".to_owned()) } else { Ok(()) };
+        let linked = |f: &[String]| {
+            if f.len() > MAX_LINKED_FOLDERS {
+                return Err(format!("a project links at most {MAX_LINKED_FOLDERS} folders"));
+            }
+            f.iter().try_for_each(|p| path(p))
+        };
         match self {
             Self::NewChat { workspace: Some(w) } => id(w),
-            Self::CreateWorkspace { name: n, folder, .. } => {
+            Self::CreateWorkspace { name: n, folder, folders, .. } => {
                 name(n)?;
+                linked(folders)?;
                 match folder {
                     NewFolder::Existing { path: p } => path(p),
                     NewFolder::Create => Ok(()),
                 }
             }
+            Self::SetWorkspaceFolders { id: i, folders } => id(i).and_then(|()| linked(folders)),
             Self::RenameWorkspace { id: i, name: n } => id(i).and_then(|()| name(n)),
             Self::RemoveWorkspace { id: i, .. } => id(i),
+            Self::ChatToProject { chat } => id(chat),
             Self::GetConfig { scope: ConfigScope::Workspace { id: i } } | Self::SetConfig { scope: ConfigScope::Workspace { id: i }, .. } => id(i),
             Self::ListFolders { path: Some(p) } => path(p),
             Self::WorkspaceEnv { workspace: Some(w), .. } => id(w),
@@ -180,8 +201,13 @@ mod tests {
         let layer = Layer { env: Some(EnvKind::Container), image: Some("python:3-slim".into()), ..Layer::default() };
         let msgs = vec![
             ClientMsg::NewChat { workspace: Some("w1".into()) },
-            ClientMsg::CreateWorkspace { name: "Data".into(), folder: NewFolder::Create, config: layer.clone() },
-            ClientMsg::CreateWorkspace { name: "Repo".into(), folder: NewFolder::Existing { path: "/home/me/repo".into() }, config: Layer::default() },
+            ClientMsg::CreateWorkspace { name: "Data".into(), folder: NewFolder::Create, config: layer.clone(), folders: Vec::new() },
+            ClientMsg::CreateWorkspace {
+                name: "Repo".into(),
+                folder: NewFolder::Existing { path: "/home/me/repo".into() },
+                config: Layer::default(),
+                folders: Vec::new(),
+            },
             ClientMsg::RenameWorkspace { id: "w1".into(), name: "New".into() },
             ClientMsg::RemoveWorkspace { id: "w1".into(), clean: true },
             ClientMsg::GetConfig { scope: ConfigScope::Chat },
@@ -197,7 +223,8 @@ mod tests {
         // Older clients' messages still parse.
         assert_eq!(ClientMsg::from_json(r#"{"type":"new_chat"}"#).unwrap(), ClientMsg::NewChat { workspace: None });
         assert_eq!(ClientMsg::from_json(r#"{"type":"workspace_env"}"#).unwrap(), ClientMsg::WorkspaceEnv { action: None, workspace: None });
-        let ws = WorkspaceSummary { id: "w1".into(), name: "Data".into(), folder: "/d".into(), chats: 2, updated_at: 5, env: EnvKind::Nix };
+        let ws =
+            WorkspaceSummary { id: "w1".into(), name: "Data".into(), folder: "/d".into(), chats: 2, updated_at: 5, env: EnvKind::Nix, ..Default::default() };
         let effective = byob_types::config::resolve(Default::default(), Default::default(), Default::default());
         let view = ConfigView { scope: ConfigScope::Global, own: layer, effective, has_key: false, title: "Defaults".into(), workspace: Some(ws.clone()) };
         let msgs = vec![
@@ -218,8 +245,8 @@ mod tests {
     fn oversized_fields_are_refused() {
         let huge = "x".repeat(MAX_PATH_CHARS + 1);
         for m in [
-            ClientMsg::CreateWorkspace { name: "n".into(), folder: NewFolder::Existing { path: huge.clone() }, config: Layer::default() },
-            ClientMsg::CreateWorkspace { name: huge.clone(), folder: NewFolder::Create, config: Layer::default() },
+            ClientMsg::CreateWorkspace { name: "n".into(), folder: NewFolder::Existing { path: huge.clone() }, config: Layer::default(), folders: Vec::new() },
+            ClientMsg::CreateWorkspace { name: huge.clone(), folder: NewFolder::Create, config: Layer::default(), folders: Vec::new() },
             ClientMsg::RenameWorkspace { id: huge.clone(), name: "n".into() },
             ClientMsg::RemoveWorkspace { id: String::new(), clean: false },
             ClientMsg::ListFolders { path: Some(huge.clone()) },
