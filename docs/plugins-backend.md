@@ -34,7 +34,7 @@ byob_plugin.py` (the Python helper), `crates/plugins/src/pyenv.rs` (Python envir
   `read` (runs without asking by default), `write`, `network` or `execute` (the default:
   asks). The bundled `memory` plugin's `remember`/`forget` are `write`.
 - `"confirm"` on a script or backend tool makes its calls must-confirm: a person approves
-  each one, whatever the approvals setting (`--auto-approve` and "Allow everything"
+  each one, whatever the approvals setting (`--auto-approve` and "Work freely"
   included); no "always allow" grant or hook's `allow` skips the card, and only switching
   its access level off refuses it. `"confirm": "<warning>"` asks on every call with that
   warning on the card; `true` the same with a generic one; `{"warning"?, "when"?: [arg

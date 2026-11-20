@@ -80,7 +80,7 @@ for the confirmations below.
 
 ## Always asked
 
-Even under "Allow everything" (or `--auto-approve`), a person confirms:
+Even under "Work freely" (or `--auto-approve`), a person confirms:
 
 - `calendar_create` and `calendar_update` **with attendees** and every `calendar_delete`: the
   manifest's `confirm` rules (`"confirm": {"when": ["attendees"], "warning": …}`, see
