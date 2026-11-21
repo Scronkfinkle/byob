@@ -577,7 +577,14 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
                     a.problems.push(format!("insert {}: a tree (what to draw) or a view (plugin/view)", ins.id));
                     continue;
                 }
-                let faults = if ins.view.is_empty() { parse_tree(&ins.tree).1 } else { Vec::new() };
+                // Checked as it's drawn: `if` and `each` nodes picked and repeated by its state.
+                let faults = if ins.view.is_empty() {
+                    let mut tree = ins.tree.clone();
+                    super::inserts::expand(&mut tree, &ins.state);
+                    parse_tree(&tree).1
+                } else {
+                    Vec::new()
+                };
                 if !faults.is_empty() {
                     let f: Vec<String> = faults.iter().take(3).map(ToString::to_string).collect();
                     a.problems.push(format!("insert {}: its tree has problems (drawn anyway where it can): {}", ins.id, f.join("; ")));
@@ -612,6 +619,17 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
     }
     doc.tidy();
     a
+}
+
+/// The rule for `path`: `base`'s (the plugins'), `doc`'s (the user's) over it.
+pub fn merged(base: &FluidDoc, doc: &FluidDoc, path: &str) -> Option<Rule> {
+    match (base.rule_for(path), doc.rule_for(path)) {
+        (Some(mut b), Some(u)) => {
+            b.merge(&u);
+            Some(b)
+        }
+        (b, u) => u.or(b),
+    }
 }
 
 /// A view tree from untrusted JSON: what could be read, and what was dropped.
@@ -664,6 +682,21 @@ mod tests {
         assert_eq!(d.inserts.len(), 1);
         assert_eq!(d.inserts[0].by, "model");
         assert_eq!(a.problems.len(), 3, "{:?}", a.problems);
+    }
+
+    #[test]
+    fn if_and_each_nodes_are_checked_as_drawn() {
+        // A pomodoro's `if` node has no "type" of its own: it isn't a problem.
+        let mut d = FluidDoc::default();
+        let a = apply(
+            &mut d,
+            &json!({"insert": [{"id": "p", "at": "free", "state": {"end": 0, "todo": []}, "tree": {"type": "column", "children": [
+                {"if": "end", "then": {"type": "text", "text": "{until:end}"}, "else": {"type": "text", "text": "25:00"}},
+                {"each": "todo", "item": {"type": "text", "text": "{item}"}}
+            ]}}]}),
+            "model",
+        );
+        assert!(a.problems.is_empty(), "{:?}", a.problems);
     }
 
     #[test]

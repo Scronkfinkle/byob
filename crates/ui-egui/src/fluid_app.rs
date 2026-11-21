@@ -20,6 +20,16 @@ impl ByobApp {
                 fluid::with(ctx, |f| f.editing = true);
                 self.fluid_editor.selected = std::env::var("BYOB_FLUID_EDIT").ok().filter(|s| !s.is_empty() && s != "1");
             }
+            // For checking it headless: start from these changes (`ui_fluid` ops, as JSON).
+            if let Some(ops) =
+                std::env::var_os("BYOB_FLUID_DOC").and_then(|f| std::fs::read_to_string(f).ok()).and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            {
+                let mut doc = fluid::FluidDoc::default();
+                for p in fluid::doc::apply(&mut doc, &ops, "you").problems {
+                    log::warn!("BYOB_FLUID_DOC: {p}");
+                }
+                self.prefs.fluid = doc;
+            }
         }
         fluid::edit::toggle_keys(ctx);
         let saved = self.fluid_saved;
@@ -58,7 +68,11 @@ impl ByobApp {
     /// At the end of a frame: inserted elements, edit mode, and what the window changed
     /// saved into the prefs.
     pub(crate) fn fluid_end(&mut self, ctx: &egui::Context) {
-        let Some((doc, base, els, edited)) = fluid::with(ctx, |f| (Arc::clone(&f.doc), Arc::clone(&f.base), f.elements.clone(), f.edited)) else { return };
+        let Some((doc, base, els, edited, dragging)) =
+            fluid::with(ctx, |f| (Arc::clone(&f.doc), Arc::clone(&f.base), f.elements.clone(), f.edited, f.dragging.clone()))
+        else {
+            return;
+        };
         let data = fluid::inserts::Data {
             chat: self.sidebar.current().map(|c| c.title.clone()).unwrap_or_default(),
             model: self.state.as_ref().map(|s| s.inference_model.clone()).unwrap_or_default(),
@@ -71,7 +85,16 @@ impl ByobApp {
         let sites = &mut self.plugins.sites;
         let mut views = |ui: &mut egui::Ui, spec: &str| sites.draw_spec(ui, &t, spec);
         let inserts: Vec<fluid::Insert> = base.inserts.iter().chain(&doc.inserts).cloned().collect();
-        let events = fluid::inserts::show(ctx, &t, &inserts, &els, &mut self.fluid_trees, &data, &mut views);
+        let rules = |path: &str| fluid::doc::merged(&base, &doc, path);
+        let events = fluid::inserts::show(
+            ctx,
+            &t,
+            &inserts,
+            &mut self.fluid_trees,
+            &data,
+            &fluid::inserts::Moves { els: &els, rules: &rules, dragging: dragging.as_deref() },
+            &mut views,
+        );
         for (id, e) in events {
             self.fluid_action(ctx, &id, &e);
         }
@@ -82,10 +105,13 @@ impl ByobApp {
             }
         }
         // For checking it headless: the elements, written out now and then.
-        if let Some(file) = std::env::var_os("BYOB_FLUID_DUMP")
-            && ctx.cumulative_pass_nr() % 30 == 5
-        {
-            let _ = std::fs::write(file, fluid::inventory(&els, "", "", 5000));
+        if let Some(file) = std::env::var_os("BYOB_FLUID_DUMP") {
+            if ctx.cumulative_pass_nr().is_multiple_of(3) {
+                let editing = fluid::with(ctx, |f| f.editing).unwrap_or(false);
+                let head = format!("editing: {editing} selected: {}\n", self.fluid_editor.selected.as_deref().unwrap_or("-"));
+                let _ = std::fs::write(file, head + &fluid::inventory(&els, "", "", 5000));
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         let edited = fluid::with(ctx, |f| f.edited).unwrap_or(edited);
         if edited != self.fluid_saved {

@@ -7,7 +7,7 @@ use byob_protocol::tree::Event;
 use egui::{Align2, Context, Pos2, Rect, Vec2};
 use serde_json::Value;
 
-use super::doc::{At, Insert, parse_tree};
+use super::doc::{At, Insert, Rule, parse_tree};
 use super::{Element, region};
 use crate::theme::Tokens;
 use crate::tree::{TreeState, show_tree};
@@ -37,7 +37,7 @@ fn text_of(v: &Value) -> String {
 /// Repeat nodes over the insert's state: a node with `"each": "key"` and `"item": node`
 /// gets one child per item of `state.key` (`{item}`, `{index}`, `{item.field}` in it), or
 /// its `"empty"` node when there are none. `{state.key}` anywhere reads the state.
-fn expand(v: &mut Value, state: &serde_json::Map<String, Value>) {
+pub(super) fn expand(v: &mut Value, state: &serde_json::Map<String, Value>) {
     // A node shown only while a state value is true (or, with `!key`, false):
     // {"if": "running", "then": node, "else": node}.
     if let Some(cond) = v.get("if").and_then(Value::as_str).map(str::to_owned) {
@@ -178,16 +178,17 @@ fn fill(v: &mut Value, d: &Data) -> bool {
     }
 }
 
-/// Where `ins` goes, as (point, which corner of it sits there), given the elements.
-fn place(ins: &Insert, els: &[Element], screen: Rect) -> Option<(Pos2, Align2)> {
-    if ins.at == At::Free {
-        let p = screen.min + Vec2::new(screen.width() * ins.x.clamp(0.0, 100.0) / 100.0, screen.height() * ins.y.clamp(0.0, 100.0) / 100.0);
+/// Where an insert goes, as (point, which corner of it sits there): by `anchor` (`at` it),
+/// or for `free`, at `x`/`y` % of the window.
+fn place(at: At, anchor: &str, x: f32, y: f32, els: &[Element], screen: Rect) -> Option<(Pos2, Align2)> {
+    if at == At::Free {
+        let p = screen.min + Vec2::new(screen.width() * x.clamp(0.0, 100.0) / 100.0, screen.height() * y.clamp(0.0, 100.0) / 100.0);
         return Some((p, Align2::LEFT_TOP));
     }
-    let anchor = els.iter().find(|e| e.path == ins.anchor).or_else(|| els.iter().find(|e| super::doc::glob(&ins.anchor, &e.path)))?;
+    let anchor = els.iter().find(|e| e.path == anchor).or_else(|| els.iter().find(|e| super::doc::glob(anchor, &e.path)))?;
     let r = anchor.shown;
     let gap = 6.0;
-    Some(match ins.at {
+    Some(match at {
         At::After => (r.right_center() + Vec2::new(gap, 0.0), Align2::LEFT_CENTER),
         At::Before => (r.left_center() - Vec2::new(gap, 0.0), Align2::RIGHT_CENTER),
         At::Above => (r.center_top() - Vec2::new(0.0, gap), Align2::CENTER_BOTTOM),
@@ -196,15 +197,48 @@ fn place(ins: &Insert, els: &[Element], screen: Rect) -> Option<(Pos2, Align2)> 
     })
 }
 
+/// Where an insert is drawn: by its anchor, unless its own rule (`+id`) places it by
+/// another element (`place`), then nudged by the rule's `dx`/`dy`. An insert is moved for
+/// real (its area is there, laid out and clicked there), not drawn elsewhere afterwards.
+fn spot(ins: &Insert, rule: Option<&Rule>, els: &[Element], screen: Rect) -> Option<(Pos2, Align2)> {
+    let own = format!("+{}", ins.id);
+    let by = rule.and_then(|r| r.place.as_deref()).and_then(|p| p.split_once(':')).and_then(|(side, target)| {
+        let at = match side.trim() {
+            "after" => At::After,
+            "before" => At::Before,
+            "above" => At::Above,
+            "below" => At::Below,
+            "over" | "swap" => At::Over,
+            _ => return None,
+        };
+        // Not by something inside itself (it would chase itself).
+        let target = target.trim();
+        (target != own && !target.starts_with(&format!("{own}/"))).then_some((at, target))
+    });
+    let (pos, pivot) = match by {
+        Some((at, target)) => place(at, target, 0.0, 0.0, els, screen).or_else(|| place(ins.at, &ins.anchor, ins.x, ins.y, els, screen))?,
+        None => place(ins.at, &ins.anchor, ins.x, ins.y, els, screen)?,
+    };
+    Some((pos + rule.map_or(Vec2::ZERO, Rule::offset), pivot))
+}
+
+/// Where inserts go: the elements on screen (anchors), the rule for a path (its own `+id`
+/// one places it), and the one being dragged in edit mode (it follows the pointer, not eased).
+pub struct Moves<'a> {
+    pub els: &'a [Element],
+    pub rules: &'a dyn Fn(&str) -> Option<Rule>,
+    pub dragging: Option<&'a str>,
+}
+
 /// Draw every insert; the events their trees sent, by insert id.
 /// `views` draws a plugin's live view (`plugin/view`).
 pub fn show(
     ctx: &Context,
     t: &Tokens,
     inserts: &[Insert],
-    els: &[Element],
     states: &mut HashMap<String, TreeState>,
     data: &Data,
+    moves: &Moves<'_>,
     views: &mut dyn FnMut(&mut egui::Ui, &str),
 ) -> Vec<(String, Event)> {
     let mut out = Vec::new();
@@ -212,7 +246,15 @@ pub fn show(
     let mut clock = false;
     states.retain(|k, _| inserts.iter().any(|i| &i.id == k));
     for ins in inserts {
-        let Some((pos, pivot)) = place(ins, els, screen) else { continue };
+        let own = format!("+{}", ins.id);
+        let Some((pos, pivot)) = spot(ins, (moves.rules)(&own).as_ref(), moves.els, screen) else { continue };
+        // Eased to a new spot (not while it's dragged: then it follows the pointer).
+        let pos = if moves.dragging == Some(own.as_str()) {
+            pos
+        } else {
+            let id = egui::Id::unique(("fluid-insert-pos", &ins.id));
+            Pos2::new(ctx.animate_value_with_time(id.with(0), pos.x, 0.2), ctx.animate_value_with_time(id.with(1), pos.y, 0.2))
+        };
         let mut tree = ins.tree.clone();
         clock |= ticks(&tree);
         expand(&mut tree, &ins.state);
@@ -223,11 +265,17 @@ pub fn show(
         }
         let st = states.entry(ins.id.clone()).or_default();
         let width = if ins.width > 0.0 { ins.width.clamp(40.0, 1200.0) } else { 360.0 };
-        egui::Area::new(egui::Id::unique(("fluid-insert", &ins.id))).order(egui::Order::Foreground).pivot(pivot).fixed_pos(pos).constrain(true).show(
+        // Over the panels, under popups and edit mode's overlay.
+        egui::Area::new(egui::Id::unique(("fluid-insert", &ins.id))).order(egui::Order::Middle).pivot(pivot).fixed_pos(pos).constrain_to(screen).show(
             ctx,
             |ui| {
-                ui.set_max_width(width);
-                region(ui, &format!("+{}", ins.id), |ui| {
+                // A width asked for is the width; otherwise as wide as it needs, up to 360.
+                if ins.width > 0.0 {
+                    ui.set_width(width);
+                } else {
+                    ui.set_max_width(width);
+                }
+                region(ui, &own, |ui| {
                     let mut body = |ui: &mut egui::Ui| match &node {
                         Some(node) => show_tree(ui, t, node, st),
                         None => {
@@ -274,6 +322,25 @@ mod tests {
         assert_eq!(v[0]["text"], "on");
         assert_eq!(v[1]["text"], "no laps");
         assert_eq!(v[2]["type"], "column");
+    }
+
+    fn el(path: &str, rect: Rect) -> Element {
+        super::super::element(path.into(), "button".into(), String::new(), rect, egui::LayerId::background(), None, 0, true)
+    }
+
+    #[test]
+    fn an_insert_is_placed_by_its_own_rule() {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 800.0));
+        let els = vec![el("sidebar/button:Chats", Rect::from_min_size(Pos2::new(8.0, 300.0), Vec2::new(224.0, 26.0)))];
+        let ins: Insert = serde_json::from_value(json!({"id": "pomo", "at": "free", "x": 50, "y": 50, "tree": {}})).unwrap_or_else(|_| unreachable!());
+        // By its anchor (free: % of the window) without a rule.
+        assert_eq!(spot(&ins, None, &els, screen).map(|s| s.0), Some(Pos2::new(500.0, 400.0)));
+        // A place rule puts the insert itself there (below Chats), and dx/dy nudge it.
+        let rule = Rule { place: Some("below:sidebar/button:Chats".into()), dx: Some(4.0), ..Rule::default() };
+        assert_eq!(spot(&ins, Some(&rule), &els, screen), Some((Pos2::new(124.0, 332.0), Align2::CENTER_TOP)));
+        // Not by something inside itself.
+        let rule = Rule { place: Some("after:+pomo/button:Go".into()), ..Rule::default() };
+        assert_eq!(spot(&ins, Some(&rule), &els, screen).map(|s| s.0), Some(Pos2::new(500.0, 400.0)));
     }
 
     #[test]

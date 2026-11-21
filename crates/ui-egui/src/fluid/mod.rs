@@ -81,6 +81,11 @@ impl Element {
         self.role == "region"
     }
 
+    /// An inserted element as a whole (`+id`).
+    pub fn is_insert(&self) -> bool {
+        self.is_region() && self.path.starts_with('+') && !self.path.contains('/')
+    }
+
     /// Not moved by its own rule (only zoomed or styled).
     fn offset_free(&self) -> bool {
         self.rule.as_ref().is_none_or(|r| r.offset() == Vec2::ZERO)
@@ -298,13 +303,7 @@ fn egui_id(n: u64) -> Option<Id> {
 impl Fluid {
     /// The rule for `path`: the plugins', the user's on top.
     pub fn rule_of(&self, path: &str) -> Option<Rule> {
-        match (self.base.rule_for(path), self.doc.rule_for(path)) {
-            (Some(mut b), Some(u)) => {
-                b.merge(&u);
-                Some(b)
-            }
-            (b, u) => u.or(b),
-        }
+        doc::merged(&self.base, &self.doc, path)
     }
 
     fn time(&self) -> f32 {
@@ -402,6 +401,8 @@ impl Fluid {
                 || widgets.iter().any(|(w, _)| same(*w, rect))
                 || inspector.is_some_and(|m| m.expand(1.0).contains_rect(rect))
                 || overlay.is_some_and(|m| same(m, rect))
+                // An area as big as a region in it (an inserted element's own): that region.
+                || raw.iter().any(|x| x.role == "region" && same(x.rect, rect))
             {
                 continue;
             }
@@ -523,8 +524,14 @@ impl Fluid {
                 None => (TSTransform::IDENTITY, 1.0, false),
             };
             let (mut off, mut scale) = rule.as_ref().map_or((Vec2::ZERO, 1.0), |r| (r.offset(), r.scale.unwrap_or(1.0)));
+            // An inserted element is moved and placed where its area is drawn (see
+            // inserts::show): really there, not drawn elsewhere than laid out.
+            let insert = els[i].is_insert();
+            if insert {
+                off = Vec2::ZERO;
+            }
             // Placed by another element: where that one was drawn last frame.
-            if let Some(place) = rule.as_ref().and_then(|r| r.place.as_deref())
+            if let Some(place) = rule.as_ref().and_then(|r| r.place.as_deref()).filter(|_| !insert)
                 && let Some((side, target)) = place.split_once(':')
                 && let Some(t) = last.get(target)
             {
@@ -539,6 +546,12 @@ impl Fluid {
                     // Where the other one was laid out (so two swapped don't chase each other).
                     _ => t.0.center() - size / 2.0,
                 };
+                // Kept inside the window (a wide one under a narrow one would stick out).
+                let screen = ctx.content_rect();
+                let at = Pos2::new(
+                    at.x.clamp(screen.left(), (screen.right() - size.x).max(screen.left())),
+                    at.y.clamp(screen.top(), (screen.bottom() - size.y).max(screen.top())),
+                );
                 // The scale is about its center: aim the center, in its parent's terms (the
                 // parent may be moved or zoomed itself).
                 off += parent_t.inverse() * (at + size / 2.0) - r.center();
@@ -629,7 +642,15 @@ impl Fluid {
                 if !b.is_finite() || !b.is_positive() {
                     continue;
                 }
-                let Some(&i) = list.iter().find(|&&i| els[i].rect.expand(1.5).contains_rect(*b)) else { continue };
+                // Its element: the innermost changed one it's inside; else (a card's shadow
+                // reaches past it) the innermost changed region it's centered in.
+                let Some(&i) = list
+                    .iter()
+                    .find(|&&i| els[i].rect.expand(1.5).contains_rect(*b))
+                    .or_else(|| list.iter().find(|&&i| els[i].is_region() && els[i].rect.contains(b.center()) && els[i].rect.expand(48.0).contains_rect(*b)))
+                else {
+                    continue;
+                };
                 let e = &els[i];
                 let first = !decorated.contains(&i);
                 if first {
@@ -805,7 +826,16 @@ fn tinted(x: Color32, to: Color32) -> Color32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn element(path: String, role: String, label: String, rect: Rect, layer: LayerId, parent: Option<usize>, depth: usize, interactive: bool) -> Element {
+pub(crate) fn element(
+    path: String,
+    role: String,
+    label: String,
+    rect: Rect,
+    layer: LayerId,
+    parent: Option<usize>,
+    depth: usize,
+    interactive: bool,
+) -> Element {
     Element {
         path,
         role,

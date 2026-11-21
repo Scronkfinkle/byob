@@ -82,13 +82,8 @@ impl Editor {
         let pointer = ctx.pointer_hover_pos();
         let accent = t.accent;
         let over_inspector = ctx.layer_id_at(pointer.unwrap_or(Pos2::ZERO)).is_some_and(|l| l.id == inspector_id());
-        // The innermost element under the pointer (drawn ones before hidden ones).
-        let hovered = pointer.filter(|_| !over_inspector).and_then(|p| {
-            els.iter()
-                .filter(|e| e.shown.contains(p))
-                .max_by(|a, b| (!a.hidden).cmp(&!b.hidden).then(b.shown.area().total_cmp(&a.shown.area())).then(a.depth.cmp(&b.depth)))
-                .cloned()
-        });
+        let rank = stacking(ctx);
+        let hovered = pointer.filter(|_| !over_inspector).and_then(|p| pick(&els, p, &rank)).cloned();
 
         // The overlay: takes every click and drag while editing.
         let resp = egui::Area::new(overlay_id())
@@ -139,12 +134,7 @@ impl Editor {
         let on_corner = pointer.is_some_and(near_corner);
         // What a drag takes is decided where the button went down (it starts a few points on).
         let origin = ctx.input(|i| i.pointer.press_origin()).or(pointer);
-        let at_origin = origin.and_then(|p| {
-            els.iter()
-                .filter(|e| e.shown.contains(p))
-                .max_by(|a, b| (!a.hidden).cmp(&!b.hidden).then(b.shown.area().total_cmp(&a.shown.area())).then(a.depth.cmp(&b.depth)))
-                .cloned()
-        });
+        let at_origin = origin.and_then(|p| pick(&els, p, &rank)).cloned();
         if resp.drag_started() {
             let on_corner = origin.is_some_and(near_corner);
             if let (true, Some(e)) = (on_corner, selected_el) {
@@ -156,8 +146,15 @@ impl Editor {
                 let path = e.path.clone();
                 with(ctx, |f| f.dragging = Some(path));
             } else if let Some(e) = &at_origin {
-                let path =
-                    if selected_el.zip(origin).is_some_and(|(s, p)| s.shown.contains(p)) { self.selected.clone().unwrap_or_default() } else { e.path.clone() };
+                // The selection, when the drag starts on it; else what's under the pointer,
+                // and a part of an inserted element (its button, its text) moves all of it.
+                let path = if selected_el.zip(origin).is_some_and(|(s, p)| s.shown.contains(p)) {
+                    self.selected.clone().unwrap_or_default()
+                } else if e.path.starts_with('+') {
+                    e.path.split('/').next().unwrap_or(&e.path).to_owned()
+                } else {
+                    e.path.clone()
+                };
                 self.selected = Some(path.clone());
                 let start = next.rules.get(&path).map_or(Vec2::ZERO, Rule::offset);
                 self.push(&next, now, true);
@@ -191,7 +188,7 @@ impl Editor {
                 (Drag::Move { path, .. }, true, Some(p)) => els
                     .iter()
                     .filter(|e| e.shown.contains(p) && !e.path.starts_with(path.as_str()) && !path.starts_with(&format!("{}/", e.path)) && !e.hidden)
-                    .min_by(|a, b| a.shown.area().total_cmp(&b.shown.area()))
+                    .max_by(|a, b| over(a, b, &rank))
                     .map(|e| (e.path.clone(), side_of(e.shown, p), e.shown)),
                 _ => None,
             };
@@ -580,6 +577,29 @@ impl Editor {
     }
 }
 
+/// Each layer's place in the stacking, back to front (the background panels first).
+fn stacking(ctx: &Context) -> std::collections::HashMap<egui::LayerId, usize> {
+    ctx.memory(|m| m.layer_ids().enumerate().map(|(i, l)| (l, (l.order as usize) * 100_000 + i)).collect())
+}
+
+/// How high `e` is drawn: moved ones over the panels (on fluid's own layer).
+fn height(e: &Element, rank: &std::collections::HashMap<egui::LayerId, usize>) -> usize {
+    let own = rank.get(&e.layer).copied().unwrap_or((e.layer.order as usize) * 100_000);
+    if e.lifted { own.max(egui::Order::Middle as usize * 100_000) } else { own }
+}
+
+/// Which of two elements under the pointer is the one pointed at: a drawn one before a
+/// hidden one, then the one drawn on top (an inserted element over the chat under it),
+/// then the innermost.
+fn over(a: &Element, b: &Element, rank: &std::collections::HashMap<egui::LayerId, usize>) -> std::cmp::Ordering {
+    (!a.hidden).cmp(&!b.hidden).then(height(a, rank).cmp(&height(b, rank))).then(b.shown.area().total_cmp(&a.shown.area())).then(a.depth.cmp(&b.depth))
+}
+
+/// The element pointed at, at `p`.
+fn pick<'a>(els: &'a [Element], p: Pos2, rank: &std::collections::HashMap<egui::LayerId, usize>) -> Option<&'a Element> {
+    els.iter().filter(|e| e.shown.contains(p)).max_by(|a, b| over(a, b, rank))
+}
+
 /// Which side of `r` the point `p` is nearest: after, before, above or below.
 fn side_of(r: Rect, p: Pos2) -> &'static str {
     let d = [(p.x - r.right()).abs(), (p.x - r.left()).abs(), (p.y - r.top()).abs(), (p.y - r.bottom()).abs()];
@@ -606,4 +626,25 @@ pub fn generalize(path: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_element_on_top_is_picked_not_the_smallest() {
+        let layer = |order, name| egui::LayerId::new(order, egui::Id::unique(name));
+        let (panel, insert) = (layer(egui::Order::Background, "panel"), layer(egui::Order::Middle, "insert"));
+        let rank: std::collections::HashMap<egui::LayerId, usize> = [(panel, 0), (insert, egui::Order::Middle as usize * 100_000)].into_iter().collect();
+        let mk = |path: &str, r: Rect, l| super::super::element(path.into(), "region".into(), String::new(), r, l, None, 0, true);
+        // A small button in the chat, under a bigger inserted counter.
+        let els = vec![
+            mk("chat/button:OpenAI", Rect::from_min_size(Pos2::new(546.0, 327.0), Vec2::new(90.0, 25.0)), panel),
+            mk("+counter1", Rect::from_min_size(Pos2::new(590.0, 310.0), Vec2::new(97.0, 47.0)), insert),
+        ];
+        assert_eq!(pick(&els, Pos2::new(600.0, 340.0), &rank).map(|e| e.path.as_str()), Some("+counter1"));
+        // Where only the button is, the button.
+        assert_eq!(pick(&els, Pos2::new(560.0, 340.0), &rank).map(|e| e.path.as_str()), Some("chat/button:OpenAI"));
+    }
 }
