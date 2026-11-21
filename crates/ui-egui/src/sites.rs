@@ -236,6 +236,20 @@ impl Sites {
         }
     }
 
+    /// Draw `plugin/view` (`#key` after it for one of several) anywhere: fluid's inserts.
+    pub fn draw_spec(&mut self, ui: &mut egui::Ui, t: &Tokens, spec: &str) {
+        let (path, key) = spec.split_once('#').unwrap_or((spec, ""));
+        let Some((plugin, view)) = path.split_once('/') else {
+            ui.label(RichText::new(format!("⚠ {spec}: a view is plugin/view")).small().color(t.warning));
+            return;
+        };
+        if !self.declared.iter().any(|d| d.plugin == plugin && d.decl.id == view) {
+            ui.label(RichText::new(format!("⚠ no plugin view {path} (is the plugin on?)")).small().color(t.warning));
+            return;
+        }
+        self.draw(ui, t, &ViewRef::new(plugin, view, key), None);
+    }
+
     // ---- cards -----------------------------------------------------------------------
 
     /// A step's `byob.tree` view owned by a plugin: the live card (its stored state until

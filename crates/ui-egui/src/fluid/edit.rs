@@ -16,6 +16,7 @@ pub struct Editor {
     ask: String,
     add: String,
     find: String,
+    scene: String,
     history: Vec<FluidDoc>,
     last_push: f64,
     drag: Option<(String, Vec2)>,
@@ -90,7 +91,7 @@ impl Editor {
                 let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
                 let p = ui.painter();
                 p.rect_filled(rect, 0.0, Color32::from_black_alpha(18));
-                for e in els.iter().filter(|e| e.hidden) {
+                for e in els.iter().filter(|e| e.rule.as_ref().is_some_and(|r| r.hidden)) {
                     dashed(p, e.shown, t.text_faint);
                 }
                 for e in els.iter().filter(|e| e.is_region() && !e.hidden) {
@@ -262,6 +263,8 @@ impl Editor {
                     });
                     ui.label(RichText::new("Click anything to select it, drag to move it. Arrows nudge (Shift: 10), H hides, R resets, +/− scale, [ selects its parent.").small().color(t.text_faint));
                     ui.separator();
+                    self.scenes(ui, t, doc, now);
+                    ui.separator();
                     let Some(path) = self.selected.clone() else {
                         ui.label(RichText::new("Nothing selected").color(t.text_dim));
                         self.finder(ui, t, els);
@@ -328,7 +331,13 @@ impl Editor {
                         s(ui, "Background", &mut r.fill, "#rrggbb(aa)");
                         s(ui, "Outline", &mut r.outline, "#rrggbb");
                         ui.label("Hidden");
-                        ui.checkbox(&mut r.hidden, "");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut r.hidden, "");
+                            let mut hover = r.reveal.as_deref() == Some("hover");
+                            if ui.checkbox(&mut hover, "only on hover").changed() {
+                                r.reveal = hover.then(|| "hover".to_owned());
+                            }
+                        });
                         ui.end_row();
                     });
                     ui.horizontal_wrapped(|ui| {
@@ -395,6 +404,33 @@ impl Editor {
                     self.finder(ui, t, els);
                 });
             });
+    }
+
+    /// Saved scenes: click one to put it on screen, save this one under a name.
+    fn scenes(&mut self, ui: &mut egui::Ui, t: &Tokens, doc: &mut FluidDoc, now: f64) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Scenes").small().color(t.text_dim));
+            let names: Vec<String> = doc.scenes.keys().cloned().collect();
+            for name in names {
+                let r = ui.small_button(&name).on_hover_text("Put this scene on screen (right-click: forget it)");
+                if r.clicked() {
+                    self.push(doc, now, true);
+                    doc.load(&name);
+                }
+                if r.secondary_clicked() {
+                    doc.scenes.remove(&name);
+                }
+            }
+            ui.add(egui::TextEdit::singleline(&mut self.scene).hint_text("name").desired_width(70.0));
+            if ui
+                .add_enabled(!self.scene.trim().is_empty(), egui::Button::new("Save").small())
+                .on_hover_text("Keep the screen as it is now under this name")
+                .clicked()
+            {
+                doc.save(self.scene.trim());
+                self.scene.clear();
+            }
+        });
     }
 
     /// Find an element by name or text (also hidden ones) and select it.

@@ -54,6 +54,9 @@ pub struct Element {
     pub parent: Option<usize>,
     pub depth: usize,
     pub interactive: bool,
+    /// A hidden region that isn't drawn at all (the layout closed up): `rect` is where it
+    /// was last.
+    pub collapsed: bool,
     /// Its own rule (globs and exact, merged), if any.
     pub rule: Option<Rule>,
     /// Hidden by its rule or a parent's.
@@ -83,6 +86,8 @@ struct Region {
     path: String,
     rect: Rect,
     layer: LayerId,
+    /// Hidden and not drawn: listed where it was last.
+    collapsed: bool,
 }
 
 /// The plugin's state (one per egui context).
@@ -100,6 +105,10 @@ pub struct Fluid {
     pub dragging: Option<String>,
     /// Eased offset and scale per path, for the fluid part.
     anim: HashMap<String, (Vec2, f32)>,
+    /// Where each region was last drawn (for collapsed ones).
+    last: HashMap<String, (Rect, LayerId)>,
+    /// Eased visibility of elements shown on hover.
+    reveal: HashMap<String, f32>,
     /// For input: elements drawn elsewhere than laid out (shown rect, transform, hidden).
     mapped: Vec<(Rect, Rect, TSTransform, bool)>,
     /// The transform a pointer press was mapped with, kept until it's let go.
@@ -119,6 +128,8 @@ impl Default for Fluid {
             editing: false,
             dragging: None,
             anim: HashMap::new(),
+            reveal: HashMap::new(),
+            last: HashMap::new(),
             mapped: Vec::new(),
             capture: None,
             start: std::time::Instant::now(),
@@ -140,9 +151,29 @@ pub fn with<R>(ctx: &Context, f: impl FnOnce(&mut Fluid) -> R) -> Option<R> {
     Some(f(&mut guard))
 }
 
+/// Is the region at `path` hidden, so it isn't drawn at all and the layout closes up
+/// around it? (Not while editing: then it's drawn faded, to be found and shown again.)
+pub fn collapsed(ctx: &Context, path: &str) -> bool {
+    with(ctx, |f| {
+        let gone = !f.editing && f.doc.rule_for(path).is_some_and(|r| r.hidden);
+        if gone {
+            // Still listed (where it was last), so it can be found and shown again.
+            if let Some(&(rect, layer)) = f.last.get(path) {
+                f.regions.push(Region { path: path.to_owned(), rect, layer, collapsed: true });
+            }
+        }
+        gone
+    })
+    .unwrap_or(false)
+}
+
 /// A named part of the interface: `add` drawn in a scope whose rect is the element `name`
-/// (nested in the regions it's drawn in).
-pub fn region<R>(ui: &mut Ui, name: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+/// (nested in the regions it's drawn in). Not drawn at all while it's hidden.
+pub fn region<R: Default>(ui: &mut Ui, name: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let parent = with(ui.ctx(), |f| f.stack.last().cloned()).flatten();
+    if collapsed(ui.ctx(), &join(parent.as_deref(), name)) {
+        return R::default();
+    }
     let path = with(ui.ctx(), |f| {
         let path = join(f.stack.last().map(String::as_str), name);
         f.stack.push(path.clone());
@@ -153,7 +184,8 @@ pub fn region<R>(ui: &mut Ui, name: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
         let (rect, layer) = (r.response.rect, ui.layer_id());
         with(ui.ctx(), |f| {
             f.stack.pop();
-            f.regions.push(Region { path, rect, layer });
+            f.last.insert(path.clone(), (rect, layer));
+            f.regions.push(Region { path, rect, layer, collapsed: false });
         });
     }
     r.inner
@@ -164,7 +196,8 @@ pub fn region<R>(ui: &mut Ui, name: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
 pub fn mark(ctx: &Context, name: &str, rect: Rect, layer: LayerId) {
     with(ctx, |f| {
         let path = join(f.stack.last().map(String::as_str), name);
-        f.regions.push(Region { path, rect, layer });
+        f.last.insert(path.clone(), (rect, layer));
+        f.regions.push(Region { path, rect, layer, collapsed: false });
     });
 }
 
@@ -234,6 +267,7 @@ impl Fluid {
             rect: Rect,
             layer: LayerId,
             interactive: bool,
+            collapsed: bool,
         }
         enum Name {
             /// A region's full path.
@@ -245,7 +279,15 @@ impl Fluid {
         for r in &self.regions {
             if !own_layer(r.layer) && !raw.iter().any(|x| matches!(&x.name, Name::Region(p) if *p == r.path)) {
                 let label = r.path.rsplit('/').next().unwrap_or_default().to_owned();
-                raw.push(Raw { name: Name::Region(r.path.clone()), role: "region".into(), label, rect: r.rect, layer: r.layer, interactive: false });
+                raw.push(Raw {
+                    name: Name::Region(r.path.clone()),
+                    role: "region".into(),
+                    label,
+                    rect: r.rect,
+                    layer: r.layer,
+                    interactive: false,
+                    collapsed: r.collapsed,
+                });
             }
         }
         let mut layers: Vec<LayerId> = vec![LayerId::background()];
@@ -260,7 +302,15 @@ impl Fluid {
                 layers.push(resp.layer_id);
             }
             widgets.push((resp.rect, resp.layer_id));
-            raw.push(Raw { name: Name::Part, role: s.role.clone(), label: s.label.clone(), rect: resp.rect, layer: resp.layer_id, interactive });
+            raw.push(Raw {
+                name: Name::Part,
+                role: s.role.clone(),
+                label: s.label.clone(),
+                rect: resp.rect,
+                layer: resp.layer_id,
+                interactive,
+                collapsed: false,
+            });
         }
         for l in ctx.memory(|m| m.layer_ids().collect::<Vec<_>>()) {
             if !layers.contains(&l) && !own_layer(l) {
@@ -302,7 +352,7 @@ impl Fluid {
                 .find(|t| !t.is_empty())
                 .or_else(|| inside.iter().find_map(|t| crate::icons::glyph_name(&t.0)).map(str::to_owned))
                 .unwrap_or_default();
-            raw.push(Raw { name: Name::Part, role: "button".into(), label, rect, layer, interactive: true });
+            raw.push(Raw { name: Name::Part, role: "button".into(), label, rect, layer, interactive: true, collapsed: false });
         }
         // Text that isn't a widget's own label (that one is the widget).
         for (text, rect, layer) in texts {
@@ -312,7 +362,7 @@ impl Fluid {
             };
             if role == "icon" {
                 if !own_layer(layer) && !raw.iter().any(|x| x.layer == layer && x.role == "button" && same(x.rect, rect)) {
-                    raw.push(Raw { name: Name::Part, role: role.into(), label: text, rect, layer, interactive: false });
+                    raw.push(Raw { name: Name::Part, role: role.into(), label: text, rect, layer, interactive: false, collapsed: false });
                 }
                 continue;
             }
@@ -322,7 +372,7 @@ impl Fluid {
             if raw.iter().any(|x| x.layer == layer && x.role != "region" && x.rect.expand(1.0).contains_rect(rect) && x.label.trim() == text.trim()) {
                 continue;
             }
-            raw.push(Raw { name: Name::Part, role: "text".into(), label: text, rect, layer, interactive: false });
+            raw.push(Raw { name: Name::Part, role: "text".into(), label: text, rect, layer, interactive: false, collapsed: false });
         }
         // Bigger first, so every element's holder comes before it; regions before the rest.
         raw.sort_by(|a, b| {
@@ -341,7 +391,9 @@ impl Fluid {
                 Name::Part => out
                     .iter()
                     .enumerate()
-                    .filter(|(_, e)| e.layer == x.layer && e.rect.expand(1.5).contains_rect(x.rect) && !(e.role == x.role && same(e.rect, x.rect)))
+                    .filter(|(_, e)| {
+                        !e.collapsed && e.layer == x.layer && e.rect.expand(1.5).contains_rect(x.rect) && !(e.role == x.role && same(e.rect, x.rect))
+                    })
                     // The tightest holder; a region over a widget of the same size.
                     .min_by(|(_, a), (_, b)| a.rect.area().total_cmp(&b.rect.area()).then((a.role != "region").cmp(&(b.role != "region"))))
                     .map(|(i, _)| i),
@@ -364,7 +416,9 @@ impl Fluid {
                 }
             };
             let depth = parent.map_or(0, |p| out[p].depth + 1);
-            out.push(element(path, x.role, x.label, x.rect, x.layer, parent, depth, x.interactive));
+            let mut e = element(path, x.role, x.label, x.rect, x.layer, parent, depth, x.interactive);
+            e.collapsed = x.collapsed;
+            out.push(e);
         }
         out
     }
@@ -375,6 +429,7 @@ impl Fluid {
         let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
         let k = 1.0 - (-dt * 14.0).exp();
         let t = self.time();
+        let pointer = ctx.pointer_latest_pos();
         let mut busy = false;
         for i in 0..els.len() {
             let rule = doc.rule_for(&els[i].path);
@@ -395,7 +450,7 @@ impl Fluid {
                 }
             }
             if off != Vec2::ZERO || scale != 1.0 {
-                self.anim.insert(path, (off, scale));
+                self.anim.insert(path.clone(), (off, scale));
             } else {
                 self.anim.remove(&path);
             }
@@ -410,11 +465,24 @@ impl Fluid {
                     _ => {}
                 }
             }
+            // Shown on hover: faded in while the pointer is near (always while editing).
+            let mut seen = 1.0;
+            if rule.as_ref().and_then(|r| r.reveal.as_deref()) == Some("hover") {
+                let near = self.editing || pointer.is_some_and(|p| els[i].shown.expand(48.0).contains(p));
+                let cur = self.reveal.get(&path).copied().unwrap_or(0.0);
+                let target = if near { 1.0 } else { 0.0 };
+                let next = cur + (target - cur) * (1.0 - (-dt * 10.0).exp());
+                seen = if (next - target).abs() < 0.01 { target } else { next };
+                if seen != target {
+                    busy = true;
+                }
+                self.reveal.insert(path.clone(), seen);
+            }
             let c = els[i].rect.center().to_vec2();
             let own = TSTransform::new(c * (1.0 - scale) + off, scale);
             let e = &mut els[i];
             e.transform = parent_t * own;
-            e.opacity = parent_o * rule.as_ref().and_then(|r| r.opacity).unwrap_or(1.0);
+            e.opacity = parent_o * rule.as_ref().and_then(|r| r.opacity).unwrap_or(1.0) * seen;
             e.hidden = parent_h || rule.as_ref().is_some_and(|r| r.hidden);
             e.shown = e.transform.mul_rect(e.rect);
             e.rule = rule;
@@ -423,7 +491,7 @@ impl Fluid {
     }
 
     /// Rewrite what the changed elements painted.
-    fn repaint(ui: &Ui, els: &[Element], time: f32) {
+    fn repaint(ui: &Ui, els: &[Element], time: f32, editing: bool) {
         let ctx = ui.ctx();
         // The elements that change anything, by layer, innermost first.
         let mut by_layer: HashMap<LayerId, Vec<usize>> = HashMap::new();
@@ -432,6 +500,9 @@ impl Fluid {
                 .rule
                 .as_ref()
                 .is_some_and(|r| r.text.is_some() || r.size.is_some() || r.color.is_some() || r.fill.is_some() || r.outline.is_some() || r.motion.is_some());
+            if e.collapsed {
+                continue;
+            }
             if e.hidden || e.opacity < 1.0 || e.transform != TSTransform::IDENTITY || styled {
                 by_layer.entry(e.layer).or_default().push(i);
             }
@@ -493,10 +564,12 @@ impl Fluid {
                 ctx.graphics_mut(|g| {
                     let Some(l) = g.get_mut(layer) else { return };
                     l.mutate_shape(egui::layers::ShapeIdx(n), |cs| {
-                        if hidden {
+                        if hidden && !editing {
                             cs.shape = Shape::Noop;
                             return;
                         }
+                        // While editing, hidden things show faintly (to be found and shown again).
+                        let opacity = if hidden { opacity * 0.25 } else { opacity };
                         let mut rect = rect;
                         if let (Some(galley), Shape::Text(ts)) = (new_galley.clone(), &mut cs.shape) {
                             ts.galley = galley;
@@ -594,6 +667,7 @@ fn element(path: String, role: String, label: String, rect: Rect, layer: LayerId
         parent,
         depth,
         interactive,
+        collapsed: false,
         rule: None,
         hidden: false,
         transform: TSTransform::IDENTITY,
@@ -619,7 +693,7 @@ impl egui::Plugin for Fluid {
         let ctx = ui.ctx().clone();
         let mut els = self.scan(&ctx);
         let busy = self.resolve(&ctx, &mut els);
-        Self::repaint(ui, &els, self.time());
+        Self::repaint(ui, &els, self.time(), self.editing);
         self.mapped = els
             .iter()
             .filter(|e| e.hidden || e.transform != TSTransform::IDENTITY)

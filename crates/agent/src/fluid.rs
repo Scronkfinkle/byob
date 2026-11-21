@@ -17,21 +17,24 @@ pub(crate) struct UiFluid {
     pub inbox: Sender<Input>,
 }
 
-const OPS: [&str; 6] = ["set", "clear", "insert", "remove", "reset", "inspect"];
+const OPS: [&str; 9] = ["set", "clear", "insert", "remove", "reset", "inspect", "save", "load", "forget"];
 
 impl Tool for UiFluid {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL.into(),
-            description: "Change ANY element of the byob window showing this chat, however small: a button, a label, a row, a message, the whole sidebar. Every element has a path (`composer/button:Send`, `sidebar/text#3`, `header`); inspect lists them with their role, label and where they're drawn. `set` moves (dx/dy in points, right/down), scales, fades, recolors, retitles (text), resizes text (size), backs (fill, outline, radius), animates (motion) or hides them; paths may be globs (`**/button:*`, `sidebar/*/text#1`). `insert` adds new elements (a view tree) after/before/above/below/over any element, or anywhere (at: free, x/y in %), and their buttons can act (send:TEXT sends a message, draft:TEXT, toggle:PATH, remove, fluid:{ops}, look:key=value). Templates in their text update live: {time} {clock} {date} {chat} {model} {project} {messages} {status}. Changes animate in. Without arguments: inspect everything.".into(),
+            description: "Change ANY element of the byob window showing this chat, however small: a button, a label, a row, a message, the whole sidebar. Every element has a path (`composer/button:Send`, `sidebar/text#3`, `header`); inspect lists them with their role, label and where they're drawn. `set` moves (dx/dy in points, right/down), scales, fades, recolors, retitles (text), resizes text (size), backs (fill, outline, radius), animates (motion) or hides them; paths may be globs (`**/button:*`, `sidebar/*/text#1`). `insert` adds new elements (a view tree) after/before/above/below/over any element, or anywhere (at: free, x/y in %), and their buttons can act (send:TEXT sends a message, draft:TEXT, toggle:PATH, remove, fluid:{ops}, look:key=value). Templates in their text update live: {time} {clock} {date} {chat} {model} {project} {messages} {status}. Scenes: save the screen under a name and load it back (\"focus mode\", \"presentation\"); a button can switch scenes with fluid:{\"load\": \"name\"}. Changes animate in. Without arguments: inspect everything.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "inspect": {"type": "object", "description": "List elements: {\"under\": path or glob (default all), \"find\": text in a path or label}. Do this first to get paths.", "properties": {"under": {"type": "string"}, "find": {"type": "string"}}},
-                    "set": {"type": "array", "description": "Changes, each {\"path\": …, and any of: dx, dy (points; or left/up), scale (0.2-6), opacity (0-1), hidden (bool), text, size (text factor), color, fill, outline (#rrggbb or a name), radius, motion (float, bounce, pulse, shake, glow, none)}. null clears a field. \"Over a bit\" is about 8-16 points.", "items": {"type": "object"}},
+                    "set": {"type": "array", "description": "Changes, each {\"path\": …, and any of: dx, dy (points; or left/up), scale (0.2-6), opacity (0-1), hidden (bool), text, size (text factor), color, fill, outline (#rrggbb or a name), radius, motion (float, bounce, pulse, shake, glow, none), reveal (\"hover\": faded until the pointer is near)}. null clears a field. \"Over a bit\" is about 8-16 points.", "items": {"type": "object"}},
                     "clear": {"type": "array", "description": "Paths (or globs) to put back as byob draws them.", "items": {"type": "string"}},
-                    "insert": {"type": "array", "description": "New elements: {\"id\", \"anchor\": path, \"at\": after|before|above|below|over|free, \"x\"/\"y\" (% of the window, for free), \"width\" (points), \"card\" (default true), \"tree\": a view tree: {\"type\": column|row|card|text|markdown|chip|button|input|toggle|select|progress|separator|chart, …}; text has \"text\", buttons \"label\" and \"action\", inputs \"name\" and \"submit\" (an action; {name} in it is the input's text)}. Same id replaces.", "items": {"type": "object"}},
+                    "insert": {"type": "array", "description": "New elements: {\"id\", \"anchor\": path, \"at\": after|before|above|below|over|free, \"x\"/\"y\" (% of the window, for free), \"width\" (points), \"card\" (default true), \"tree\": a view tree: {\"type\": column|row|card|text|markdown|chip|button|input|toggle|select|progress|separator|chart, …}; text has \"text\", buttons \"label\" and \"action\", inputs \"name\" and \"submit\" (an action; {name} in it is the input's text)}; or \"view\": \"plugin/view\" for a plugin's live view instead of a tree (inspect lists them). Same id replaces.", "items": {"type": "object"}},
                     "remove": {"type": "array", "description": "Ids of inserted elements to take away (`*` matches any).", "items": {"type": "string"}},
+                    "save": {"type": "string", "description": "Keep the screen as it is now (after this call's other changes) as a named scene."},
+                    "load": {"type": "string", "description": "Put a saved scene on screen (before this call's other changes)."},
+                    "forget": {"type": "string", "description": "Delete a saved scene."},
                     "reset": {"type": "boolean", "description": "Every element back as byob draws it and every inserted one gone, first."},
                     "undo": {"type": "boolean", "description": "Put back the window from before the last change (fluid or look)."}
                 }

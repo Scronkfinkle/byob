@@ -49,6 +49,9 @@ pub struct Rule {
     /// Corner radius of `fill` and `outline`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub radius: Option<f32>,
+    /// Shown only while the pointer is near ("hover"), faded the rest of the time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reveal: Option<String>,
     /// Gently moving: "float" (bobs), "bounce", "pulse" (breathes), "shake", "glow".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motion: Option<String>,
@@ -64,7 +67,7 @@ impl Rule {
         macro_rules! take {
             ($($f:ident),*) => { $( if other.$f.is_some() { self.$f = other.$f.clone(); } )* };
         }
-        take!(dx, dy, scale, opacity, text, size, color, fill, outline, radius, motion);
+        take!(dx, dy, scale, opacity, text, size, color, fill, outline, radius, reveal, motion);
         self.hidden |= other.hidden;
     }
 
@@ -130,7 +133,11 @@ pub struct Insert {
     #[serde(default = "yes")]
     pub card: bool,
     /// The content: a view tree node (`{"type": "column", "children": [...]}` …).
+    #[serde(default)]
     pub tree: Value,
+    /// Or a plugin's live view instead: `plugin/view`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub view: String,
     /// Who made it: "you", "model", or a plugin id.
     #[serde(default)]
     pub by: String,
@@ -140,6 +147,14 @@ fn yes() -> bool {
     true
 }
 
+/// A saved arrangement of the screen, to switch back to.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Scene {
+    pub rules: BTreeMap<String, Rule>,
+    pub inserts: Vec<Insert>,
+}
+
 /// Everything changed about the screen.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -147,11 +162,27 @@ pub struct FluidDoc {
     /// Path (or glob: `*` within a part, `**` any parts) → rule.
     pub rules: BTreeMap<String, Rule>,
     pub inserts: Vec<Insert>,
+    /// Saved scenes by name (`load` puts one on screen).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub scenes: BTreeMap<String, Scene>,
 }
 
 impl FluidDoc {
     pub fn is_empty(&self) -> bool {
         self.rules.is_empty() && self.inserts.is_empty()
+    }
+
+    /// Keep what's on screen as scene `name`.
+    pub fn save(&mut self, name: &str) {
+        self.scenes.insert(name.to_owned(), Scene { rules: self.rules.clone(), inserts: self.inserts.clone() });
+    }
+
+    /// Put scene `name` on screen (false: there's none).
+    pub fn load(&mut self, name: &str) -> bool {
+        let Some(sc) = self.scenes.get(name).cloned() else { return false };
+        self.rules = sc.rules;
+        self.inserts = sc.inserts;
+        true
     }
 
     /// The rule for `path`: every matching glob's (in key order), then its own on top.
@@ -337,6 +368,17 @@ pub fn set_fields(rule: &mut Rule, fields: &serde_json::Map<String, Value>, prob
                     problems.push(bad("#rrggbb"));
                 }
             }
+            "reveal" => {
+                rule.reveal = match v.as_str().map(str::to_ascii_lowercase) {
+                    Some(m) if m == "hover" => Some(m),
+                    Some(m) if m.is_empty() || m == "none" || m == "always" => None,
+                    None => None,
+                    Some(_) => {
+                        problems.push(bad("hover or none"));
+                        rule.reveal.clone()
+                    }
+                }
+            }
             "motion" | "animate" | "animation" => {
                 rule.motion = match v.as_str().map(str::to_ascii_lowercase) {
                     None => None,
@@ -348,7 +390,9 @@ pub fn set_fields(rule: &mut Rule, fields: &serde_json::Map<String, Value>, prob
                     }
                 }
             }
-            other => problems.push(format!("{path}: no field {other:?} (dx, dy, scale, opacity, hidden, text, size, color, fill, outline, radius, motion)")),
+            other => {
+                problems.push(format!("{path}: no field {other:?} (dx, dy, scale, opacity, hidden, text, size, color, fill, outline, radius, reveal, motion)"))
+            }
         }
     }
 }
@@ -372,7 +416,7 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
         return a;
     };
     if ops.get("reset").and_then(Value::as_bool) == Some(true) {
-        *doc = FluidDoc::default();
+        *doc = FluidDoc { scenes: std::mem::take(&mut doc.scenes), ..FluidDoc::default() };
         a.done.push("reset: every element back as byob draws it".into());
     }
     let list = |k: &str| -> Vec<Value> {
@@ -382,6 +426,14 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
             Some(v) => vec![v.clone()],
         }
     };
+    if let Some(name) = ops.get("load").and_then(Value::as_str) {
+        if doc.load(name) {
+            a.done.push(format!("loaded scene {name:?}"));
+        } else {
+            let names: Vec<&str> = doc.scenes.keys().map(String::as_str).collect();
+            a.problems.push(format!("load: no scene {name:?} (saved: {})", if names.is_empty() { "none".into() } else { names.join(", ") }));
+        }
+    }
     for p in list("clear") {
         match p.as_str() {
             Some(path) => {
@@ -434,7 +486,11 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
                     a.problems.push(format!("insert {}: an anchor (an element's path), or \"at\": \"free\"", ins.id));
                     continue;
                 }
-                let faults = parse_tree(&ins.tree).1;
+                if ins.tree.is_null() && ins.view.is_empty() {
+                    a.problems.push(format!("insert {}: a tree (what to draw) or a view (plugin/view)", ins.id));
+                    continue;
+                }
+                let faults = if ins.view.is_empty() { parse_tree(&ins.tree).1 } else { Vec::new() };
                 if !faults.is_empty() {
                     let f: Vec<String> = faults.iter().take(3).map(ToString::to_string).collect();
                     a.problems.push(format!("insert {}: its tree has problems (drawn anyway where it can): {}", ins.id, f.join("; ")));
@@ -449,6 +505,18 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
                 doc.inserts.push(ins);
             }
             Err(e) => a.problems.push(format!("insert: {e} in {i}")),
+        }
+    }
+    // Saved after the changes above, so "change this and save it as …" works in one go.
+    if let Some(name) = ops.get("save").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) {
+        doc.save(name);
+        a.done.push(format!("saved this as scene {name:?}"));
+    }
+    if let Some(name) = ops.get("forget").and_then(Value::as_str) {
+        if doc.scenes.remove(name).is_some() {
+            a.done.push(format!("forgot scene {name:?}"));
+        } else {
+            a.problems.push(format!("forget: no scene {name:?}"));
         }
     }
     if let Some(q) = ops.get("inspect") {

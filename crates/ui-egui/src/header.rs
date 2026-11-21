@@ -422,6 +422,10 @@ impl ByobApp {
             self.start_arranging();
             ui.close();
         }
+        if ui.button("Edit anything… (F2)").on_hover_text("Select any element on screen to move, restyle, hide or add to it, or ask byob to").clicked() {
+            crate::fluid::with(ui.ctx(), |f| f.editing = true);
+            ui.close();
+        }
         // Zoom, where people look for it in an app menu.
         ui.horizontal(|ui| {
             ui.add_space(9.0);

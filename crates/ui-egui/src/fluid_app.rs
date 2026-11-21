@@ -44,7 +44,9 @@ impl ByobApp {
             context: String::new(),
         };
         let t = self.tokens;
-        let events = fluid::inserts::show(ctx, &t, &doc.inserts, &els, &mut self.fluid_trees, &data);
+        let sites = &mut self.plugins.sites;
+        let mut views = |ui: &mut egui::Ui, spec: &str| sites.draw_spec(ui, &t, spec);
+        let events = fluid::inserts::show(ctx, &t, &doc.inserts, &els, &mut self.fluid_trees, &data, &mut views);
         for (id, e) in events {
             self.fluid_action(ctx, &id, &e);
         }
@@ -155,7 +157,14 @@ impl ByobApp {
                 screen.height()
             ));
             out.push_str(&fluid::inventory(&els, &under, &find, 260));
+            let views: Vec<String> = self.plugins.sites.declared().iter().map(|d| format!("{}/{} ({})", d.plugin, d.decl.id, d.decl.title)).collect();
+            if !views.is_empty() {
+                out.push_str(&format!("\nPlugin views you can insert (\"view\": …): {}\n", views.join(", ")));
+            }
             let doc = &self.prefs.fluid;
+            if !doc.scenes.is_empty() {
+                out.push_str(&format!("\nSaved scenes (load one): {}\n", doc.scenes.keys().cloned().collect::<Vec<_>>().join(", ")));
+            }
             if !doc.inserts.is_empty() {
                 out.push_str("\nInserted elements:\n");
                 for i in &doc.inserts {

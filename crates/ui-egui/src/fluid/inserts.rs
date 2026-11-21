@@ -74,7 +74,16 @@ fn place(ins: &Insert, els: &[Element], screen: Rect) -> Option<(Pos2, Align2)> 
 }
 
 /// Draw every insert; the events their trees sent, by insert id.
-pub fn show(ctx: &Context, t: &Tokens, inserts: &[Insert], els: &[Element], states: &mut HashMap<String, TreeState>, data: &Data) -> Vec<(String, Event)> {
+/// `views` draws a plugin's live view (`plugin/view`).
+pub fn show(
+    ctx: &Context,
+    t: &Tokens,
+    inserts: &[Insert],
+    els: &[Element],
+    states: &mut HashMap<String, TreeState>,
+    data: &Data,
+    views: &mut dyn FnMut(&mut egui::Ui, &str),
+) -> Vec<(String, Event)> {
     let mut out = Vec::new();
     let screen = ctx.content_rect();
     let mut clock = false;
@@ -83,7 +92,10 @@ pub fn show(ctx: &Context, t: &Tokens, inserts: &[Insert], els: &[Element], stat
         let Some((pos, pivot)) = place(ins, els, screen) else { continue };
         let mut tree = ins.tree.clone();
         clock |= fill(&mut tree, data);
-        let Some(node) = parse_tree(&tree).0 else { continue };
+        let node = if ins.view.is_empty() { parse_tree(&tree).0 } else { None };
+        if node.is_none() && ins.view.is_empty() {
+            continue;
+        }
         let st = states.entry(ins.id.clone()).or_default();
         let width = if ins.width > 0.0 { ins.width.clamp(40.0, 1200.0) } else { 360.0 };
         egui::Area::new(egui::Id::unique(("fluid-insert", &ins.id))).order(egui::Order::Foreground).pivot(pivot).fixed_pos(pos).constrain(true).show(
@@ -91,11 +103,14 @@ pub fn show(ctx: &Context, t: &Tokens, inserts: &[Insert], els: &[Element], stat
             |ui| {
                 ui.set_max_width(width);
                 region(ui, &format!("+{}", ins.id), |ui| {
-                    let events = if ins.card {
-                        crate::menu::frame(t).inner_margin(egui::Margin::same(10)).show(ui, |ui| show_tree(ui, t, &node, st)).inner
-                    } else {
-                        show_tree(ui, t, &node, st)
+                    let mut body = |ui: &mut egui::Ui| match &node {
+                        Some(node) => show_tree(ui, t, node, st),
+                        None => {
+                            views(ui, &ins.view);
+                            Vec::new()
+                        }
                     };
+                    let events = if ins.card { crate::menu::frame(t).inner_margin(egui::Margin::same(10)).show(ui, |ui| body(ui)).inner } else { body(ui) };
                     out.extend(events.into_iter().map(|e| (ins.id.clone(), e)));
                 });
             },

@@ -1219,10 +1219,12 @@ impl ByobApp {
         // Beside the chat, the list runs the full height and carries the window controls;
         // the header spans only the chat. Settings and maximized views have no list.
         self.sidebar_docked = list_open && !narrow && !self.show_settings && !self.artifacts.is_maximized() && self.artifacts.web_mut().maximized().is_none();
-        if self.sidebar_docked {
+        if self.sidebar_docked && !fluid::collapsed(ui.ctx(), "sidebar") {
             self.chat_list_panel(ui, &t);
         }
-        self.header(ui);
+        if !fluid::collapsed(ui.ctx(), "header") {
+            self.header(ui);
+        }
         upload::drop_overlay(ui.ctx(), &self.tokens);
         if self.show_settings {
             self.settings_keys(ui.ctx(), narrow);
@@ -1301,8 +1303,10 @@ impl ByobApp {
         // list and panes on the panel color.
         let composer_frame = cockpit::framed(ui.ctx(), egui::Frame::side_top_panel(ui.style()).fill(t.app_bg));
         let chat_frame = cockpit::framed(ui.ctx(), egui::Frame::central_panel(ui.style()).fill(t.app_bg));
-        let composer = egui::Panel::bottom("composer").show_separator_line(false).frame(composer_frame).show(ui, |ui| self.composer(ui));
-        cockpit::mark(ui.ctx(), composer.response.rect);
+        if !fluid::collapsed(ui.ctx(), "composer") {
+            let composer = egui::Panel::bottom("composer").show_separator_line(false).frame(composer_frame).show(ui, |ui| self.composer(ui));
+            cockpit::mark(ui.ctx(), composer.response.rect);
+        }
         let chat = egui::CentralPanel::default().frame(chat_frame).show(ui, |ui| {
             self.plugins.trust_card(ui, &t, &self.entries);
             self.transcript(ui);
