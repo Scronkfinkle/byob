@@ -86,6 +86,27 @@ impl ByobApp {
         }
         let (verb, rest) = action.split_once(':').unwrap_or((action.as_str(), ""));
         let rest = rest.trim().to_owned();
+        // The element's own state; several actions can go in one, separated by `;`.
+        if ["set", "add", "drop", "flip", "inc"].contains(&verb.trim()) {
+            fluid::with(ctx, |f| {
+                let mut doc = (*f.doc).clone();
+                if let Some(ins) = doc.inserts.iter_mut().find(|i| i.id == id) {
+                    for part in action.split(';') {
+                        let (v, r) = part.split_once(':').unwrap_or((part, ""));
+                        ins.act(v.trim(), r);
+                    }
+                }
+                f.doc = Arc::new(doc);
+                f.edited += 1;
+            });
+            // A field that was typed into and sent starts empty again.
+            if let Some(st) = self.fluid_trees.get_mut(id) {
+                let cleared: serde_json::Map<String, Value> =
+                    e.values.iter().filter(|(_, v)| v.is_string()).map(|(k, _)| (k.clone(), Value::String(String::new()))).collect();
+                st.replied(&cleared);
+            }
+            return;
+        }
         match verb.trim() {
             "send" | "ask" if !rest.is_empty() => self.submit(rest),
             "draft" => self.set_draft(&rest),

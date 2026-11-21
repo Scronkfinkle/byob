@@ -141,6 +141,55 @@ pub struct Insert {
     /// Who made it: "you", "model", or a plugin id.
     #[serde(default)]
     pub by: String,
+    /// Its own data, kept with it: `{state.key}` in its text, `"each": "key"` repeats a
+    /// node per item, and its actions change it (`set:`, `add:`, `drop:`, `flip:`, `inc:`).
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub state: serde_json::Map<String, Value>,
+}
+
+impl Insert {
+    /// Apply a state action (`set:k=v`, `add:k=v`, `drop:k=i`, `flip:k`, `inc:k=n`);
+    /// false if `verb` isn't one.
+    pub fn act(&mut self, verb: &str, rest: &str) -> bool {
+        let (k, v) = rest.split_once('=').map_or((rest.trim(), ""), |(k, v)| (k.trim(), v.trim()));
+        let k = k.strip_prefix("state.").unwrap_or(k).to_owned();
+        let parsed = || serde_json::from_str::<Value>(v).unwrap_or_else(|_| Value::String(v.to_owned()));
+        match verb {
+            "set" => {
+                self.state.insert(k, parsed());
+            }
+            "add" if !v.is_empty() => {
+                let list = self.state.entry(k).or_insert_with(|| Value::Array(Vec::new()));
+                if !list.is_array() {
+                    *list = Value::Array(Vec::new());
+                }
+                if let Value::Array(a) = list {
+                    a.push(parsed());
+                    let over = a.len().saturating_sub(500);
+                    a.drain(..over);
+                }
+            }
+            "add" => {}
+            "drop" => {
+                if let (Some(Value::Array(a)), Ok(i)) = (self.state.get_mut(&k), v.parse::<usize>())
+                    && i < a.len()
+                {
+                    a.remove(i);
+                }
+            }
+            "flip" => {
+                let now = self.state.get(&k).and_then(Value::as_bool).unwrap_or(false);
+                self.state.insert(k, Value::Bool(!now));
+            }
+            "inc" => {
+                let by = v.parse::<f64>().unwrap_or(1.0);
+                let now = self.state.get(&k).and_then(Value::as_f64).unwrap_or(0.0);
+                self.state.insert(k, serde_json::json!(now + by));
+            }
+            _ => return false,
+        }
+        true
+    }
 }
 
 fn yes() -> bool {
@@ -574,6 +623,20 @@ mod tests {
         assert_eq!(d.inserts.len(), 1);
         assert_eq!(d.inserts[0].by, "model");
         assert_eq!(a.problems.len(), 3, "{:?}", a.problems);
+    }
+
+    #[test]
+    fn state_actions() {
+        let mut i: Insert = serde_json::from_value(json!({"id": "todo", "at": "free", "tree": {}})).unwrap_or_else(|_| unreachable!());
+        assert!(i.act("add", "items=buy milk"));
+        assert!(i.act("add", "items=call mom"));
+        assert!(i.act("drop", "items=0"));
+        assert!(i.act("inc", "n"));
+        assert!(i.act("flip", "state.dark"));
+        assert_eq!(i.state.get("items"), Some(&json!(["call mom"])));
+        assert_eq!(i.state.get("n"), Some(&json!(1.0)));
+        assert_eq!(i.state.get("dark"), Some(&json!(true)));
+        assert!(!i.act("explode", "x"));
     }
 
     #[test]

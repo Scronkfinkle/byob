@@ -23,6 +23,82 @@ pub struct Data {
     pub context: String,
 }
 
+/// A value as text in a template.
+fn text_of(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        Value::Array(a) => a.len().to_string(),
+        Value::Number(n) => n.as_f64().map_or_else(|| n.to_string(), |f| if f.fract() == 0.0 && f.abs() < 1e15 { format!("{f:.0}") } else { format!("{f}") }),
+        v => v.to_string(),
+    }
+}
+
+/// Repeat nodes over the insert's state: a node with `"each": "key"` and `"item": node`
+/// gets one child per item of `state.key` (`{item}`, `{index}`, `{item.field}` in it), or
+/// its `"empty"` node when there are none. `{state.key}` anywhere reads the state.
+fn expand(v: &mut Value, state: &serde_json::Map<String, Value>) {
+    match v {
+        Value::Object(m) => {
+            if let Some(key) = m.get("each").and_then(Value::as_str).map(|k| k.trim_start_matches("state.").to_owned()) {
+                let item = m.remove("item").unwrap_or(Value::Null);
+                let empty = m.remove("empty");
+                m.remove("each");
+                let items = state.get(&key).and_then(Value::as_array).cloned().unwrap_or_default();
+                let mut children: Vec<Value> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, it)| {
+                        let mut node = item.clone();
+                        substitute(&mut node, &|s: &str| {
+                            let mut s = s.replace("{index}", &i.to_string()).replace("{item}", &text_of(it));
+                            if let Value::Object(fields) = it {
+                                for (k, f) in fields {
+                                    s = s.replace(&format!("{{item.{k}}}"), &text_of(f));
+                                }
+                            }
+                            s
+                        });
+                        node
+                    })
+                    .collect();
+                if children.is_empty()
+                    && let Some(e) = empty
+                {
+                    children.push(e);
+                }
+                m.insert("children".into(), Value::Array(children));
+                if !m.contains_key("type") {
+                    m.insert("type".into(), Value::String("column".into()));
+                }
+            }
+            for x in m.values_mut() {
+                expand(x, state);
+            }
+        }
+        Value::Array(a) => {
+            for x in a {
+                expand(x, state);
+            }
+        }
+        Value::String(s) if s.contains("{state.") => {
+            for (k, val) in state {
+                *s = s.replace(&format!("{{state.{k}}}"), &text_of(val));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn substitute(v: &mut Value, f: &dyn Fn(&str) -> String) {
+    match v {
+        Value::String(s) => *s = f(s),
+        Value::Array(a) => a.iter_mut().for_each(|x| substitute(x, f)),
+        Value::Object(m) => m.values_mut().for_each(|x| substitute(x, f)),
+        _ => {}
+    }
+}
+
 /// `{name}`s in every string of `v` filled from `d`; whether the clock is read (so it is
 /// drawn again each second).
 fn fill(v: &mut Value, d: &Data) -> bool {
@@ -91,6 +167,7 @@ pub fn show(
     for ins in inserts {
         let Some((pos, pivot)) = place(ins, els, screen) else { continue };
         let mut tree = ins.tree.clone();
+        expand(&mut tree, &ins.state);
         clock |= fill(&mut tree, data);
         let node = if ins.view.is_empty() { parse_tree(&tree).0 } else { None };
         if node.is_none() && ins.view.is_empty() {
@@ -120,4 +197,24 @@ pub fn show(
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn each_repeats_over_state() {
+        let state = json!({"items": [{"t": "milk"}, {"t": "eggs"}], "title": "Shop"}).as_object().cloned().unwrap_or_default();
+        let mut v = json!({"type": "column", "children": [
+            {"type": "text", "text": "{state.title} ({state.items})"},
+            {"each": "items", "item": {"type": "button", "label": "{index}: {item.t}", "action": "drop:items={index}"}}
+        ]});
+        expand(&mut v, &state);
+        assert_eq!(v["children"][0]["text"], "Shop (2)");
+        assert_eq!(v["children"][1]["children"][1]["label"], "1: eggs");
+        assert_eq!(v["children"][1]["children"][1]["action"], "drop:items=1");
+        assert_eq!(v["children"][1]["type"], "column");
+    }
 }
