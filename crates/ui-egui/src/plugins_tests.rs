@@ -37,6 +37,7 @@ pub(crate) fn info(id: &str, scope: PluginScope, origin: PluginOrigin) -> Plugin
         renderers: vec![],
         starters: vec![],
         superseded_by: None,
+        fluid: None,
         logo: false,
     }
 }

@@ -92,7 +92,10 @@ struct Region {
 
 /// The plugin's state (one per egui context).
 pub struct Fluid {
+    /// What the user (and the model) changed.
     pub doc: Arc<FluidDoc>,
+    /// What plugins that are on change, under the user's changes.
+    pub base: Arc<FluidDoc>,
     /// Bumped on every change made in the window (edit mode), for the app to save.
     pub edited: u64,
     stack: Vec<String>,
@@ -120,6 +123,7 @@ impl Default for Fluid {
     fn default() -> Self {
         Self {
             doc: Arc::default(),
+            base: Arc::default(),
             edited: 0,
             stack: Vec::new(),
             regions: Vec::new(),
@@ -431,14 +435,20 @@ impl Fluid {
 
     /// Rules, easing and motion: each element's transform, opacity and hiding.
     fn resolve(&mut self, ctx: &Context, els: &mut [Element]) -> bool {
-        let doc = Arc::clone(&self.doc);
+        let (doc, base) = (Arc::clone(&self.doc), Arc::clone(&self.base));
         let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
         let k = 1.0 - (-dt * 14.0).exp();
         let t = self.time();
         let pointer = ctx.pointer_latest_pos();
         let mut busy = false;
         for i in 0..els.len() {
-            let rule = doc.rule_for(&els[i].path);
+            let rule = match (base.rule_for(&els[i].path), doc.rule_for(&els[i].path)) {
+                (Some(mut b), Some(u)) => {
+                    b.merge(&u);
+                    Some(b)
+                }
+                (b, u) => u.or(b),
+            };
             let (parent_t, parent_o, parent_h) = match els[i].parent {
                 Some(p) => (els[p].transform, els[p].opacity, els[p].hidden),
                 None => (TSTransform::IDENTITY, 1.0, false),

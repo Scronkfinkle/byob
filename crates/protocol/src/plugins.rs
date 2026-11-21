@@ -205,6 +205,9 @@ pub struct PluginInfo {
     /// is switched off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
+    /// Changes to the screen while it's on (experimental fluid ops: `set`, `insert`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fluid: Option<serde_json::Value>,
     /// Its folder has a logo (`logo.png` or `logo.jpg`); ask for it with
     /// [`crate::ClientMsg::GetPluginLogo`] (15+, cap [`crate::version::CAP_PLUGIN_LOGOS`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -450,6 +453,7 @@ mod tests {
             renderers: vec![],
             starters: vec![],
             superseded_by: None,
+            fluid: None,
             logo: false,
         }
     }

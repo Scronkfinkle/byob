@@ -193,6 +193,8 @@ pub struct ByobApp {
     fluid_editor: fluid::edit::Editor,
     fluid_trees: std::collections::HashMap<String, tree::TreeState>,
     fluid_saved: u64,
+    /// The plugins' fluid changes last made into the base layer.
+    fluid_layers: Vec<(String, serde_json::Value)>,
     /// The answer to the model's last fluid request, for the next look report.
     fluid_note: Option<(String, (String, String))>,
     /// One of your messages being changed, to start over from it.
@@ -291,6 +293,7 @@ impl ByobApp {
             fluid_editor: fluid::edit::Editor::default(),
             fluid_trees: std::collections::HashMap::new(),
             fluid_saved: 0,
+            fluid_layers: Vec::new(),
             fluid_note: None,
             editing: Editing::default(),
             math: false,

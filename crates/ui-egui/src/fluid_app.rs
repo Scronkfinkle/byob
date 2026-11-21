@@ -24,9 +24,33 @@ impl ByobApp {
         fluid::edit::toggle_keys(ctx);
         let saved = self.fluid_saved;
         let doc = &self.prefs.fluid;
+        // Plugins' changes: a layer under the user's, their inserts named after the plugin.
+        let layers = self.plugins.fluid_layers();
+        let base = (layers != self.fluid_layers).then(|| {
+            let mut base = fluid::FluidDoc::default();
+            for (id, ops) in &layers {
+                let mut one = fluid::FluidDoc::default();
+                let a = fluid::doc::apply(&mut one, ops, id);
+                for p in a.problems {
+                    log::warn!("plugin {id}: fluid: {p}");
+                }
+                base.rules.extend(one.rules);
+                base.inserts.extend(one.inserts.into_iter().map(|mut i| {
+                    i.id = format!("{id}.{}", i.id);
+                    i
+                }));
+            }
+            base
+        });
+        if base.is_some() {
+            self.fluid_layers = layers;
+        }
         fluid::with(ctx, |f| {
             if f.edited == saved && *f.doc != *doc {
                 f.doc = Arc::new(doc.clone());
+            }
+            if let Some(b) = base {
+                f.base = Arc::new(b);
             }
         });
     }
@@ -34,7 +58,7 @@ impl ByobApp {
     /// At the end of a frame: inserted elements, edit mode, and what the window changed
     /// saved into the prefs.
     pub(crate) fn fluid_end(&mut self, ctx: &egui::Context) {
-        let Some((doc, els, edited)) = fluid::with(ctx, |f| (Arc::clone(&f.doc), f.elements.clone(), f.edited)) else { return };
+        let Some((doc, base, els, edited)) = fluid::with(ctx, |f| (Arc::clone(&f.doc), Arc::clone(&f.base), f.elements.clone(), f.edited)) else { return };
         let data = fluid::inserts::Data {
             chat: self.sidebar.current().map(|c| c.title.clone()).unwrap_or_default(),
             model: self.state.as_ref().map(|s| s.inference_model.clone()).unwrap_or_default(),
@@ -46,7 +70,8 @@ impl ByobApp {
         let t = self.tokens;
         let sites = &mut self.plugins.sites;
         let mut views = |ui: &mut egui::Ui, spec: &str| sites.draw_spec(ui, &t, spec);
-        let events = fluid::inserts::show(ctx, &t, &doc.inserts, &els, &mut self.fluid_trees, &data, &mut views);
+        let inserts: Vec<fluid::Insert> = base.inserts.iter().chain(&doc.inserts).cloned().collect();
+        let events = fluid::inserts::show(ctx, &t, &inserts, &els, &mut self.fluid_trees, &data, &mut views);
         for (id, e) in events {
             self.fluid_action(ctx, &id, &e);
         }

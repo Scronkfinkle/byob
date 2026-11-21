@@ -636,6 +636,7 @@ fn new_info(id: &str, dir: &Path) -> PluginInfo {
         renderers: Vec::new(),
         starters: Vec::new(),
         superseded_by: None,
+        fluid: None,
         logo: false,
     }
 }

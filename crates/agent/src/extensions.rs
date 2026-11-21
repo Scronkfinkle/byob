@@ -1198,6 +1198,7 @@ fn info(plugin: &Plugin, scope: PluginScope, input: &ComposeIn<'_>, tools: &[Str
             renderers: m.renderers.iter().map(|r| RendererDecl { content_type: r.content_type.clone(), renderer: r.renderer.clone() }).collect(),
             starters: m.starters.iter().map(|s| StarterDecl { title: s.title.clone(), prompt: s.prompt.clone() }).collect(),
             superseded_by: None,
+            fluid: m.fluid.clone(),
             logo: logo_file(&plugin.dir).is_some(),
         }
     }

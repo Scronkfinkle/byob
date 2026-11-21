@@ -760,6 +760,18 @@ fn missing_required(p: &PluginInfo) -> bool {
 }
 
 /// The last `n` lines of a backend's output.
+impl PluginsUi {
+    /// The fluid changes of the plugins that are on (id, ops), for the screen.
+    pub fn fluid_layers(&self) -> Vec<(String, serde_json::Value)> {
+        let Some(ext) = &self.ext else { return Vec::new() };
+        ext.plugins
+            .iter()
+            .filter(|p| p.enabled && p.shadowed_by.is_none() && p.superseded_by.is_none())
+            .filter_map(|p| Some((p.id.clone(), p.fluid.clone()?)))
+            .collect()
+    }
+}
+
 fn tail_lines(text: &str, n: usize) -> String {
     let lines: Vec<&str> = text.trim_end().lines().collect();
     lines.get(lines.len().saturating_sub(n)..).unwrap_or_default().join("\n")

@@ -49,6 +49,9 @@ pub struct Manifest {
     pub requirements: Vec<String>,
     /// Live views its backend draws at render sites (`views`).
     pub views: Vec<ManifestView>,
+    /// Changes to the screen while it's on (`fluid`, experimental): fluid ops (`set`,
+    /// `insert`) the window layers under the user's own.
+    pub fluid: Option<Value>,
     /// Can't be switched off (`locked`; honored for bundled plugins and their forks).
     pub locked: bool,
     /// On until someone switches it (`"enabled": false` ships it switched off).
@@ -580,6 +583,12 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
         backend,
         requirements,
         views,
+        fluid: match r.get("fluid") {
+            None | Some(Value::Null) => None,
+            Some(v @ Value::Object(_)) if v.to_string().len() <= 64 * 1024 => Some(v.clone()),
+            Some(Value::Object(_)) => return Err("fluid: at most 64 KB".into()),
+            Some(_) => return Err("fluid: an object of fluid changes, like {\"insert\": [...]}".into()),
+        },
         locked: r.get("locked") == Some(&Value::Bool(true)),
         on_by_default: r.get("enabled") != Some(&Value::Bool(false)),
         provides: match opt_str(r.get("provides"), "provides")?.map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()) {
