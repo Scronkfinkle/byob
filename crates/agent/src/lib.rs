@@ -47,6 +47,7 @@ mod engine_tests;
 mod extensions;
 #[cfg(test)]
 mod extensions_tests;
+pub mod fluid;
 pub mod hooks;
 #[cfg(test)]
 mod hooks_tests;
@@ -710,6 +711,7 @@ impl Engine {
             // Offered while the bundled `appearance` plugin (which names it) is on.
             tools.register(layout::UiLayout::new(inbox.clone()));
             tools.register(Arc::new(look::UiLook { inbox: inbox.clone() }));
+            tools.register(Arc::new(fluid::UiFluid { inbox: inbox.clone() }));
             tools.register(Arc::new(capture::UiScreenshot { inbox: inbox.clone() }));
         }
         let plugin_values = Self::load_plugin_values(config.paths.as_ref());

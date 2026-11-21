@@ -64,6 +64,10 @@ pub fn control_size(ui: &Ui) -> f32 {
 
 impl ByobApp {
     pub(crate) fn composer(&mut self, ui: &mut Ui) {
+        crate::fluid::region(ui, "composer", |ui| self.composer_inner(ui))
+    }
+
+    fn composer_inner(&mut self, ui: &mut Ui) {
         let t = self.tokens;
         ui.add_space(t.pad(6.0));
         readable_column(ui, &t, |ui| self.composer_column(ui, &t));

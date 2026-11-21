@@ -285,6 +285,11 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
         };
         let k: &mut Knobs = &mut prefs.knobs;
         let r: Result<(), String> = match key.as_str() {
+            "fluid" => {
+                let ops = v.as_str().map_or_else(|| v.clone(), |s| serde_json::from_str(s).unwrap_or(Value::Null));
+                let a = crate::fluid::doc::apply(&mut prefs.fluid, &ops, "you");
+                if a.problems.is_empty() { Ok(()) } else { Err(a.problems.join("; ")) }
+            }
             "mode" => ThemeKind::from_name(&text(v)).map(|m| prefs.theme = m).ok_or_else(|| format!("mode: dark, light or system, not {v}")),
             "dark_theme" | "light_theme" => {
                 let want = key == "dark_theme";

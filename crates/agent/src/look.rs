@@ -35,9 +35,9 @@ pub(crate) struct Waiting {
 }
 
 /// The tool's answer when the window doesn't answer in time.
-const NOT_DRAWING: &str = "The window hasn't answered in 10 seconds: it isn't drawing right now (a browser tab in the background, for one). The change was sent and will apply when the window draws again. Don't send it again: read the look later (a read says how many changes are still waiting).";
+pub(crate) const NOT_DRAWING: &str = "The window hasn't answered in 10 seconds: it isn't drawing right now (a browser tab in the background, for one). The change was sent and will apply when the window draws again. Don't send it again: read the look later (a read says how many changes are still waiting).";
 
-const NO_WINDOW: &str = "no byob window is showing this chat right now (or it's too old to report its look), so there's no look to read or change";
+pub(crate) const NO_WINDOW: &str = "no byob window is showing this chat right now (or it's too old to report its look), so there's no look to read or change";
 
 impl Engine {
     fn look_clients(&self, chat: &str) -> Vec<ClientId> {
@@ -100,7 +100,7 @@ impl Engine {
     }
 }
 
-fn request(inbox: &Sender<Input>, chat: &str, changes: Option<LookChanges>, cancel: &AtomicBool) -> Answer {
+pub(crate) fn request(inbox: &Sender<Input>, chat: &str, changes: Option<LookChanges>, cancel: &AtomicBool) -> Answer {
     let (reply, answer) = channel();
     inbox.send(Input::Look { chat: chat.to_owned(), changes, reply }).map_err(|_| "byob is shutting down".to_owned())?;
     let started = Instant::now();

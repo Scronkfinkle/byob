@@ -257,6 +257,10 @@ impl ByobApp {
     /// The settings screen, below the header: the navigation column and the page beside it,
     /// or on phones the list of categories or one page.
     pub(crate) fn settings_screen(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        crate::fluid::region(ui, "settings", |ui| self.settings_inner(ui, narrow))
+    }
+
+    fn settings_inner(&mut self, ui: &mut egui::Ui, narrow: bool) {
         let t = self.tokens;
         if std::mem::take(&mut self.plugins.reveal) {
             self.open_settings_at(Tab::Plugins);

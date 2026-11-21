@@ -993,6 +993,7 @@ version = "0.3.10"
 dependencies = [
  "byob-protocol",
  "byob-types",
+ "chrono",
  "directories",
  "egui",
  "egui-pop-phosphor",

@@ -813,6 +813,10 @@ impl Artifacts {
 
     /// The pane's contents (the caller decides where it goes).
     pub fn pane(&mut self, ui: &mut egui::Ui, t: &Tokens, narrow: bool) {
+        crate::fluid::region(ui, "pane", |ui| self.pane_inner(ui, t, narrow))
+    }
+
+    fn pane_inner(&mut self, ui: &mut egui::Ui, t: &Tokens, narrow: bool) {
         self.tab_strip(ui, t, narrow);
         let Some((a, version)) = self.selected_artifact() else {
             return;

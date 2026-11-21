@@ -286,6 +286,10 @@ impl ByobApp {
 
     /// The header's row (in its panel, or in a free arrangement's module).
     pub(crate) fn header_row(&mut self, ui: &mut egui::Ui, layout: Layout) {
+        crate::fluid::region(ui, "header", |ui| self.header_row_inner(ui, layout))
+    }
+
+    fn header_row_inner(&mut self, ui: &mut egui::Ui, layout: Layout) {
         let t = self.tokens;
         ui.horizontal(|ui| {
             // The row's full height up front: items line up on its center whatever order

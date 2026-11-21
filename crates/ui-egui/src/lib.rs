@@ -15,6 +15,8 @@ pub mod count;
 mod envpanel;
 pub mod export;
 mod fit;
+pub mod fluid;
+mod fluid_app;
 mod form;
 pub mod glass;
 pub mod header;
@@ -186,6 +188,13 @@ pub struct ByobApp {
     captures: capture::Captures,
     /// Looks from before each change the model made, newest last (`ui_look`'s undo).
     look_history: Vec<theme::Prefs>,
+    /// Fluid: the edit mode, inserted elements' tree state, and what the plugin's document
+    /// was last saved from (its `edited` count).
+    fluid_editor: fluid::edit::Editor,
+    fluid_trees: std::collections::HashMap<String, tree::TreeState>,
+    fluid_saved: u64,
+    /// The answer to the model's last fluid request, for the next look report.
+    fluid_note: Option<(String, (String, String))>,
     /// One of your messages being changed, to start over from it.
     editing: Editing,
     /// Math in messages is typeset (a plugin names `native:math`, [`math`]).
@@ -279,6 +288,10 @@ impl ByobApp {
             look_answer: Vec::new(),
             captures: capture::Captures::default(),
             look_history: Vec::new(),
+            fluid_editor: fluid::edit::Editor::default(),
+            fluid_trees: std::collections::HashMap::new(),
+            fluid_saved: 0,
+            fluid_note: None,
             editing: Editing::default(),
             math: false,
             stage: cockpit::Stage::default(),
@@ -667,9 +680,17 @@ impl ByobApp {
                     }
                     self.layout = std::sync::Arc::new(l);
                 }
-                ServerMsg::SetLook { request, changes } => {
+                ServerMsg::SetLook { request, mut changes } => {
                     let mut prefs = self.prefs.clone();
-                    let problems = look::change(&mut prefs, &mut self.look_history, &changes, self.tokens.dark, &self.user_themes, self.stage.available());
+                    let fluid_ops = changes.remove("fluid");
+                    let mut problems = look::change(&mut prefs, &mut self.look_history, &changes, self.tokens.dark, &self.user_themes, self.stage.available());
+                    if let Some(ops) = fluid_ops {
+                        let before = prefs.clone();
+                        problems.extend(self.fluid_from_model(&mut prefs, &ops));
+                        if prefs != before {
+                            self.look_history.push(before);
+                        }
+                    }
                     self.set_prefs(prefs);
                     // Answered once the new look is drawn (its colors are what the theme makes).
                     self.look_answer.push((request, problems));
@@ -705,13 +726,16 @@ impl ByobApp {
 
     /// Tell the engine this window's look when it changed (or it asked for a change), once
     /// the tokens are built from it.
-    fn report_look(&mut self) {
+    fn report_look(&mut self, ctx: &egui::Context) {
         let now = (self.prefs_gen, self.tokens.dark);
         if self.look_reported == Some(now) || !self.engine_has(byob_protocol::look::CAP_LOOK) {
             return;
         }
         self.look_reported = Some(now);
-        let report = look::report(&self.prefs, &self.tokens, &self.user_themes, self.stage.available());
+        let mut report = look::report(&self.prefs, &self.tokens, &self.user_themes, self.stage.available());
+        if let Some(note) = self.fluid_report(ctx) {
+            report.notes.insert("fluid".into(), note);
+        }
         // Every change gets its answer (several can arrive between two frames).
         let answers = std::mem::take(&mut self.look_answer);
         if answers.is_empty() {
@@ -740,7 +764,7 @@ impl ByobApp {
                 cockpit::glaze(&mut tokens, self.prefs.cockpit.glass);
             }
             self.tokens = tokens;
-            self.report_look();
+            self.report_look(ctx);
         }
     }
 
@@ -1131,10 +1155,11 @@ impl ByobApp {
         }
         self.poll_appearance();
         self.apply_theme(ui.ctx());
+        self.fluid_begin(ui.ctx());
         layout::store(ui.ctx(), &self.layout);
         self.stage.begin(ui, &self.prefs.cockpit);
         math::set_enabled(ui.ctx(), self.math);
-        self.report_look();
+        self.report_look(ui.ctx());
         let narrow = ui.available_width() < sidebar::NARROW;
         self.artifacts.network_switch = self.engine_has(byob_protocol::version::CAP_ARTIFACT_NETWORK);
         self.artifacts.begin_frame(ui.ctx(), &self.tokens, narrow);
@@ -1355,6 +1380,7 @@ impl ByobApp {
 
     /// After drawing: artifact actions and overlays, and what they want sent or shown.
     fn end_frame(&mut self, ctx: &egui::Context) {
+        self.fluid_end(ctx);
         // The chat list's arrangement changed here: shared through the layout.
         if let Some(list) = self.sidebar.take_list_change()
             && self.engine_has(byob_protocol::layout::CAP_LAYOUT)
@@ -1465,6 +1491,10 @@ impl ByobApp {
     }
 
     fn transcript(&mut self, ui: &mut egui::Ui) {
+        crate::fluid::region(ui, "chat", |ui| self.transcript_inner(ui))
+    }
+
+    fn transcript_inner(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens;
         if self.entries.is_empty() {
             self.empty_chat(ui);

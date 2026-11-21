@@ -1334,6 +1334,10 @@ impl Sidebar {
     /// Draw the list. Returns messages for the engine. On a wide screen it sits on a glass
     /// card filling `ui`; on a phone it is the whole screen, without the card.
     pub fn show(&mut self, ui: &mut Ui, t: &Tokens, narrow: bool) -> Vec<ClientMsg> {
+        crate::fluid::region(ui, "sidebar", |ui| self.show_inner(ui, t, narrow))
+    }
+
+    fn show_inner(&mut self, ui: &mut Ui, t: &Tokens, narrow: bool) -> Vec<ClientMsg> {
         self.rects = Rects::default();
         self.now_ms = now_ms();
         self.mark_seen();

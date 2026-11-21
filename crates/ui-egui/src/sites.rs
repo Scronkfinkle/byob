@@ -354,6 +354,10 @@ impl Sites {
     /// The pane's contents: its views as tabs, the one in front, × to close. Web views
     /// (`html` in the manifest) run on a web surface instead of a tree.
     pub fn pane(&mut self, ui: &mut egui::Ui, t: &Tokens, narrow: bool, web: &mut crate::web::Web) {
+        crate::fluid::region(ui, "plugin_pane", |ui| self.pane_inner(ui, t, narrow, web))
+    }
+
+    fn pane_inner(&mut self, ui: &mut egui::Ui, t: &Tokens, narrow: bool, web: &mut crate::web::Web) {
         let Some(active) = self.active.clone() else { return };
         let panes: Vec<Declared> = self.panes().cloned().collect();
         ui.add_space(4.0);
