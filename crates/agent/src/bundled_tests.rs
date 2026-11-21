@@ -67,6 +67,7 @@ fn compose(ext: &mut Ext, ws: &Path, switches: &[(&str, bool)]) -> Composed {
     // The engine registers the layout tool (it talks to the engine); the `appearance` plugin names it.
     base.register(crate::layout::UiLayout::new(std::sync::mpsc::channel().0));
     base.register(std::sync::Arc::new(crate::look::UiLook { inbox: std::sync::mpsc::channel().0 }));
+    base.register(std::sync::Arc::new(crate::fluid::UiFluid { inbox: std::sync::mpsc::channel().0 }));
     base.register(std::sync::Arc::new(crate::capture::UiScreenshot { inbox: std::sync::mpsc::channel().0 }));
     let trust = BTreeMap::new();
     let values = BTreeMap::new();

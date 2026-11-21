@@ -19,7 +19,14 @@ pub struct Editor {
     scene: String,
     history: Vec<FluidDoc>,
     last_push: f64,
-    drag: Option<(String, Vec2)>,
+    drag: Option<Drag>,
+}
+
+/// A drag in progress: moving an element, or scaling it by its corner.
+#[derive(Clone)]
+enum Drag {
+    Move { path: String, start: Vec2 },
+    Scale { path: String, start: f32, center: Pos2, from: f32 },
 }
 
 /// What the editor asks of the app.
@@ -79,7 +86,7 @@ impl Editor {
         let hovered = pointer.filter(|_| !over_inspector).and_then(|p| {
             els.iter()
                 .filter(|e| e.shown.contains(p))
-                .max_by(|a, b| (!a.hidden, a.depth).cmp(&(!b.hidden, b.depth)).then(b.shown.area().total_cmp(&a.shown.area())))
+                .max_by(|a, b| (!a.hidden).cmp(&!b.hidden).then(b.shown.area().total_cmp(&a.shown.area())).then(a.depth.cmp(&b.depth)))
                 .cloned()
         });
 
@@ -126,34 +133,65 @@ impl Editor {
         {
             self.selected = Some(e.path.clone());
         }
-        if resp.drag_started()
-            && let Some(e) = &hovered
-        {
-            let path = if self.selected.as_deref().is_some_and(|s| els.iter().any(|x| x.path == s && x.shown.contains(pointer.unwrap_or_default()))) {
-                self.selected.clone().unwrap_or_default()
-            } else {
-                e.path.clone()
-            };
-            self.selected = Some(path.clone());
-            let start = next.rules.get(&path).map_or(Vec2::ZERO, Rule::offset);
-            self.push(&next, now, true);
-            self.drag = Some((path.clone(), start));
-            with(ctx, |f| f.dragging = Some(path));
+        // Dragging the selection's corner handle scales it; dragging anything else moves it.
+        let selected_el = self.selected.as_deref().and_then(|s| els.iter().find(|e| e.path == s));
+        let near_corner = |p: Pos2| selected_el.is_some_and(|e| e.shown.right_bottom().distance(p) < 10.0);
+        let on_corner = pointer.is_some_and(near_corner);
+        // What a drag takes is decided where the button went down (it starts a few points on).
+        let origin = ctx.input(|i| i.pointer.press_origin()).or(pointer);
+        let at_origin = origin.and_then(|p| {
+            els.iter()
+                .filter(|e| e.shown.contains(p))
+                .max_by(|a, b| (!a.hidden).cmp(&!b.hidden).then(b.shown.area().total_cmp(&a.shown.area())).then(a.depth.cmp(&b.depth)))
+                .cloned()
+        });
+        if resp.drag_started() {
+            let on_corner = origin.is_some_and(near_corner);
+            if let (true, Some(e)) = (on_corner, selected_el) {
+                let start = next.rules.get(&e.path).and_then(|r| r.scale).unwrap_or(1.0);
+                let center = e.shown.center();
+                let from = pointer.map_or(1.0, |p| p.distance(center)).max(4.0);
+                self.push(&next, now, true);
+                self.drag = Some(Drag::Scale { path: e.path.clone(), start, center, from });
+                let path = e.path.clone();
+                with(ctx, |f| f.dragging = Some(path));
+            } else if let Some(e) = &at_origin {
+                let path =
+                    if selected_el.zip(origin).is_some_and(|(s, p)| s.shown.contains(p)) { self.selected.clone().unwrap_or_default() } else { e.path.clone() };
+                self.selected = Some(path.clone());
+                let start = next.rules.get(&path).map_or(Vec2::ZERO, Rule::offset);
+                self.push(&next, now, true);
+                self.drag = Some(Drag::Move { path: path.clone(), start });
+                with(ctx, |f| f.dragging = Some(path));
+            }
         }
-        if let Some((path, start)) = self.drag.clone() {
+        if let Some(drag) = self.drag.clone() {
             if resp.dragged() {
-                let total = ctx.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()).map(|(a, b)| b - a)).unwrap_or_default();
-                // Snap to whole points (and to 8 with Shift).
                 let snap = if ctx.input(|i| i.modifiers.shift) { 8.0 } else { 1.0 };
-                let v = start + total;
-                let r = next.rule_mut(&path);
-                r.dx = Some((v.x / snap).round() * snap);
-                r.dy = Some((v.y / snap).round() * snap);
+                match drag {
+                    Drag::Move { path, start } => {
+                        let total = ctx.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()).map(|(a, b)| b - a)).unwrap_or_default();
+                        // Snap to whole points (and to 8 with Shift).
+                        let v = start + total;
+                        let r = next.rule_mut(&path);
+                        r.dx = Some((v.x / snap).round() * snap);
+                        r.dy = Some((v.y / snap).round() * snap);
+                    }
+                    Drag::Scale { path, start, center, from } => {
+                        if let Some(p) = pointer {
+                            let k = (start * p.distance(center) / from).clamp(0.2, 6.0);
+                            next.rule_mut(&path).scale = Some((k * 100.0).round() / 100.0);
+                        }
+                    }
+                }
             }
             if resp.drag_stopped() || !ctx.input(|i| i.pointer.any_down()) {
                 self.drag = None;
                 with(ctx, |f| f.dragging = None);
             }
+        }
+        if on_corner {
+            ctx.set_cursor_icon(egui::CursorIcon::ResizeNwSe);
         }
 
         // Keys (not while typing in the inspector).
@@ -255,18 +293,30 @@ impl Editor {
                             {
                                 *doc = prev;
                             }
-                            if ui.add_enabled(!doc.is_empty(), egui::Button::new("Reset all").small()).on_hover_text("Every element back as byob draws it").clicked() {
+                            if ui
+                                .add_enabled(!doc.is_empty(), egui::Button::new("Reset all").small())
+                                .on_hover_text("Every element back as byob draws it")
+                                .clicked()
+                            {
                                 self.push(doc, now, true);
                                 *doc = FluidDoc::default();
                             }
                         });
                     });
-                    ui.label(RichText::new("Click anything to select it, drag to move it. Arrows nudge (Shift: 10), H hides, R resets, +/− scale, [ selects its parent.").small().color(t.text_faint));
+                    ui.label(
+                        RichText::new(
+                            "Click anything to select it, drag to move it. Arrows nudge (Shift: 10), H hides, R resets, +/− scale, [ selects its parent.",
+                        )
+                        .small()
+                        .color(t.text_faint),
+                    );
                     ui.separator();
                     self.scenes(ui, t, doc, now);
                     ui.separator();
+                    self.palette(ui, t, doc, now);
                     let Some(path) = self.selected.clone() else {
-                        ui.label(RichText::new("Nothing selected").color(t.text_dim));
+                        ui.label(RichText::new("Nothing selected: click anything").color(t.text_dim));
+                        self.ask_box(ui, None, out);
                         self.finder(ui, t, els);
                         return;
                     };
@@ -290,7 +340,11 @@ impl Editor {
                     match el {
                         Some(e) => {
                             let label: String = e.label.chars().take(80).collect();
-                            ui.label(RichText::new(if label.is_empty() || e.is_region() { e.role.clone() } else { format!("{} · {label:?}", e.role) }).small().color(t.text_dim));
+                            ui.label(
+                                RichText::new(if label.is_empty() || e.is_region() { e.role.clone() } else { format!("{} · {label:?}", e.role) })
+                                    .small()
+                                    .color(t.text_dim),
+                            );
                         }
                         None => {
                             ui.label(RichText::new("Not on screen now").small().color(t.text_faint));
@@ -390,20 +444,67 @@ impl Editor {
                         }
                     });
                     // Or ask byob.
-                    let ask = ui.add(egui::TextEdit::multiline(&mut self.ask).hint_text("Ask byob to change this… (\"move it over a bit\", \"put a timer next to it\")").desired_rows(2).desired_width(f32::INFINITY));
-                    let enter = ask.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
-                    if (ui.button("Ask byob").clicked() || enter) && !self.ask.trim().is_empty() {
-                        let what = el.map_or_else(|| format!("{path} (not on screen now)"), |e| format!("{} at {:.0},{:.0} {:.0}×{:.0}", describe(e), e.shown.min.x, e.shown.min.y, e.shown.width(), e.shown.height()));
-                        out.ask = Some(format!(
-                            "{}\n\n(Selected on screen in edit mode: {what}. Change it with ui_fluid; inspect under its parent first if you need its neighbors.)",
-                            self.ask.trim()
-                        ));
-                        self.ask.clear();
-                    }
+                    self.ask_box(ui, Some((path.as_str(), el)), out);
                     ui.separator();
                     self.finder(ui, t, els);
                 });
             });
+    }
+
+    /// Ask byob for a change: to the selected element (`what`), or to the screen.
+    fn ask_box(&mut self, ui: &mut egui::Ui, what: Option<(&str, Option<&Element>)>, out: &mut Out) {
+        let hint = if what.is_some() {
+            "Ask byob to change this… (\"move it over a bit\", \"put a timer next to it\")"
+        } else {
+            "Ask byob to change the screen… (\"a calmer layout\", \"a notes pad on the right\")"
+        };
+        let ask = ui.add(egui::TextEdit::multiline(&mut self.ask).hint_text(hint).desired_rows(2).desired_width(f32::INFINITY));
+        let enter = ask.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
+        if (ui.button("Ask byob").clicked() || enter) && !self.ask.trim().is_empty() {
+            let context = match what {
+                Some((_, Some(e))) => format!(
+                    "\n\n(Selected on screen in edit mode: {} at {:.0},{:.0} {:.0}×{:.0}. Change it with ui_fluid; inspect under its parent first if you need its neighbors.)",
+                    describe(e),
+                    e.shown.min.x,
+                    e.shown.min.y,
+                    e.shown.width(),
+                    e.shown.height()
+                ),
+                Some((path, None)) => format!("\n\n(Selected in edit mode: {path}, not on screen now. Change it with ui_fluid.)"),
+                None => "\n\n(Asked from fluid's edit mode: change the screen with ui_fluid.)".to_owned(),
+            };
+            out.ask = Some(format!("{}{context}", self.ask.trim()));
+            self.ask.clear();
+        }
+    }
+
+    /// New elements, dropped near the middle of the window to be dragged where they go.
+    fn palette(&mut self, ui: &mut egui::Ui, t: &Tokens, doc: &mut FluidDoc, now: f64) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Add").small().color(t.text_dim));
+            let kinds: [(&str, serde_json::Value, serde_json::Value); 4] = [
+                ("Note", serde_json::json!({"type": "column", "children": [{"type": "text", "text": "{state.text}"}, {"type": "input", "name": "t", "placeholder": "Write a note…", "submit": "set:text={t}"}]}), serde_json::json!({"text": "A note"})),
+                ("Clock", serde_json::json!({"type": "column", "children": [{"type": "text", "text": "{time}", "style": "title"}, {"type": "text", "text": "{date}", "tone": "muted"}]}), serde_json::json!({})),
+                (
+                    "Todo",
+                    serde_json::json!({"type": "column", "children": [{"type": "text", "text": "Todo ({state.items})", "style": "title"}, {"type": "input", "name": "task", "placeholder": "Add a task…", "submit": "add:items={task}"}, {"type": "column", "each": "items", "item": {"type": "row", "children": [{"type": "text", "text": "{item}"}, {"type": "button", "label": "Done", "action": "drop:items={index}"}]}, "empty": {"type": "text", "text": "Nothing to do", "tone": "muted"}}]}),
+                    serde_json::json!({"items": []}),
+                ),
+                ("Counter", serde_json::json!({"type": "row", "children": [{"type": "button", "label": "−", "action": "inc:n=-1"}, {"type": "text", "text": "{state.n}", "style": "title"}, {"type": "button", "label": "+", "action": "inc:n=1"}]}), serde_json::json!({"n": 0})),
+            ];
+            for (name, tree, state) in kinds {
+                if ui.small_button(name).clicked() {
+                    self.push(doc, now, true);
+                    let n = doc.inserts.len() + 1;
+                    let id = format!("{}{n}", name.to_lowercase());
+                    let ins = serde_json::json!({"id": id, "at": "free", "x": 40, "y": 35, "tree": tree, "state": state, "by": "you"});
+                    if let Ok(i) = serde_json::from_value::<Insert>(ins) {
+                        doc.inserts.push(i);
+                        self.selected = Some(format!("+{id}"));
+                    }
+                }
+            }
+        });
     }
 
     /// Saved scenes: click one to put it on screen, save this one under a name.

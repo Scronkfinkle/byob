@@ -334,8 +334,10 @@ impl Fluid {
         }
         let same = |a: Rect, b: Rect| a.expand(2.0).contains_rect(b) && b.expand(2.0).contains_rect(a);
         // Clickable things AccessKit didn't name: custom-drawn rows, icons, chips.
+        // Fluid's own: the inspector, and the overlay over the whole window while editing.
+        let mine: Vec<Rect> = [inspector_id(), overlay_id()].iter().filter_map(|id| ctx.memory(|m| m.area_rect(*id))).collect();
         for rect in ctx.interactive_rects_last_pass() {
-            if !rect.is_positive() || widgets.iter().any(|(w, _)| same(*w, rect)) {
+            if !rect.is_positive() || widgets.iter().any(|(w, _)| same(*w, rect)) || mine.iter().any(|m| m.expand(1.0).contains_rect(rect)) {
                 continue;
             }
             let inside: Vec<&(String, Rect, LayerId)> = texts.iter().filter(|(_, r, _)| rect.expand(1.0).contains_rect(*r)).collect();
@@ -352,7 +354,11 @@ impl Fluid {
                 .find(|t| !t.is_empty())
                 .or_else(|| inside.iter().find_map(|t| crate::icons::glyph_name(&t.0)).map(str::to_owned))
                 .unwrap_or_default();
-            raw.push(Raw { name: Name::Part, role: "button".into(), label, rect, layer, interactive: true, collapsed: false });
+            // A big clickable surface (a panel's background) is an area, not a button named
+            // after whatever text happens to be first in it.
+            let big = rect.width() > 420.0 || rect.height() > 160.0;
+            let (role, label) = if big { ("area", String::new()) } else { ("button", label) };
+            raw.push(Raw { name: Name::Part, role: role.into(), label, rect, layer, interactive: true, collapsed: false });
         }
         // Text that isn't a widget's own label (that one is the widget).
         for (text, rect, layer) in texts {
@@ -691,9 +697,15 @@ impl egui::Plugin for Fluid {
 
     fn on_end_pass(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        let t0 = web_time::Instant::now();
         let mut els = self.scan(&ctx);
+        let t1 = web_time::Instant::now();
         let busy = self.resolve(&ctx, &mut els);
         Self::repaint(ui, &els, self.time(), self.editing);
+        let t2 = web_time::Instant::now();
+        if t2 - t0 > std::time::Duration::from_millis(3) || ctx.cumulative_pass_nr() % 30 == 0 {
+            log::debug!("fluid: {} elements, scan {:?}, rules and paint {:?}", els.len(), t1 - t0, t2 - t1);
+        }
         self.mapped = els
             .iter()
             .filter(|e| e.hidden || e.transform != TSTransform::IDENTITY)
