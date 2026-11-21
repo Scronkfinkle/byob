@@ -320,5 +320,6 @@ manifest: the same changes the model makes with `ui_fluid`, layered under the us
   (`set:`, `add:`, `drop:`, `flip:`, `inc:`), repeat a node per item (`each`), read live
   values (`{time}`, `{chat}`, `{model}`, `{state.key}`), and send messages (`send:`).
 - `set` changes elements by path or glob: `dx`, `dy`, `scale`, `opacity`, `hidden`, `text`,
-  `size`, `color`, `fill`, `outline`, `radius`, `motion`, `reveal`. Read the paths with
+  `size`, `color`, `fill`, `outline`, `radius`, `motion`, `reveal`, and `place`
+  (`after:PATH`, `below:PATH`, `swap:PATH`…: kept by another element, wherever it goes). Read the paths with
   `ui_fluid` (inspect), or press F2 in the window and point at the element.

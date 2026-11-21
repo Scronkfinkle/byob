@@ -125,6 +125,13 @@ pub struct Fluid {
     mapped: Vec<(Rect, Rect, TSTransform, bool)>,
     /// The transform a pointer press was mapped with, kept until it's let go.
     capture: Option<TSTransform>,
+    /// The last press on a moved element (its transform, where it's laid out): a popup it
+    /// opens there is moved along with it.
+    opener: Option<(TSTransform, Rect)>,
+    /// Popup layers moved that way.
+    moved_popups: Vec<LayerId>,
+    /// The layers open when that press came (a popup is one that opened after it).
+    open_before: Vec<LayerId>,
     start: std::time::Instant,
 }
 
@@ -145,6 +152,9 @@ impl Default for Fluid {
             last: HashMap::new(),
             mapped: Vec::new(),
             capture: None,
+            opener: None,
+            moved_popups: Vec::new(),
+            open_before: Vec::new(),
             start: std::time::Instant::now(),
         }
     }
@@ -475,6 +485,8 @@ impl Fluid {
     /// Rules, easing and motion: each element's transform, opacity and hiding.
     fn resolve(&mut self, ctx: &Context, els: &mut [Element]) -> bool {
         let (doc, base) = (Arc::clone(&self.doc), Arc::clone(&self.base));
+        // Last frame's elements by path (laid out, drawn), for placing by another element.
+        let last: HashMap<String, (Rect, Rect)> = self.elements.iter().map(|e| (e.path.clone(), (e.rect, e.shown))).collect();
         let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
         let k = 1.0 - (-dt * 14.0).exp();
         let t = self.time();
@@ -498,6 +510,26 @@ impl Fluid {
                 None => (TSTransform::IDENTITY, 1.0, false),
             };
             let (mut off, mut scale) = rule.as_ref().map_or((Vec2::ZERO, 1.0), |r| (r.offset(), r.scale.unwrap_or(1.0)));
+            // Placed by another element: where that one was drawn last frame.
+            if let Some(place) = rule.as_ref().and_then(|r| r.place.as_deref())
+                && let Some((side, target)) = place.split_once(':')
+                && let Some(t) = last.get(target)
+            {
+                let r = els[i].rect;
+                let (size, gap) = (r.size() * scale, 6.0);
+                let at = match side {
+                    "after" => Pos2::new(t.1.right() + gap, t.1.center().y - size.y / 2.0),
+                    "before" => Pos2::new(t.1.left() - gap - size.x, t.1.center().y - size.y / 2.0),
+                    "above" => Pos2::new(t.1.center().x - size.x / 2.0, t.1.top() - gap - size.y),
+                    "below" => Pos2::new(t.1.center().x - size.x / 2.0, t.1.bottom() + gap),
+                    "over" => t.1.center() - size / 2.0,
+                    // Where the other one was laid out (so two swapped don't chase each other).
+                    _ => t.0.center() - size / 2.0,
+                };
+                // The scale is about its center: aim the center, in its parent's terms (the
+                // parent may be moved or zoomed itself).
+                off += parent_t.inverse() * (at + size / 2.0) - r.center();
+            }
             // Ease toward the rule (snap while dragged).
             let path = els[i].path.clone();
             if self.dragging.as_deref() != Some(path.as_str()) {
@@ -787,7 +819,7 @@ impl egui::Plugin for Fluid {
         let busy = self.resolve(&ctx, &mut els);
         Self::repaint(ui, &els, self.time(), self.editing);
         let t2 = web_time::Instant::now();
-        if t2 - t0 > std::time::Duration::from_millis(3) || ctx.cumulative_pass_nr() % 30 == 0 {
+        if t2 - t0 > std::time::Duration::from_millis(4) {
             log::debug!("fluid: {} elements, scan {:?}, rules and paint {:?}", els.len(), t1 - t0, t2 - t1);
         }
         self.mapped = els
@@ -798,13 +830,46 @@ impl egui::Plugin for Fluid {
             .collect();
         // Smallest first: the innermost element under the pointer wins.
         self.mapped.sort_by(|a, b| a.0.area().total_cmp(&b.0.area()));
+        // A popup the moved element opened (near where it's laid out) goes where it's drawn.
+        if let Some((t, at)) = self.opener {
+            let shown = t.mul_rect(at);
+            let screen = ctx.content_rect();
+            for l in ctx.memory(|m| m.layer_ids().collect::<Vec<_>>()) {
+                if l.order != egui::Order::Foreground || own_layer(l) || l.id.value() == overlay_id().value() {
+                    continue;
+                }
+                let near = ctx.memory(|m| m.area_rect(l.id)).is_some_and(|r| r.intersects(at.expand(400.0)) && ctx.memory(|m| m.areas().is_visible(&l)));
+                if near && !self.moved_popups.contains(&l) && !self.open_before.contains(&l) {
+                    let Some(r) = ctx.memory(|m| m.area_rect(l.id)) else { continue };
+                    // As it sat by the element where it's laid out, by where it's drawn; on
+                    // the other side if that's off screen (a menu that opened upward from the
+                    // bottom, moved to the top), and within the window.
+                    let mut d = shown.center() - at.center();
+                    let moved = r.translate(d);
+                    if moved.top() < screen.top() || moved.bottom() > screen.bottom() {
+                        d.y = if r.center().y < at.center().y { shown.bottom() + 4.0 - r.top() } else { shown.top() - 4.0 - r.bottom() };
+                    }
+                    let moved = r.translate(d);
+                    d.x += (screen.right() - moved.right()).min(0.0) + (screen.left() - moved.left()).max(0.0);
+                    ctx.set_transform_layer(l, TSTransform::from_translation(d));
+                    self.moved_popups.push(l);
+                }
+            }
+        }
+        self.moved_popups.retain(|l| {
+            let open = ctx.memory(|m| m.areas().is_visible(l));
+            if !open {
+                ctx.set_transform_layer(*l, TSTransform::IDENTITY);
+            }
+            open
+        });
         self.elements = els;
         if busy {
             ctx.request_repaint();
         }
     }
 
-    fn input_hook(&mut self, _ctx: &Context, input: &mut egui::RawInput) {
+    fn input_hook(&mut self, ctx: &Context, input: &mut egui::RawInput) {
         if self.editing || self.mapped.is_empty() {
             self.capture = None;
             return;
@@ -824,9 +889,19 @@ impl egui::Plugin for Fluid {
                 } else {
                     if press == Some(true) {
                         self.capture = Some(*t);
+                        let at = t.inverse() * *pos;
+                        self.opener = self.mapped.iter().find(|m| m.1.contains(at)).map(|m| (*t, m.1));
+                        self.open_before = ctx.memory(|m| m.layer_ids().filter(|l| m.areas().is_visible(l)).collect());
                     }
                     Some(t.inverse() * *pos)
                 }
+            } else if press == Some(true)
+                && self.opener.is_some()
+                && !self.moved_popups.iter().any(|l| ctx.memory(|m| m.area_rect(l.id)).is_some_and(|r| r.contains(*pos)))
+            {
+                // A press elsewhere (not in the popup): later popups aren't its.
+                self.opener = None;
+                None
             } else if self.mapped.iter().any(|m| m.1.contains(*pos) && !m.3) {
                 // Where something was laid out but isn't drawn any more: nothing there.
                 Some(far)

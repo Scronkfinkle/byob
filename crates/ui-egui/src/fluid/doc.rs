@@ -49,6 +49,11 @@ pub struct Rule {
     /// Corner radius of `fill` and `outline`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub radius: Option<f32>,
+    /// Drawn next to another element, wherever that one is: `after:PATH`, `before:`,
+    /// `above:`, `below:`, `over:`, or `swap:PATH` (each where the other was laid out).
+    /// `dx`/`dy` then nudge it from there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
     /// Shown only while the pointer is near ("hover"), faded the rest of the time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reveal: Option<String>,
@@ -67,7 +72,7 @@ impl Rule {
         macro_rules! take {
             ($($f:ident),*) => { $( if other.$f.is_some() { self.$f = other.$f.clone(); } )* };
         }
-        take!(dx, dy, scale, opacity, text, size, color, fill, outline, radius, reveal, motion);
+        take!(dx, dy, scale, opacity, text, size, color, fill, outline, radius, place, reveal, motion);
         self.hidden |= other.hidden;
     }
 
@@ -77,7 +82,7 @@ impl Rule {
 
     /// Changes where and how big it is drawn (and so where it's clicked).
     pub fn moves(&self) -> bool {
-        self.offset() != egui::Vec2::ZERO || self.scale.is_some_and(|s| s != 1.0) || self.motion.is_some()
+        self.offset() != egui::Vec2::ZERO || self.scale.is_some_and(|s| s != 1.0) || self.motion.is_some() || self.place.is_some()
     }
 }
 
@@ -423,6 +428,20 @@ pub fn set_fields(rule: &mut Rule, fields: &serde_json::Map<String, Value>, prob
                     problems.push(bad("#rrggbb"));
                 }
             }
+            "place" => {
+                rule.place = match v.as_str().map(str::trim) {
+                    None | Some("" | "none") => None,
+                    Some(p) => match p.split_once(':') {
+                        Some((side, target)) if ["after", "before", "above", "below", "over", "swap"].contains(&side) && !target.trim().is_empty() => {
+                            Some(format!("{side}:{}", target.trim()))
+                        }
+                        _ => {
+                            problems.push(bad("after:PATH, before:PATH, above:PATH, below:PATH, over:PATH or swap:PATH"));
+                            rule.place.clone()
+                        }
+                    },
+                }
+            }
             "reveal" => {
                 rule.reveal = match v.as_str().map(str::to_ascii_lowercase) {
                     Some(m) if m == "hover" => Some(m),
@@ -445,9 +464,8 @@ pub fn set_fields(rule: &mut Rule, fields: &serde_json::Map<String, Value>, prob
                     }
                 }
             }
-            other => {
-                problems.push(format!("{path}: no field {other:?} (dx, dy, scale, opacity, hidden, text, size, color, fill, outline, radius, reveal, motion)"))
-            }
+            other => problems
+                .push(format!("{path}: no field {other:?} (dx, dy, scale, opacity, hidden, text, size, color, fill, outline, radius, place, reveal, motion)")),
         }
     }
 }
@@ -514,6 +532,12 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
         };
         let mut rule = doc.rules.get(path).cloned().unwrap_or_default();
         set_fields(&mut rule, m, &mut a.problems, path);
+        // A swap goes both ways.
+        if let Some(other) = rule.place.as_deref().and_then(|p| p.strip_prefix("swap:")).map(str::to_owned)
+            && m.contains_key("place")
+        {
+            doc.rule_mut(&other).place = Some(format!("swap:{path}"));
+        }
         a.done.push(format!("{path}: {}", serde_json::to_string(&rule).unwrap_or_default()));
         doc.rules.insert(path.to_owned(), rule);
     }

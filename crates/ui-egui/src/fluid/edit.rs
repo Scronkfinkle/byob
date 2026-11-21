@@ -168,7 +168,7 @@ impl Editor {
         if let Some(drag) = self.drag.clone() {
             if resp.dragged() {
                 let snap = if ctx.input(|i| i.modifiers.shift) { 8.0 } else { 1.0 };
-                match drag {
+                match drag.clone() {
                     Drag::Move { path, start } => {
                         let total = ctx.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()).map(|(a, b)| b - a)).unwrap_or_default();
                         // Snap to whole points (and to 8 with Shift).
@@ -185,7 +185,34 @@ impl Editor {
                     }
                 }
             }
+            // With Alt, dropped on another element it goes by that one (wherever it goes).
+            let alt = ctx.input(|i| i.modifiers.alt);
+            let target = match (&drag, alt, pointer) {
+                (Drag::Move { path, .. }, true, Some(p)) => els
+                    .iter()
+                    .filter(|e| e.shown.contains(p) && !e.path.starts_with(path.as_str()) && !path.starts_with(&format!("{}/", e.path)) && !e.hidden)
+                    .min_by(|a, b| a.shown.area().total_cmp(&b.shown.area()))
+                    .map(|e| (e.path.clone(), side_of(e.shown, p), e.shown)),
+                _ => None,
+            };
+            if let Some((_, side, r)) = &target {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, overlay_id()));
+                painter.rect_stroke(r.expand(2.0), 3.0, Stroke::new(2.0, Color32::from_rgb(250, 200, 80)), StrokeKind::Outside);
+                let edge = match *side {
+                    "after" => [r.right_top(), r.right_bottom()],
+                    "before" => [r.left_top(), r.left_bottom()],
+                    "above" => [r.left_top(), r.right_top()],
+                    _ => [r.left_bottom(), r.right_bottom()],
+                };
+                painter.line_segment(edge, Stroke::new(4.0, Color32::from_rgb(250, 200, 80)));
+            }
             if resp.drag_stopped() || !ctx.input(|i| i.pointer.any_down()) {
+                if let (Drag::Move { path, .. }, Some((to, side, _))) = (&drag, target) {
+                    let r = next.rule_mut(path);
+                    r.place = Some(format!("{side}:{to}"));
+                    r.dx = None;
+                    r.dy = None;
+                }
                 self.drag = None;
                 with(ctx, |f| f.dragging = None);
             }
@@ -305,7 +332,7 @@ impl Editor {
                     });
                     ui.label(
                         RichText::new(
-                            "Click anything to select it, drag to move it. Arrows nudge (Shift: 10), H hides, R resets, +/− scale, [ selects its parent.",
+                            "Click anything to select it, drag to move it (with Alt, drop it on another to keep it beside that one). Arrows nudge (Shift: 10), H hides, R resets, +/− scale, [ selects its parent.",
                         )
                         .small()
                         .color(t.text_faint),
@@ -384,6 +411,7 @@ impl Editor {
                         s(ui, "Color", &mut r.color, "#rrggbb or a name");
                         s(ui, "Background", &mut r.fill, "#rrggbb(aa)");
                         s(ui, "Outline", &mut r.outline, "#rrggbb");
+                        s(ui, "Beside", &mut r.place, "after:PATH, below:PATH, swap:PATH…");
                         ui.label("Hidden");
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut r.hidden, "");
@@ -550,6 +578,13 @@ impl Editor {
             }
         });
     }
+}
+
+/// Which side of `r` the point `p` is nearest: after, before, above or below.
+fn side_of(r: Rect, p: Pos2) -> &'static str {
+    let d = [(p.x - r.right()).abs(), (p.x - r.left()).abs(), (p.y - r.top()).abs(), (p.y - r.bottom()).abs()];
+    let i = (0..4).min_by(|&a, &b| d[a].total_cmp(&d[b])).unwrap_or(0);
+    ["after", "before", "above", "below"][i]
 }
 
 /// `sidebar/row.3/button:Pin` → `sidebar/*/button:Pin`: the same kind of element in every
