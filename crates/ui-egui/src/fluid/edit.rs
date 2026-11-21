@@ -235,7 +235,8 @@ impl Editor {
         let screen = ctx.content_rect();
         egui::Area::new(inspector_id())
             .order(egui::Order::Tooltip)
-            .default_pos(Pos2::new(screen.right() - 340.0, screen.top() + 60.0))
+            .pivot(egui::Align2::RIGHT_TOP)
+            .default_pos(Pos2::new(screen.right() - 12.0, screen.top() + 52.0))
             .movable(true)
             .constrain(true)
             .show(ctx, |ui| {

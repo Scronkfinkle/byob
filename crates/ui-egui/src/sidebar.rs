@@ -2990,6 +2990,8 @@ impl Sidebar {
 
 pub fn window_button(ui: &mut Ui, t: &Tokens, rect: Rect, id: Id, paint: icons::Paint, enabled: bool) -> egui::Response {
     let resp = ui.interact(rect, id, if enabled { Sense::click() } else { Sense::hover() });
+    let name = icons::name_of(paint).unwrap_or("icon");
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, name));
     if ui.is_rect_visible(rect) {
         if enabled && resp.hovered() {
             let state = if resp.is_pointer_button_down_on() { glass::RowState::Pressed } else { glass::RowState::Hovered };

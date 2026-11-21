@@ -175,6 +175,11 @@ fn join(parent: Option<&str>, name: &str) -> String {
     }
 }
 
+/// Text without icon-font glyphs (private-use characters), trimmed.
+pub fn clean(text: &str) -> String {
+    text.chars().filter(|c| !('\u{E000}'..='\u{F8FF}').contains(c)).collect::<String>().trim().to_owned()
+}
+
 /// A label as a path part: short single-line labels as they are, others not at all.
 fn slug(label: &str) -> Option<String> {
     let l = label.trim();
@@ -216,53 +221,150 @@ impl Fluid {
         self.start.elapsed().as_secs_f32()
     }
 
-    /// Every element this pass: the marked regions and the widgets AccessKit saw last pass
-    /// (where they are this pass), each under the innermost region holding it.
+    /// Every element this pass, nested by what holds what:
+    /// - the regions byob marked (named parts: `sidebar`, `composer`, …);
+    /// - the widgets AccessKit saw last pass (buttons, labels, inputs, …), where they are now;
+    /// - other clickable things (custom-drawn rows and icons), named by the text in them;
+    /// - every run of text painted anywhere that isn't a widget's own label.
     fn scan(&self, ctx: &Context) -> Vec<Element> {
-        let mut regions = self.regions.clone();
-        // Parents first: by depth, then in the order drawn.
-        regions.sort_by_key(|r| r.path.matches('/').count());
-        let mut out: Vec<Element> = Vec::new();
-        let mut index: HashMap<String, usize> = HashMap::new();
-        for r in regions {
-            if index.contains_key(&r.path) || own_layer(r.layer) {
-                continue;
-            }
-            let parent = r.path.rsplit_once('/').and_then(|(p, _)| index.get(p).copied());
-            let depth = r.path.matches('/').count();
-            let label = r.path.rsplit('/').next().unwrap_or_default().to_owned();
-            index.insert(r.path.clone(), out.len());
-            out.push(element(r.path, "region".into(), label, r.rect, r.layer, parent, depth, false));
+        struct Raw {
+            name: Name,
+            role: String,
+            label: String,
+            rect: Rect,
+            layer: LayerId,
+            interactive: bool,
         }
-        let regions = out.len();
-        // Widgets, under the smallest region on their layer that holds them.
-        let mut counts: HashMap<(Option<usize>, String), usize> = HashMap::new();
-        let mut taken: HashMap<String, usize> = HashMap::new();
+        enum Name {
+            /// A region's full path.
+            Region(String),
+            /// A path part, given its parent; numbered when it has no label.
+            Part,
+        }
+        let mut raw: Vec<Raw> = Vec::new();
+        for r in &self.regions {
+            if !own_layer(r.layer) && !raw.iter().any(|x| matches!(&x.name, Name::Region(p) if *p == r.path)) {
+                let label = r.path.rsplit('/').next().unwrap_or_default().to_owned();
+                raw.push(Raw { name: Name::Region(r.path.clone()), role: "region".into(), label, rect: r.rect, layer: r.layer, interactive: false });
+            }
+        }
+        let mut layers: Vec<LayerId> = vec![LayerId::background()];
+        let mut widgets: Vec<(Rect, LayerId)> = Vec::new();
         for s in &self.seen {
-            let Some(id) = egui_id(s.id) else { continue };
-            let Some(resp) = ctx.read_response(id) else { continue };
+            let Some(resp) = egui_id(s.id).and_then(|id| ctx.read_response(id)) else { continue };
             if own_layer(resp.layer_id) || !resp.rect.is_positive() {
                 continue;
             }
-            let rect = resp.rect;
-            let parent = (0..regions)
-                .filter(|&i| out[i].layer == resp.layer_id && out[i].rect.expand(2.0).contains_rect(rect))
-                .min_by(|&a, &b| out[a].rect.area().total_cmp(&out[b].rect.area()));
-            let part = match slug(&s.label) {
-                Some(l) => format!("{}:{l}", s.role),
-                None => {
-                    let n = counts.entry((parent, s.role.clone())).or_insert(0);
-                    *n += 1;
-                    format!("{}#{n}", s.role)
+            let interactive = resp.sense.senses_click() || resp.sense.senses_drag() || resp.sense.is_focusable();
+            if !layers.contains(&resp.layer_id) {
+                layers.push(resp.layer_id);
+            }
+            widgets.push((resp.rect, resp.layer_id));
+            raw.push(Raw { name: Name::Part, role: s.role.clone(), label: s.label.clone(), rect: resp.rect, layer: resp.layer_id, interactive });
+        }
+        for l in ctx.memory(|m| m.layer_ids().collect::<Vec<_>>()) {
+            if !layers.contains(&l) && !own_layer(l) {
+                layers.push(l);
+            }
+        }
+        for r in &self.regions {
+            if !layers.contains(&r.layer) {
+                layers.push(r.layer);
+            }
+        }
+        // Painted text, by layer.
+        let mut texts: Vec<(String, Rect, LayerId)> = Vec::new();
+        for &layer in &layers {
+            ctx.graphics(|g| {
+                let Some(list) = g.get(layer) else { return };
+                for cs in list.all_entries() {
+                    collect_text(&cs.shape, layer, &mut texts);
+                }
+            });
+        }
+        let same = |a: Rect, b: Rect| a.expand(2.0).contains_rect(b) && b.expand(2.0).contains_rect(a);
+        // Clickable things AccessKit didn't name: custom-drawn rows, icons, chips.
+        for rect in ctx.interactive_rects_last_pass() {
+            if !rect.is_positive() || widgets.iter().any(|(w, _)| same(*w, rect)) {
+                continue;
+            }
+            let inside: Vec<&(String, Rect, LayerId)> = texts.iter().filter(|(_, r, _)| rect.expand(1.0).contains_rect(*r)).collect();
+            let layer = inside.first().map(|t| t.2).or_else(|| {
+                raw.iter().filter(|x| x.role == "region" && x.rect.contains_rect(rect)).min_by(|a, b| a.rect.area().total_cmp(&b.rect.area())).map(|x| x.layer)
+            });
+            let Some(layer) = layer else { continue };
+            if own_layer(layer) {
+                continue;
+            }
+            let label = inside
+                .iter()
+                .map(|t| clean(&t.0))
+                .find(|t| !t.is_empty())
+                .or_else(|| inside.iter().find_map(|t| crate::icons::glyph_name(&t.0)).map(str::to_owned))
+                .unwrap_or_default();
+            raw.push(Raw { name: Name::Part, role: "button".into(), label, rect, layer, interactive: true });
+        }
+        // Text that isn't a widget's own label (that one is the widget).
+        for (text, rect, layer) in texts {
+            let (role, text) = match clean(&text) {
+                t if t.is_empty() => ("icon", crate::icons::glyph_name(&text).unwrap_or_default().to_owned()),
+                t => ("text", t),
+            };
+            if role == "icon" {
+                if !own_layer(layer) && !raw.iter().any(|x| x.layer == layer && x.role == "button" && same(x.rect, rect)) {
+                    raw.push(Raw { name: Name::Part, role: role.into(), label: text, rect, layer, interactive: false });
+                }
+                continue;
+            }
+            if own_layer(layer) || raw.iter().any(|x| x.layer == layer && x.role == "text" && same(x.rect, rect)) {
+                continue;
+            }
+            if raw.iter().any(|x| x.layer == layer && x.role != "region" && x.rect.expand(1.0).contains_rect(rect) && x.label.trim() == text.trim()) {
+                continue;
+            }
+            raw.push(Raw { name: Name::Part, role: "text".into(), label: text, rect, layer, interactive: false });
+        }
+        // Bigger first, so every element's holder comes before it; regions before the rest.
+        raw.sort_by(|a, b| {
+            let (ra, rb) = (a.role == "region", b.role == "region");
+            match (&a.name, &b.name) {
+                (Name::Region(pa), Name::Region(pb)) => pa.matches('/').count().cmp(&pb.matches('/').count()).then(b.rect.area().total_cmp(&a.rect.area())),
+                _ => rb.cmp(&ra).then(b.rect.area().total_cmp(&a.rect.area())),
+            }
+        });
+        let mut out: Vec<Element> = Vec::with_capacity(raw.len());
+        let mut counts: HashMap<(Option<usize>, String), usize> = HashMap::new();
+        let mut taken: HashMap<String, usize> = HashMap::new();
+        for x in raw {
+            let parent = match &x.name {
+                Name::Region(p) => p.rsplit_once('/').and_then(|(pp, _)| out.iter().position(|e| e.path == pp)),
+                Name::Part => out
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.layer == x.layer && e.rect.expand(1.5).contains_rect(x.rect) && !(e.role == x.role && same(e.rect, x.rect)))
+                    // The tightest holder; a region over a widget of the same size.
+                    .min_by(|(_, a), (_, b)| a.rect.area().total_cmp(&b.rect.area()).then((a.role != "region").cmp(&(b.role != "region"))))
+                    .map(|(i, _)| i),
+            };
+            let path = match x.name {
+                Name::Region(p) => p,
+                Name::Part => {
+                    let part = match slug(&x.label) {
+                        Some(l) => format!("{}:{l}", x.role),
+                        None => {
+                            let n = counts.entry((parent, x.role.clone())).or_insert(0);
+                            *n += 1;
+                            format!("{}#{n}", x.role)
+                        }
+                    };
+                    let base = join(Some(parent.map_or("window", |p| out[p].path.as_str())), &part);
+                    let k = taken.entry(base.clone()).or_insert(0);
+                    *k += 1;
+                    if *k == 1 { base } else { format!("{base}#{k}") }
                 }
             };
-            let base = join(parent.map(|p| out[p].path.as_str()).or(Some("window")), &part);
-            let k = taken.entry(base.clone()).or_insert(0);
-            *k += 1;
-            let path = if *k == 1 { base } else { format!("{base}#{k}") };
-            let depth = parent.map_or(1, |p| out[p].depth + 1);
-            let interactive = resp.sense.senses_click() || resp.sense.senses_drag() || resp.sense.is_focusable();
-            out.push(element(path, s.role.clone(), s.label.clone(), rect, resp.layer_id, parent, depth, interactive));
+            let depth = parent.map_or(0, |p| out[p].depth + 1);
+            out.push(element(path, x.role, x.label, x.rect, x.layer, parent, depth, x.interactive));
         }
         out
     }
@@ -452,6 +554,22 @@ impl Fluid {
     }
 }
 
+/// Every run of text in `shape` (with where it is).
+fn collect_text(shape: &Shape, layer: LayerId, out: &mut Vec<(String, Rect, LayerId)>) {
+    match shape {
+        Shape::Text(t) if !t.galley.job.text.trim().is_empty() => {
+            out.push((t.galley.job.text.clone(), t.visual_bounding_rect(), layer));
+        }
+        Shape::Callback(_) | Shape::Noop => {}
+        Shape::Vec(v) => {
+            for s in v {
+                collect_text(s, layer, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// `x` in `to`'s hue, keeping its lightness and alpha.
 fn tinted(x: Color32, to: Color32) -> Color32 {
     let [r, g, b, a] = x.to_srgba_unmultiplied();
@@ -561,7 +679,7 @@ impl egui::Plugin for Fluid {
             .iter()
             .filter_map(|(id, node)| {
                 let role = role_name(node.role())?;
-                let label = node.label().or_else(|| node.value()).unwrap_or_default().to_owned();
+                let label = clean(node.label().or_else(|| node.value()).unwrap_or_default());
                 Some(Seen { id: id.0, role: role.to_owned(), label })
             })
             .collect();
