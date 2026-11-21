@@ -101,7 +101,15 @@ impl ByobApp {
     /// hides or shows an element, `remove` takes this element away, `fluid:{ops}` applies
     /// changes, `look:KEY=VALUE` changes the look; `{field}` in them is that input's text.
     fn fluid_action(&mut self, ctx: &egui::Context, id: &str, e: &Event) {
+        // `{now}`: this moment, in seconds since 1970 (`set:start={now}` starts a stopwatch;
+        // `set:end={now+1500}` a 25-minute timer).
+        let now = chrono::Utc::now().timestamp();
         let mut action = e.action.clone();
+        while let Some(i) = action.find("{now") {
+            let Some(j) = action[i..].find('}').map(|j| i + j) else { break };
+            let add = action[i + 4..j].trim().trim_start_matches('+').trim().parse::<i64>().unwrap_or(0);
+            action.replace_range(i..=j, &(now + add).to_string());
+        }
         for (k, v) in &e.values {
             let text = match v {
                 Value::String(s) => s.clone(),

@@ -81,12 +81,41 @@ fn expand(v: &mut Value, state: &serde_json::Map<String, Value>) {
                 expand(x, state);
             }
         }
-        Value::String(s) if s.contains("{state.") => {
+        Value::String(s) if s.contains("{state.") || s.contains("{since:") || s.contains("{until:") => {
             for (k, val) in state {
                 *s = s.replace(&format!("{{state.{k}}}"), &text_of(val));
             }
+            // Time since / until a moment kept in the state (seconds since 1970), as m:ss.
+            let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
+            for (k, val) in state {
+                let Some(at) = val.as_f64() else { continue };
+                if s.contains(&format!("{{since:{k}}}")) {
+                    *s = s.replace(&format!("{{since:{k}}}"), &clock((now - at).max(0.0).floor()));
+                }
+                if s.contains(&format!("{{until:{k}}}")) {
+                    let left = at - now;
+                    *s = s.replace(&format!("{{until:{k}}}"), &if left <= 0.0 { "done".to_owned() } else { clock(left.ceil()) });
+                }
+            }
         }
         _ => {}
+    }
+}
+
+/// Seconds as m:ss (h:mm:ss past an hour).
+fn clock(secs: f64) -> String {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a duration on a clock
+    let s = secs.round().max(0.0) as u64;
+    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
+/// Does the tree read the time (so it's drawn again every second)?
+fn ticks(v: &Value) -> bool {
+    match v {
+        Value::String(s) => s.contains("{since:") || s.contains("{until:"),
+        Value::Array(a) => a.iter().any(ticks),
+        Value::Object(m) => m.values().any(ticks),
+        _ => false,
     }
 }
 
@@ -167,6 +196,7 @@ pub fn show(
     for ins in inserts {
         let Some((pos, pivot)) = place(ins, els, screen) else { continue };
         let mut tree = ins.tree.clone();
+        clock |= ticks(&tree);
         expand(&mut tree, &ins.state);
         clock |= fill(&mut tree, data);
         let node = if ins.view.is_empty() { parse_tree(&tree).0 } else { None };
@@ -216,5 +246,15 @@ mod tests {
         assert_eq!(v["children"][1]["children"][1]["label"], "1: eggs");
         assert_eq!(v["children"][1]["children"][1]["action"], "drop:items=1");
         assert_eq!(v["children"][1]["type"], "column");
+    }
+
+    #[test]
+    fn timers_read_the_clock() {
+        let now = chrono::Utc::now().timestamp() as f64;
+        let state = json!({"start": now - 75.0, "end": now + 600.0, "old": now - 5.0}).as_object().cloned().unwrap_or_default();
+        let mut v = json!(["{since:start}", "{until:end}", "{until:old}"]);
+        assert!(ticks(&v));
+        expand(&mut v, &state);
+        assert_eq!(v, json!(["1:15", "10:00", "done"]));
     }
 }
