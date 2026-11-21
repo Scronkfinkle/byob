@@ -531,6 +531,14 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
                 if ins.id.trim().is_empty() {
                     ins.id = format!("new{}", doc.inserts.len() + 1);
                 }
+                // `"{now}"` / `"{now+1500}"` in its starting state: this moment (+ seconds).
+                let now = chrono::Utc::now().timestamp();
+                for v in ins.state.values_mut() {
+                    if let Some(t) = v.as_str().map(str::trim).and_then(|t| t.strip_prefix("{now")).and_then(|t| t.strip_suffix('}')) {
+                        let add = t.trim().trim_start_matches('+').trim().parse::<i64>().unwrap_or(0);
+                        *v = Value::from(now + add);
+                    }
+                }
                 if ins.at != At::Free && ins.anchor.trim().is_empty() {
                     a.problems.push(format!("insert {}: an anchor (an element's path), or \"at\": \"free\"", ins.id));
                     continue;

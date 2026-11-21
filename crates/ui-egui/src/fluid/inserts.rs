@@ -38,6 +38,24 @@ fn text_of(v: &Value) -> String {
 /// gets one child per item of `state.key` (`{item}`, `{index}`, `{item.field}` in it), or
 /// its `"empty"` node when there are none. `{state.key}` anywhere reads the state.
 fn expand(v: &mut Value, state: &serde_json::Map<String, Value>) {
+    // A node shown only while a state value is true (or, with `!key`, false):
+    // {"if": "running", "then": node, "else": node}.
+    if let Some(cond) = v.get("if").and_then(Value::as_str).map(str::to_owned) {
+        let (neg, key) = cond.strip_prefix('!').map_or((false, cond.as_str()), |k| (true, k));
+        let key = key.trim().trim_start_matches("state.");
+        let truthy = match state.get(key) {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0),
+            Some(Value::String(s)) => !s.is_empty() && s != "false",
+            Some(Value::Array(a)) => !a.is_empty(),
+            Some(Value::Object(o)) => !o.is_empty(),
+        };
+        let pick = if truthy != neg { "then" } else { "else" };
+        *v = v.get(pick).cloned().unwrap_or_else(|| serde_json::json!({"type": "column", "children": []}));
+        expand(v, state);
+        return;
+    }
     match v {
         Value::Object(m) => {
             if let Some(key) = m.get("each").and_then(Value::as_str).map(|k| k.trim_start_matches("state.").to_owned()) {
@@ -246,6 +264,16 @@ mod tests {
         assert_eq!(v["children"][1]["children"][1]["label"], "1: eggs");
         assert_eq!(v["children"][1]["children"][1]["action"], "drop:items=1");
         assert_eq!(v["children"][1]["type"], "column");
+    }
+
+    #[test]
+    fn if_picks_by_state() {
+        let state = json!({"running": true, "laps": []}).as_object().cloned().unwrap_or_default();
+        let mut v = json!([{"if": "running", "then": {"type": "text", "text": "on"}, "else": {"type": "text", "text": "off"}}, {"if": "!laps", "then": {"type": "text", "text": "no laps"}}, {"if": "laps", "then": 1}]);
+        expand(&mut v, &state);
+        assert_eq!(v[0]["text"], "on");
+        assert_eq!(v[1]["text"], "no laps");
+        assert_eq!(v[2]["type"], "column");
     }
 
     #[test]
