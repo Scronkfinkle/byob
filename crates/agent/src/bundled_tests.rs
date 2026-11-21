@@ -134,12 +134,12 @@ fn bundled_plugins_load_with_no_files_on_disk() {
     assert_eq!(charts.tools, ["make_chart"]);
     // Every tool of the base is offered (run_command & co. are optional: not in this base).
     let mut have: Vec<String> = c.tools.specs().into_iter().map(|s| s.name).collect();
-    have.retain(|n| !matches!(n.as_str(), "use_skill" | "remember" | "forget" | "byob_help" | "ui_layout" | "ui_look" | "ui_screenshot"));
+    have.retain(|n| !matches!(n.as_str(), "use_skill" | "remember" | "forget" | "byob_help" | "ui_layout" | "ui_look" | "ui_fluid" | "ui_screenshot"));
     let memory = c.infos.iter().find(|p| p.id == "memory").unwrap();
     assert_eq!(memory.views.len(), 1, "its pane");
     assert_eq!(c.infos.iter().find(|p| p.id == "plan").unwrap().tools, ["update_plan"]);
     assert_eq!(c.infos.iter().find(|p| p.id == "ask-user").unwrap().tools, ["ask_user"]);
-    assert_eq!(c.infos.iter().find(|p| p.id == "appearance").unwrap().tools, ["ui_layout", "ui_look", "ui_screenshot"]);
+    assert_eq!(c.infos.iter().find(|p| p.id == "appearance").unwrap().tools, ["ui_layout", "ui_look", "ui_fluid", "ui_screenshot"]);
     let base: Vec<String> = byob_tools::builtin().specs().into_iter().map(|s| s.name).collect();
     assert_eq!(have, base);
 }
