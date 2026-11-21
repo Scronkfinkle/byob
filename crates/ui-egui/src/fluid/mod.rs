@@ -28,7 +28,13 @@ pub use doc::{At, FluidDoc, Insert, Rule};
 
 /// Layers fluid draws its own things on (never rewritten, never listed).
 pub fn own_layer(layer: LayerId) -> bool {
-    layer.id == overlay_id() || layer.id == inspector_id()
+    layer.id == overlay_id() || layer.id == inspector_id() || layer.id == lift_id()
+}
+
+/// Where moved elements are drawn: over the panels (whatever was drawn after them where
+/// they were laid out), under popups.
+fn lift_id() -> Id {
+    Id::unique("fluid-lift")
 }
 
 pub fn overlay_id() -> Id {
@@ -59,6 +65,8 @@ pub struct Element {
     pub collapsed: bool,
     /// A region whose text size is laid out (a zoom from its top left), not drawn bigger.
     pub zoom: f32,
+    /// Moved (by its rule or a parent's): drawn over the panels.
+    pub lifted: bool,
     /// Its own rule (globs and exact, merged), if any.
     pub rule: Option<Rule>,
     /// Hidden by its rule or a parent's.
@@ -387,9 +395,14 @@ impl Fluid {
         let same = |a: Rect, b: Rect| a.expand(2.0).contains_rect(b) && b.expand(2.0).contains_rect(a);
         // Clickable things AccessKit didn't name: custom-drawn rows, icons, chips.
         // Fluid's own: the inspector, and the overlay over the whole window while editing.
-        let mine: Vec<Rect> = [inspector_id(), overlay_id()].iter().filter_map(|id| ctx.memory(|m| m.area_rect(*id))).collect();
+        let inspector = ctx.memory(|m| m.area_rect(inspector_id()));
+        let overlay = ctx.memory(|m| m.area_rect(overlay_id()));
         for rect in ctx.interactive_rects_last_pass() {
-            if !rect.is_positive() || widgets.iter().any(|(w, _)| same(*w, rect)) || mine.iter().any(|m| m.expand(1.0).contains_rect(rect)) {
+            if !rect.is_positive()
+                || widgets.iter().any(|(w, _)| same(*w, rect))
+                || inspector.is_some_and(|m| m.expand(1.0).contains_rect(rect))
+                || overlay.is_some_and(|m| same(m, rect))
+            {
                 continue;
             }
             let inside: Vec<&(String, Rect, LayerId)> = texts.iter().filter(|(_, r, _)| rect.expand(1.0).contains_rect(*r)).collect();
@@ -574,7 +587,9 @@ impl Fluid {
             let zoomed = TSTransform::new(els[i].rect.min.to_vec2() * (1.0 - z), z);
             let c = zoomed.mul_rect(els[i].rect).center().to_vec2();
             let own = TSTransform::new(c * (1.0 - scale) + off, scale) * zoomed;
+            let parent_lifted = els[i].parent.is_some_and(|p| els[p].lifted);
             let e = &mut els[i];
+            e.lifted = parent_lifted || off.length() > 0.5;
             e.transform = parent_t * own;
             e.opacity = parent_o * rule.as_ref().and_then(|r| r.opacity).unwrap_or(1.0) * seen;
             e.hidden = parent_h || rule.as_ref().is_some_and(|r| r.hidden);
@@ -584,7 +599,7 @@ impl Fluid {
         busy
     }
 
-    /// Rewrite what the changed elements painted.
+    /// Rewrite what the changed elements painted (moved ones onto a layer of their own).
     fn repaint(ui: &Ui, els: &[Element], time: f32, editing: bool) {
         let ctx = ui.ctx();
         // The elements that change anything, by layer, innermost first.
@@ -604,6 +619,7 @@ impl Fluid {
         for v in by_layer.values_mut() {
             v.sort_by(|&a, &b| els[a].rect.area().total_cmp(&els[b].rect.area()));
         }
+        let mut lifted: Vec<epaint::ClippedShape> = Vec::new();
         for (layer, list) in by_layer {
             let bounds: Vec<Rect> =
                 ctx.graphics(|g| g.get(layer).map(|l| l.all_entries().map(|c| c.shape.visual_bounding_rect()).collect()).unwrap_or_default());
@@ -670,7 +686,7 @@ impl Fluid {
                 }
                 let crisp = new_galley.is_some() && e.transform.scaling != 1.0;
                 let tint = e.rule.as_ref().and_then(|r| r.color.as_deref()).and_then(doc::parse_color);
-                let (hidden, opacity, transform, rect) = (e.hidden, e.opacity, e.transform, e.rect);
+                let (hidden, opacity, transform, rect, lift) = (e.hidden, e.opacity, e.transform, e.rect, e.lifted);
                 // The zoomed part this is in (if it isn't moved itself).
                 let zoomed = std::iter::successors(Some(i), |&k| els[k].parent).find(|&k| els[k].zoom != 1.0).map(|k| els[k].rect).filter(|_| e.offset_free());
                 let glow = e.rule.as_ref().and_then(|r| r.motion.as_deref()) == Some("glow");
@@ -741,9 +757,21 @@ impl Fluid {
                                 cs.clip_rect = transform.mul_rect(cs.clip_rect);
                             }
                         }
+                        if lift {
+                            lifted.push(cs.clone());
+                            cs.shape = Shape::Noop;
+                        }
                     });
                 });
             }
+        }
+        if !lifted.is_empty() {
+            ctx.graphics_mut(|g| {
+                let l = g.entry(LayerId::new(egui::Order::Middle, lift_id()));
+                for cs in lifted {
+                    l.add(cs.clip_rect, cs.shape);
+                }
+            });
         }
     }
 }
@@ -790,6 +818,7 @@ fn element(path: String, role: String, label: String, rect: Rect, layer: LayerId
         interactive,
         collapsed: false,
         zoom: 1.0,
+        lifted: false,
         rule: None,
         hidden: false,
         transform: TSTransform::IDENTITY,
