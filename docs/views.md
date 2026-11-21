@@ -296,3 +296,29 @@ A tree can be shown on a step of a reply as a view of kind `byob.tree` (version 
 is the view's `data`, a markdown summary its fallback for clients that can't draw trees).
 A plugin's card carries its `owner` (plugin, view, key): clients that can show live views
 draw the live one and send its events to the plugin; others show the stored tree.
+
+## Changing the screen: `fluid` (experimental)
+
+A plugin can also change byob's own screen while it's on, with a `fluid` object in its
+manifest: the same changes the model makes with `ui_fluid`, layered under the user's own.
+
+```json
+"fluid": {
+  "insert": [
+    {"id": "prompts", "anchor": "composer", "at": "above", "card": false,
+     "tree": {"type": "row", "children": [
+       {"type": "button", "label": "Summarize", "action": "send:Summarize this chat."}]}},
+    {"id": "notes", "at": "free", "x": 74, "y": 9, "width": 270, "view": "my-plugin/notes"}
+  ],
+  "set": [{"path": "header/button:Memory", "motion": "glow"}]
+}
+```
+
+- `insert` puts a tree (or one of the plugin's live `views`, as `"view": "plugin/view"`)
+  `after`, `before`, `above`, `below` or `over` an element (`anchor`, a path), or anywhere
+  (`"at": "free"`, `x`/`y` in % of the window). Trees can keep `state` and act on it
+  (`set:`, `add:`, `drop:`, `flip:`, `inc:`), repeat a node per item (`each`), read live
+  values (`{time}`, `{chat}`, `{model}`, `{state.key}`), and send messages (`send:`).
+- `set` changes elements by path or glob: `dx`, `dy`, `scale`, `opacity`, `hidden`, `text`,
+  `size`, `color`, `fill`, `outline`, `radius`, `motion`, `reveal`. Read the paths with
+  `ui_fluid` (inspect), or press F2 in the window and point at the element.
