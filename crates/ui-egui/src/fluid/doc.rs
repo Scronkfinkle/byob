@@ -236,9 +236,15 @@ impl FluidDoc {
 
     /// The rule for `path`: every matching glob's (in key order), then its own on top.
     pub fn rule_for(&self, path: &str) -> Option<Rule> {
+        self.rule_for_named(path, None)
+    }
+
+    /// [`Self::rule_for`], with globs also matched against `named`: the path with its full
+    /// label as the last part (`chat/byob.2/text:17k context · 295 out`), however long.
+    pub fn rule_for_named(&self, path: &str, named: Option<&str>) -> Option<Rule> {
         let mut out: Option<Rule> = None;
         for (k, r) in &self.rules {
-            if k != path && k.contains('*') && glob(k, path) {
+            if k != path && k.contains('*') && (glob(k, path) || named.is_some_and(|n| glob(k, n))) {
                 out.get_or_insert_with(Rule::default).merge(r);
             }
         }
@@ -617,6 +623,9 @@ mod tests {
         assert_eq!(r.dx, Some(8.0));
         assert_eq!(r.color.as_deref(), Some("red"));
         assert!(d.rule_for("composer/text#1").is_none());
+        apply(&mut d, &json!({"set": [{"path": "chat/byob.*/text:*context*", "hidden": true}]}), "you");
+        assert!(d.rule_for_named("chat/byob.2/text#4", Some("chat/byob.2/text:17k context · 295 out")).is_some_and(|r| r.hidden));
+        assert!(d.rule_for("chat/byob.2/text#4").is_none());
     }
 
     #[test]

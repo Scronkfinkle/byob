@@ -1545,19 +1545,19 @@ impl ByobApp {
             readable_column(ui, &t, |ui| {
                 ui.add_space(t.pad(8.0));
                 usage.dividers(ui, &t, 0);
+                // Each message is an element of its own: `you.3` (the third of yours), `byob.2`.
+                let (mut yours, mut replies) = (0, 0);
                 for entry in &self.entries {
-                    answers.extend(entry_view(
-                        ui,
-                        &t,
-                        entry,
-                        markdown,
-                        media,
-                        artifacts,
-                        (plugins, views, &latest),
-                        retry_id == Some(entry.id),
-                        &mut card,
-                        editing,
-                    ));
+                    let name = if entry.role == byob_protocol::EntryRole::User {
+                        yours += 1;
+                        format!("you.{yours}")
+                    } else {
+                        replies += 1;
+                        format!("byob.{replies}")
+                    };
+                    answers.extend(fluid::region(ui, &name, |ui| {
+                        entry_view(ui, &t, entry, markdown, media, artifacts, (plugins, views, &latest), retry_id == Some(entry.id), &mut card, editing)
+                    }));
                     ui.add_space(t.pad(8.0));
                     usage.dividers(ui, &t, entry.id);
                 }

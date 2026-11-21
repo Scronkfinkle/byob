@@ -57,6 +57,8 @@ pub struct Element {
     /// A hidden region that isn't drawn at all (the layout closed up): `rect` is where it
     /// was last.
     pub collapsed: bool,
+    /// A region whose text size is laid out (a zoom from its top left), not drawn bigger.
+    pub zoom: f32,
     /// Its own rule (globs and exact, merged), if any.
     pub rule: Option<Rule>,
     /// Hidden by its rule or a parent's.
@@ -69,6 +71,11 @@ pub struct Element {
 impl Element {
     pub fn is_region(&self) -> bool {
         self.role == "region"
+    }
+
+    /// Not moved by its own rule (only zoomed or styled).
+    fn offset_free(&self) -> bool {
+        self.rule.as_ref().is_none_or(|r| r.offset() == Vec2::ZERO)
     }
 }
 
@@ -88,6 +95,8 @@ struct Region {
     layer: LayerId,
     /// Hidden and not drawn: listed where it was last.
     collapsed: bool,
+    /// Its text size, laid out (see [`region`]).
+    zoom: f32,
 }
 
 /// The plugin's state (one per egui context).
@@ -163,7 +172,7 @@ pub fn collapsed(ctx: &Context, path: &str) -> bool {
         if gone {
             // Still listed (where it was last), so it can be found and shown again.
             if let Some(&(rect, layer)) = f.last.get(path) {
-                f.regions.push(Region { path: path.to_owned(), rect, layer, collapsed: true });
+                f.regions.push(Region { path: path.to_owned(), rect, layer, collapsed: true, zoom: 1.0 });
             }
         }
         gone
@@ -183,13 +192,28 @@ pub fn region<R: Default>(ui: &mut Ui, name: &str, add: impl FnOnce(&mut Ui) -> 
         f.stack.push(path.clone());
         path
     });
-    let r = ui.scope(add);
+    // Bigger text in a region is a zoom that reflows: laid out narrower by the factor, drawn
+    // scaled up from its top left (so it fills the width it had), and the height it gains
+    // taken in the layout so what follows moves down.
+    let zoom = path.as_deref().and_then(|p| with(ui.ctx(), |f| f.rule_of(p).and_then(|r| r.size)).flatten()).filter(|k| (*k - 1.0).abs() > 0.001);
+    let r = ui.scope(|ui| {
+        if let Some(k) = zoom {
+            ui.set_max_width((ui.available_width() / k).max(40.0));
+        }
+        add(ui)
+    });
+    if let Some(k) = zoom {
+        let more = r.response.rect.height() * (k - 1.0);
+        if more > 0.0 {
+            ui.allocate_space(Vec2::new(0.0, more));
+        }
+    }
     if let Some(path) = path {
         let (rect, layer) = (r.response.rect, ui.layer_id());
         with(ui.ctx(), |f| {
             f.stack.pop();
             f.last.insert(path.clone(), (rect, layer));
-            f.regions.push(Region { path, rect, layer, collapsed: false });
+            f.regions.push(Region { path, rect, layer, collapsed: false, zoom: zoom.unwrap_or(1.0) });
         });
     }
     r.inner
@@ -201,7 +225,7 @@ pub fn mark(ctx: &Context, name: &str, rect: Rect, layer: LayerId) {
     with(ctx, |f| {
         let path = join(f.stack.last().map(String::as_str), name);
         f.last.insert(path.clone(), (rect, layer));
-        f.regions.push(Region { path, rect, layer, collapsed: false });
+        f.regions.push(Region { path, rect, layer, collapsed: false, zoom: 1.0 });
     });
 }
 
@@ -254,6 +278,17 @@ fn egui_id(n: u64) -> Option<Id> {
 }
 
 impl Fluid {
+    /// The rule for `path`: the plugins', the user's on top.
+    pub fn rule_of(&self, path: &str) -> Option<Rule> {
+        match (self.base.rule_for(path), self.doc.rule_for(path)) {
+            (Some(mut b), Some(u)) => {
+                b.merge(&u);
+                Some(b)
+            }
+            (b, u) => u.or(b),
+        }
+    }
+
     fn time(&self) -> f32 {
         self.start.elapsed().as_secs_f32()
     }
@@ -272,6 +307,7 @@ impl Fluid {
             layer: LayerId,
             interactive: bool,
             collapsed: bool,
+            zoom: f32,
         }
         enum Name {
             /// A region's full path.
@@ -291,6 +327,7 @@ impl Fluid {
                     layer: r.layer,
                     interactive: false,
                     collapsed: r.collapsed,
+                    zoom: r.zoom,
                 });
             }
         }
@@ -314,6 +351,7 @@ impl Fluid {
                 layer: resp.layer_id,
                 interactive,
                 collapsed: false,
+                zoom: 1.0,
             });
         }
         for l in ctx.memory(|m| m.layer_ids().collect::<Vec<_>>()) {
@@ -362,7 +400,7 @@ impl Fluid {
             // after whatever text happens to be first in it.
             let big = rect.width() > 420.0 || rect.height() > 160.0;
             let (role, label) = if big { ("area", String::new()) } else { ("button", label) };
-            raw.push(Raw { name: Name::Part, role: role.into(), label, rect, layer, interactive: true, collapsed: false });
+            raw.push(Raw { name: Name::Part, role: role.into(), label, rect, layer, interactive: true, collapsed: false, zoom: 1.0 });
         }
         // Text that isn't a widget's own label (that one is the widget).
         for (text, rect, layer) in texts {
@@ -372,7 +410,7 @@ impl Fluid {
             };
             if role == "icon" {
                 if !own_layer(layer) && !raw.iter().any(|x| x.layer == layer && x.role == "button" && same(x.rect, rect)) {
-                    raw.push(Raw { name: Name::Part, role: role.into(), label: text, rect, layer, interactive: false, collapsed: false });
+                    raw.push(Raw { name: Name::Part, role: role.into(), label: text, rect, layer, interactive: false, collapsed: false, zoom: 1.0 });
                 }
                 continue;
             }
@@ -382,7 +420,7 @@ impl Fluid {
             if raw.iter().any(|x| x.layer == layer && x.role != "region" && x.rect.expand(1.0).contains_rect(rect) && x.label.trim() == text.trim()) {
                 continue;
             }
-            raw.push(Raw { name: Name::Part, role: "text".into(), label: text, rect, layer, interactive: false, collapsed: false });
+            raw.push(Raw { name: Name::Part, role: "text".into(), label: text, rect, layer, interactive: false, collapsed: false, zoom: 1.0 });
         }
         // Bigger first, so every element's holder comes before it; regions before the rest.
         raw.sort_by(|a, b| {
@@ -428,6 +466,7 @@ impl Fluid {
             let depth = parent.map_or(0, |p| out[p].depth + 1);
             let mut e = element(path, x.role, x.label, x.rect, x.layer, parent, depth, x.interactive);
             e.collapsed = x.collapsed;
+            e.zoom = x.zoom;
             out.push(e);
         }
         out
@@ -442,7 +481,12 @@ impl Fluid {
         let pointer = ctx.pointer_latest_pos();
         let mut busy = false;
         for i in 0..els.len() {
-            let rule = match (base.rule_for(&els[i].path), doc.rule_for(&els[i].path)) {
+            // Globs match the full label too (long ones aren't in the path).
+            let named = (!els[i].is_region() && !els[i].label.is_empty() && slug(&els[i].label).is_none()).then(|| {
+                let parent = els[i].path.rsplit_once('/').map_or("window", |(p, _)| p);
+                format!("{parent}/{}:{}", els[i].role, els[i].label.replace(['\n', '/'], " "))
+            });
+            let rule = match (base.rule_for_named(&els[i].path, named.as_deref()), doc.rule_for_named(&els[i].path, named.as_deref())) {
                 (Some(mut b), Some(u)) => {
                     b.merge(&u);
                     Some(b)
@@ -494,8 +538,10 @@ impl Fluid {
                 }
                 self.reveal.insert(path.clone(), seen);
             }
-            let c = els[i].rect.center().to_vec2();
-            let own = TSTransform::new(c * (1.0 - scale) + off, scale);
+            let z = els[i].zoom;
+            let zoomed = TSTransform::new(els[i].rect.min.to_vec2() * (1.0 - z), z);
+            let c = zoomed.mul_rect(els[i].rect).center().to_vec2();
+            let own = TSTransform::new(c * (1.0 - scale) + off, scale) * zoomed;
             let e = &mut els[i];
             e.transform = parent_t * own;
             e.opacity = parent_o * rule.as_ref().and_then(|r| r.opacity).unwrap_or(1.0) * seen;
@@ -542,18 +588,18 @@ impl Fluid {
                     decorated.push(i);
                 }
                 let retitle = e.rule.as_ref().and_then(|r| r.text.clone()).filter(|_| !retitled.contains(&i));
-                let size = e.rule.as_ref().and_then(|r| r.size);
+                let size = e.rule.as_ref().and_then(|r| r.size).filter(|_| e.zoom == 1.0);
                 let (text_galley, fill) = {
                     let r = e.rule.clone().unwrap_or_default();
                     let galley = ctx.graphics(|g| {
                         g.get(layer).and_then(|l| l.all_entries().nth(n)).and_then(|c| match &c.shape {
-                            Shape::Text(ts) if retitle.is_some() || size.is_some() => Some(ts.galley.clone()),
+                            Shape::Text(ts) if retitle.is_some() || size.is_some() || e.transform.scaling != 1.0 => Some(ts.galley.clone()),
                             _ => None,
                         })
                     });
                     (galley, first.then_some(r))
                 };
-                let new_galley = text_galley.map(|g| {
+                let new_galley = text_galley.clone().map(|g| {
                     let mut job = (*g.job).clone();
                     if let Some(text) = &retitle {
                         let format = job.sections.first().map(|s| s.format.clone()).unwrap_or_default();
@@ -564,9 +610,14 @@ impl Fluid {
                             format,
                         }];
                     }
-                    if let Some(k) = size {
+                    // Drawn bigger: laid out again at the bigger size (crisp), not stretched.
+                    let k = size.unwrap_or(1.0) * e.transform.scaling;
+                    if k != 1.0 {
                         for s in &mut job.sections {
-                            s.format.font_id.size = (s.format.font_id.size * k).clamp(4.0, 200.0);
+                            s.format.font_id.size = (s.format.font_id.size * k).clamp(2.0, 400.0);
+                        }
+                        if job.wrap.max_width.is_finite() {
+                            job.wrap.max_width *= e.transform.scaling;
                         }
                     }
                     ctx.fonts_mut(|f| f.layout_job(job))
@@ -574,8 +625,22 @@ impl Fluid {
                 if new_galley.is_some() && retitle.is_some() {
                     retitled.push(i);
                 }
+                // Laid out again bigger, it should be as big as stretched; if it isn't (aligned
+                // or justified text lays out otherwise), stretch it after all.
+                let mut new_galley = new_galley;
+                if retitle.is_none()
+                    && let (Some(old), Some(new)) = (&text_galley, &new_galley)
+                {
+                    let want = old.size() * size.unwrap_or(1.0) * e.transform.scaling;
+                    if (new.size().x - want.x).abs() > 4.0 + want.x * 0.06 || (new.size().y - want.y).abs() > 4.0 + want.y * 0.1 {
+                        new_galley = if size.is_some() { new_galley } else { None };
+                    }
+                }
+                let crisp = new_galley.is_some() && e.transform.scaling != 1.0;
                 let tint = e.rule.as_ref().and_then(|r| r.color.as_deref()).and_then(doc::parse_color);
                 let (hidden, opacity, transform, rect) = (e.hidden, e.opacity, e.transform, e.rect);
+                // The zoomed part this is in (if it isn't moved itself).
+                let zoomed = std::iter::successors(Some(i), |&k| els[k].parent).find(|&k| els[k].zoom != 1.0).map(|k| els[k].rect).filter(|_| e.offset_free());
                 let glow = e.rule.as_ref().and_then(|r| r.motion.as_deref()) == Some("glow");
                 ctx.graphics_mut(|g| {
                     let Some(l) = g.get_mut(layer) else { return };
@@ -633,8 +698,16 @@ impl Fluid {
                             }
                         }
                         if transform != TSTransform::IDENTITY {
-                            cs.shape.transform(transform);
-                            cs.clip_rect = transform.mul_rect(cs.clip_rect);
+                            match (&mut cs.shape, crisp) {
+                                // Already laid out at its new size: only moved.
+                                (Shape::Text(ts), true) => ts.pos = transform * ts.pos,
+                                (shape, _) => shape.transform(transform),
+                            }
+                            // A zoomed part stays inside its panel (a clip as wide as it is
+                            // the panel's); a field's own clip, and a moved part's, go with it.
+                            if zoomed.is_none_or(|z| cs.clip_rect.width() < z.width() - 2.0) {
+                                cs.clip_rect = transform.mul_rect(cs.clip_rect);
+                            }
                         }
                     });
                 });
@@ -684,6 +757,7 @@ fn element(path: String, role: String, label: String, rect: Rect, layer: LayerId
         depth,
         interactive,
         collapsed: false,
+        zoom: 1.0,
         rule: None,
         hidden: false,
         transform: TSTransform::IDENTITY,
