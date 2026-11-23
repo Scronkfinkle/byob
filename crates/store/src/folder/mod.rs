@@ -746,12 +746,21 @@ impl ChatStore for FolderStore {
 
     fn pin_chat(&self, id: &str, pinned: bool) -> Result<()> {
         let mut inner = self.lock();
-        let current = inner.state_or_404(id)?.chat.pinned_at;
+        let chat = &inner.state_or_404(id)?.chat;
+        let current = chat.pinned_at;
         let pinned_at = if pinned { current.or_else(|| Some(now())) } else { None };
-        if pinned_at == current {
+        let mut events = Vec::new();
+        // Pinning an archived chat brings it back (archiving unpins).
+        if pinned && chat.archived_at.is_some() {
+            events.push(Event::Archived { archived_at: None });
+        }
+        if pinned_at != current {
+            events.push(Event::Pinned { pinned_at });
+        }
+        if events.is_empty() {
             return Ok(());
         }
-        inner.write(id, vec![Event::Pinned { pinned_at }], true, true)
+        inner.write(id, events, true, true)
     }
 
     fn archive_chat(&self, id: &str, archived: bool) -> Result<()> {

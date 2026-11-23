@@ -175,10 +175,13 @@ impl Store {
         found(n, || format!("chat {id}"))
     }
 
+    /// Pin a chat (`true`) or unpin it. Pinning an archived chat also brings it back.
     pub fn pin_chat(&self, id: &str, pinned: bool) -> Result<()> {
-        let n = self
-            .conn
-            .execute("UPDATE chats SET pinned_at = CASE WHEN ?2 THEN coalesce(pinned_at, ?3) ELSE NULL END WHERE id = ?1", params![id, pinned, now()])?;
+        let n = self.conn.execute(
+            "UPDATE chats SET pinned_at = CASE WHEN ?2 THEN coalesce(pinned_at, ?3) ELSE NULL END, \
+             archived_at = CASE WHEN ?2 THEN NULL ELSE archived_at END WHERE id = ?1",
+            params![id, pinned, now()],
+        )?;
         found(n, || format!("chat {id}"))
     }
 

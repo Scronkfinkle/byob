@@ -24,6 +24,7 @@ macro_rules! for_each_backend {
 
 for_each_backend!(
     archiving,
+    pinning_an_archived_chat_brings_it_back,
     chats_crud,
     pinning,
     list_is_recent_first_and_paginates,
@@ -622,4 +623,49 @@ fn large_streamed_content(s: &dyn ChatStore) {
     let m = s.message(id).unwrap().unwrap();
     assert_eq!(m.content.len(), chunk.len() * 200);
     assert!(m.content.starts_with("lorem") && m.content.ends_with("🦀 "));
+}
+
+/// Archived chats stay archived across a restart and through an export/import into the
+/// other kind of storage (switching storage keeps the flag).
+#[test]
+fn archived_chats_survive_reopen_and_moving_between_storage_kinds() {
+    for (f, other) in [(sqlite(), folder()), (folder(), sqlite())] {
+        let s = &*f;
+        chat(s, "a");
+        chat(s, "b");
+        s.append_message("a", &NewMessage::user("hi")).unwrap();
+        s.archive_chat("a", true).unwrap();
+        let at = s.chat("a").unwrap().unwrap().archived_at;
+        assert!(at.is_some());
+        let f = f.reopen();
+        let s = &*f;
+        assert_eq!(s.chat("a").unwrap().unwrap().archived_at, at, "{:?}", s.kind());
+        assert!(s.chat("b").unwrap().unwrap().archived_at.is_none());
+        assert!(s.list_chats(10, None).unwrap().chats.iter().any(|c| c.id == "a" && c.archived_at == at), "{:?}", s.kind());
+        let e = s.export_chat("a").unwrap().unwrap();
+        other.import_chat(&e).unwrap();
+        assert_eq!(other.chat("a").unwrap().unwrap().archived_at, at, "{:?}", other.kind());
+        let other = other.reopen();
+        assert_eq!(other.chat("a").unwrap().unwrap().archived_at, at, "{:?}", other.kind());
+        // Deleting an archived chat works like any other.
+        let f = f;
+        f.delete_chat("a").unwrap();
+        assert!(f.chat("a").unwrap().is_none());
+        assert!(f.list_chats(10, None).unwrap().chats.iter().all(|c| c.id != "a"));
+    }
+}
+
+/// Regression: pinning an archived chat (the header's Pin) left it pinned and archived at
+/// once: listed under Pinned while flagged archived. Archiving unpins; pinning unarchives.
+fn pinning_an_archived_chat_brings_it_back(s: &dyn ChatStore) {
+    chat(s, "a");
+    s.archive_chat("a", true).unwrap();
+    s.pin_chat("a", true).unwrap();
+    let c = s.chat("a").unwrap().unwrap();
+    assert!(c.pinned() && c.archived_at.is_none(), "{c:?}");
+    assert_eq!(s.pinned_chats().unwrap().len(), 1);
+    // Unpinning an archived chat leaves it archived.
+    s.archive_chat("a", true).unwrap();
+    s.pin_chat("a", false).unwrap();
+    assert!(s.chat("a").unwrap().unwrap().archived_at.is_some());
 }

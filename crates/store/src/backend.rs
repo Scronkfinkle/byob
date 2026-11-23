@@ -34,6 +34,7 @@ pub trait ChatStore: Send {
     fn pinned_chats(&self) -> Result<Vec<Chat>>;
     fn rename_chat(&self, id: &str, title: &str) -> Result<()>;
     fn set_chat_workspace(&self, id: &str, workspace: &Path) -> Result<()>;
+    /// Pin a chat or unpin it (pinning an archived chat brings it back).
     fn pin_chat(&self, id: &str, pinned: bool) -> Result<()>;
     /// Archive a chat or bring it back (archiving unpins it).
     fn archive_chat(&self, id: &str, archived: bool) -> Result<()>;
