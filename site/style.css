@@ -128,7 +128,7 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
 .demo figcaption { color: #d8deec; }
 
 /* ---------- slogans: four stencil lines ---------- */
-.slogans { max-width: var(--wide); margin: 0 auto; padding: clamp(2.5rem, 6vw, 4rem) var(--pad); }
+.slogans { background: var(--paper); padding: clamp(2.5rem, 6vw, 4rem) max(var(--pad), calc((100% - var(--wide)) / 2 + var(--pad))); }
 .slogans ul {
   list-style: none;
   margin: 0;
@@ -185,7 +185,6 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
   clip-path: polygon(100% 0, 100% 100%, 0 100%);
 }
 .asks label:hover { transform: translateY(-2px); }
-#look-light:checked ~ .asks [for="look-light"],
 #look-dark:checked ~ .asks [for="look-dark"],
 #look-backdrop:checked ~ .asks [for="look-backdrop"],
 #look-fluid:checked ~ .asks [for="look-fluid"],
@@ -194,7 +193,6 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
   color: var(--paper);
   box-shadow: 5px 5px 0 var(--red);
 }
-#look-light:focus-visible ~ .asks [for="look-light"],
 #look-dark:focus-visible ~ .asks [for="look-dark"],
 #look-backdrop:focus-visible ~ .asks [for="look-backdrop"],
 #look-fluid:focus-visible ~ .asks [for="look-fluid"],
@@ -205,7 +203,6 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
 .frames figure { display: none; max-width: 76rem; }
 .frames img, .frames video { border: 3px solid var(--navy); background: var(--navy); box-shadow: 10px 10px 0 var(--navy); }
 .frames figcaption { margin-top: 1.4rem; font-size: 1rem; }
-#look-light:checked ~ .frames .f-light,
 #look-dark:checked ~ .frames .f-dark,
 #look-backdrop:checked ~ .frames .f-backdrop,
 #look-fluid:checked ~ .frames .f-fluid,
@@ -320,6 +317,7 @@ pre code { font-size: inherit; }
 /* ---------- footer ---------- */
 footer { padding: 2rem var(--pad) 3rem; max-width: var(--wide); margin: 0 auto; font-size: 0.9375rem; }
 footer p { margin: 0; }
+footer .links { display: flex; flex-wrap: wrap; gap: 0.4rem 1.25rem; margin-top: 0.6rem; font-weight: 600; }
 
 /* ---------- narrow screens ---------- */
 @media (max-width: 56rem) {

@@ -21,8 +21,8 @@
 <header class="top">
   <a class="mark" href="/"><img src="icon-96.png" alt="" width="36" height="36">byob</a>
   <nav>
-    <a href="#looks">Make it yours</a>
     <a href="#what">What it does</a>
+    <a href="#looks">Make it yours</a>
     <a href="#faq">FAQ</a>
     <a href="https://github.com/Scronkfinkle/byob">GitHub</a>
     <a class="nav-dl" href="#install">Download</a>
@@ -70,67 +70,6 @@
     <li><b>Native.</b> One program for Linux, macOS and Windows, drawn on the GPU. No Electron.</li>
     <li><b>Open source.</b> MIT or Apache-2.0. Read it, fork it, or ask byob to extend it.</li>
   </ul>
-</section>
-
-<section class="looks" id="looks">
-  <h2>Make it look like anything</h2>
-  <p class="lede">Ask in plain words, or press F2 and change it yourself. Every element on screen,
-    down to a single button, can be moved, resized, recolored or hidden.</p>
-
-  <input type="radio" name="look" id="look-light" checked>
-  <input type="radio" name="look" id="look-dark">
-  <input type="radio" name="look" id="look-backdrop">
-  <input type="radio" name="look" id="look-fluid">
-  <input type="radio" name="look" id="look-edit">
-
-  <div class="asks" role="group" aria-label="Pick a look">
-    <label for="look-light">“Keep it light.”</label>
-    <label for="look-dark">“Make it dark.”</label>
-    <label for="look-backdrop">“Make it the control room of a deep-sea research submarine. Go big.”</label>
-    <label for="look-fluid">“Move the model picker up top and put a watering timer under my chats.”</label>
-    <label for="look-edit">Or press F2</label>
-  </div>
-
-  <div class="frames">
-    <figure class="f-light">
-      <img src="media/look-light.png" width="1100" height="620" loading="lazy" alt="byob in its light theme, the harvest chart inline in the chat">
-      <figcaption>The light theme, as byob starts. Settings → Appearance has more (Nord, Gruvbox,
-        Solarized, Dracula, Tokyo Night, Rosé Pine), any accent, corners, text size and
-        spacing.</figcaption>
-    </figure>
-    <figure class="f-dark">
-      <img src="media/look-dark.png" width="1100" height="620" loading="lazy" alt="The same chat in byob's dark theme, the chart shown inline">
-      <figcaption>The same chat in the dark theme. Looks are kept per device, so the phone can
-        stay light while the desktop goes dark.</figcaption>
-    </figure>
-    <figure class="f-backdrop">
-      <video autoplay muted loop playsinline preload="metadata" width="1100" height="620"
-        aria-label="Recorded: byob is asked for a deep-sea submarine control room and turns its light window into dark glass panels in metal frames with stamped labels, HUD controls and a living deep-ocean shader behind them">
-        <source src="media/look-theme.webm" type="video/webm">
-        <source src="media/look-theme.mp4" type="video/mp4">
-      </video>
-      <figcaption>One request, recorded live (the model's thinking is sped up): byob picks the
-        palette, writes a deep-ocean shader for behind the glass, frames each panel in metal with
-        stamped labels, switches to HUD controls, then checks a screenshot of its own work.</figcaption>
-    </figure>
-    <figure class="f-fluid">
-      <img src="media/look-fluid.png" width="1100" height="620" loading="lazy" alt="byob after the request: the model picker sits in the header beside Memory, and a running watering timer with Restart and Stop sits under the chats in the sidebar">
-      <figcaption>Asked for real: byob lists what's on screen, moves the picker, adds a timer that
-        counts down under the chats, then checks a screenshot of the window and fixes what it
-        got wrong. New elements like the timer keep their own state.</figcaption>
-    </figure>
-    <figure class="f-edit">
-      <video autoplay muted loop playsinline preload="metadata" width="1100" height="620"
-        aria-label="Recorded: F2 opens the editor; Plugins is dragged onto New chat and Library onto Search, and the sidebar's buttons trade places">
-        <source src="media/fluid-edit.webm" type="video/webm">
-        <source src="media/fluid-edit.mp4" type="video/mp4">
-      </video>
-      <figcaption>F2 opens the editor. Drag anything; with Alt, drop it on another element's middle
-        to swap the two, or on an edge to keep it beside that one. Here the sidebar's buttons
-        trade places. The inspector sets text, colors and motion, and an arrangement can be
-        saved as a scene.</figcaption>
-    </figure>
-  </div>
 </section>
 
 <section class="what" id="what">
@@ -199,12 +138,68 @@
   </div>
 </section>
 
+<section class="looks" id="looks">
+  <h2>Make it look like anything</h2>
+  <p class="lede">Ask in plain words, or press F2 and change it yourself. Every element on screen,
+    down to a single button, can be moved, resized, recolored or hidden.</p>
+
+  <input type="radio" name="look" id="look-backdrop" checked>
+  <input type="radio" name="look" id="look-fluid">
+  <input type="radio" name="look" id="look-edit">
+  <input type="radio" name="look" id="look-dark">
+
+  <div class="asks" role="group" aria-label="Pick a look">
+    <label for="look-backdrop">“Make it the control room of a deep-sea research submarine. Go big.”</label>
+    <label for="look-fluid">“Move the model picker up top and put a watering timer under my chats.”</label>
+    <label for="look-dark">“Make it dark.”</label>
+    <label for="look-edit">Or press F2</label>
+  </div>
+
+  <div class="frames">
+    <figure class="f-dark">
+      <img src="media/look-dark.png" width="1100" height="620" loading="lazy" alt="The same chat in byob's dark theme, the chart shown inline">
+      <figcaption>The same chat in the dark theme. Settings → Appearance has more themes (Nord,
+        Gruvbox, Solarized, Dracula, Tokyo Night, Rosé Pine), any accent, corners, text size and
+        spacing, and looks are kept per device: the phone can stay light while the desktop goes
+        dark.</figcaption>
+    </figure>
+    <figure class="f-backdrop">
+      <video autoplay muted loop playsinline preload="metadata" width="1100" height="620"
+        aria-label="Recorded: byob is asked for a deep-sea submarine control room and turns its light window into dark glass panels in metal frames with stamped labels, HUD controls and a living deep-ocean shader behind them">
+        <source src="media/look-theme.webm" type="video/webm">
+        <source src="media/look-theme.mp4" type="video/mp4">
+      </video>
+      <figcaption>One request, recorded live (the model's thinking is sped up): byob picks the
+        palette, writes a deep-ocean shader for behind the glass, frames each panel in metal with
+        stamped labels, switches to HUD controls, then checks a screenshot of its own work.</figcaption>
+    </figure>
+    <figure class="f-fluid">
+      <img src="media/look-fluid.png" width="1100" height="620" loading="lazy" alt="byob after the request: the model picker sits in the header beside Memory, and a running watering timer with Restart and Stop sits under the chats in the sidebar">
+      <figcaption>Asked for real: byob lists what's on screen, moves the picker, adds a timer that
+        counts down under the chats, then checks a screenshot of the window and fixes what it
+        got wrong. New elements like the timer keep their own state.</figcaption>
+    </figure>
+    <figure class="f-edit">
+      <video autoplay muted loop playsinline preload="metadata" width="1100" height="620"
+        aria-label="Recorded: F2 opens the editor; Plugins is dragged onto New chat and Library onto Search, and the sidebar's buttons trade places">
+        <source src="media/fluid-edit.webm" type="video/webm">
+        <source src="media/fluid-edit.mp4" type="video/mp4">
+      </video>
+      <figcaption>F2 opens the editor. Drag anything; with Alt, drop it on another element's middle
+        to swap the two, or on an edge to keep it beside that one. Here the sidebar's buttons
+        trade places. The inspector sets text, colors and motion, and an arrangement can be
+        saved as a scene.</figcaption>
+    </figure>
+  </div>
+</section>
+
 <section class="servers">
-  <h2>It finds the server you already have</h2>
+  <h2>It finds what you already have</h2>
   <ul>
-    <li>llama.cpp</li><li>Ollama</li><li>LM Studio</li><li>vLLM</li><li>Anthropic (Claude)</li><li>OpenAI-compatible APIs</li>
+    <li>Claude</li><li>ChatGPT</li><li>llama.cpp</li><li>Ollama</li><li>LM Studio</li><li>vLLM</li><li>any OpenAI-compatible API</li>
   </ul>
-  <p>On first run byob looks on their usual ports and offers presets for hosted APIs.</p>
+  <p>On first run byob looks for Claude Code and Codex (your plan) and for local servers on their
+    usual ports, and offers presets for hosted APIs.</p>
 </section>
 
 <section class="faq" id="faq">
@@ -311,11 +306,22 @@ byob --serve                 # also open it to browsers on http://127.0.0.1:7470
 </main>
 
 <footer>
-  <p>byob is free software under MIT or Apache-2.0.
-    <a href="https://github.com/Scronkfinkle/byob">Code, issues and docs on GitHub</a>.</p>
+  <p>byob is free software under MIT or Apache-2.0.</p>
+  <p class="links">
+    <a href="https://github.com/Scronkfinkle/byob">Code</a>
+    <a href="https://github.com/Scronkfinkle/byob/releases">Releases</a>
+    <a href="https://github.com/Scronkfinkle/byob/tree/main/docs">Docs</a>
+    <a href="https://github.com/Scronkfinkle/byob/issues">Issues</a>
+  </p>
 </footer>
 
 <script>
+// Less motion when the system asks for it: the videos wait to be played.
+if (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  document.querySelectorAll("video[autoplay]").forEach(function (v) {
+    v.removeAttribute("autoplay"); v.pause(); v.controls = true; v.preload = "metadata";
+  });
+}
 // The download buttons fetch this computer's build (they link to the list of downloads
 // otherwise, and on phones).
 (function () {
