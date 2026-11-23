@@ -26,7 +26,7 @@ use std::collections::HashMap;
 
 use byob_protocol::media;
 use byob_protocol::{Artifact, ArtifactRef, ClientMsg, NoticeLevel, ServerMsg};
-use egui::{RichText, Stroke, vec2};
+use egui::{RichText, Stroke, pos2, vec2};
 
 use crate::appview::{self, AppStatus, AppView};
 use crate::export::Exports;
@@ -675,7 +675,8 @@ impl Artifacts {
             return;
         }
         let n = if self.pane.tabs().is_empty() { self.list.len() } else { self.pane.tabs().len() };
-        let corner = chat.right_bottom() - vec2(FLOATING_MARGIN, FLOATING_MARGIN);
+        // Within the window, even if something in the chat is laid out wider than it.
+        let corner = pos2(chat.right().min(ctx.content_rect().right()), chat.bottom()) - vec2(FLOATING_MARGIN, FLOATING_MARGIN);
         egui::Area::new(egui::Id::unique("artifact-fab")).fixed_pos(corner).pivot(egui::Align2::RIGHT_BOTTOM).order(egui::Order::Foreground).show(ctx, |ui| {
             let text = RichText::new(format!("Artifacts  {n}")).strong().color(t.on_accent);
             let b = egui::Button::new(text).fill(t.accent).corner_radius(t.round(18.0)).min_size(vec2(44.0, FLOATING_HEIGHT));

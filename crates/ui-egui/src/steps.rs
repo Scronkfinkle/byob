@@ -597,7 +597,8 @@ fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step, agent: Option<&str>
             None => {}
         }
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        // Wrapped: on a phone Deny ran off the screen.
+        ui.horizontal_wrapped(|ui| {
             let allow = egui::Button::new(RichText::new("Allow").color(t.on_accent).family(bold_family())).fill(t.accent);
             if ui.add(allow).clicked() {
                 answer = Some(ApprovalAnswer::Allow);
@@ -951,6 +952,30 @@ mod tests {
             assert_eq!(body(ui, &Tokens::dark(), &e, false, &mut cache, &mut |_, _| {}), None);
         });
         out.textures_delta.clear();
+    }
+
+    /// Regression: on a phone the approval card's buttons ran off the screen, Deny first.
+    #[test]
+    fn an_approval_cards_buttons_stay_on_a_phone_screen() {
+        use egui::{Pos2, Rect};
+        let ctx = egui::Context::default();
+        let mut waiting = step(3, StepStatus::Waiting);
+        waiting.tool = "write_file_with_a_long_name".into();
+        let e = entry(vec![waiting]);
+        let mut cache = markdown::Cache::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(360.0, 800.0));
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
+                body(ui, &Tokens::dark(), &e, false, &mut cache, &mut |_, _| {});
+            });
+            out.textures_delta.clear();
+            texts = crate::plugins::tests::texts_of(&out);
+        }
+        for label in ["Allow", "Always allow write_file_with_a_long_name", "…in every chat", "Deny"] {
+            let r = texts.iter().find(|(s, _)| s == label).unwrap_or_else(|| panic!("no {label:?} in {texts:?}")).1;
+            assert!(screen.contains_rect(r), "{label:?} at {r:?} is off the {screen:?}");
+        }
     }
 
     #[test]
