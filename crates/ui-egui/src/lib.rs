@@ -197,6 +197,10 @@ pub struct ByobApp {
     fluid_layers: Vec<(String, serde_json::Value)>,
     /// The answer to the model's last fluid request, for the next look report.
     fluid_note: Option<(String, (String, String))>,
+    /// Since when that answer waits for the elements to be listed (fluid was idle).
+    fluid_wait: Option<web_time::Instant>,
+    /// Fluid's environment switches, read once.
+    fluid_env: fluid_app::FluidEnv,
     /// One of your messages being changed, to start over from it.
     editing: Editing,
     /// Math in messages is typeset (a plugin names `native:math`, [`math`]).
@@ -295,6 +299,8 @@ impl ByobApp {
             fluid_saved: 0,
             fluid_layers: Vec::new(),
             fluid_note: None,
+            fluid_wait: None,
+            fluid_env: fluid_app::FluidEnv::read(),
             editing: Editing::default(),
             math: false,
             stage: cockpit::Stage::default(),
@@ -732,6 +738,10 @@ impl ByobApp {
     fn report_look(&mut self, ctx: &egui::Context) {
         let now = (self.prefs_gen, self.tokens.dark);
         if self.look_reported == Some(now) || !self.engine_has(byob_protocol::look::CAP_LOOK) {
+            return;
+        }
+        // The model asked to see the elements: once they're listed (fluid may have been idle).
+        if !self.fluid_ready(ctx) {
             return;
         }
         self.look_reported = Some(now);

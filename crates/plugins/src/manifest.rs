@@ -49,7 +49,7 @@ pub struct Manifest {
     pub requirements: Vec<String>,
     /// Live views its backend draws at render sites (`views`).
     pub views: Vec<ManifestView>,
-    /// Changes to the screen while it's on (`fluid`, experimental): fluid ops (`set`,
+    /// Changes to the screen while it's on (`fluid`): fluid ops (`set`,
     /// `insert`) the window layers under the user's own.
     pub fluid: Option<Value>,
     /// Can't be switched off (`locked`; honored for bundled plugins and their forks).

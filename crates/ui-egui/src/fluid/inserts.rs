@@ -20,7 +20,6 @@ pub struct Data {
     pub project: String,
     pub messages: usize,
     pub busy: bool,
-    pub context: String,
 }
 
 /// A value as text in a template.
@@ -38,6 +37,34 @@ fn text_of(v: &Value) -> String {
 /// gets one child per item of `state.key` (`{item}`, `{index}`, `{item.field}` in it), or
 /// its `"empty"` node when there are none. `{state.key}` anywhere reads the state.
 pub(super) fn expand(v: &mut Value, state: &serde_json::Map<String, Value>) {
+    let mut budget = MAX_EXPANDED;
+    expand_in(v, state, &mut budget);
+}
+
+/// Most JSON values `each` nodes make in one insert (nested ones multiply).
+const MAX_EXPANDED: usize = 20_000;
+
+/// Longest a string gets by putting values in it.
+const MAX_FILLED: usize = 16 * 1024;
+
+/// `s` with every `pat` replaced by `val`, unless that would make it longer than
+/// [`MAX_FILLED`] (then by "…").
+fn put(s: &str, pat: &str, val: &str) -> String {
+    let n = s.matches(pat).count();
+    let grown = s.len().saturating_add(n.saturating_mul(val.len()));
+    s.replace(pat, if grown > MAX_FILLED { "…" } else { val })
+}
+
+/// How many JSON values `v` holds.
+fn values(v: &Value) -> usize {
+    match v {
+        Value::Array(a) => a.iter().map(values).sum::<usize>() + 1,
+        Value::Object(m) => m.values().map(values).sum::<usize>() + 1,
+        _ => 1,
+    }
+}
+
+fn expand_in(v: &mut Value, state: &serde_json::Map<String, Value>, budget: &mut usize) {
     // A node shown only while a state value is true (or, with `!key`, false):
     // {"if": "running", "then": node, "else": node}.
     if let Some(cond) = v.get("if").and_then(Value::as_str).map(str::to_owned) {
@@ -53,7 +80,7 @@ pub(super) fn expand(v: &mut Value, state: &serde_json::Map<String, Value>) {
         };
         let pick = if truthy != neg { "then" } else { "else" };
         *v = v.get(pick).cloned().unwrap_or_else(|| serde_json::json!({"type": "column", "children": []}));
-        expand(v, state);
+        expand_in(v, state, budget);
         return;
     }
     match v {
@@ -63,16 +90,23 @@ pub(super) fn expand(v: &mut Value, state: &serde_json::Map<String, Value>) {
                 let empty = m.remove("empty");
                 m.remove("each");
                 let items = state.get(&key).and_then(Value::as_array).cloned().unwrap_or_default();
+                // As many as the budget allows (each copy of `item` costs its size).
+                let cost = values(&item);
+                let fit = (*budget / cost.max(1)).min(items.len());
+                *budget -= fit * cost;
                 let mut children: Vec<Value> = items
                     .iter()
+                    .take(fit)
                     .enumerate()
                     .map(|(i, it)| {
                         let mut node = item.clone();
                         substitute(&mut node, &|s: &str| {
-                            let mut s = s.replace("{index}", &i.to_string()).replace("{item}", &text_of(it));
-                            if let Value::Object(fields) = it {
+                            let mut s = put(&put(s, "{index}", &i.to_string()), "{item}", &text_of(it));
+                            if let Value::Object(fields) = it
+                                && s.contains("{item.")
+                            {
                                 for (k, f) in fields {
-                                    s = s.replace(&format!("{{item.{k}}}"), &text_of(f));
+                                    s = put(&s, &format!("{{item.{k}}}"), &text_of(f));
                                 }
                             }
                             s
@@ -91,17 +125,20 @@ pub(super) fn expand(v: &mut Value, state: &serde_json::Map<String, Value>) {
                 }
             }
             for x in m.values_mut() {
-                expand(x, state);
+                expand_in(x, state, budget);
             }
         }
         Value::Array(a) => {
             for x in a {
-                expand(x, state);
+                expand_in(x, state, budget);
             }
         }
         Value::String(s) if s.contains("{state.") || s.contains("{since:") || s.contains("{until:") => {
             for (k, val) in state {
-                *s = s.replace(&format!("{{state.{k}}}"), &text_of(val));
+                let pat = format!("{{state.{k}}}");
+                if s.contains(&pat) {
+                    *s = put(s, &pat, &text_of(val));
+                }
             }
             // Time since / until a moment kept in the state (seconds since 1970), as m:ss.
             let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
@@ -169,7 +206,6 @@ fn fill(v: &mut Value, d: &Data) -> bool {
             r("{project}", &|| d.project.clone());
             r("{messages}", &|| d.messages.to_string());
             r("{status}", &|| if d.busy { "working…".into() } else { "idle".into() });
-            r("{context}", &|| d.context.clone());
             clock
         }
         Value::Array(a) => a.iter_mut().fold(false, |c, x| fill(x, d) | c),
@@ -312,6 +348,29 @@ mod tests {
         assert_eq!(v["children"][1]["children"][1]["label"], "1: eggs");
         assert_eq!(v["children"][1]["children"][1]["action"], "drop:items=1");
         assert_eq!(v["children"][1]["type"], "column");
+    }
+
+    #[test]
+    fn nested_each_stays_within_a_budget() {
+        let items: Vec<Value> = (0..1000).map(Value::from).collect();
+        let state = json!({"xs": items}).as_object().cloned().unwrap_or_default();
+        let leaf = json!({"type": "text", "text": "{item}"});
+        let mut v = json!({"each": "xs", "item": {"each": "xs", "item": {"each": "xs", "item": leaf}}});
+        let t = std::time::Instant::now();
+        expand(&mut v, &state);
+        assert!(values(&v) <= MAX_EXPANDED * 2, "{}", values(&v));
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn filled_text_stays_short() {
+        let state = json!({"big": "x".repeat(10_000)}).as_object().cloned().unwrap_or_default();
+        let mut v = json!({"type": "text", "text": "{state.big}".repeat(100)});
+        expand(&mut v, &state);
+        assert!(v["text"].as_str().is_some_and(|s| s.len() <= MAX_FILLED), "{}", v["text"].as_str().map_or(0, str::len));
+        let mut v = json!({"type": "text", "text": "{state.big}!"});
+        expand(&mut v, &state);
+        assert_eq!(v["text"].as_str().map(str::len), Some(10_001));
     }
 
     #[test]

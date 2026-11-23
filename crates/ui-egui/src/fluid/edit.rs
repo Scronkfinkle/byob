@@ -93,7 +93,7 @@ impl Editor {
                 let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
                 let p = ui.painter();
                 p.rect_filled(rect, 0.0, Color32::from_black_alpha(18));
-                for e in els.iter().filter(|e| e.rule.as_ref().is_some_and(|r| r.hidden)) {
+                for e in els.iter().filter(|e| e.rule.as_ref().is_some_and(Rule::is_hidden)) {
                     dashed(p, e.shown, t.text_faint);
                 }
                 for e in els.iter().filter(|e| e.is_region() && !e.hidden) {
@@ -266,13 +266,15 @@ impl Editor {
                     continue;
                 }
                 self.push(&next, now, false);
+                // Hidden as it's drawn now: by its own rule, a glob's or a plugin's.
+                let was_hidden = els.iter().find(|e| e.path == path).is_some_and(|e| e.rule.as_ref().is_some_and(Rule::is_hidden));
                 let r = next.rule_mut(&path);
                 match key {
                     Key::ArrowLeft => r.dx = Some(r.dx.unwrap_or(0.0) - step),
                     Key::ArrowRight => r.dx = Some(r.dx.unwrap_or(0.0) + step),
                     Key::ArrowUp => r.dy = Some(r.dy.unwrap_or(0.0) - step),
                     Key::ArrowDown => r.dy = Some(r.dy.unwrap_or(0.0) + step),
-                    Key::Delete | Key::Backspace | Key::H => r.hidden = !r.hidden,
+                    Key::Delete | Key::Backspace | Key::H => r.hidden = Some(!was_hidden),
                     Key::R => *r = Rule::default(),
                     Key::Plus | Key::Equals => r.scale = Some((r.scale.unwrap_or(1.0) * 1.1).min(6.0)),
                     Key::Minus => r.scale = Some((r.scale.unwrap_or(1.0) / 1.1).max(0.2)),
@@ -323,7 +325,8 @@ impl Editor {
                                 .clicked()
                             {
                                 self.push(doc, now, true);
-                                *doc = FluidDoc::default();
+                                // Saved scenes stay (as with the model's reset).
+                                *doc = FluidDoc { scenes: std::mem::take(&mut doc.scenes), ..FluidDoc::default() };
                             }
                         });
                     });
@@ -334,6 +337,19 @@ impl Editor {
                         .small()
                         .color(t.text_faint),
                     );
+                    // A way out of a plugin's change that's in the way (one that hides the
+                    // settings, say): leave them out until byob starts again.
+                    let (plugins, ignored) = with(ctx, |f| (!f.base.is_empty(), f.ignore_base)).unwrap_or((false, false));
+                    if plugins {
+                        let mut on = !ignored;
+                        if ui
+                            .checkbox(&mut on, "Plugins' changes")
+                            .on_hover_text("What plugins change on screen. Off until byob starts again; turn a plugin off for good in Settings → Plugins.")
+                            .changed()
+                        {
+                            with(ctx, |f| f.ignore_base = !on);
+                        }
+                    }
                     ui.separator();
                     self.scenes(ui, t, doc, now);
                     ui.separator();
@@ -375,6 +391,7 @@ impl Editor {
                         }
                     }
                     let before = doc.clone();
+                    let was_hidden = el.is_some_and(|e| e.rule.as_ref().is_some_and(Rule::is_hidden));
                     let r = doc.rule_mut(&path);
                     egui::Grid::new("fluid-fields").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
                         let f = |ui: &mut egui::Ui, name: &str, v: &mut Option<f32>, def: f32, speed: f64, range: std::ops::RangeInclusive<f32>| {
@@ -411,7 +428,10 @@ impl Editor {
                         s(ui, "Beside", &mut r.place, "after:PATH, below:PATH, swap:PATH…");
                         ui.label("Hidden");
                         ui.horizontal(|ui| {
-                            ui.checkbox(&mut r.hidden, "");
+                            let mut hidden = was_hidden;
+                            if ui.checkbox(&mut hidden, "").changed() {
+                                r.hidden = Some(hidden);
+                            }
                             let mut hover = r.reveal.as_deref() == Some("hover");
                             if ui.checkbox(&mut hover, "only on hover").changed() {
                                 r.reveal = hover.then(|| "hover".to_owned());

@@ -298,7 +298,7 @@ is the view's `data`, a markdown summary its fallback for clients that can't dra
 A plugin's card carries its `owner` (plugin, view, key): clients that can show live views
 draw the live one and send its events to the plugin; others show the stored tree.
 
-## Changing the screen: `fluid` (experimental)
+## Changing the screen: `fluid`
 
 A plugin can also change byob's own screen while it's on, with a `fluid` object in its
 manifest: the same changes the model makes with `ui_fluid`, layered under the user's own.
@@ -324,3 +324,7 @@ manifest: the same changes the model makes with `ui_fluid`, layered under the us
   `size`, `color`, `fill`, `outline`, `radius`, `motion`, `reveal`, and `place`
   (`after:PATH`, `below:PATH`, `swap:PATH`…: kept by another element, wherever it goes). Read the paths with
   `ui_fluid` (inspect), or press F2 in the window and point at the element.
+- The user's changes win over a plugin's: `"hidden": false` shows again what a glob or a
+  plugin hid, and edit mode's **Plugins' changes** switch leaves every plugin's out until byob
+  starts again. A path is at most 300 characters with at most 10 `*`s, and an insert's tree and
+  state at most 64 KB each (as JSON); bigger ones are refused with a problem.

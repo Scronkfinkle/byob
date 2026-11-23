@@ -384,7 +384,7 @@ pub struct Prefs {
     pub zoom: f32,
     /// The cockpit (experimental): a backdrop scene behind glass panels.
     pub cockpit: crate::cockpit::Cockpit,
-    /// Fluid (experimental): what was moved, restyled, hidden or added on screen.
+    /// Fluid: what was moved, restyled, hidden or added on screen.
     pub fluid: crate::fluid::FluidDoc,
     /// What a reply's thinking is measured in.
     pub thinking_size: crate::count::SizeUnit,
@@ -460,6 +460,7 @@ impl Prefs {
         }
         self.knobs = self.knobs.sanitized();
         self.cockpit = self.cockpit.sanitized();
+        self.fluid = std::mem::take(&mut self.fluid).sanitized();
         for id in [&mut self.dark_theme, &mut self.light_theme] {
             if id.is_empty() || id.len() > 120 {
                 id.clear();

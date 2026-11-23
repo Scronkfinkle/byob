@@ -146,6 +146,16 @@ pub struct Fluid {
     /// The layers open when that press came (a popup is one that opened after it).
     open_before: Vec<LayerId>,
     start: std::time::Instant,
+    /// Plugins' changes left out (edit mode's switch, for a plugin whose changes are in the
+    /// way of turning it off); not kept across a restart.
+    pub ignore_base: bool,
+    /// Listing elements even with nothing changed, until then (the model asked to see them).
+    warm_until: Option<web_time::Instant>,
+    /// Passes in a row that listed the elements (the first ones after AccessKit is turned
+    /// on don't have its widgets yet).
+    scans: u32,
+    /// AccessKit turned on (by fluid; it's left on).
+    accesskit: bool,
 }
 
 impl Default for Fluid {
@@ -169,6 +179,10 @@ impl Default for Fluid {
             moved_popups: Vec::new(),
             open_before: Vec::new(),
             start: std::time::Instant::now(),
+            ignore_base: false,
+            warm_until: None,
+            scans: 0,
+            accesskit: false,
         }
     }
 }
@@ -191,7 +205,7 @@ pub fn with<R>(ctx: &Context, f: impl FnOnce(&mut Fluid) -> R) -> Option<R> {
 /// around it? (Not while editing: then it's drawn faded, to be found and shown again.)
 pub fn collapsed(ctx: &Context, path: &str) -> bool {
     with(ctx, |f| {
-        let gone = !f.editing && f.doc.rule_for(path).is_some_and(|r| r.hidden);
+        let gone = !f.editing && f.rule_of(path).is_some_and(|r| r.is_hidden());
         if gone {
             // Still listed (where it was last), so it can be found and shown again.
             if let Some(&(rect, layer)) = f.last.get(path) {
@@ -303,7 +317,32 @@ fn egui_id(n: u64) -> Option<Id> {
 impl Fluid {
     /// The rule for `path`: the plugins', the user's on top.
     pub fn rule_of(&self, path: &str) -> Option<Rule> {
-        doc::merged(&self.base, &self.doc, path)
+        if self.doc.is_empty() && self.base().is_empty() {
+            return None;
+        }
+        doc::merged(self.base(), &self.doc, path)
+    }
+
+    /// The plugins' changes, unless they're left out.
+    pub fn base(&self) -> &FluidDoc {
+        static NONE: std::sync::LazyLock<FluidDoc> = std::sync::LazyLock::new(FluidDoc::default);
+        if self.ignore_base { &NONE } else { &self.base }
+    }
+
+    /// Anything to do this pass: changes to draw, edit mode, or the model about to look.
+    fn active(&self) -> bool {
+        !self.doc.is_empty() || !self.base().is_empty() || self.editing || self.warm_until.is_some_and(|t| web_time::Instant::now() < t)
+    }
+
+    /// Keep listing the elements for a while, though nothing is changed (the model asked
+    /// to see them).
+    pub fn wake(&mut self) {
+        self.warm_until = Some(web_time::Instant::now() + std::time::Duration::from_secs(60));
+    }
+
+    /// [`Self::elements`] is this window's, as of a pass or so ago.
+    pub fn fresh(&self) -> bool {
+        self.scans >= 3
     }
 
     fn time(&self) -> f32 {
@@ -498,7 +537,8 @@ impl Fluid {
 
     /// Rules, easing and motion: each element's transform, opacity and hiding.
     fn resolve(&mut self, ctx: &Context, els: &mut [Element]) -> bool {
-        let (doc, base) = (Arc::clone(&self.doc), Arc::clone(&self.base));
+        let doc = Arc::clone(&self.doc);
+        let base = if self.ignore_base { Arc::default() } else { Arc::clone(&self.base) };
         // Last frame's elements by path (laid out, drawn), for placing by another element.
         let last: HashMap<String, (Rect, Rect)> = self.elements.iter().map(|e| (e.path.clone(), (e.rect, e.shown))).collect();
         let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
@@ -603,9 +643,9 @@ impl Fluid {
             let parent_lifted = els[i].parent.is_some_and(|p| els[p].lifted);
             let e = &mut els[i];
             e.lifted = parent_lifted || off.length() > 0.5;
-            e.transform = parent_t * own;
+            e.transform = bounded(parent_t * own);
             e.opacity = parent_o * rule.as_ref().and_then(|r| r.opacity).unwrap_or(1.0) * seen;
-            e.hidden = parent_h || rule.as_ref().is_some_and(|r| r.hidden);
+            e.hidden = parent_h || rule.as_ref().is_some_and(Rule::is_hidden);
             e.shown = e.transform.mul_rect(e.rect);
             e.rule = rule;
         }
@@ -797,6 +837,15 @@ impl Fluid {
     }
 }
 
+/// `t` within what can be drawn: nested scales multiply (a glob's on every level), and an
+/// element blown up thousands of times (or shrunk to nothing) would stall the painter.
+fn bounded(mut t: TSTransform) -> TSTransform {
+    t.scaling = if t.scaling.is_finite() { t.scaling.clamp(0.05, 20.0) } else { 1.0 };
+    let fit = |v: f32| if v.is_finite() { v.clamp(-20_000.0, 20_000.0) } else { 0.0 };
+    t.translation = Vec2::new(fit(t.translation.x), fit(t.translation.y));
+    t
+}
+
 /// Every run of text in `shape` (with where it is).
 fn collect_text(shape: &Shape, layer: LayerId, out: &mut Vec<(String, Rect, LayerId)>) {
     match shape {
@@ -861,10 +910,6 @@ impl egui::Plugin for Fluid {
         "fluid"
     }
 
-    fn setup(&mut self, ctx: &Context) {
-        ctx.enable_accesskit();
-    }
-
     fn on_begin_pass(&mut self, _ui: &mut Ui) {
         self.stack.clear();
         self.regions.clear();
@@ -872,6 +917,30 @@ impl egui::Plugin for Fluid {
 
     fn on_end_pass(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        // Where regions were drawn: only the ones still there.
+        let here: std::collections::HashSet<&str> = self.regions.iter().map(|r| r.path.as_str()).collect();
+        self.last.retain(|k, _| here.contains(k.as_str()));
+        if !self.active() {
+            // Nothing changed and nobody looking: nothing to list, rewrite or map.
+            self.scans = 0;
+            self.warm_until = None;
+            self.elements.clear();
+            self.mapped.clear();
+            self.anim.clear();
+            self.reveal.clear();
+            self.restore_popups(&ctx);
+            return;
+        }
+        // Widgets are listed from AccessKit's tree: on from the first time it's needed.
+        if !self.accesskit {
+            self.accesskit = true;
+            ctx.enable_accesskit();
+            ctx.request_repaint();
+        }
+        self.scans = self.scans.saturating_add(1);
+        if !self.fresh() {
+            ctx.request_repaint();
+        }
         let t0 = web_time::Instant::now();
         let mut els = self.scan(&ctx);
         let t1 = web_time::Instant::now();
@@ -915,13 +984,7 @@ impl egui::Plugin for Fluid {
                 }
             }
         }
-        self.moved_popups.retain(|l| {
-            let open = ctx.memory(|m| m.areas().is_visible(l));
-            if !open {
-                ctx.set_transform_layer(*l, TSTransform::IDENTITY);
-            }
-            open
-        });
+        self.restore_popups(&ctx);
         self.elements = els;
         if busy {
             ctx.request_repaint();
@@ -929,6 +992,41 @@ impl egui::Plugin for Fluid {
     }
 
     fn input_hook(&mut self, ctx: &Context, input: &mut egui::RawInput) {
+        self.input(ctx, input);
+    }
+
+    fn output_hook(&mut self, _ctx: &Context, output: &mut egui::FullOutput) {
+        let Some(update) = &output.platform_output.accesskit_update else { return };
+        if !self.active() {
+            self.seen.clear();
+            return;
+        }
+        self.seen = update
+            .nodes
+            .iter()
+            .filter_map(|(id, node)| {
+                let role = role_name(node.role())?;
+                let label = clean(node.label().or_else(|| node.value()).unwrap_or_default());
+                Some(Seen { id: id.0, role: role.to_owned(), label })
+            })
+            .collect();
+    }
+}
+
+impl Fluid {
+    /// Popups a moved element opened go back to where egui puts them once they're closed.
+    fn restore_popups(&mut self, ctx: &Context) {
+        self.moved_popups.retain(|l| {
+            let open = ctx.memory(|m| m.areas().is_visible(l));
+            if !open {
+                ctx.set_transform_layer(*l, TSTransform::IDENTITY);
+            }
+            open
+        });
+    }
+
+    /// The pointer mapped from where moved elements are drawn to where they're laid out.
+    fn input(&mut self, ctx: &Context, input: &mut egui::RawInput) {
         if self.editing || self.mapped.is_empty() {
             self.capture = None;
             return;
@@ -974,19 +1072,6 @@ impl egui::Plugin for Fluid {
                 *pos = p;
             }
         }
-    }
-
-    fn output_hook(&mut self, _ctx: &Context, output: &mut egui::FullOutput) {
-        let Some(update) = &output.platform_output.accesskit_update else { return };
-        self.seen = update
-            .nodes
-            .iter()
-            .filter_map(|(id, node)| {
-                let role = role_name(node.role())?;
-                let label = clean(node.label().or_else(|| node.value()).unwrap_or_default());
-                Some(Seen { id: id.0, role: role.to_owned(), label })
-            })
-            .collect();
     }
 }
 
@@ -1036,4 +1121,54 @@ pub fn inventory(els: &[Element], under: &str, find: &str, max: usize) -> String
         out.push_str("(no elements match)\n");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(ctx: &Context) {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            region(ui, "composer", |ui| {
+                let _ = ui.button("Send");
+                ui.label("hello there");
+            });
+        });
+        out.textures_delta.clear();
+    }
+
+    fn listed(ctx: &Context) -> usize {
+        with(ctx, |f| f.elements.len()).unwrap_or(0)
+    }
+
+    #[test]
+    fn idle_fluid_lists_nothing_and_wakes_for_a_rule() {
+        let ctx = Context::default();
+        install(&ctx);
+        for _ in 0..4 {
+            frame(&ctx);
+        }
+        assert_eq!(listed(&ctx), 0, "nothing changed: nothing listed");
+        assert!(with(&ctx, |f| !f.accesskit).unwrap_or(false), "AccessKit isn't turned on for nothing");
+        let mut doc = FluidDoc::default();
+        doc::apply(&mut doc, &serde_json::json!({"set": [{"path": "composer", "dx": 10}]}), "you");
+        with(&ctx, |f| f.doc = Arc::new(doc));
+        for _ in 0..4 {
+            frame(&ctx);
+        }
+        assert!(with(&ctx, |f| f.fresh()).unwrap_or(false));
+        assert!(with(&ctx, |f| f.elements.iter().any(|e| e.path == "composer" && e.transform.translation.x > 0.0)).unwrap_or(false));
+        // Reset: idle again, nothing mapped for input.
+        with(&ctx, |f| f.doc = Arc::default());
+        frame(&ctx);
+        assert_eq!(listed(&ctx), 0);
+        assert!(with(&ctx, |f| f.mapped.is_empty()).unwrap_or(false));
+    }
+
+    #[test]
+    fn nested_scales_stay_drawable() {
+        let t = bounded(TSTransform::new(Vec2::new(f32::INFINITY, 1e9), 6f32.powi(40)));
+        assert!(t.scaling <= 20.0 && t.translation.x == 0.0 && t.translation.y <= 20_000.0);
+    }
 }

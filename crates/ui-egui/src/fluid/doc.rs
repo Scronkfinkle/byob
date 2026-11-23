@@ -11,6 +11,15 @@ use serde_json::Value;
 pub const MAX_RULES: usize = 400;
 pub const MAX_INSERTS: usize = 64;
 pub const MAX_TEXT: usize = 400;
+/// Longest path or glob a rule is kept under, and most `*`s in one.
+pub const MAX_KEY: usize = 300;
+pub const MAX_STARS: usize = 10;
+/// Most saved scenes.
+pub const MAX_SCENES: usize = 32;
+/// Biggest an insert's tree or state gets, as JSON.
+pub const MAX_INSERT_BYTES: usize = 64 * 1024;
+/// Longest insert id.
+pub const MAX_ID: usize = 80;
 
 /// How one element (or every element a glob matches) is changed. Every field is optional:
 /// a rule only says what it changes.
@@ -28,9 +37,10 @@ pub struct Rule {
     /// 0 (invisible, still there) ..= 1.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
-    /// Not drawn and not clickable.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub hidden: bool,
+    /// Not drawn and not clickable (`true`), or shown again (`false`: over a glob's or a
+    /// plugin's rule that hides it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
     /// Its text, instead of what byob writes there.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -72,18 +82,77 @@ impl Rule {
         macro_rules! take {
             ($($f:ident),*) => { $( if other.$f.is_some() { self.$f = other.$f.clone(); } )* };
         }
-        take!(dx, dy, scale, opacity, text, size, color, fill, outline, radius, place, reveal, motion);
-        self.hidden |= other.hidden;
+        take!(dx, dy, scale, opacity, hidden, text, size, color, fill, outline, radius, place, reveal, motion);
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.hidden == Some(true)
     }
 
     pub fn offset(&self) -> egui::Vec2 {
         egui::vec2(self.dx.unwrap_or(0.0), self.dy.unwrap_or(0.0))
     }
 
-    /// Changes where and how big it is drawn (and so where it's clicked).
-    pub fn moves(&self) -> bool {
-        self.offset() != egui::Vec2::ZERO || self.scale.is_some_and(|s| s != 1.0) || self.motion.is_some() || self.place.is_some()
+    /// Every field within its bounds (a saved or synced rule may not have come through
+    /// [`set_fields`]); what can't be read is dropped.
+    fn sanitize(&mut self) {
+        let fit = |v: &mut Option<f32>, lo: f32, hi: f32| *v = v.filter(|f| f.is_finite()).map(|f| f.clamp(lo, hi));
+        fit(&mut self.dx, -4000.0, 4000.0);
+        fit(&mut self.dy, -4000.0, 4000.0);
+        fit(&mut self.scale, 0.2, 6.0);
+        fit(&mut self.opacity, 0.0, 1.0);
+        fit(&mut self.size, 0.3, 6.0);
+        fit(&mut self.radius, 0.0, 200.0);
+        if let Some(t) = &mut self.text
+            && t.chars().count() > MAX_TEXT
+        {
+            *t = t.chars().take(MAX_TEXT).collect();
+        }
+        for c in [&mut self.color, &mut self.fill, &mut self.outline] {
+            if c.as_deref().is_some_and(|c| !color_ok(c)) {
+                *c = None;
+            }
+        }
+        if self.place.as_deref().is_some_and(|p| p.len() > MAX_KEY + 8 || !p.contains(':')) {
+            self.place = None;
+        }
+        if self.reveal.as_deref().is_some_and(|r| r != "hover") {
+            self.reveal = None;
+        }
+        if self.motion.as_deref().is_some_and(|m| !MOTIONS.contains(&m)) {
+            self.motion = None;
+        }
     }
+}
+
+const MOTIONS: [&str; 5] = ["float", "pulse", "shake", "glow", "bounce"];
+
+/// A path or glob a rule can be kept under: not too long, not too many `*`s (each one makes
+/// matching it slower, and it's matched against every element every frame).
+pub fn key_ok(key: &str) -> Result<(), String> {
+    if key.len() > MAX_KEY {
+        return Err(format!("a path is at most {MAX_KEY} characters"));
+    }
+    if key.matches('*').count() > MAX_STARS {
+        return Err(format!("a path has at most {MAX_STARS} *s"));
+    }
+    Ok(())
+}
+
+/// An insert small enough to keep, every frame (its tree and state as JSON, and its id).
+fn insert_ok(i: &Insert) -> Result<(), String> {
+    if i.id.chars().count() > MAX_ID {
+        return Err(format!("an id is at most {MAX_ID} characters"));
+    }
+    if json_len(&i.tree) > MAX_INSERT_BYTES || json_len(&i.state) > MAX_INSERT_BYTES || i.anchor.len() > MAX_KEY || i.view.len() > MAX_KEY {
+        return Err(format!("its tree and state are at most {} KB each", MAX_INSERT_BYTES / 1024));
+    }
+    Ok(())
+}
+
+/// How long `v` is as JSON.
+fn json_len(v: &impl Serialize) -> usize {
+    serde_json::to_string(v).map_or(usize::MAX, |s| s.len())
 }
 
 /// Where an inserted element goes, relative to its anchor element.
@@ -159,6 +228,7 @@ impl Insert {
         let (k, v) = rest.split_once('=').map_or((rest.trim(), ""), |(k, v)| (k.trim(), v.trim()));
         let k = k.strip_prefix("state.").unwrap_or(k).to_owned();
         let parsed = || serde_json::from_str::<Value>(v).unwrap_or_else(|_| Value::String(v.to_owned()));
+        let before = self.state.clone();
         match verb {
             "set" => {
                 self.state.insert(k, parsed());
@@ -193,6 +263,10 @@ impl Insert {
             }
             _ => return false,
         }
+        // A value too big for an insert's state isn't kept.
+        if json_len(&self.state) > MAX_INSERT_BYTES {
+            self.state = before;
+        }
         true
     }
 }
@@ -226,9 +300,45 @@ impl FluidDoc {
         self.rules.is_empty() && self.inserts.is_empty()
     }
 
-    /// Keep what's on screen as scene `name`.
-    pub fn save(&mut self, name: &str) {
-        self.scenes.insert(name.to_owned(), Scene { rules: self.rules.clone(), inserts: self.inserts.clone() });
+    /// Keep what's on screen as scene `name` (false: there are too many already).
+    pub fn save(&mut self, name: &str) -> bool {
+        if self.scenes.len() >= MAX_SCENES && !self.scenes.contains_key(name) {
+            return false;
+        }
+        let name: String = name.chars().take(80).collect();
+        self.scenes.insert(name, Scene { rules: self.rules.clone(), inserts: self.inserts.clone() });
+        true
+    }
+
+    /// Everything within bounds: a doc from the prefs file (hand-edited, synced, or saved by
+    /// an older byob) gets the checks a change made in the window or by the model gets.
+    #[must_use]
+    pub fn sanitized(mut self) -> Self {
+        fn clean(rules: &mut BTreeMap<String, Rule>, inserts: &mut Vec<Insert>) {
+            rules.retain(|k, _| key_ok(k).is_ok());
+            for r in rules.values_mut() {
+                r.sanitize();
+            }
+            inserts.retain(|i| insert_ok(i).is_ok());
+            for i in inserts.iter_mut() {
+                i.x = if i.x.is_finite() { i.x.clamp(0.0, 100.0) } else { 0.0 };
+                i.y = if i.y.is_finite() { i.y.clamp(0.0, 100.0) } else { 0.0 };
+                i.width = if i.width.is_finite() { i.width.clamp(0.0, 1200.0) } else { 0.0 };
+            }
+        }
+        clean(&mut self.rules, &mut self.inserts);
+        while self.scenes.len() > MAX_SCENES {
+            self.scenes.pop_last();
+        }
+        for sc in self.scenes.values_mut() {
+            clean(&mut sc.rules, &mut sc.inserts);
+            while sc.rules.len() > MAX_RULES {
+                sc.rules.pop_first();
+            }
+            sc.inserts.truncate(MAX_INSERTS);
+        }
+        self.tidy();
+        self
     }
 
     /// Put scene `name` on screen (false: there's none).
@@ -274,30 +384,48 @@ impl FluidDoc {
 }
 
 /// Does `pattern` match `path`? Parts are split on `/`; `**` matches any number of parts,
-/// `*` within a part any characters.
+/// `*` within a part any characters (case doesn't matter).
 pub fn glob(pattern: &str, path: &str) -> bool {
     let p: Vec<&str> = pattern.split('/').collect();
     let s: Vec<&str> = path.split('/').collect();
-    parts(&p, &s)
-}
-
-fn parts(p: &[&str], s: &[&str]) -> bool {
-    match (p.first(), s.first()) {
-        (None, None) => true,
-        (Some(&"**"), _) => parts(&p[1..], s) || (!s.is_empty() && parts(p, &s[1..])),
-        (Some(a), Some(b)) => part(a, b) && parts(&p[1..], &s[1..]),
-        _ => false,
-    }
+    wildcard(&p, &s, |p| *p == "**", |p, s| part(p, s))
 }
 
 fn part(p: &str, s: &str) -> bool {
-    let Some((head, rest)) = p.split_once('*') else { return p.eq_ignore_ascii_case(s) };
-    let lower = s.to_lowercase();
-    let Some(after) = lower.strip_prefix(&head.to_lowercase()) else { return false };
-    if rest.is_empty() {
-        return true;
+    if !p.contains('*') {
+        return p.eq_ignore_ascii_case(s);
     }
-    (0..=after.len()).filter(|i| after.is_char_boundary(*i)).any(|i| part(rest, &after[i..]))
+    let p: Vec<char> = p.chars().flat_map(char::to_lowercase).collect();
+    let s: Vec<char> = s.chars().flat_map(char::to_lowercase).collect();
+    wildcard(&p, &s, |c| *c == '*', |a, b| a == b)
+}
+
+/// Wildcard matching without backtracking blow-up: a star takes as little as it can, and
+/// on a mismatch the last star takes one more (time at most `p.len() * s.len()`).
+fn wildcard<P, S>(p: &[P], s: &[S], star: impl Fn(&P) -> bool, eq: impl Fn(&P, &S) -> bool) -> bool {
+    let (mut i, mut j) = (0, 0);
+    let mut back: Option<(usize, usize)> = None;
+    while j < s.len() {
+        match (p.get(i), s.get(j)) {
+            (Some(x), _) if star(x) => {
+                back = Some((i, j));
+                i += 1;
+            }
+            (Some(x), Some(y)) if eq(x, y) => {
+                i += 1;
+                j += 1;
+            }
+            _ => match back {
+                Some((bi, bj)) => {
+                    back = Some((bi, bj + 1));
+                    i = bi + 1;
+                    j = bj + 1;
+                }
+                None => return false,
+            },
+        }
+    }
+    p.get(i..).is_some_and(|rest| rest.iter().all(star))
 }
 
 fn num(v: &Value) -> Option<f32> {
@@ -399,8 +527,8 @@ pub fn set_fields(rule: &mut Rule, fields: &serde_json::Map<String, Value>, prob
                 }
             }
             "radius" => rule.radius = if clear { None } else { num(v).map(|f| f.clamp(0.0, 200.0)) },
-            "hidden" | "hide" => rule.hidden = v.as_bool().unwrap_or(false),
-            "show" | "visible" => rule.hidden = !v.as_bool().unwrap_or(true),
+            "hidden" | "hide" => rule.hidden = if clear { None } else { Some(v.as_bool().unwrap_or(false)) },
+            "show" | "visible" => rule.hidden = if clear { None } else { Some(!v.as_bool().unwrap_or(true)) },
             "text" | "label" => {
                 rule.text = if clear {
                     None
@@ -457,7 +585,7 @@ pub fn set_fields(rule: &mut Rule, fields: &serde_json::Map<String, Value>, prob
                 rule.motion = match v.as_str().map(str::to_ascii_lowercase) {
                     None => None,
                     Some(m) if m.is_empty() || m == "none" || m == "off" => None,
-                    Some(m) if ["float", "pulse", "shake", "glow", "bounce"].contains(&m.as_str()) => Some(m),
+                    Some(m) if MOTIONS.contains(&m.as_str()) => Some(m),
                     Some(_) => {
                         problems.push(bad("float, bounce, pulse, shake, glow or none"));
                         rule.motion.clone()
@@ -509,6 +637,7 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
     }
     for p in list("clear") {
         match p.as_str() {
+            Some(path) if key_ok(path).is_err() => a.problems.push(format!("clear {path:.80}…: too long or too many *s")),
             Some(path) => {
                 let n = doc.rules.len();
                 if path.contains('*') && !doc.rules.contains_key(path) {
@@ -530,6 +659,10 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
             a.problems.push(format!("set: each needs a \"path\" (from inspect): {s}"));
             continue;
         };
+        if let Err(e) = key_ok(path) {
+            a.problems.push(format!("set {:.80}…: {e}", path));
+            continue;
+        }
         let mut rule = doc.rules.get(path).cloned().unwrap_or_default();
         set_fields(&mut rule, m, &mut a.problems, path);
         // A swap goes both ways.
@@ -544,7 +677,8 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
     for id in list("remove") {
         let id = id.as_str().unwrap_or_default().to_owned();
         let n = doc.inserts.len();
-        doc.inserts.retain(|i| i.id != id && !(id.contains('*') && part(&id, &i.id)));
+        let globbed = id.contains('*') && key_ok(&id).is_ok();
+        doc.inserts.retain(|i| i.id != id && !(globbed && part(&id, &i.id)));
         if doc.inserts.len() == n {
             a.problems.push(format!("remove: no inserted element {id:?}"));
         } else {
@@ -552,59 +686,15 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
         }
     }
     for i in list("insert") {
-        let mut v = i.clone();
-        if let Some(m) = v.as_object_mut() {
-            m.entry("by").or_insert_with(|| Value::String(by.to_owned()));
-        }
-        match serde_json::from_value::<Insert>(v) {
-            Ok(mut ins) => {
-                if ins.id.trim().is_empty() {
-                    ins.id = format!("new{}", doc.inserts.len() + 1);
-                }
-                // `"{now}"` / `"{now+1500}"` in its starting state: this moment (+ seconds).
-                let now = chrono::Utc::now().timestamp();
-                for v in ins.state.values_mut() {
-                    if let Some(t) = v.as_str().map(str::trim).and_then(|t| t.strip_prefix("{now")).and_then(|t| t.strip_suffix('}')) {
-                        let add = t.trim().trim_start_matches('+').trim().parse::<i64>().unwrap_or(0);
-                        *v = Value::from(now + add);
-                    }
-                }
-                if ins.at != At::Free && ins.anchor.trim().is_empty() {
-                    a.problems.push(format!("insert {}: an anchor (an element's path), or \"at\": \"free\"", ins.id));
-                    continue;
-                }
-                if ins.tree.is_null() && ins.view.is_empty() {
-                    a.problems.push(format!("insert {}: a tree (what to draw) or a view (plugin/view)", ins.id));
-                    continue;
-                }
-                // Checked as it's drawn: `if` and `each` nodes picked and repeated by its state.
-                let faults = if ins.view.is_empty() {
-                    let mut tree = ins.tree.clone();
-                    super::inserts::expand(&mut tree, &ins.state);
-                    parse_tree(&tree).1
-                } else {
-                    Vec::new()
-                };
-                if !faults.is_empty() {
-                    let f: Vec<String> = faults.iter().take(3).map(ToString::to_string).collect();
-                    a.problems.push(format!("insert {}: its tree has problems (drawn anyway where it can): {}", ins.id, f.join("; ")));
-                }
-                a.done.push(format!(
-                    "inserted +{} {} {}",
-                    ins.id,
-                    ins.at.name(),
-                    if ins.at == At::Free { format!("{}%,{}%", ins.x, ins.y) } else { ins.anchor.clone() }
-                ));
-                doc.inserts.retain(|o| o.id != ins.id);
-                doc.inserts.push(ins);
-            }
-            Err(e) => a.problems.push(format!("insert: {e} in {i}")),
-        }
+        insert(doc, &i, by, &mut a);
     }
     // Saved after the changes above, so "change this and save it as …" works in one go.
     if let Some(name) = ops.get("save").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) {
-        doc.save(name);
-        a.done.push(format!("saved this as scene {name:?}"));
+        if doc.save(name) {
+            a.done.push(format!("saved this as scene {name:?}"));
+        } else {
+            a.problems.push(format!("save: at most {MAX_SCENES} scenes (forget one first)"));
+        }
     }
     if let Some(name) = ops.get("forget").and_then(Value::as_str) {
         if doc.scenes.remove(name).is_some() {
@@ -619,6 +709,65 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
     }
     doc.tidy();
     a
+}
+
+/// One insert from the model's or a plugin's JSON, added (or replacing the one with its id).
+fn insert(doc: &mut FluidDoc, i: &Value, by: &str, a: &mut Applied) {
+    let mut v = i.clone();
+    if let Some(m) = v.as_object_mut() {
+        m.entry("by").or_insert_with(|| Value::String(by.to_owned()));
+    }
+    match serde_json::from_value::<Insert>(v) {
+        Ok(mut ins) => {
+            if ins.id.trim().is_empty() {
+                ins.id = format!("new{}", doc.inserts.len() + 1);
+            }
+            // `"{now}"` / `"{now+1500}"` in its starting state: this moment (+ seconds).
+            let now = chrono::Utc::now().timestamp();
+            for v in ins.state.values_mut() {
+                if let Some(t) = v.as_str().map(str::trim).and_then(|t| t.strip_prefix("{now")).and_then(|t| t.strip_suffix('}')) {
+                    let add = t.trim().trim_start_matches('+').trim().parse::<i64>().unwrap_or(0);
+                    *v = Value::from(now.saturating_add(add));
+                }
+            }
+            if let Err(e) = insert_ok(&ins) {
+                a.problems.push(format!("insert {:.80}: {e}", ins.id));
+                return;
+            }
+            ins.x = ins.x.clamp(0.0, 100.0);
+            ins.y = ins.y.clamp(0.0, 100.0);
+            ins.width = ins.width.clamp(0.0, 1200.0);
+            if ins.at != At::Free && ins.anchor.trim().is_empty() {
+                a.problems.push(format!("insert {}: an anchor (an element's path), or \"at\": \"free\"", ins.id));
+                return;
+            }
+            if ins.tree.is_null() && ins.view.is_empty() {
+                a.problems.push(format!("insert {}: a tree (what to draw) or a view (plugin/view)", ins.id));
+                return;
+            }
+            // Checked as it's drawn: `if` and `each` nodes picked and repeated by its state.
+            let faults = if ins.view.is_empty() {
+                let mut tree = ins.tree.clone();
+                super::inserts::expand(&mut tree, &ins.state);
+                parse_tree(&tree).1
+            } else {
+                Vec::new()
+            };
+            if !faults.is_empty() {
+                let f: Vec<String> = faults.iter().take(3).map(ToString::to_string).collect();
+                a.problems.push(format!("insert {}: its tree has problems (drawn anyway where it can): {}", ins.id, f.join("; ")));
+            }
+            a.done.push(format!(
+                "inserted +{} {} {}",
+                ins.id,
+                ins.at.name(),
+                if ins.at == At::Free { format!("{}%,{}%", ins.x, ins.y) } else { ins.anchor.clone() }
+            ));
+            doc.inserts.retain(|o| o.id != ins.id);
+            doc.inserts.push(ins);
+        }
+        Err(e) => a.problems.push(format!("insert: {e} in {i}")),
+    }
 }
 
 /// The rule for `path`: `base`'s (the plugins'), `doc`'s (the user's) over it.
@@ -666,7 +815,7 @@ mod tests {
         assert_eq!(r.color.as_deref(), Some("red"));
         assert!(d.rule_for("composer/text#1").is_none());
         apply(&mut d, &json!({"set": [{"path": "chat/byob.*/text:*context*", "hidden": true}]}), "you");
-        assert!(d.rule_for_named("chat/byob.2/text#4", Some("chat/byob.2/text:17k context · 295 out")).is_some_and(|r| r.hidden));
+        assert!(d.rule_for_named("chat/byob.2/text#4", Some("chat/byob.2/text:17k context · 295 out")).is_some_and(|r| r.is_hidden()));
         assert!(d.rule_for("chat/byob.2/text#4").is_none());
     }
 
@@ -711,6 +860,66 @@ mod tests {
         assert_eq!(i.state.get("n"), Some(&json!(1.0)));
         assert_eq!(i.state.get("dark"), Some(&json!(true)));
         assert!(!i.act("explode", "x"));
+    }
+
+    #[test]
+    fn globs_with_many_stars_match_in_linear_time() {
+        // A backtracking matcher takes ages on this; it's matched every frame.
+        let long = "e".repeat(4000);
+        let t = std::time::Instant::now();
+        assert!(!glob("**/text:*e*e*e*e*e*e*e*e*q", &format!("chat/byob.1/text:{long}")));
+        assert!(!glob("**/**/**/**/**/**/**/**/x", &"a/".repeat(200)));
+        assert!(glob("*a*b*", "xxaxxbxx") && !glob("*a*b*", "xxbxxaxx"));
+        assert!(glob("**", "anything/at/all") && glob("a/**", "a") && !glob("a/*", "a"));
+        assert!(t.elapsed() < std::time::Duration::from_millis(500), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn rules_with_too_long_or_starry_paths_are_refused() {
+        let mut d = FluidDoc::default();
+        let stars = "*a".repeat(MAX_STARS + 1);
+        let a = apply(&mut d, &json!({"set": [{"path": stars, "hidden": true}, {"path": "x".repeat(MAX_KEY + 1), "dx": 1}]}), "model");
+        assert!(d.rules.is_empty());
+        assert_eq!(a.problems.len(), 2, "{:?}", a.problems);
+    }
+
+    #[test]
+    fn a_users_show_beats_a_glob_or_plugin_hide() {
+        let mut base = FluidDoc::default();
+        apply(&mut base, &json!({"set": [{"path": "**", "hidden": true}]}), "plugin");
+        let mut user = FluidDoc::default();
+        apply(&mut user, &json!({"set": [{"path": "header/button:Settings", "hidden": false}]}), "you");
+        assert!(merged(&base, &user, "header/button:Settings").is_some_and(|r| !r.is_hidden()));
+        assert!(merged(&base, &user, "header/button:More").is_some_and(|r| r.is_hidden()));
+        // An old saved `"hidden": true` still reads.
+        let r: Rule = serde_json::from_value(json!({"hidden": true})).unwrap_or_default();
+        assert!(r.is_hidden());
+    }
+
+    #[test]
+    fn saved_docs_are_brought_within_bounds() {
+        let saved = json!({
+            "rules": {"a": {"scale": 0.0, "dx": 1e30, "opacity": 7, "color": "nope", "motion": "spin"}, "*a*a*a*a*a*a*a*a*a*a*a*a": {"hidden": true}},
+            "inserts": [{"id": "x", "at": "free", "x": 1e9, "tree": {"type": "text", "text": "hi"}}, {"id": "big", "at": "free", "tree": {"type": "text", "text": "a".repeat(MAX_INSERT_BYTES + 1)}}],
+            "scenes": (0..MAX_SCENES + 5).map(|i| (format!("s{i:02}"), json!({}))).collect::<serde_json::Map<_, _>>(),
+        });
+        let d = serde_json::from_value::<FluidDoc>(saved).unwrap_or_default().sanitized();
+        let r = d.rules.get("a").cloned().unwrap_or_default();
+        assert_eq!((r.scale, r.dx, r.opacity, r.color, r.motion), (Some(0.2), Some(4000.0), Some(1.0), None, None));
+        assert_eq!(d.rules.len(), 1);
+        assert_eq!(d.inserts.iter().map(|i| (i.id.as_str(), i.x)).collect::<Vec<_>>(), [("x", 100.0)]);
+        assert_eq!(d.scenes.len(), MAX_SCENES);
+    }
+
+    #[test]
+    fn now_far_ahead_saturates() {
+        let mut d = FluidDoc::default();
+        apply(
+            &mut d,
+            &json!({"insert": [{"id": "t", "at": "free", "state": {"end": format!("{{now+{}}}", i64::MAX)}, "tree": {"type": "text", "text": "x"}}]}),
+            "model",
+        );
+        assert_eq!(d.inserts[0].state.get("end"), Some(&json!(i64::MAX)));
     }
 
     #[test]

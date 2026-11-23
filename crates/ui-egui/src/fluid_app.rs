@@ -9,21 +9,53 @@ use serde_json::Value;
 use crate::fluid;
 use crate::{ByobApp, theme};
 
+/// Fluid's environment switches, read once at startup.
+#[derive(Debug, Default)]
+pub(crate) struct FluidEnv {
+    /// `BYOB_NO_FLUID=1`: start with fluid off (no saved or plugin change drawn, no edit
+    /// mode), the way out of a change that makes the window unusable. What's saved stays.
+    off: bool,
+    /// `BYOB_FLUID_EDIT=1` (or `=PATH`): start in edit mode, with that element selected.
+    edit: Option<String>,
+    /// `BYOB_FLUID_DOC=FILE`: start from these changes (`ui_fluid` ops, as JSON). They
+    /// replace the saved ones, so only with `BYOB_HOME` set (a throwaway home).
+    doc: Option<std::path::PathBuf>,
+    /// `BYOB_FLUID_DUMP=FILE`: the elements written to FILE now and then.
+    dump: Option<std::path::PathBuf>,
+}
+
+impl FluidEnv {
+    pub(crate) fn read() -> Self {
+        let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+        let doc = var("BYOB_FLUID_DOC").map(std::path::PathBuf::from);
+        if doc.is_some() && var("BYOB_HOME").is_none() {
+            log::warn!("BYOB_FLUID_DOC is only read with BYOB_HOME set (it replaces the saved changes)");
+        }
+        Self {
+            off: var("BYOB_NO_FLUID").is_some_and(|v| v != "0"),
+            edit: var("BYOB_FLUID_EDIT").map(|v| v.to_string_lossy().into_owned()),
+            doc: doc.filter(|_| var("BYOB_HOME").is_some()),
+            dump: var("BYOB_FLUID_DUMP").map(std::path::PathBuf::from),
+        }
+    }
+}
+
 impl ByobApp {
     /// At the start of a frame: the plugin is installed and has the prefs' document (unless
     /// the window changed it and that isn't saved yet); F2 toggles edit mode.
     pub(crate) fn fluid_begin(&mut self, ctx: &egui::Context) {
+        if self.fluid_env.off {
+            return;
+        }
         if ctx.plugin_opt::<fluid::Fluid>().is_none() {
             fluid::install(ctx);
             // For checking it headless: start editing, with an element selected.
-            if std::env::var_os("BYOB_FLUID_EDIT").is_some() {
+            if let Some(sel) = &self.fluid_env.edit {
                 fluid::with(ctx, |f| f.editing = true);
-                self.fluid_editor.selected = std::env::var("BYOB_FLUID_EDIT").ok().filter(|s| !s.is_empty() && s != "1");
+                self.fluid_editor.selected = Some(sel.clone()).filter(|s| s != "1");
             }
-            // For checking it headless: start from these changes (`ui_fluid` ops, as JSON).
-            if let Some(ops) =
-                std::env::var_os("BYOB_FLUID_DOC").and_then(|f| std::fs::read_to_string(f).ok()).and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            {
+            // For checking it headless: start from these changes.
+            if let Some(ops) = self.fluid_env.doc.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
                 let mut doc = fluid::FluidDoc::default();
                 for p in fluid::doc::apply(&mut doc, &ops, "you").problems {
                     log::warn!("BYOB_FLUID_DOC: {p}");
@@ -79,7 +111,6 @@ impl ByobApp {
             project: self.sidebar.current_workspace().map(|w| w.name.clone()).unwrap_or_default(),
             messages: self.entries.len(),
             busy: self.busy(),
-            context: String::new(),
         };
         let t = self.tokens;
         let sites = &mut self.plugins.sites;
@@ -105,7 +136,7 @@ impl ByobApp {
             }
         }
         // For checking it headless: the elements, written out now and then.
-        if let Some(file) = std::env::var_os("BYOB_FLUID_DUMP") {
+        if let Some(file) = &self.fluid_env.dump {
             if ctx.cumulative_pass_nr().is_multiple_of(3) {
                 let editing = fluid::with(ctx, |f| f.editing).unwrap_or(false);
                 let head = format!("editing: {editing} selected: {}\n", self.fluid_editor.selected.as_deref().unwrap_or("-"));
@@ -133,8 +164,8 @@ impl ByobApp {
         let mut action = e.action.clone();
         while let Some(i) = action.find("{now") {
             let Some(j) = action[i..].find('}').map(|j| i + j) else { break };
-            let add = action[i + 4..j].trim().trim_start_matches('+').trim().parse::<i64>().unwrap_or(0);
-            action.replace_range(i..=j, &(now + add).to_string());
+            let add = action.get(i + 4..j).unwrap_or_default().trim().trim_start_matches('+').trim().parse::<i64>().unwrap_or(0);
+            action.replace_range(i..=j, &now.saturating_add(add).to_string());
         }
         for (k, v) in &e.values {
             let text = match v {
@@ -171,7 +202,7 @@ impl ByobApp {
             "draft" => self.set_draft(&rest),
             "remove" | "close" => self.fluid_change(ctx, &serde_json::json!({"remove": [id]})),
             "toggle" => {
-                let hidden = fluid::with(ctx, |f| f.doc.rules.get(&rest).is_some_and(|r| r.hidden)).unwrap_or(false);
+                let hidden = fluid::with(ctx, |f| f.rule_of(&rest).is_some_and(|r| r.is_hidden())).unwrap_or(false);
                 self.fluid_change(ctx, &serde_json::json!({"set": [{"path": rest, "hidden": !hidden}]}));
             }
             "fluid" => match serde_json::from_str::<Value>(&rest) {
@@ -208,6 +239,9 @@ impl ByobApp {
     /// The model's `fluid` changes (from a look change): applied to `prefs`, their answer
     /// kept for the look report. What couldn't be done.
     pub(crate) fn fluid_from_model(&mut self, prefs: &mut theme::Prefs, ops: &Value) -> Vec<String> {
+        if self.fluid_env.off {
+            return vec!["fluid is off in this window (BYOB_NO_FLUID): nothing changes until byob starts without it".into()];
+        }
         let a = fluid::doc::apply(&mut prefs.fluid, ops, "model");
         let inspect = a.inspect.clone();
         let mut done = a.done.join("\n");
@@ -216,6 +250,28 @@ impl ByobApp {
         }
         self.fluid_note = Some((done, inspect.unwrap_or_else(|| ("-".into(), String::new()))));
         a.problems
+    }
+
+    /// Can the look report go now? Not while the model's asked to see the elements and
+    /// fluid (idle until then) hasn't listed them yet; that waits a second at most (a hidden
+    /// window draws nothing).
+    pub(crate) fn fluid_ready(&mut self, ctx: &egui::Context) -> bool {
+        let wants_list = self.fluid_note.as_ref().is_some_and(|(_, (under, _))| under != "-");
+        if !wants_list {
+            self.fluid_wait = None;
+            return true;
+        }
+        let fresh = fluid::with(ctx, |f| {
+            f.wake();
+            f.fresh()
+        });
+        let since = *self.fluid_wait.get_or_insert_with(web_time::Instant::now);
+        if fresh != Some(false) || since.elapsed() > std::time::Duration::from_secs(1) {
+            self.fluid_wait = None;
+            return true;
+        }
+        ctx.request_repaint();
+        false
     }
 
     /// The answer to the model's last fluid request, as a look note: what was done, and the

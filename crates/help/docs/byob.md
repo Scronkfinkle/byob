@@ -140,6 +140,19 @@ HUD, plate or pill buttons. A new backdrop that byob closes on within a few seco
 off at the next start; `BYOB_NO_BACKDROP=1` starts without any. From a terminal: `--backdrop
 FILE.wgsl|off`, `--arrangement NAME`, `--look KEY=VALUE`.
 
+**Fluid editing** (press F2, or ask byob, e.g. "make the send button bigger and put the model
+picker in the header"): every element on screen, down to a single button or line of text, can
+be moved, scaled, recolored, retitled, faded, hidden, shown only on hover or set gently moving,
+and new elements (a clock, a timer, a to-do list, buttons that send a prompt) can be put beside
+any of them. In edit mode, point at anything to see what it is, click to select it, drag to move
+it (with Alt, drop it on another element to keep it beside that one), drag a corner to scale it,
+and change the rest in the inspector; arrows nudge, H hides, R resets, Ctrl+Z undoes, Esc
+leaves. Arrangements can be saved as scenes to switch back to. byob changes the same things with
+the Appearance plugin's `ui_fluid` tool, and plugins can bring changes of their own (Edit mode's
+**Plugins' changes** switch leaves them out until the next start). Changes stay per device, like
+the look. **Reset all** in edit mode puts everything back; `BYOB_NO_FLUID=1` starts without any
+change drawn, keeping them for later.
+
 ## Plugins
 
 Settings → Plugins lists what the chat in view can use. Any bundled plugin can be forked to your
