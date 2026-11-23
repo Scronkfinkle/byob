@@ -317,6 +317,27 @@ impl Sites {
         }
     }
 
+    /// The pane toggles as "⋯" menu items (phones, where the header has no room for them);
+    /// whether one was chosen.
+    pub fn pane_menu_items(&mut self, ui: &mut egui::Ui, t: &Tokens) -> bool {
+        let panes: Vec<Declared> = self.panes().cloned().collect();
+        if panes.is_empty() {
+            return false;
+        }
+        crate::menu::separator(ui, t);
+        let mut chosen = false;
+        for d in &panes {
+            let r = d.view_ref();
+            let on = self.pane_open && self.active.as_ref() == Some(&r);
+            let label = if on { format!("Hide {}", d.title()) } else { d.title().to_owned() };
+            if crate::menu::item(ui, t, Some(crate::icons::puzzle), &label, None).on_hover_text(format!("{} ({})", d.title(), d.plugin_name)).clicked() {
+                self.toggle_pane(Some(r));
+                chosen = true;
+            }
+        }
+        chosen
+    }
+
     /// Open the pane on `view` (the first pane view if `None`), or close it if that is what
     /// it shows.
     pub fn toggle_pane(&mut self, view: Option<ViewRef>) {

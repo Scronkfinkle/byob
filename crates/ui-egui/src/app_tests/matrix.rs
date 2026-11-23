@@ -189,6 +189,18 @@ fn check(case: Case, d: &Drawn) -> Vec<String> {
             }
         }
     }
+    // In the header, nothing clickable is drawn over something else clickable (on a phone
+    // the actions ran over Back and Forward, and the title over the chat settings).
+    let header: Vec<&Element> =
+        shown.iter().copied().filter(|e| e.path.starts_with("header/") && (e.interactive || e.role == "button") && e.role != "area").collect();
+    for (i, a) in header.iter().enumerate() {
+        for b in &header[i + 1..] {
+            let nested = a.shown.expand(1.0).contains_rect(b.shown) || b.shown.expand(1.0).contains_rect(a.shown);
+            if !nested && a.shown.intersect(b.shown).area() > 4.0 {
+                bad.push(format!("{case}: in the header, {} {:?} and {} {:?} overlap", a.path, a.shown, b.path, b.shown));
+            }
+        }
+    }
     // No text drawn with no size, or out of the window where it isn't clipped away.
     for p in painted_text(&d.shapes) {
         let what = format!("{:?}", p.text.chars().take(40).collect::<String>());
@@ -227,6 +239,25 @@ fn the_window_keeps_its_invariants_across_the_matrix() {
     }
     assert!(bad.is_empty(), "{} problems in {} cases:\n{}", bad.len(), all.len(), bad.join("\n"));
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "the matrix took {:?}", started.elapsed());
+}
+
+/// Phone and tablet sizes (always docked: free arrangements are for wider windows), in
+/// both themes, on the chat and its other screens, against every invariant in [`check`].
+/// 260 points: a 390-pixel phone zoomed to 150 % (or a small one at 125 %).
+#[test]
+fn phones_and_tablets_keep_the_invariants() {
+    let mut bad = Vec::new();
+    let mut n = 0;
+    for size in [Vec2::new(390.0, 844.0), Vec2::new(320.0, 568.0), Vec2::new(260.0, 560.0), Vec2::new(768.0, 1024.0)] {
+        for theme in [theme::ThemeKind::Light, theme::ThemeKind::Dark] {
+            for extra in [Extra::None, Extra::Settings, Extra::Projects, Extra::Artifact] {
+                let case = Case { arrangement: "docked", theme, size, extra };
+                bad.extend(check(case, &render(case, |_| {})));
+                n += 1;
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{} problems in {n} cases:\n{}", bad.len(), bad.join("\n"));
 }
 
 /// Edit mode's inspector covers part of the window: what is under it is still listed (it

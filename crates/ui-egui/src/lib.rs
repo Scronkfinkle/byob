@@ -1329,7 +1329,7 @@ impl ByobApp {
         });
         cockpit::mark(ui.ctx(), chat.response.rect);
         if narrow {
-            self.artifacts.floating_button(ui.ctx(), &t);
+            self.artifacts.floating_button(ui.ctx(), &t, chat.response.rect);
         }
         self.end_frame(ui.ctx());
     }
@@ -1527,6 +1527,7 @@ impl ByobApp {
             let entries = &self.entries;
             self.markdown.retain(|id| entries.iter().any(|e| e.id == markdown::entry_of(id)));
         }
+        let fab = self.artifacts.floating_shown();
         let markdown = &mut self.markdown;
         let media = &mut self.media;
         let artifacts = &mut self.artifacts;
@@ -1588,6 +1589,10 @@ impl ByobApp {
                         }
                     });
                     ui.add_space(t.pad(8.0));
+                }
+                if fab {
+                    // Phones: the end of the chat scrolls clear of the floating button.
+                    ui.add_space(artifact::FLOATING_CLEARANCE);
                 }
             });
         });
@@ -2071,7 +2076,7 @@ mod app_tests {
                 ..Default::default()
             }),
             ServerMsg::Artifacts { chat: Some("c".into()), artifacts: vec![artifact] },
-            plugins::tests::ext(vec![troubled_plugin()]),
+            plugins::tests::ext(vec![troubled_plugin(), pane_plugin()]),
         ]);
         ByobApp::new(Box::new(fake), "test")
     }
@@ -2079,6 +2084,20 @@ mod app_tests {
     fn troubled_plugin() -> byob_protocol::PluginInfo {
         let mut p = plugins::tests::info("weather", byob_protocol::PluginScope::Workspace, byob_protocol::PluginOrigin::Agent);
         p.problems = vec!["tools/x.py is missing".into()];
+        p
+    }
+
+    /// A plugin with a pane, as the bundled memory plugin has: its toggle is in the header.
+    fn pane_plugin() -> byob_protocol::PluginInfo {
+        let mut p = plugins::tests::info("memory", byob_protocol::PluginScope::Global, byob_protocol::PluginOrigin::User);
+        p.views = vec![byob_protocol::ViewDecl {
+            id: "notes".into(),
+            site: byob_protocol::Site::Pane,
+            title: "Memory".into(),
+            icon: String::new(),
+            html: String::new(),
+        }];
+        p.backend = Some(byob_protocol::BackendInfo { state: "running".into(), ..Default::default() });
         p
     }
 
@@ -2999,7 +3018,8 @@ mod app_tests {
         let mut app = crowded_app();
         frame(&ctx, &mut app, 1000.0);
         assert!(!app.show_settings);
-        assert_eq!(app.plugins.summary(), Some((1, true)));
+        // The troubled one and the one with a pane, both on.
+        assert_eq!(app.plugins.summary(), Some((2, true)));
         assert!(app.open_panel("plugins"));
         frame(&ctx, &mut app, 1000.0);
         assert!(app.show_settings);

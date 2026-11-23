@@ -35,6 +35,12 @@ use crate::renderers::{ArtifactCx, ArtifactRenderer, ArtifactRenderers, File, Fi
 use crate::theme::Tokens;
 /// Width of the collapsed pane's rail.
 const RAIL_WIDTH: f32 = 46.0;
+/// The phones' floating button: its height, and its gap to the chat's corner.
+const FLOATING_HEIGHT: f32 = 36.0;
+const FLOATING_MARGIN: f32 = 12.0;
+/// Room left under the end of the chat while the floating button shows, so the last
+/// reply's links ("Hide details") scroll clear of it.
+pub const FLOATING_CLEARANCE: f32 = FLOATING_HEIGHT + 2.0 * FLOATING_MARGIN;
 /// Size of a rail icon.
 const RAIL_ICON: f32 = 32.0;
 /// Characters of a title shown on a tab.
@@ -655,23 +661,28 @@ impl Artifacts {
         });
     }
 
+    /// The floating button is shown (phones, the chat has artifacts, the pane is closed).
+    pub fn floating_shown(&self) -> bool {
+        self.narrow && !self.list.is_empty() && self.pane.shown(true) != PaneShown::Open
+    }
+
     /// Phones, pane closed: a floating button with the number of open tabs (or of the
-    /// chat's artifacts, when none was opened on this device yet).
-    pub fn floating_button(&mut self, ctx: &egui::Context, t: &Tokens) {
+    /// chat's artifacts, when none was opened on this device yet), in the bottom right
+    /// corner of `chat` (the transcript's area; the end of the chat scrolls clear of it,
+    /// [`FLOATING_CLEARANCE`]).
+    pub fn floating_button(&mut self, ctx: &egui::Context, t: &Tokens, chat: egui::Rect) {
         if self.list.is_empty() || self.pane.shown(true) == PaneShown::Open {
             return;
         }
         let n = if self.pane.tabs().is_empty() { self.list.len() } else { self.pane.tabs().len() };
-        egui::Area::new(egui::Id::unique("artifact-fab")).anchor(egui::Align2::RIGHT_BOTTOM, vec2(-14.0, -96.0)).order(egui::Order::Foreground).show(
-            ctx,
-            |ui| {
-                let text = RichText::new(format!("Artifacts  {n}")).strong().color(t.on_accent);
-                let b = egui::Button::new(text).fill(t.accent).corner_radius(t.round(18.0)).min_size(vec2(44.0, 36.0));
-                if ui.add(b).on_hover_text("Show the open artifacts").clicked() {
-                    self.actions.push(Action::Expand);
-                }
-            },
-        );
+        let corner = chat.right_bottom() - vec2(FLOATING_MARGIN, FLOATING_MARGIN);
+        egui::Area::new(egui::Id::unique("artifact-fab")).fixed_pos(corner).pivot(egui::Align2::RIGHT_BOTTOM).order(egui::Order::Foreground).show(ctx, |ui| {
+            let text = RichText::new(format!("Artifacts  {n}")).strong().color(t.on_accent);
+            let b = egui::Button::new(text).fill(t.accent).corner_radius(t.round(18.0)).min_size(vec2(44.0, FLOATING_HEIGHT));
+            if ui.add(b).on_hover_text("Show the open artifacts").clicked() {
+                self.actions.push(Action::Expand);
+            }
+        });
     }
 
     // ---- card ---------------------------------------------------------------------------
@@ -1504,7 +1515,7 @@ mod tests {
         let t = Tokens::dark();
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             s.begin_frame(ui.ctx(), &t, true);
-            s.floating_button(ui.ctx(), &t);
+            s.floating_button(ui.ctx(), &t, ui.max_rect());
         });
         out.textures_delta.clear();
         assert!(ctx.memory(|m| m.areas().visible_layer_ids().iter().any(|l| l.id == egui::Id::unique("artifact-fab"))), "the floating button shows");

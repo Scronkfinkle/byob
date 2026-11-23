@@ -35,6 +35,9 @@ pub struct Layout {
     pub chip: ChipDetail,
     /// How many plugins are on, next to the puzzle chip.
     pub plugin_count: bool,
+    /// The plugins' pane toggles in the header (else in the "⋯" menu: on a phone their
+    /// names ran over the window controls).
+    pub pane_toggles: bool,
 }
 
 impl Layout {
@@ -61,6 +64,7 @@ impl Layout {
                 ChipDetail::Model
             },
             plugin_count: !phone,
+            pane_toggles: !phone,
         }
     }
 }
@@ -325,7 +329,7 @@ impl ByobApp {
             items.push((w.as_str(), None));
         }
         let width = crate::menu::fit(ui, &items).max(200.0);
-        crate::menu::below(&more, t, width).show(|ui| self.more_menu(ui, t));
+        crate::menu::below(&more, t, width).show(|ui| self.more_menu(ui, t, layout));
         if self.show_settings {
             // The chat's panes aren't there to toggle.
             self.header_rects.plugins = Rect::NOTHING;
@@ -349,7 +353,8 @@ impl ByobApp {
             match id.as_str() {
                 "toolbar.plugins" => self.header_rects.plugins = self.plugins.chip(ui, t, layout.plugin_count, false).map_or(Rect::NOTHING, |r| r.rect),
                 "toolbar.artifacts" => self.artifacts.header_toggle(ui, t),
-                "toolbar.panes" => self.plugins.sites.pane_toggles(ui, t),
+                "toolbar.panes" if layout.pane_toggles => self.plugins.sites.pane_toggles(ui, t),
+                "toolbar.panes" => {}
                 view => self.plugins.sites.status_item(ui, t, view),
             }
         }
@@ -378,7 +383,7 @@ impl ByobApp {
     }
 
     /// The "⋯" menu: every settings entry point by name, and the artifact actions.
-    fn more_menu(&mut self, ui: &mut egui::Ui, t: &theme::Tokens) {
+    fn more_menu(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, layout: Layout) {
         use crate::menu;
         menu::tighten(ui);
         if menu::item(ui, t, Some(icons::sliders), "Chat settings", None).on_hover_text("This chat's model, approvals, where commands run…").clicked() {
@@ -407,6 +412,9 @@ impl ByobApp {
             .clicked()
         {
             self.plugins.open(None);
+            ui.close();
+        }
+        if !layout.pane_toggles && !self.show_settings && self.plugins.sites.pane_menu_items(ui, t) {
             ui.close();
         }
         if !self.artifacts.is_empty() {
@@ -554,17 +562,25 @@ impl ByobApp {
         }
         let room = ui.available_width();
         let chat = self.sidebar.current().cloned();
-        // The title, and a chevron when there is a chat to act on: its menu.
+        // The title, and a chevron when there is a chat to act on: its menu. All the room
+        // the actions left (nothing follows it since the model moved under the message box;
+        // half of it made "New chat" "Ne…" on a phone), never more (it ran over the chat
+        // settings); with no room at all, no title (its menu is also the chat list's).
+        let max = room - 4.0;
+        if max < 44.0 {
+            self.header_rects.title = Rect::NOTHING;
+            return;
+        }
         let title_resp = ui
             .scope(|ui| {
-                ui.set_max_width((room * 0.5).max(60.0));
+                ui.set_max_width(max);
                 let mut job = egui::text::LayoutJob::default();
                 let font = egui::TextStyle::Body.resolve(ui.style());
                 if let Some((name, _)) = ws.as_ref().filter(|_| layout.workspace_name) {
                     job.append(&format!("{name} / "), 0.0, egui::TextFormat::simple(font.clone(), t.text_dim));
                 }
                 job.append(&title, 0.0, egui::TextFormat::simple(font, t.text_strong));
-                job.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - 30.0).max(30.0));
+                job.wrap = egui::text::TextWrapping::truncate_at_width((max - 30.0).max(14.0));
                 let galley = ui.painter().layout_job(job);
                 let h = icons::button_height(ui);
                 let menu = chat.is_some();
@@ -705,13 +721,13 @@ mod tests {
     #[test]
     fn details_drop_as_the_window_narrows() {
         let full = Layout::for_width(1600.0);
-        assert_eq!(full, Layout { workspace_name: true, chip: ChipDetail::Full, plugin_count: true });
+        assert_eq!(full, Layout { workspace_name: true, chip: ChipDetail::Full, plugin_count: true, pane_toggles: true });
         let laptop = Layout::for_width(1100.0);
-        assert_eq!(laptop, Layout { workspace_name: true, chip: ChipDetail::Model, plugin_count: true });
+        assert_eq!(laptop, Layout { workspace_name: true, chip: ChipDetail::Model, plugin_count: true, pane_toggles: true });
         let small = Layout::for_width(800.0);
-        assert_eq!(small, Layout { workspace_name: true, chip: ChipDetail::Model, plugin_count: true });
+        assert_eq!(small, Layout { workspace_name: true, chip: ChipDetail::Model, plugin_count: true, pane_toggles: true });
         let phone = Layout::for_width(390.0);
-        assert_eq!(phone, Layout { workspace_name: false, chip: ChipDetail::Dot, plugin_count: false });
+        assert_eq!(phone, Layout { workspace_name: false, chip: ChipDetail::Dot, plugin_count: false, pane_toggles: false });
         // Narrowing never brings something back.
         let mut last = full;
         for w in (320..=1600).rev().step_by(10) {

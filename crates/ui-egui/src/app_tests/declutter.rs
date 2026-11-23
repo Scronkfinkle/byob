@@ -243,3 +243,38 @@ fn hide_details_quiets_this_chats_replies() {
     }
     assert!(app.sidebar.prefs().quiet.contains(&id), "remembered on this device");
 }
+
+/// Regression: on a phone, the floating "Artifacts" button sat on "Hide details" under the
+/// last reply (scrolled to the end, it could never be tapped). The end of the chat now
+/// scrolls clear of the button.
+#[test]
+fn the_floating_artifacts_button_leaves_hide_details_clear_on_a_phone() {
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    // A reply longer than the screen: the chat is scrolled to its end.
+    let long = (1..=40).map(|i| format!("Pear number {i}.")).collect::<Vec<_>>().join("\n\n");
+    let stats = byob_protocol::TurnStats { prompt_tokens: 1234, completion_tokens: 56, elapsed_ms: 2500, model_calls: 1, context_tokens: 0 };
+    fake.inbox.lock().unwrap().push(ServerMsg::Transcript {
+        entries: vec![entry(1, byob_protocol::EntryRole::User, "How many pears?", None), entry(2, byob_protocol::EntryRole::Assistant, &long, Some(stats))],
+    });
+    let ctx = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(390.0, 844.0));
+    let mut shapes = Vec::new();
+    for _ in 0..8 {
+        let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+        out.textures_delta.clear();
+        shapes = out.shapes;
+    }
+    let fab = ctx.memory(|m| m.area_rect(egui::Id::unique("artifact-fab"))).expect("the floating button shows on a phone");
+    fn find(shape: &egui::Shape, want: &str) -> Option<egui::Rect> {
+        match shape {
+            egui::Shape::Text(t) if t.galley.text() == want => Some(t.visual_bounding_rect()),
+            egui::Shape::Vec(v) => v.iter().find_map(|s| find(s, want)),
+            _ => None,
+        }
+    }
+    let link = shapes.iter().find_map(|s| find(&s.shape, "Hide details")).expect("Hide details is drawn");
+    assert!(!fab.intersects(link.expand(2.0)), "the floating button {fab:?} covers Hide details at {link:?}");
+    assert!(fab.bottom() <= app.composer_rects.frame.top(), "the floating button {fab:?} is above the message box {:?}", app.composer_rects.frame);
+}
