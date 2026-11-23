@@ -271,6 +271,13 @@ pub fn resolve(ws: &str, chat: Option<&str>, arg: Option<&Value>, follow: bool) 
             };
             return Err(SheetError::Msg(format!("Artifact {s1} belongs to another chat; sheet tools only use this chat's artifacts.{copy}")));
         }
+        // A live file: the person's own file, which its versions only follow. Saving the
+        // sheet over it put an .xlsx in front of the file, and the next snapshot of the CSV
+        // went in as a broken .xlsx; the file is what's meant (a write imports a copy).
+        if let Some(rel) = meta.get("live").and_then(Value::as_str).filter(|r| !r.is_empty()) {
+            let rel = format!("./{}", rel.trim_start_matches("./"));
+            return resolve(ws, chat, Some(&Value::String(rel)), follow);
+        }
         if let Some(o) = meta.as_object_mut() {
             o.entry("id").or_insert(Value::String(s1.to_owned()));
         }

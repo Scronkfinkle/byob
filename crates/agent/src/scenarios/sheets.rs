@@ -198,3 +198,41 @@ fn looking_at_and_editing_a_sheet_does_not_ask_before_changes() {
     }
     assert_eq!(w.read("harvest.csv").as_deref(), Some(HARVEST), "the file itself is left alone");
 }
+
+/// A CSV kept in the Library as a live file, then written to by the model by its id.
+/// Regression: write_cells saved an .xlsx version over the live file (renaming it
+/// budget.xlsx); opening the Library snapshot the unchanged CSV as the next version, under
+/// the new name, so the artifact's latest version was a CSV called v3.xlsx and every sheet
+/// tool failed on it ("couldn't be opened as an .xlsx workbook"). The person's file was
+/// never changed either. Now the live file's id means the file: a write imports a copy,
+/// and update_artifact says to edit the file.
+#[test]
+fn a_live_csv_written_to_by_id_stays_the_persons_file() {
+    use byob_protocol::{ClientMsg, ServerMsg};
+    let mut w = World::new();
+    w.file("harvest.csv", HARVEST);
+    w.model.says("Hi.");
+    w.send("hello");
+    w.tell(ClientMsg::AddLiveFile { path: "harvest.csv".into() });
+    w.wait(|m| matches!(m, ServerMsg::Notice { .. }).then_some(()));
+    let live = w.seen.artifacts[0].id.clone();
+    let (a, b) = (live.clone(), live.clone());
+    w.model.answers(move |_| Answer::call("write_cells", json!({"sheet": a, "cells": {"D1": "notes"}})));
+    w.model.answers(move |_| Answer::call("update_artifact", json!({"id": b, "content": "crop\nbeans\n"})));
+    w.model.says("Done.");
+    let t = w.send("Add a notes column to it");
+    let wrote = t.step("write_cells").done();
+    let copy = artifact_id(t.result("write_cells"), "harvest").filter(|id| *id != live).unwrap_or_else(|| panic!("a copy: {wrote}"));
+    assert!(t.step("update_artifact").failed().contains("harvest.csv"), "{}", t.result("update_artifact"));
+
+    // Opening the Library snapshots the file only if it changed: it didn't.
+    w.tell(ClientMsg::ListLibrary);
+    w.wait(|m| matches!(m, ServerMsg::Library { .. }).then_some(()));
+    let meta = byob_tools::artifact::load(&w.project, &live).unwrap();
+    assert_eq!((meta.artifact.versions.len(), meta.artifact.filename.as_str()), (1, "harvest.csv"));
+    assert_eq!(w.read("harvest.csv").as_deref(), Some(HARVEST));
+    w.model.answers(move |_| Answer::call("describe_sheet", json!({"sheet": copy})));
+    w.model.says("It has a notes column.");
+    let t = w.send("What's in it?");
+    assert!(t.step("describe_sheet").done().contains("notes") || t.result("describe_sheet").contains("notes"), "{}", t.result("describe_sheet"));
+}

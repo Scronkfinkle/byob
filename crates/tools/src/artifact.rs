@@ -253,11 +253,19 @@ pub fn refresh_live(types: &ArtifactTypes, workspace: &Path) -> usize {
         }
         let s =
             SaveBytes { chat: &meta.chat, id: Some(&meta.artifact.id), title: None, filename: None, bytes: &now, note: "Changed", replace: None, turn: None };
-        if save_bytes(types, workspace, &s).is_ok() {
+        if save_version(types, workspace, &s, true).is_ok() {
             changed += 1;
         }
     }
     changed
+}
+
+/// Why live file `id` (following `rel`) takes no versions but the file's own: an edit
+/// saved there would be taken back by the file's next snapshot, and never reach the file.
+fn live_refusal(id: &str, rel: &str) -> String {
+    format!(
+        "{id} is the user's own file {rel}, kept as a live file: it follows that file. Change {rel} itself (edit_file or write_file), or make a new artifact"
+    )
 }
 
 /// Delete artifact `id` of `chat` in `workspace` for good (you chose to delete it).
@@ -521,8 +529,13 @@ pub struct Saved {
 
 /// Write `s.bytes` as a new version (or over a draft, see [`SaveBytes::replace`]) of an
 /// artifact, or as a new artifact. Same layout and rules as the artifact tools: files only
-/// inside `.byob/artifacts`, never through links, version numbers never reused.
+/// inside `.byob/artifacts`, never through links, version numbers never reused. A live
+/// file's versions only follow the person's file ([`refresh_live`]), so nothing else saves one.
 pub fn save_bytes(types: &ArtifactTypes, workspace: &Path, s: &SaveBytes<'_>) -> Result<Saved, String> {
+    save_version(types, workspace, s, false)
+}
+
+fn save_version(types: &ArtifactTypes, workspace: &Path, s: &SaveBytes<'_>, follow: bool) -> Result<Saved, String> {
     if s.chat.is_empty() {
         return Err("artifacts are only available in a chat".into());
     }
@@ -565,6 +578,9 @@ pub fn save_bytes(types: &ArtifactTypes, workspace: &Path, s: &SaveBytes<'_>) ->
         return result;
     };
     let mut meta = load_in_chat(workspace, s.chat, id)?;
+    if let Some(rel) = meta.live.as_deref().filter(|_| !follow) {
+        return Err(live_refusal(&meta.artifact.id, rel));
+    }
     let id = meta.artifact.id.clone();
     let (root, dir) = artifact_dir(workspace, &id)?;
     // Every version, also those whose file is gone (numbers are never reused).
@@ -858,6 +874,9 @@ fn update(types: &ArtifactTypes, args: &Value, ctx: &ToolContext<'_>) -> Result<
     let a: UpdateArgs = parse_args(args)?;
     let mut meta = load_in_chat(ctx.workspace, chat, a.id.trim())?;
     let id = meta.artifact.id.clone();
+    if let Some(rel) = meta.live.as_deref() {
+        return Err(live_refusal(&id, rel));
+    }
     let ty = types.of(&meta.artifact);
     if !ty.text {
         return Err(format!("{id} is not a text file ({}); it can't be edited as text. Make a new one instead", ty.label));
@@ -1389,6 +1408,14 @@ mod tests {
         let meta = list_all_meta(ws).into_iter().find(|m| m.artifact.id == a.id).unwrap();
         assert_eq!(meta.live.as_deref(), Some("budget.csv"));
         assert_eq!(meta.artifact.versions.len(), 2);
+        // Regression: only the file makes its versions. A plugin's save or update_artifact
+        // put another file in front of it, taken back (or garbled) by the next snapshot.
+        let save = SaveBytes { chat: "c1", id: Some(&a.id), bytes: b"x,y\n", ..Default::default() };
+        let refused = save_bytes(&types, ws, &save).unwrap_err();
+        assert!(refused.contains("budget.csv"), "{refused}");
+        let out = run_in(&UpdateArtifact { types: types.clone() }, ws, "c1", json!({"id": a.id, "content": "x,y\n"}));
+        assert!(out.failed && out.text.contains("edit_file"), "{}", out.text);
+        assert_eq!(list_all_meta(ws).into_iter().find(|m| m.artifact.id == a.id).unwrap().artifact.versions.len(), 2);
         // Removed from the Library: the snapshots go, the file stays.
         remove(ws, "c1", &a.id).unwrap();
         assert!(list_all_meta(ws).is_empty());
