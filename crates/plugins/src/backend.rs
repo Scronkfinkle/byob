@@ -58,6 +58,11 @@ const DRAIN_GRACE: Duration = Duration::from_millis(500);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Crashes in a row after which it isn't started again (until its plugin reloads).
 pub const MAX_CRASHES: u32 = 5;
+/// Stack of a native backend's thread. Native backends may recurse on untrusted input in
+/// libraries byob doesn't control (IronCalc parses and evaluates formulas recursively), and
+/// running out of stack aborts the whole process rather than panicking; only the pages
+/// actually touched are committed.
+pub const NATIVE_STACK: usize = 64 * 1024 * 1024;
 const FIRST_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Running this long resets the crash count.
@@ -513,7 +518,7 @@ fn start_now(shared: &Arc<Shared>) {
             drop(g);
             log::info!("plugin {}: native backend started", shared.plugin);
             let s = Arc::clone(shared);
-            guarded("byob-backend-native", move || {
+            guarded_with_stack("byob-backend-native", NATIVE_STACK, move || {
                 let how = native_loop(&s, backend, &rx);
                 exited(&s, generation, &how);
             });
@@ -837,8 +842,15 @@ fn exited(shared: &Arc<Shared>, generation: u64, how: &str) {
 }
 
 fn guarded(name: &str, work: impl FnOnce() + Send + 'static) {
+    guarded_with_stack(name, 0, work);
+}
+
+/// [`guarded`] on a thread with a `stack`-byte stack (0: the default).
+fn guarded_with_stack(name: &str, stack: usize, work: impl FnOnce() + Send + 'static) {
     let label = name.to_owned();
-    let spawned = thread::Builder::new().name(name.into()).spawn(move || {
+    let builder = thread::Builder::new().name(name.into());
+    let builder = if stack > 0 { builder.stack_size(stack) } else { builder };
+    let spawned = builder.spawn(move || {
         if catch_unwind(AssertUnwindSafe(work)).is_err() {
             log::error!("{label} crashed");
         }

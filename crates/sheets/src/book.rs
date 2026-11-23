@@ -13,6 +13,8 @@ use crate::SheetError;
 use crate::text::fmt_g;
 
 pub const MAX_IMPORT_CELLS: usize = 2_000_000;
+/// Longest formula a cell takes (Excel's own limit).
+pub const MAX_FORMULA_CHARS: usize = 8192;
 const LOCALE: &str = "en";
 const TZ: &str = "UTC";
 const LANG: &str = "en";
@@ -352,7 +354,7 @@ impl Book {
                     continue;
                 }
                 let v = if leading_zero(v) { format!("'{v}") } else { v.clone() };
-                self.m.set_user_input(s, idx(i + 1), idx(j + 1), v).map_err(engine)?;
+                self.input(s, idx(i + 1), idx(j + 1), v)?;
             }
         }
         self.version_gen += 1;
@@ -501,16 +503,28 @@ impl Book {
             Value::String(t) if t.is_empty() => self.clear(s, r, c, r, c),
             Value::Bool(b) => self.m.update_cell_with_bool(s, row, col, *b).map_err(engine),
             Value::Number(n) => self.m.update_cell_with_number(s, row, col, n.as_f64().unwrap_or(0.0)).map_err(engine),
-            Value::String(t) => self.m.set_user_input(s, row, col, t.clone()).map_err(engine),
-            other => self.m.set_user_input(s, row, col, crate::text::pystr(other)).map_err(engine),
+            Value::String(t) => self.input(s, row, col, t.clone()),
+            other => self.input(s, row, col, crate::text::pystr(other)),
         }
+    }
+
+    /// Everything typed into a cell goes through here: a formula longer than Excel allows is
+    /// refused before IronCalc parses it (its parser and evaluator recurse, so a long chain
+    /// like `=1+1+…` or `=((((…` could otherwise run out of stack and abort byob).
+    fn input(&mut self, s: u32, row: i32, col: i32, v: String) -> Result<(), SheetError> {
+        if v.starts_with('=') && v.chars().count() > MAX_FORMULA_CHARS {
+            return Err(SheetError::Msg(format!(
+                "That formula is longer than {MAX_FORMULA_CHARS} characters, the most a spreadsheet formula may have. Split it up, or use SUM or another function over a range."
+            )));
+        }
+        self.m.set_user_input(s, row, col, v).map_err(engine)
     }
 
     pub fn put_text(&mut self, s: u32, r: i64, c: i64, v: &str) -> Result<(), SheetError> {
         if v.is_empty() {
             return self.clear(s, r, c, r, c);
         }
-        self.m.set_user_input(s, idx64(r), idx64(c), v.to_owned()).map_err(engine)
+        self.input(s, idx64(r), idx64(c), v.to_owned())
     }
 
     pub fn clear(&mut self, s: u32, r1: i64, c1: i64, r2: i64, c2: i64) -> Result<(), SheetError> {
@@ -575,6 +589,36 @@ pub fn idx64(n: i64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: IronCalc parses and evaluates formulas recursively, and a long chain like
+    /// `=1+1+…+1` (2000 terms) or `=((…1…))` (800 deep) ran out of a thread's default stack,
+    /// which aborts all of byob. Formulas are capped at Excel's length, and the longest
+    /// worst cases evaluate on a native backend's stack.
+    #[test]
+    fn hostile_formulas_neither_abort_nor_get_in() {
+        let half = MAX_FORMULA_CHARS / 2 - 1;
+        let worst = [
+            format!("={}1{}", "(".repeat(half), ")".repeat(half)),
+            format!("={}1", "-".repeat(MAX_FORMULA_CHARS - 2)),
+            format!("=1{}", "+1".repeat(half)),
+            format!("=SUM({}1{})", "SUM(".repeat(MAX_FORMULA_CHARS / 5 - 2), ")".repeat(MAX_FORMULA_CHARS / 5 - 2)),
+        ];
+        let worker = std::thread::Builder::new().stack_size(byob_plugins::backend::NATIVE_STACK).spawn(move || {
+            let mut b = Book::new("x").unwrap();
+            for (i, f) in worst.iter().enumerate() {
+                assert!(f.chars().count() <= MAX_FORMULA_CHARS, "{i}");
+                b.put(0, 1, i64::try_from(i).unwrap() + 1, &Value::String(f.clone())).unwrap();
+            }
+            b.evaluate();
+            let too_long = format!("=1{}", "+1".repeat(MAX_FORMULA_CHARS / 2));
+            assert!(b.put(0, 2, 1, &Value::String(too_long.clone())).is_err());
+            assert!(b.put_text(0, 2, 1, &too_long).is_err());
+            assert!(b.import_rows(0, &[vec![too_long]]).is_err());
+            // Long text that isn't a formula is fine.
+            b.put(0, 3, 1, &Value::String("x".repeat(20_000))).unwrap();
+        });
+        worker.unwrap().join().unwrap();
+    }
 
     #[test]
     fn csv_like_python() {
