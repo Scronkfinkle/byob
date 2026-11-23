@@ -903,6 +903,7 @@ pub struct NewWorkspaceForm {
     /// Put the keyboard in the name field on the next frame.
     focus_name: bool,
     /// Open the system's folder picker on the next frame (started from "From a folder").
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pick_now: bool,
     /// Enter was pressed in the name (the buttons, drawn after, act on it).
     enter: bool,

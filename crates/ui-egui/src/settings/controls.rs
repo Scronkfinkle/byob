@@ -299,6 +299,7 @@ impl ByobApp {
             self.appearance.export_name = if current.is_builtin() { format!("{} (mine)", current.name) } else { current.name.clone() };
         }
         let b = form::button(ui, t, "Save…", true).on_hover_text("Save this look as a theme");
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut save_to_themes = false;
         crate::menu::below(&b, t, 280.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.spacing_mut().item_spacing.y = 8.0;

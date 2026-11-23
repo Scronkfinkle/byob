@@ -818,6 +818,7 @@ impl ByobApp {
 
     /// Re-read theme files: the themes folder (desktop) and imported ones (browser).
     fn reload_themes(&mut self) {
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let (mut defs, mut warnings) = theme::file::imported(&self.prefs);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(dir) = &self.themes_dir {
