@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>byob: bring your own brain</title>
-<meta name="description" content="A desktop AI coworker for the model you already run. Point byob at llama.cpp, Ollama, LM Studio, vLLM, Claude or another hosted API and it works in a folder with you.">
+<meta name="description" content="A desktop AI coworker for the model you already run. Point byob at llama.cpp, Ollama, LM Studio, vLLM, Claude or another hosted API and it works in a folder with you, and looks however you ask it to.">
 <meta property="og:title" content="byob: bring your own brain">
 <meta property="og:description" content="A desktop AI coworker for the model you already run.">
 <meta property="og:image" content="https://byob.chat/og.png">
@@ -21,6 +21,7 @@
 <header class="top">
   <a class="mark" href="/"><img src="icon-96.png" alt="" width="36" height="36">byob</a>
   <nav>
+    <a href="#looks">Make it yours</a>
     <a href="#what">What it does</a>
     <a href="#install">Install</a>
     <a href="https://github.com/Scronkfinkle/byob">GitHub</a>
@@ -36,7 +37,7 @@
       folder with you: reads and writes files, runs code, and builds spreadsheets, charts,
       documents and small apps beside the chat.</p>
     <p class="lede">No bundled model, no account, no Electron. One native program for Linux,
-      macOS and Windows.</p>
+      macOS and Windows, and it looks however you ask it to.</p>
     <div class="get">
       <a class="button" href="#install">Download byob 0.3.10</a>
       <a class="quiet" href="https://github.com/Scronkfinkle/byob">Source on GitHub</a>
@@ -50,11 +51,62 @@
 
 <section class="demo">
   <figure>
-    <img src="media/hero.gif" width="1100" height="618" loading="lazy"
-      alt="byob building a two-sheet budget workbook: the spreadsheet fills in beside the chat as the model writes it">
-    <figcaption>Building a budget workbook against a local model on llama.cpp. The waits for the
-      model are cut.</figcaption>
+    <img src="media/beside.png" width="1440" height="810" loading="lazy"
+      alt="byob with a chat about an allotment's harvest on the left and a stacked bar chart of the harvest by month beside it">
+    <figcaption>“Chart our allotment harvest by month from harvest.csv.” byob reads the file,
+      draws the chart beside the chat and answers the question.</figcaption>
   </figure>
+</section>
+
+<section class="looks" id="looks">
+  <h2>Make it look like anything</h2>
+  <p class="lede">Ask in plain words, or press F2 and change it yourself. Every element on screen,
+    down to a single button, can be moved, resized, recolored or hidden.</p>
+
+  <input type="radio" name="look" id="look-light" checked>
+  <input type="radio" name="look" id="look-dark">
+  <input type="radio" name="look" id="look-backdrop">
+  <input type="radio" name="look" id="look-fluid">
+  <input type="radio" name="look" id="look-edit">
+
+  <div class="asks" role="group" aria-label="Pick a look">
+    <label for="look-light">“Keep it light.”</label>
+    <label for="look-dark">“Make it dark.”</label>
+    <label for="look-backdrop">“Put a dusky hillside behind the chat.”</label>
+    <label for="look-fluid">“Move the model picker up top and give me a watering timer.”</label>
+    <label for="look-edit">Or press F2</label>
+  </div>
+
+  <div class="frames">
+    <figure class="f-light">
+      <img src="media/look-light.png" width="1440" height="810" loading="lazy" alt="byob in its light theme, the harvest chart inline in the chat">
+      <figcaption>The light theme, as byob starts. Settings → Appearance has more (Nord, Gruvbox,
+        Solarized, Dracula, Tokyo Night, Rosé Pine), any accent, corners, text size and
+        spacing.</figcaption>
+    </figure>
+    <figure class="f-dark">
+      <img src="media/look-dark.png" width="1440" height="810" loading="lazy" alt="The same chat in byob's dark theme, the chart shown inline">
+      <figcaption>The same chat in the dark theme. Looks are kept per device, so the phone can
+        stay light while the desktop goes dark.</figcaption>
+    </figure>
+    <figure class="f-backdrop">
+      <img src="media/look-backdrop.png" width="1440" height="810" loading="lazy" alt="byob's panels as frosted glass over a dusk scene of hills and a low sun">
+      <figcaption>A backdrop is a shader scene behind the panels, which turn to frosted glass over
+        it. Name a place or a mood and byob writes the scene, checking it compiles first.</figcaption>
+    </figure>
+    <figure class="f-fluid">
+      <img src="media/look-fluid.png" width="1440" height="810" loading="lazy" alt="byob with the model picker moved into the header, a watering timer card at the top right and two quick-prompt buttons above the message box">
+      <figcaption>The model picker moved into the header, a watering timer that counts down, and
+        two buttons that start a prompt. New elements like these keep their own state and can
+        go anywhere.</figcaption>
+    </figure>
+    <figure class="f-edit">
+      <img src="media/fluid-edit.png" width="1440" height="810" loading="lazy" alt="byob's edit mode: the quick-prompt row selected with handles, and an inspector panel listing its position, scale, colors and motion">
+      <figcaption>Edit mode: point at anything to see what it is, drag it, scale it by a corner, or
+        set its text, colors and motion in the inspector. Save an arrangement as a scene to
+        switch back to it later.</figcaption>
+    </figure>
+  </div>
 </section>
 
 <section class="what" id="what">
@@ -64,18 +116,24 @@
       <h3>Your model, your machine</h3>
       <p>Any OpenAI-compatible URL, or Claude over Anthropic's own API. On first run byob finds
         the servers already running on this computer and offers presets for hosted APIs. Save
-        several models and give each a job: subagents, image descriptions, chat titles. Models
-        without native tool calling get prompt-based tools instead.</p>
+        several models and give each a job: subagents, image descriptions, chat titles.
+        <code>/bench</code> measures how fast yours really is.</p>
     </div>
     <div>
       <h3>Work beside the chat</h3>
       <p>Spreadsheets (xlsx and csv), charts, Markdown documents, images and HTML apps open next
-        to the conversation, each with its own version history.</p>
+        to the conversation, each with its own version history. Apps can use the internet when
+        you let them.</p>
     </div>
     <div>
       <h3>Hands, on a leash</h3>
       <p>File tools, shell commands and Python, sandboxed on Linux. Approval cards show the diff
         before anything changes, and every turn can be undone.</p>
+    </div>
+    <div>
+      <h3>Projects</h3>
+      <p>A project is a name, instructions every chat in it follows, and the folders its chats
+        work in, as many as it needs. Find any of them from the search palette (Ctrl+K).</p>
     </div>
     <div>
       <h3>Reads your stuff</h3>
@@ -87,19 +145,15 @@
       <p>The browser UI is the same app compiled to WebAssembly, live on the same session.
         Put it behind <code>tailscale serve</code> and it follows you around.</p>
     </div>
-    <div>
-      <h3>Everything is a plugin</h3>
-      <p>The prompt, the core tools, artifacts and subagents are plugins on the same API anyone
-        gets. Ask byob for a new one and it writes it, reads its own errors and fixes them.</p>
-    </div>
   </div>
 
   <div class="shots">
     <figure>
       <a href="media/self-plugin.gif"><img src="media/self-plugin.gif" width="1100" height="618" loading="lazy" alt="Asking byob for a counter plugin: it writes the plugin and the pane appears beside the chat"></a>
       <figcaption><h3>It writes its own plugins</h3>
-        <p>“Make me a plugin with a counter pane.” byob writes it, reads its own load errors,
-          fixes them, and the pane appears.</p></figcaption>
+        <p>The prompt, the core tools, artifacts and subagents are all plugins, on the same API
+          anyone gets. “Make me a plugin with a counter pane”: byob writes it, reads its own load
+          errors, fixes them, and the pane appears.</p></figcaption>
     </figure>
     <figure>
       <a href="media/sheets.png"><img src="media/sheets.png" width="1440" height="810" loading="lazy" alt="sales.csv open as a spreadsheet with a new growth column"></a>
@@ -108,9 +162,10 @@
           the model.</p></figcaption>
     </figure>
     <figure>
-      <a href="media/html-app.png"><img src="media/html-app.png" width="1440" height="810" loading="lazy" alt="A tip calculator HTML app rendered inline in the chat"></a>
-      <figcaption><h3>Small apps, inline</h3>
-        <p>HTML apps run right in the chat, on the desktop and in the browser.</p></figcaption>
+      <a href="media/html-app.png"><img src="media/html-app.png" width="1440" height="810" loading="lazy" alt="A sowing calendar HTML app running beside the chat: vegetable buttons and a 12-month strip of when to sow and harvest"></a>
+      <figcaption><h3>Small apps, beside the chat</h3>
+        <p>“Make a sowing calendar.” HTML apps run right there, on the desktop and in the
+          browser, and can use the internet when you turn it on.</p></figcaption>
     </figure>
   </div>
 </section>

@@ -122,6 +122,73 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
 .demo img { border: 1px solid #3c5797; }
 .demo figcaption { color: #d8deec; }
 
+/* ---------- make it yours: the requests are the poster's speech bubbles ---------- */
+.looks {
+  background: var(--paper);
+  padding: clamp(3rem, 7vw, 5.5rem) max(var(--pad), calc((100% - var(--wide)) / 2 + var(--pad)));
+}
+.looks h2 { margin-bottom: 1rem; }
+.looks .lede { max-width: 36em; }
+.looks > input { position: absolute; opacity: 0; pointer-events: none; }
+.asks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.1rem 1.25rem;
+  margin: 2.25rem 0 2.5rem;
+  align-items: flex-end;
+}
+.asks label {
+  position: relative;
+  cursor: pointer;
+  background: #fff;
+  border: 3px solid var(--navy);
+  border-radius: 1.4rem;
+  padding: 0.55rem 1.05rem 0.6rem;
+  font: 800 1.35rem/1.1 var(--display);
+  max-width: 22rem;
+  transition: transform 0.08s;
+}
+/* the bubble's tail */
+.asks label::after {
+  content: "";
+  position: absolute;
+  left: 1.4rem;
+  bottom: -0.8rem;
+  width: 1rem;
+  height: 1rem;
+  background: inherit;
+  border-right: 3px solid var(--navy);
+  border-bottom: 3px solid var(--navy);
+  transform: skewY(40deg) rotate(15deg);
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+.asks label:hover { transform: translateY(-2px); }
+#look-light:checked ~ .asks [for="look-light"],
+#look-dark:checked ~ .asks [for="look-dark"],
+#look-backdrop:checked ~ .asks [for="look-backdrop"],
+#look-fluid:checked ~ .asks [for="look-fluid"],
+#look-edit:checked ~ .asks [for="look-edit"] {
+  background: var(--navy);
+  color: var(--paper);
+  box-shadow: 5px 5px 0 var(--red);
+}
+#look-light:focus-visible ~ .asks [for="look-light"],
+#look-dark:focus-visible ~ .asks [for="look-dark"],
+#look-backdrop:focus-visible ~ .asks [for="look-backdrop"],
+#look-fluid:focus-visible ~ .asks [for="look-fluid"],
+#look-edit:focus-visible ~ .asks [for="look-edit"] {
+  outline: 3px solid var(--red);
+  outline-offset: 4px;
+}
+.frames figure { display: none; max-width: 62rem; }
+.frames img { border: 3px solid var(--navy); background: var(--navy); box-shadow: 10px 10px 0 var(--navy); }
+.frames figcaption { margin-top: 1.4rem; font-size: 1rem; }
+#look-light:checked ~ .frames .f-light,
+#look-dark:checked ~ .frames .f-dark,
+#look-backdrop:checked ~ .frames .f-backdrop,
+#look-fluid:checked ~ .frames .f-fluid,
+#look-edit:checked ~ .frames .f-edit { display: block; }
+
 /* ---------- what it does ---------- */
 .what { max-width: var(--wide); margin: 0 auto; padding: clamp(3rem, 7vw, 5.5rem) var(--pad); }
 .points {
@@ -219,9 +286,11 @@ footer p { margin: 0; }
 }
 @media (max-width: 38rem) {
   .top nav a:not(:last-child) { display: none; }
+  .asks label { font-size: 1.15rem; }
+  .frames img { box-shadow: 6px 6px 0 var(--navy); }
   .points, .platforms { grid-template-columns: minmax(0, 1fr); }
   .poster img { box-shadow: 8px 8px 0 var(--navy); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .button { transition: none; }
+  .button, .asks label { transition: none; }
 }

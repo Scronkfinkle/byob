@@ -52,7 +52,7 @@ that draws its own interface on the GPU, with no Electron.
 <table>
   <tr>
     <td width="50%"><img src="docs/media/self-plugin.gif" alt="Asking byob for a counter plugin: it writes the plugin and the pane appears beside the chat"><br><sub>“Make me a plugin with a counter pane”: byob writes it, reads its own load errors, fixes them, and the pane appears.</sub></td>
-    <td width="50%"><img src="docs/media/html-app.png" alt="A tip calculator HTML app rendered inline in the chat"><br><sub>HTML apps run inline, on the desktop (a separate Servo renderer process ships with byob) and in the browser UI.</sub></td>
+    <td width="50%"><img src="docs/media/html-app.png" alt="A sowing calendar HTML app running beside the chat"><br><sub>HTML apps run inline, on the desktop (a separate Servo renderer process ships with byob) and in the browser UI.</sub></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/media/sheets.png" alt="sales.csv open as a spreadsheet with a new growth column"><br><sub>Open a CSV as a spreadsheet; every write recalculates and reports errors back to the model.</sub></td>
