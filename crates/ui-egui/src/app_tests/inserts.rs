@@ -53,3 +53,25 @@ fn a_plugins_insert_acts_on_its_state_and_goes_with_its_rules() {
     crate::fluid::with(&ctx, |f| f.ignore_base = true);
     assert!(!frames(&ctx, &mut app, 3).contains("Counted"), "left out with the plugin's other changes");
 }
+
+/// Regression: on a small window edit mode's inspector ran past the bottom edge (its
+/// fields, Ask byob and Find out of reach: it can't be moved up past the top either).
+#[test]
+fn edit_modes_inspector_fits_a_small_window() {
+    let mut app = crowded_app();
+    let ctx = egui::Context::default();
+    let size = egui::vec2(560.0, 420.0);
+    let run = |app: &mut ByobApp| {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+        out.textures_delta.clear();
+    };
+    run(&mut app);
+    crate::fluid::with(&ctx, |f| f.editing = true);
+    app.fluid_editor.selected = Some("composer".into());
+    for _ in 0..4 {
+        run(&mut app);
+    }
+    let inspector = ctx.memory(|m| m.area_rect(crate::fluid::inspector_id())).unwrap();
+    assert!(inspector.bottom() <= size.y + 0.5 && inspector.top() >= 0.0, "{inspector:?}");
+}

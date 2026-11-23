@@ -311,6 +311,10 @@ impl Editor {
             .constrain(true)
             .show(ctx, |ui| {
                 crate::menu::frame(t).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                    // A small window can't hold all of it: it scrolls (else what's below the
+                    // window's edge can't be reached, and the area can't be moved up).
+                    let room = (screen.height() - 90.0).max(120.0);
+                    egui::ScrollArea::vertical().max_height(room).auto_shrink([false, true]).show(ui, |ui| {
                     ui.set_width(300.0);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Fluid").strong().size(15.0).color(t.text_strong));
@@ -497,6 +501,7 @@ impl Editor {
                     self.ask_box(ui, Some((path.as_str(), el)), out);
                     ui.separator();
                     self.finder(ui, t, els);
+                    });
                 });
             });
     }
