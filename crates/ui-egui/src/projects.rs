@@ -297,10 +297,13 @@ impl Projects {
     /// Search on the left (a clear button once you type, ⌘F while it's empty); Show, Sort
     /// and the view on the right. One height, one corner, one border for all of them.
     fn toolbar(&mut self, ui: &mut Ui, t: &Tokens, page_w: f32, searching: bool) {
+        // Narrow (a phone): the search across the page, Show, Sort and the view under it
+        // (side by side they ran over one another).
+        let narrow = page_w < COMPACT;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let id = egui::Id::unique("projects-search");
-            let width = (page_w - 420.0).clamp(160.0, 420.0);
+            let width = if narrow { page_w } else { (page_w - 420.0).clamp(160.0, 420.0) };
             let r = crate::workspace::form_field_margin(ui, t, id, egui::Margin { left: 34, right: 34, top: 9, bottom: 9 }, |frame| {
                 egui::TextEdit::singleline(&mut self.query).id(id).hint_text("Search projects").char_limit(200).desired_width(width).frame(frame)
             });
@@ -340,34 +343,45 @@ impl Projects {
             }
             self.search_focused = ui.ctx().memory(|m| m.has_focus(id));
             let h = r.rect.height().max(34.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                view_switch(ui, t, &mut self.view, h);
-                let b = menu_button(ui, t, None, self.sort.label(), false, h).on_hover_text("Sort");
-                crate::menu::below(&b, t, 180.0).show(|ui| {
-                    crate::menu::tighten(ui);
-                    crate::menu::heading(ui, t, "Sort by");
-                    for s in Sort::ALL {
-                        if crate::chatbar::choice_row(ui, t, s.label(), self.sort == s).clicked() {
-                            self.sort = s;
-                            self.reverse = false;
-                            ui.close();
-                        }
-                    }
-                });
-                let on = self.show != Show::All;
-                let b = menu_button(ui, t, Some(icons::funnel), self.show.label(), on, h).on_hover_text("Show");
-                crate::menu::below(&b, t, 200.0).show(|ui| {
-                    crate::menu::tighten(ui);
-                    crate::menu::heading(ui, t, "Show");
-                    for s in Show::ALL {
-                        if crate::chatbar::choice_row(ui, t, s.label(), self.show == s).clicked() {
-                            self.show = s;
-                            ui.close();
-                        }
-                    }
-                });
-            });
+            if !narrow {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.toolbar_menus(ui, t, h, 8.0));
+            }
+        });
+        if narrow {
+            ui.add_space(8.0);
+            // One row high: a right-to-left layout would otherwise take all the height left.
+            let row = vec2(ui.available_width(), 34.0);
+            ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| self.toolbar_menus(ui, t, 34.0, 6.0));
+        }
+    }
+
+    /// The toolbar's right end, drawn right to left: the view, Sort and Show.
+    fn toolbar_menus(&mut self, ui: &mut Ui, t: &Tokens, h: f32, gap: f32) {
+        ui.spacing_mut().item_spacing.x = gap;
+        view_switch(ui, t, &mut self.view, h);
+        let b = menu_button(ui, t, None, self.sort.label(), false, h).on_hover_text("Sort");
+        crate::menu::below(&b, t, 180.0).show(|ui| {
+            crate::menu::tighten(ui);
+            crate::menu::heading(ui, t, "Sort by");
+            for s in Sort::ALL {
+                if crate::chatbar::choice_row(ui, t, s.label(), self.sort == s).clicked() {
+                    self.sort = s;
+                    self.reverse = false;
+                    ui.close();
+                }
+            }
+        });
+        let on = self.show != Show::All;
+        let b = menu_button(ui, t, Some(icons::funnel), self.show.label(), on, h).on_hover_text("Show");
+        crate::menu::below(&b, t, 200.0).show(|ui| {
+            crate::menu::tighten(ui);
+            crate::menu::heading(ui, t, "Show");
+            for s in Show::ALL {
+                if crate::chatbar::choice_row(ui, t, s.label(), self.show == s).clicked() {
+                    self.show = s;
+                    ui.close();
+                }
+            }
         });
     }
 
@@ -480,9 +494,11 @@ impl Projects {
             }
         };
         head(ui, rect.left() + TEXT_X, "Name", Sort::Name, false);
-        // "Chats" ends where its numbers end (they're right-aligned).
-        head(ui, rect.left() + cols.chats_right, "Chats", Sort::Chats, true);
-        head(ui, rect.left() + cols.when, "Updated", Sort::Active, false);
+        if !cols.compact {
+            // "Chats" ends where its numbers end (they're right-aligned).
+            head(ui, rect.left() + cols.chats_right, "Chats", Sort::Chats, true);
+            head(ui, rect.left() + cols.when, "Updated", Sort::Active, false);
+        }
         ui.painter().hline(rect.left()..=rect.right(), rect.bottom(), Stroke::new(1.0, t.separator.gamma_multiply(0.7)));
         let mut action = None;
         for (i, w) in shown.iter().enumerate() {
@@ -556,18 +572,28 @@ fn view_switch(ui: &mut Ui, t: &Tokens, view: &mut View, h: f32) {
 /// Where a row's text starts (after its tile), from its left edge.
 const TEXT_X: f32 = 60.0;
 
+/// Narrower than this (a phone), the page stacks its toolbar and its list has no Chats and
+/// Updated columns (each row says them under its name).
+const COMPACT: f32 = 520.0;
+
 /// The list's columns, from the row's left edge: where the chat counts end (right-aligned
 /// numbers) and where "updated" starts; both sit just before the row's tools.
 struct Columns {
     chats_right: f32,
     when: f32,
+    /// No columns: the name runs up to the row's tools.
+    compact: bool,
 }
 
 impl Columns {
     fn new(width: f32) -> Self {
+        if width < COMPACT {
+            // The tools' room (⋯, pin, new chat) and the name's gap before them.
+            return Self { chats_right: width - 116.0 + 60.0, when: width, compact: true };
+        }
         // Room on the right for the row's three tools (⋯, pin, new chat).
         let when = width - 120.0 - 96.0;
-        Self { chats_right: when - 28.0, when }
+        Self { chats_right: when - 28.0, when, compact: false }
     }
 }
 
@@ -734,6 +760,12 @@ fn row(ui: &mut Ui, t: &Tokens, w: &WorkspaceSummary, pinned: bool, root: &str, 
     name.wrap = egui::text::TextWrapping::truncate_at_width(room);
     let name = p.layout_job(name);
     let (line, is_goal) = sub_line(w, root);
+    let (line, is_goal) = if cols.compact {
+        // No columns: what they'd say, under the name.
+        (format!("{} · {}", crate::sidebar::chats_label(w.chats), when_label(w.updated_at, now_ms)), false)
+    } else {
+        (line, is_goal)
+    };
     let mut sub = egui::text::LayoutJob::simple_singleline(line, small, if is_goal { t.text_dim } else { t.text_faint });
     sub.wrap = egui::text::TextWrapping::truncate_at_width(room);
     let sub = p.layout_job(sub);
@@ -742,10 +774,12 @@ fn row(ui: &mut Ui, t: &Tokens, w: &WorkspaceSummary, pinned: bool, root: &str, 
     let name_h = name.size().y;
     p.galley(pos2(x, top), name, t.text_strong);
     p.galley(pos2(x, top + name_h + 3.0), sub, t.text_faint);
-    let chats = p.layout_no_wrap(w.chats.to_string(), body.clone(), t.text_dim);
-    p.galley(pos2(rect.left() + cols.chats_right - chats.size().x, rect.center().y - chats.size().y / 2.0), chats, t.text_dim);
-    let when = p.layout_no_wrap(when_label(w.updated_at, now_ms), body, t.text_dim);
-    p.galley(pos2(rect.left() + cols.when, rect.center().y - when.size().y / 2.0), when, t.text_dim);
+    if !cols.compact {
+        let chats = p.layout_no_wrap(w.chats.to_string(), body.clone(), t.text_dim);
+        p.galley(pos2(rect.left() + cols.chats_right - chats.size().x, rect.center().y - chats.size().y / 2.0), chats, t.text_dim);
+        let when = p.layout_no_wrap(when_label(w.updated_at, now_ms), body, t.text_dim);
+        p.galley(pos2(rect.left() + cols.when, rect.center().y - when.size().y / 2.0), when, t.text_dim);
+    }
     // Soft lines between rows, as in the settings cards; none under the last (the card ends).
     if !last {
         p.hline(rect.left()..=rect.right(), rect.bottom(), Stroke::new(1.0, t.separator.gamma_multiply(0.7)));
@@ -1144,6 +1178,35 @@ mod tests {
         let clear = texts.iter().filter(|t| t.0 == "Clear filters").map(|t| t.1).max_by(|a, b| a.top().total_cmp(&b.top())).unwrap();
         click(&mut p, &ctx, &all, clear.center());
         assert_eq!(p.show, Show::All);
+    }
+
+    /// Regression: on a phone the toolbar's search, Show and Sort were drawn over one
+    /// another, and the list's Chats and Updated columns over the names ("pho…").
+    #[test]
+    fn a_phone_stacks_the_toolbar_and_drops_the_columns() {
+        let ctx = egui::Context::default();
+        let all = vec![ws("a", "Groceries", 1)];
+        let mut p = Projects::default();
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(390.0, 844.0));
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
+                p.ui(ui, &Tokens::dark(), &all, &[], "", None, 10);
+            });
+            out.textures_delta.clear();
+            texts = crate::plugins::tests::texts_of(&out);
+        }
+        let at = |want: &str| texts.iter().find(|t| t.0 == want).map(|t| t.1).unwrap_or_else(|| panic!("no {want:?} in {texts:?}"));
+        let search = p.search_rect.unwrap();
+        for menu in ["All projects", "Last active"] {
+            let r = at(menu);
+            assert!(!search.intersects(r) && screen.contains_rect(r), "{menu:?} at {r:?}, the search at {search:?}");
+        }
+        assert!(search.right() <= screen.right() && search.width() > 300.0, "the search across the page: {search:?}");
+        // The name in full, no column header over it.
+        let name = at("Groceries");
+        assert!(texts.iter().all(|t| t.0 != "Chats" && t.0 != "Updated"), "{texts:?}");
+        assert!(texts.iter().any(|t| t.0.contains("2 chats") && t.1.top() > name.bottom()), "chats and when under the name: {texts:?}");
     }
 
     /// The × in the search clears it.
