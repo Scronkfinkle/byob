@@ -395,16 +395,14 @@ impl FluidDoc {
     /// [`Self::rule_for`], with globs also matched against `named`: the path with its full
     /// label as the last part (`chat/byob.2/text:17k context · 295 out`), however long.
     pub fn rule_for_named(&self, path: &str, named: Option<&str>) -> Option<Rule> {
-        let mut out: Option<Rule> = None;
-        for (k, r) in &self.rules {
-            if k != path && k.contains('*') && (glob(k, path) || named.is_some_and(|n| glob(k, n))) {
-                out.get_or_insert_with(Rule::default).merge(r);
-            }
-        }
-        if let Some(r) = self.rules.get(path) {
-            out.get_or_insert_with(Rule::default).merge(r);
-        }
-        out
+        self.prepared().rule_for_named(path, named)
+    }
+
+    /// The rules ready to be matched against many paths (every element, every frame): the
+    /// globs split into their parts once.
+    pub fn prepared(&self) -> Prepared<'_> {
+        let globs = self.rules.iter().filter(|(k, _)| k.contains('*')).map(|(k, r)| (k.as_str(), k.split('/').collect(), r)).collect();
+        Prepared { doc: self, globs }
     }
 
     /// The rule kept for exactly `path`, made if missing.
@@ -421,17 +419,52 @@ impl FluidDoc {
     }
 }
 
+/// A doc's rules ready to be matched ([`FluidDoc::prepared`]).
+pub struct Prepared<'a> {
+    doc: &'a FluidDoc,
+    /// Each glob rule: its key, the key's parts, the rule (in key order).
+    globs: Vec<(&'a str, Vec<&'a str>, &'a Rule)>,
+}
+
+impl Prepared<'_> {
+    /// See [`FluidDoc::rule_for_named`].
+    pub fn rule_for_named(&self, path: &str, named: Option<&str>) -> Option<Rule> {
+        let mut out: Option<Rule> = None;
+        if !self.globs.is_empty() {
+            let parts: Vec<&str> = path.split('/').collect();
+            let named: Option<Vec<&str>> = named.map(|n| n.split('/').collect());
+            for (k, pattern, r) in &self.globs {
+                if *k != path && (glob_parts(pattern, &parts) || named.as_deref().is_some_and(|n| glob_parts(pattern, n))) {
+                    out.get_or_insert_with(Rule::default).merge(r);
+                }
+            }
+        }
+        if let Some(r) = self.doc.rules.get(path) {
+            out.get_or_insert_with(Rule::default).merge(r);
+        }
+        out
+    }
+}
+
 /// Does `pattern` match `path`? Parts are split on `/`; `**` matches any number of parts,
 /// `*` within a part any characters (case doesn't matter).
 pub fn glob(pattern: &str, path: &str) -> bool {
     let p: Vec<&str> = pattern.split('/').collect();
     let s: Vec<&str> = path.split('/').collect();
-    wildcard(&p, &s, |p| *p == "**", |p, s| part(p, s))
+    glob_parts(&p, &s)
+}
+
+fn glob_parts(p: &[&str], s: &[&str]) -> bool {
+    wildcard(p, s, |p| *p == "**", |p, s| part(p, s))
 }
 
 fn part(p: &str, s: &str) -> bool {
     if !p.contains('*') {
         return p.eq_ignore_ascii_case(s);
+    }
+    // Most paths are ASCII: matched as they are, without lowercasing copies.
+    if p.is_ascii() && s.is_ascii() {
+        return wildcard(p.as_bytes(), s.as_bytes(), |c| *c == b'*', u8::eq_ignore_ascii_case);
     }
     let p: Vec<char> = p.chars().flat_map(char::to_lowercase).collect();
     let s: Vec<char> = s.chars().flat_map(char::to_lowercase).collect();

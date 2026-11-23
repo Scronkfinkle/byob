@@ -560,6 +560,8 @@ impl Fluid {
     fn resolve(&mut self, ctx: &Context, els: &mut [Element]) -> bool {
         let doc = Arc::clone(&self.doc);
         let base = if self.ignore_base { Arc::default() } else { Arc::clone(&self.base) };
+        // Globs split once, not once per element.
+        let (base_rules, doc_rules) = (base.prepared(), doc.prepared());
         // Last frame's elements by path (laid out, drawn), for placing by another element.
         let last: HashMap<String, (Rect, Rect)> = self.elements.iter().map(|e| (e.path.clone(), (e.rect, e.shown))).collect();
         let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
@@ -573,7 +575,7 @@ impl Fluid {
                 let parent = els[i].path.rsplit_once('/').map_or("window", |(p, _)| p);
                 format!("{parent}/{}:{}", els[i].role, els[i].label.replace(['\n', '/'], " "))
             });
-            let rule = match (base.rule_for_named(&els[i].path, named.as_deref()), doc.rule_for_named(&els[i].path, named.as_deref())) {
+            let rule = match (base_rules.rule_for_named(&els[i].path, named.as_deref()), doc_rules.rule_for_named(&els[i].path, named.as_deref())) {
                 (Some(mut b), Some(u)) => {
                     b.merge(&u);
                     Some(b)
@@ -1220,6 +1222,37 @@ mod tests {
         let paths: Vec<String> = with(&ctx, |f| f.elements.iter().map(|e| e.path.clone()).collect()).unwrap_or_default();
         assert!(paths.iter().any(|p| p == "composer/button:model"), "{paths:?}");
         assert!(!paths.iter().any(|p| p.contains("Reset all")), "{paths:?}");
+    }
+
+    /// Regression: every glob rule was split, and its parts lowercased into new strings, for
+    /// every element every frame: with many rules (the most kept) on a long chat a frame
+    /// took over half a second.
+    #[test]
+    fn many_glob_rules_on_many_elements_stay_quick() {
+        let ctx = Context::default();
+        install(&ctx);
+        let mut doc = FluidDoc::default();
+        let sets: Vec<serde_json::Value> =
+            (0..doc::MAX_RULES).map(|i| serde_json::json!({"path": format!("chat/**/text:*zz{i}*"), "color": "#ff0000"})).collect();
+        doc::apply(&mut doc, &serde_json::json!({"set": sets}), "you");
+        with(&ctx, |f| f.doc = Arc::new(doc));
+        let mut fastest = std::time::Duration::MAX;
+        for _ in 0..6 {
+            let t = std::time::Instant::now();
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 900.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                region(ui, "chat", |ui| {
+                    for i in 0..1500 {
+                        ui.label(format!("message line number {i} with some words"));
+                    }
+                });
+            });
+            out.textures_delta.clear();
+            if listed(&ctx) > 1000 {
+                fastest = fastest.min(t.elapsed());
+            }
+        }
+        assert!(fastest < std::time::Duration::from_millis(300), "{fastest:?}");
     }
 
     #[test]
