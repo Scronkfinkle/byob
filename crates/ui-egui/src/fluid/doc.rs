@@ -702,12 +702,29 @@ pub fn apply(doc: &mut FluidDoc, ops: &Value, by: &str) -> Applied {
             continue;
         }
         let mut rule = doc.rules.get(path).cloned().unwrap_or_default();
+        let swapped_with = |r: &Rule| r.place.as_deref().and_then(|p| p.strip_prefix("swap:")).map(str::to_owned);
+        let was = swapped_with(&rule);
         set_fields(&mut rule, m, &mut a.problems, path);
-        // A swap goes both ways.
-        if let Some(other) = rule.place.as_deref().and_then(|p| p.strip_prefix("swap:")).map(str::to_owned)
-            && m.contains_key("place")
-        {
-            doc.rule_mut(&other).place = Some(format!("swap:{path}"));
+        let now = swapped_with(&rule);
+        // A swap goes both ways, and is between two: a partner left behind goes back to
+        // its own place (as edit mode's Alt-drop does).
+        if m.contains_key("place") && was != now {
+            let unswap = |doc: &mut FluidDoc, who: &str, from: &str| {
+                if let Some(r) = doc.rules.get_mut(who)
+                    && r.place.as_deref() == Some(&format!("swap:{from}"))
+                {
+                    r.place = None;
+                }
+            };
+            if let Some(old) = &was {
+                unswap(doc, old, path);
+            }
+            if let Some(other) = &now {
+                if let Some(theirs) = doc.rules.get(other.as_str()).and_then(swapped_with).filter(|t| t != path) {
+                    unswap(doc, &theirs, other);
+                }
+                doc.rule_mut(other).place = Some(format!("swap:{path}"));
+            }
         }
         a.done.push(format!("{path}: {}", serde_json::to_string(&rule).unwrap_or_default()));
         doc.rules.insert(path.to_owned(), rule);
@@ -919,6 +936,23 @@ mod tests {
         // Kept across a save.
         let back: FluidDoc = serde_json::from_value(serde_json::to_value(&d).unwrap()).unwrap();
         assert_eq!(drawn_inserts(&base, &back.sanitized())[0].state.get("n"), Some(&json!(5.0)));
+    }
+
+    /// Regression: swapping an element with a third one (or placing it elsewhere) left its
+    /// first partner still swapped with it, drawn where it's laid out.
+    #[test]
+    fn a_swap_is_between_two() {
+        let mut d = FluidDoc::default();
+        let place = |d: &FluidDoc, p: &str| d.rules.get(p).and_then(|r| r.place.clone());
+        apply(&mut d, &json!({"set": {"path": "a", "place": "swap:b"}}), "model");
+        assert_eq!(place(&d, "b").as_deref(), Some("swap:a"));
+        apply(&mut d, &json!({"set": {"path": "a", "place": "swap:c"}}), "model");
+        assert_eq!((place(&d, "b"), place(&d, "c").as_deref()), (None, Some("swap:a")));
+        // c's new partner takes c from a: a goes back.
+        apply(&mut d, &json!({"set": {"path": "e", "place": "swap:c"}}), "model");
+        assert_eq!((place(&d, "a"), place(&d, "c").as_deref()), (None, Some("swap:e")));
+        apply(&mut d, &json!({"set": {"path": "e", "place": "below:x"}}), "model");
+        assert_eq!(place(&d, "c"), None);
     }
 
     #[test]
