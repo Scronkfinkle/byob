@@ -23,7 +23,7 @@
 //! Chat rows show how long ago they were active (the time gives way to "⋯" on hover, and to
 //! a dot while a reply runs). A workspace row is a folder icon and its name, with a quiet
 //! chevron after it; its environment shows as a small badge only when it isn't this
-//! machine. Selection is a calm tint of the text colour, never an accent block.
+//! machine. Selection is a calm tint of the text color, never an accent block.
 //!
 //! Row actions appear on hover only, in space every row keeps for them so titles never
 //! move: a workspace row shows "+" (new chat there) and "⋯" (its menu); a chat row "⋯". A
@@ -1126,7 +1126,7 @@ impl Sidebar {
         }
     }
 
-    /// The Space settings dialog: its name, its colour, and deleting it (what it held goes
+    /// The Space settings dialog: its name, its color, and deleting it (what it held goes
     /// back to the first Space).
     pub fn space_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
         let Some((id, mut name)) = self.space_edit.clone() else { return };
@@ -1145,7 +1145,7 @@ impl Sidebar {
             ui.label(egui::RichText::new("Name").color(t.text_strong));
             ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 8)));
             ui.add_space(12.0);
-            ui.label(egui::RichText::new("Colour").color(t.text_strong));
+            ui.label(egui::RichText::new("Color").color(t.text_strong));
             ui.horizontal(|ui| {
                 for c in ["#3b82f6", "#16a34a", "#d97706", "#9333ea", "#e11d48", "#0891b2", "#64748b"] {
                     let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
@@ -2955,7 +2955,7 @@ impl Sidebar {
                 self.new_space();
                 ui.close();
             }
-            if menu::item(ui, t, Some(icons::sliders), "Space settings", None).on_hover_text("Its name and colour").clicked() {
+            if menu::item(ui, t, Some(icons::sliders), "Space settings", None).on_hover_text("Its name and color").clicked() {
                 // The default Space becomes a real one the first time it's edited.
                 if self.spaces.is_empty() {
                     self.spaces.push(default_space());
@@ -3053,7 +3053,7 @@ pub(crate) fn plural(n: usize, word: &str) -> String {
     if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
 }
 
-/// A Space in the footer menu: its colour square (with its letter), its name, and a trail
+/// A Space in the footer menu: its color square (with its letter), its name, and a trail
 /// (✓ for the one in view, else its key).
 fn space_item(ui: &mut Ui, t: &Tokens, name: &str, color: egui::Color32, trail: Option<&str>) -> egui::Response {
     let letter: String = name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
@@ -3075,7 +3075,7 @@ fn status_item(ui: &mut Ui, t: &Tokens, st: &Status) -> egui::Response {
 
 /// The footer's status: a dot (green: ready; blue: working; amber: waiting or checking;
 /// red: can't reach the model), what byob is doing, and the model, dimmer.
-/// The footer row: with Spaces, the Space's colour square and name, the status dot at the
+/// The footer row: with Spaces, the Space's color square and name, the status dot at the
 /// end; without, the dot, the state and where it runs.
 fn status_row(ui: &mut Ui, t: &Tokens, st: &Status, space: Option<&(String, egui::Color32)>) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click());
@@ -3128,7 +3128,7 @@ fn default_space() -> byob_types::layout::ListSpace {
     byob_types::layout::ListSpace { id: "space-1".into(), name: "Personal".into(), color: "#3b82f6".into(), items: Vec::new() }
 }
 
-/// A Space's colour (`#rrggbb`), or `fallback`.
+/// A Space's color (`#rrggbb`), or `fallback`.
 pub fn space_color(hex: &str, fallback: egui::Color32) -> egui::Color32 {
     let h = hex.strip_prefix('#').unwrap_or(hex);
     let byte = |i: usize| h.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok());

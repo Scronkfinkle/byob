@@ -145,7 +145,7 @@ pub fn static_select(ui: &mut Ui, t: &Tokens, text: &str, width: f32) -> Respons
     resp
 }
 
-/// Corners of controls: selects, buttons, fields and colour chips.
+/// Corners of controls: selects, buttons, fields and color chips.
 pub const CONTROL_R: f32 = 8.0;
 /// Corners of cards (a step rounder than what sits inside them).
 pub const CARD_R: f32 = 12.0;
@@ -213,13 +213,13 @@ pub fn slider(ui: &mut Ui, t: &Tokens, value: &mut f32, range: std::ops::RangeIn
 }
 
 /// A control's fill that reads on any surface (a page, a card, a dialog, light or dark): a
-/// light tint of the text colour, not a fixed grey that can match what's behind it.
+/// light tint of the text color, not a fixed gray that can match what's behind it.
 pub(crate) fn soft(t: &Tokens) -> Color32 {
     t.text_strong.gamma_multiply(if t.dark { 0.075 } else { 0.055 })
 }
 
 /// A whole row or card under the pointer: lighter than [`soft`], since it covers a wide
-/// area (a button's hover across a full row reads as a heavy grey bar).
+/// area (a button's hover across a full row reads as a heavy gray bar).
 pub(crate) fn row_hover(t: &Tokens) -> Color32 {
     t.text_strong.gamma_multiply(if t.dark { 0.045 } else { 0.03 })
 }
@@ -229,13 +229,13 @@ pub(crate) fn soft_hover(t: &Tokens) -> Color32 {
     t.text_strong.gamma_multiply(if t.dark { 0.12 } else { 0.09 })
 }
 
-/// A button in byob's style (outlined, quiet), for actions in settings rows. Greyed when
+/// A button in byob's style (outlined, quiet), for actions in settings rows. Grayed when
 /// `enabled` is false.
 pub(crate) fn button(ui: &mut Ui, t: &Tokens, label: &str, enabled: bool) -> Response {
     crate::workspace::dialog_button(ui, t, label, false, enabled, control_h(t).max(32.0))
 }
 
-/// [`button`] for the one action that can't be undone: the error colour, outlined.
+/// [`button`] for the one action that can't be undone: the error color, outlined.
 pub(crate) fn danger_button(ui: &mut Ui, t: &Tokens, label: &str) -> Response {
     let font = egui::TextStyle::Button.resolve(ui.style());
     let g = ui.painter().layout_no_wrap(label.to_owned(), font, t.danger);

@@ -100,7 +100,7 @@ impl ChatConfig {
 enum Lead {
     Nothing,
     Icon(Paint),
-    /// A status dot in this colour.
+    /// A status dot in this color.
     Dot(egui::Color32),
 }
 

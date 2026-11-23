@@ -61,7 +61,7 @@ pub const BYOB_DARK: Palette = Palette {
     name: "byob Dark",
     dark: true,
     credit: "byob",
-    // Neutral greys (no blue cast), and depth that rises: page, then cards and fields a
+    // Neutral grays (no blue cast), and depth that rises: page, then cards and fields a
     // step lighter, with hairlines only a little above them.
     bg: 0x181818,
     panel: 0x1d1d1d,
@@ -74,7 +74,7 @@ pub const BYOB_DARK: Palette = Palette {
     red: 0xf78585,
     yellow: 0xe8b75a,
     green: 0x5cc98a,
-    // Ink first: byob's main colour is white on dark (buttons, focus, the selected state);
+    // Ink first: byob's main color is white on dark (buttons, focus, the selected state);
     // links and text selection stay blue (see `Tokens::derive`).
     accents: &[("ink", 0xf4f4f5), ("blue", 0x6c9ef8), ("violet", 0xa78bfa), ("green", 0x4fc28a), ("orange", 0xf59e4c), ("pink", 0xf472b6), ("teal", 0x2dd4bf)],
     inline_code: 0xf0c68a,
@@ -91,7 +91,7 @@ pub const BYOB_LIGHT: Palette = Palette {
     bg: 0xffffff,
     panel: 0xf3f3f2,
     field: 0xffffff,
-    // Neutral greys: no blue cast on a white page.
+    // Neutral grays: no blue cast on a white page.
     surface: [0xebebeb, 0xdedede, 0xcfcfcf],
     overlay: 0x80838a,
     subtext: 0x55585f,
@@ -100,7 +100,7 @@ pub const BYOB_LIGHT: Palette = Palette {
     red: 0xb42323,
     yellow: 0x8a5600,
     green: 0x1a6e3e,
-    // Ink first: byob's main colour is near-black on light.
+    // Ink first: byob's main color is near-black on light.
     accents: &[("ink", 0x18181b), ("blue", 0x1f56c4), ("violet", 0x653fcc), ("green", 0x167347), ("orange", 0xa34a05), ("pink", 0xb0256c), ("teal", 0x0d6b63)],
     inline_code: 0x9a2f1f,
     syntax: [0x7b3fc4, 0x2f7a32, 0xa3500c, 0x6b6f78, 0x1f5fbf, 0x8a6100],

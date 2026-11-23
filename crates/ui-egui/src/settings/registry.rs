@@ -86,7 +86,7 @@ pub static PLUGINS: Section = sec(Tab::Plugins, "plugins", "", "");
 pub static THEME: Section = sec(Tab::Appearance, "theme", "Look", "");
 pub static MESSAGES: Section = sec(Tab::Appearance, "messages", "Messages", "");
 // Appearance's Advanced (folded on the page): fine-tuning, grouped by what it changes.
-pub static COLOURS_ADV: Section = sec(Tab::Appearance, "colours-advanced", "Colours", "Your own colours on top of the theme, for this theme only.");
+pub static COLORS_ADV: Section = sec(Tab::Appearance, "colors-advanced", "Colors", "Your own colors on top of the theme, for this theme only.");
 pub static MSG_STYLE: Section = sec(Tab::Appearance, "message-style", "Message style", "How messages are drawn.");
 pub static SHOWN: Section = sec(
     Tab::Appearance,
@@ -107,7 +107,7 @@ pub static RESET_ADV: Section = sec(Tab::Appearance, "reset-advanced", "", "");
 pub static RESET_LOOK: Section = sec(Tab::Appearance, "reset", "", "");
 
 /// The sections under Appearance's Advanced (shown on the page when it's opened).
-pub static ADVANCED: &[&Section] = &[&COLOURS_ADV, &STYLE, &MSG_STYLE, &SHOWN, &THEME_FILES, &RESET_ADV];
+pub static ADVANCED: &[&Section] = &[&COLORS_ADV, &STYLE, &MSG_STYLE, &SHOWN, &THEME_FILES, &RESET_ADV];
 
 /// Is `sec` one of Advanced's (shown when Advanced is opened)?
 pub fn is_advanced(sec: &Section) -> bool {
@@ -131,7 +131,7 @@ pub static SECTIONS: &[&Section] = &[
     &PLUGINS,
     &THEME,
     &MESSAGES,
-    &COLOURS_ADV,
+    &COLORS_ADV,
     &STYLE,
     &MSG_STYLE,
     &SHOWN,
@@ -282,11 +282,11 @@ pub static SETTINGS: &[Setting] = &[
         "theme-pair",
         &THEME,
         "Theme",
-        "Its colours. Import a theme, or copy this look to share it.",
+        "Its colors. Import a theme, or copy this look to share it.",
         "scheme palette light theme dark theme import copy export catppuccin gruvbox nord solarized dracula tokyo rose pine",
         Row,
     ),
-    s(Key::Accent, "accent", &THEME, "Accent", "Buttons, focus and what's selected.", "colour color highlight tint brand buttons", Row),
+    s(Key::Accent, "accent", &THEME, "Accent", "Buttons, focus and what's selected.", "color colour highlight tint brand buttons", Row),
     s(Key::Font, "font", &THEME, "Font", "The typeface of the interface and the chat.", "typeface inter ubuntu", Row),
     s(
         Key::MessageLayout,
@@ -316,15 +316,15 @@ pub static SETTINGS: &[Setting] = &[
         Row,
     ),
     // Appearance's Advanced (on the page, folded).
-    s(Key::Background, "background", &COLOURS_ADV, "Background", "The colour behind everything.", "background colour color bg canvas", Row),
-    s(Key::Foreground, "foreground", &COLOURS_ADV, "Text colour", "The colour of text.", "foreground text colour color fg ink", Row),
+    s(Key::Background, "background", &COLORS_ADV, "Background", "The color behind everything.", "background color colour bg canvas", Row),
+    s(Key::Foreground, "foreground", &COLORS_ADV, "Text color", "The color of text.", "foreground text color colour fg ink", Row),
     s(
         Key::ChartColors,
         "chart-colors",
-        &COLOURS_ADV,
-        "Chart colours",
-        "The theme's colours, or a set people with colour blindness can tell apart.",
-        "colorblind colour blind palette graphs plots accessibility charts",
+        &COLORS_ADV,
+        "Chart colors",
+        "The theme's colors, or a set people with color blindness can tell apart.",
+        "colorblind colour color blind palette graphs plots accessibility charts",
         Row,
     ),
     s(Key::Radius, "radius", &STYLE, "Corner radius", "How round buttons, cards and messages are.", "rounded corners shape roundness", Row),
@@ -365,21 +365,13 @@ pub static SETTINGS: &[Setting] = &[
         Row,
     ),
     s(Key::ImportTheme, "import-theme", &THEME_FILES, "Add a theme", "From a .json theme file.", "import load file json reload folder", Row),
-    s(
-        Key::ResetLook,
-        "reset-look",
-        &RESET_ADV,
-        "Reset advanced",
-        "Colours, message style, corners and charts go back to the theme's.",
-        "defaults restore",
-        Row,
-    ),
+    s(Key::ResetLook, "reset-look", &RESET_ADV, "Reset advanced", "Colors, message style, corners and charts go back to the theme's.", "defaults restore", Row),
     s(
         Key::ResetAppearance,
         "reset-appearance",
         &RESET_LOOK,
         "Reset to default",
-        "Themes, accent, text, layout and colours back to the defaults. Imported themes stay.",
+        "Themes, accent, text, layout and colors back to the defaults. Imported themes stay.",
         "defaults restore factory everything reset all",
         Row,
     ),

@@ -159,13 +159,13 @@ pub fn item(ui: &mut Ui, t: &Tokens, icon: Option<Paint>, label: &str, shortcut:
     row(ui, t, icon.as_ref().map(|f| f as &dyn Fn(&egui::Painter, egui::Rect, egui::Color32)), label, shortcut, false)
 }
 
-/// An item whose mark isn't one of the icons (a colour square, a status dot): `mark` draws
-/// it in the icon's place, given that square and the icon colour.
+/// An item whose mark isn't one of the icons (a color square, a status dot): `mark` draws
+/// it in the icon's place, given that square and the icon color.
 pub fn item_marked(ui: &mut Ui, t: &Tokens, mark: &dyn Fn(&egui::Painter, egui::Rect, egui::Color32), label: &str, shortcut: Option<&str>) -> Response {
     row(ui, t, Some(mark), label, shortcut, false)
 }
 
-/// A destructive item, in the error colour (it should ask with [`Confirm`] before acting).
+/// A destructive item, in the error color (it should ask with [`Confirm`] before acting).
 pub fn danger(ui: &mut Ui, t: &Tokens, icon: Option<Paint>, label: &str, shortcut: Option<&str>) -> Response {
     row(ui, t, icon.as_ref().map(|f| f as &dyn Fn(&egui::Painter, egui::Rect, egui::Color32)), label, shortcut, true)
 }

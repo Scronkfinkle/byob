@@ -1,11 +1,11 @@
 //! A glass material for the chat list ([`panel`], edge to edge), drawn from the theme's
-//! tokens so every theme and custom colour gets it. Menus use the same fill
+//! tokens so every theme and custom color gets it. Menus use the same fill
 //! ([`crate::menu::frame`]).
 //!
 //! egui can't blur what is behind a window or panel, so the look is built from the cues that
 //! read as glass on macOS: a surface a shade lighter than the content beside it, a soft sheen
 //! fading down from the top edge, and a hairline where it meets the content. Rows on it are
-//! tinted with translucent overlays of the text colour (not the accent), so selection stays
+//! tinted with translucent overlays of the text color (not the accent), so selection stays
 //! calm on every theme.
 
 use egui::{Color32, Painter, Rect, Shape, Stroke, StrokeKind, pos2};
@@ -17,12 +17,12 @@ pub const ROW_RADIUS: f32 = 8.0;
 /// How far down the sheen fades.
 const SHEEN_H: f32 = 160.0;
 
-/// The glass fill: the panel colour lifted toward white.
+/// The glass fill: the panel color lifted toward white.
 pub fn fill(t: &Tokens) -> Color32 {
     if t.dark { mix(t.panel_bg, Color32::WHITE, 0.045) } else { mix(t.panel_bg, Color32::WHITE, 0.62) }
 }
 
-/// A translucent overlay of the text colour: rows' hover, pressed and selected tints.
+/// A translucent overlay of the text color: rows' hover, pressed and selected tints.
 fn tint(t: &Tokens, alpha: f32) -> Color32 {
     t.text_strong.gamma_multiply(alpha)
 }

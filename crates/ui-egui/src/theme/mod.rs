@@ -424,7 +424,7 @@ impl Tokens {
             ChartPalette::Accessible => presets::ACCESSIBLE_CHART_LIGHT,
         };
         // A neutral accent (byob's black or white ink) leads buttons and focus; links and text
-        // selection still need a colour that reads as one: the scheme's blue.
+        // selection still need a color that reads as one: the scheme's blue.
         let neutral = accent.r().max(accent.g()).max(accent.b()) - accent.r().min(accent.g()).min(accent.b()) < 24;
         let link =
             if neutral { p.accents.iter().find(|(n, _)| *n == "blue").map_or(accent, |(_, c)| ensure_contrast(rgb(*c), &surfaces, 4.5)) } else { accent };
@@ -442,8 +442,8 @@ impl Tokens {
             button_bg: s0,
             hover: s1,
             pressed: mix(s1, s2, 0.5),
-            // What's selected (a menu's current page, an option, selected text): a soft grey,
-            // never the brand colour, so the screen stays calm.
+            // What's selected (a menu's current page, an option, selected text): a soft gray,
+            // never the brand color, so the screen stays calm.
             selection: if dark { Color32::from_white_alpha(34) } else { Color32::from_black_alpha(20) },
             shadow: Color32::from_black_alpha(if dark { 96 } else { 40 }),
             user_bubble: user,

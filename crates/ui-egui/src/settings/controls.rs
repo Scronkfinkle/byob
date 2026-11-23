@@ -100,7 +100,7 @@ impl ByobApp {
             },
             Key::PluginList => self.plugins.panel(ui, t, &crate::plugins::Filter::All),
             Key::Mode => {
-                // Each mode drawn in the colours it gives: the light and dark themes as picked.
+                // Each mode drawn in the colors it gives: the light and dark themes as picked.
                 let light = theme::Tokens::build(&file::resolve(&d.prefs.light_theme, false, &self.user_themes), &d.prefs);
                 let dark = theme::Tokens::build(&file::resolve(&d.prefs.dark_theme, true, &self.user_themes), &d.prefs);
                 mode_previews(ui, t, &mut d.prefs.theme, &light, &dark);
@@ -118,8 +118,8 @@ impl ByobApp {
                 let slot = if dark { &mut d.prefs.dark_theme } else { &mut d.prefs.light_theme };
                 theme_menu(ui, t, slot, &d.themes, dark, &mut d.remove);
             }
-            Key::Background => colour_chip(ui, t, "bg", &d.current, &mut d.prefs, "app_bg", t.app_bg),
-            Key::Foreground => colour_chip(ui, t, "fg", &d.current, &mut d.prefs, "text", t.text),
+            Key::Background => color_chip(ui, t, "bg", &d.current, &mut d.prefs, "app_bg", t.app_bg),
+            Key::Foreground => color_chip(ui, t, "fg", &d.current, &mut d.prefs, "text", t.text),
             Key::Accent => accent_menu(ui, t, &d.current, &mut d.prefs.accent),
             Key::Radius => {
                 form::slider(ui, t, &mut k.radius, Knobs::RADIUS_RANGE, 1.0, |v| format!("{v:.0} pt"));
@@ -195,14 +195,14 @@ impl ByobApp {
             Key::ImportTheme => self.import_buttons(ui),
             Key::ExportTheme => self.export_controls(ui, t, d),
             Key::ResetLook => {
-                if form::button(ui, t, "Reset", true).on_hover_text("Accent, corners, bubbles and chart colours back to the theme's").clicked() {
+                if form::button(ui, t, "Reset", true).on_hover_text("Accent, corners, bubbles and chart colors back to the theme's").clicked() {
                     reset_advanced(&mut d.prefs, &d.current.id);
                 }
             }
             Key::ResetAppearance => {
-                // The one destructive action on the page: in the error colour, outlined.
+                // The one destructive action on the page: in the error color, outlined.
                 if form::danger_button(ui, t, "Reset everything")
-                    .on_hover_text("Themes, accent, text, layout and colour overrides (keeps imported themes)")
+                    .on_hover_text("Themes, accent, text, layout and color overrides (keeps imported themes)")
                     .clicked()
                 {
                     d.prefs = Prefs { imported: std::mem::take(&mut d.prefs.imported), ..Prefs::default() };
@@ -407,7 +407,7 @@ fn scale_buttons(ui: &mut egui::Ui, value: &mut f32) {
     }
 }
 
-/// The modes as small pictures of byob, each in its own colours, with its name under it.
+/// The modes as small pictures of byob, each in its own colors, with its name under it.
 /// System is split: light on the left, dark on the right. The chosen one has an ink ring.
 fn mode_previews(ui: &mut egui::Ui, t: &Tokens, value: &mut ThemeKind, light: &Tokens, dark: &Tokens) {
     let size = vec2(76.0, 50.0);
@@ -447,12 +447,12 @@ fn mode_previews(ui: &mut egui::Ui, t: &Tokens, value: &mut ThemeKind, light: &T
         if on || resp.has_focus() {
             p.rect_stroke(tile.expand(2.5), radius + 2.5, Stroke::new(1.5, t.text_strong), egui::StrokeKind::Middle);
         }
-        let colour = if on { t.text_strong } else { t.text_dim };
-        p.text(egui::pos2(tile.center().x, tile.bottom() + label_h * 0.5 + 3.0), egui::Align2::CENTER_CENTER, name, label_font.clone(), colour);
+        let color = if on { t.text_strong } else { t.text_dim };
+        p.text(egui::pos2(tile.center().x, tile.bottom() + label_h * 0.5 + 3.0), egui::Align2::CENTER_CENTER, name, label_font.clone(), color);
     }
 }
 
-/// byob in miniature, in `tk`'s colours: a sidebar with a few chats, a reply, your message
+/// byob in miniature, in `tk`'s colors: a sidebar with a few chats, a reply, your message
 /// in its bubble, and the message box with its send button in the accent.
 fn mini_window(p: &egui::Painter, r: egui::Rect, radius: f32, tk: &Tokens) {
     use egui::{Rect, pos2};
@@ -534,8 +534,8 @@ fn theme_menu(ui: &mut egui::Ui, t: &Tokens, value: &mut String, themes: &[Theme
     });
 }
 
-/// The accent: Default (the theme's own: byob's ink), the theme's colours, or Custom (any
-/// colour, edited as hex beside it).
+/// The accent: Default (the theme's own: byob's ink), the theme's colors, or Custom (any
+/// color, edited as hex beside it).
 fn accent_menu(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, accent: &mut Accent) {
     let p = current.base;
     let own = current.accent.unwrap_or_else(|| theme::rgb(p.default_accent()));
@@ -548,7 +548,7 @@ fn accent_menu(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, accent: &mut A
     let label = match &*accent {
         Accent::Theme => "Default".to_owned(),
         Accent::Custom(_) => "Custom".to_owned(),
-        other => capitalise(&other.label()),
+        other => capitalize(&other.label()),
     };
     let mark = dot(t.accent);
     let b = form::pill(ui, t, 130.0, Some(&mark), &label);
@@ -559,11 +559,11 @@ fn accent_menu(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, accent: &mut A
             *accent = Accent::Theme;
             ui.close();
         }
-        // The theme's own colours (its first is the default, already listed).
+        // The theme's own colors (its first is the default, already listed).
         for (name, c) in p.accents.iter().skip(1) {
             let on = matches!(accent, Accent::Named(n) if n.eq_ignore_ascii_case(name));
             let d = dot(theme::rgb(*c));
-            if crate::menu::item_marked(ui, t, &|pt, r, _| d(pt, r), &capitalise(name), on.then_some("✓")).clicked() {
+            if crate::menu::item_marked(ui, t, &|pt, r, _| d(pt, r), &capitalize(name), on.then_some("✓")).clicked() {
                 *accent = Accent::Named((*name).to_owned());
                 ui.close();
             }
@@ -600,16 +600,16 @@ fn reset_advanced(prefs: &mut Prefs, theme: &str) {
     }
 }
 
-/// A colour of the theme (its background, its text) as a chip: a dot and its hex, editable.
-/// A change is an override of this theme only (the Colours tab lists every one).
-fn colour_chip(ui: &mut egui::Ui, t: &Tokens, id: &str, current: &ThemeDef, prefs: &mut Prefs, role: &str, now: Color32) {
+/// A color of the theme (its background, its text) as a chip: a dot and its hex, editable.
+/// A change is an override of this theme only (the Colors tab lists every one).
+fn color_chip(ui: &mut egui::Ui, t: &Tokens, id: &str, current: &ThemeDef, prefs: &mut Prefs, role: &str, now: Color32) {
     let mut c = now;
     if hex_field(ui, t, id, &mut c) {
         prefs.overrides.entry(current.id.clone()).or_default().insert(role.to_owned(), hex(c));
     }
 }
 
-/// A hex colour in a pill: its dot and `#RRGGBB`, typed over. True when a valid new colour
+/// A hex color in a pill: its dot and `#RRGGBB`, typed over. True when a valid new color
 /// was entered (Enter, or leaving the field).
 fn hex_field(ui: &mut egui::Ui, t: &Tokens, id: &str, color: &mut Color32) -> bool {
     let key = egui::Id::unique(("hex-field", id));
@@ -652,7 +652,7 @@ fn font_menu(ui: &mut egui::Ui, t: &Tokens, font: &mut UiFont) {
 }
 
 /// "violet" → "Violet".
-fn capitalise(s: &str) -> String {
+fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
@@ -668,12 +668,12 @@ fn read_on(role: &str) -> Option<&'static str> {
     })
 }
 
-/// Every colour role with a picker, in columns; changes are overrides for the current theme only.
+/// Every color role with a picker, in columns; changes are overrides for the current theme only.
 fn advanced(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, prefs: &mut Prefs, filter: &mut String) {
     ui.horizontal_wrapped(|ui| {
         ui.add(form::field(filter, t).hint_text("Filter colors").desired_width(200.0));
         let has = prefs.overrides.get(&current.id).is_some_and(|o| !o.is_empty());
-        if form::button(ui, t, "Reset all colours", has).clicked() {
+        if form::button(ui, t, "Reset all colors", has).clicked() {
             prefs.overrides.remove(&current.id);
         }
     });
