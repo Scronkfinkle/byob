@@ -117,3 +117,49 @@ fn edit_keeps_your_message_its_size() {
     let y = reply_top(&ctx, &mut app).expect("the reply is drawn");
     assert!(y < 400.0, "while editing, the reply starts at {y}");
 }
+
+/// Regression: on a touch screen (a phone) there is no hover, so Edit, shown while the
+/// pointer is on your message, could never be reached. A touch on the message shows it.
+#[test]
+fn a_touch_on_your_message_shows_edit() {
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    let user = byob_protocol::Entry {
+        id: 1,
+        role: byob_protocol::EntryRole::User,
+        content: "How many pears?".into(),
+        reasoning: String::new(),
+        done: true,
+        error: None,
+        stats: None,
+        steps: vec![],
+        undoable: false,
+        undone: false,
+        attachments: vec![],
+    };
+    let reply = byob_protocol::Entry { id: 2, role: byob_protocol::EntryRole::Assistant, content: "Seven.".into(), ..user.clone() };
+    // The default layout: Edit while the pointer is on the message.
+    fake.inbox.lock().unwrap().extend([ServerMsg::Welcome(byob_protocol::Welcome::current()), ServerMsg::Transcript { entries: vec![user, reply] }]);
+    let ctx = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(390.0, 844.0));
+    let mut run = |events: Vec<egui::Event>| {
+        let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+        out.textures_delta.clear();
+        plugins::tests::texts_of(&out)
+    };
+    for _ in 0..3 {
+        run(vec![]);
+    }
+    let texts = run(vec![]);
+    assert!(!texts.iter().any(|t| t.0 == "Edit"), "no Edit before: {texts:?}");
+    let at = texts.iter().find(|t| t.0 == "How many pears?").map(|t| t.1.center()).unwrap();
+    // A tap, as the browser sends it: a touch, and the pointer down, up and gone.
+    let touch = |phase| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(0), phase, pos: at, force: None };
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    run(vec![touch(egui::TouchPhase::Start), egui::Event::PointerMoved(at), button(true)]);
+    run(vec![touch(egui::TouchPhase::End), button(false), egui::Event::PointerGone]);
+    run(vec![]);
+    let texts = run(vec![]);
+    assert!(texts.iter().any(|t| t.0 == "Edit"), "Edit after a touch: {texts:?}");
+}

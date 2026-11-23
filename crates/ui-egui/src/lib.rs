@@ -1773,7 +1773,16 @@ fn entry_view(
     let layout = if width < full { egui::Layout::right_to_left(egui::Align::Min) } else { egui::Layout::top_down(egui::Align::Min) };
     // The bubble's rect from the last frame: the reply's details show while the pointer is on it.
     let rect_id = ui.make_persistent_id(("bubble-rect", entry.id));
-    let hovered = ui.data(|d| d.get_temp::<egui::Rect>(rect_id)).is_some_and(|r| ui.rect_contains_pointer(r));
+    let last = ui.data(|d| d.get_temp::<egui::Rect>(rect_id));
+    // A touch screen has no hover: a touch on a message shows what the pointer on it would
+    // (Edit on yours, a reply's details) until another message is touched.
+    let touched_id = egui::Id::unique("byob-touched-message");
+    let (touch, pressed_at) = ui.input(|i| (i.has_touch_screen(), i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten()));
+    if touch && pressed_at.is_some_and(|p| last.is_some_and(|r| r.contains(p))) {
+        ui.data_mut(|d| d.insert_temp(touched_id, entry.id));
+    }
+    let touched = touch && ui.data(|d| d.get_temp::<u64>(touched_id)) == Some(entry.id);
+    let hovered = touched || last.is_some_and(|r| ui.rect_contains_pointer(r));
     let shape = crate::layout::get(ui.ctx());
     let (details, on_hover) = entry.stats.filter(|_| entry.role == EntryRole::Assistant).map(|s| reply_details(&shape, &s)).unwrap_or_default();
     ui.with_layout(layout, |ui| {
