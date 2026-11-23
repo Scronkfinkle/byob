@@ -53,6 +53,10 @@ pub enum LlmError {
     /// request again gets the same answer.
     #[error("the model declined to answer: {0}")]
     Refused(String),
+    /// An agent CLI failed in a way trying again won't fix (it isn't installed, or ran out
+    /// of time after many minutes).
+    #[error("{0}")]
+    Agent(String),
 }
 
 /// One incremental piece of a streamed reply.
@@ -226,6 +230,18 @@ impl Client {
         on_event: impl FnMut(StreamEvent),
     ) -> Result<ChatOutcome, LlmError> {
         self.stream(messages, tools, slot, StopWhen { cancel, also: None, deadline: None }, on_event)
+    }
+
+    /// [`Client::stream_chat_in_slot`] that also stops when `stop_when` says so.
+    pub fn stream_chat_in_slot_until(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+        slot: Option<u64>,
+        stop_when: StopWhen<'_>,
+        on_event: impl FnMut(StreamEvent),
+    ) -> Result<ChatOutcome, LlmError> {
+        self.stream(messages, tools, slot, stop_when, on_event)
     }
 
     /// [`Client::stream_chat`] that also stops on a second flag (e.g. a caller's own size

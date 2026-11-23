@@ -30,6 +30,7 @@ mod chats;
 mod folders;
 mod recovery;
 mod sheets;
+mod streams;
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -59,20 +60,36 @@ pub(crate) struct Answer {
     text: String,
     /// (tool, raw JSON arguments)
     calls: Vec<(String, String)>,
+    /// The finish reason to send instead of the usual one (`length`: cut off).
+    finish: Option<String>,
+    /// End the stream with this error instead of finishing (a server that broke off).
+    fail: Option<String>,
 }
 
 impl Answer {
     pub(crate) fn text(text: impl Into<String>) -> Self {
-        Self { text: text.into(), calls: Vec::new() }
+        Self { text: text.into(), ..Self::default() }
     }
 
     pub(crate) fn call(name: &str, args: Value) -> Self {
-        Self { text: String::new(), calls: vec![(name.to_owned(), args.to_string())] }
+        Self { calls: vec![(name.to_owned(), args.to_string())], ..Self::default() }
     }
 
     /// A call with arguments exactly as given, valid JSON or not (models get them wrong).
     pub(crate) fn raw_call(name: &str, args: &str) -> Self {
-        Self { text: String::new(), calls: vec![(name.to_owned(), args.to_owned())] }
+        Self { calls: vec![(name.to_owned(), args.to_owned())], ..Self::default() }
+    }
+
+    /// Cut off at the model's output limit (`finish_reason: length`).
+    pub(crate) fn cut(mut self) -> Self {
+        self.finish = Some("length".into());
+        self
+    }
+
+    /// The stream breaks off with an error after what was sent.
+    pub(crate) fn failing(mut self, error: &str) -> Self {
+        self.fail = Some(error.into());
+        self
     }
 
     /// Text, then tool calls, in one answer.
@@ -103,7 +120,10 @@ impl Answer {
             );
             out += &frame(json!({"choices": [{"delta": {"tool_calls": [{"index": i, "function": {"arguments": b}}]}}]}));
         }
-        let finish = if self.calls.is_empty() { "stop" } else { "tool_calls" };
+        if let Some(e) = &self.fail {
+            return out + &frame(json!({"error": {"message": e}}));
+        }
+        let finish = self.finish.as_deref().unwrap_or(if self.calls.is_empty() { "stop" } else { "tool_calls" });
         out += &frame(json!({"choices": [{"delta": {}, "finish_reason": finish}], "usage": {"prompt_tokens": 100, "completion_tokens": 10}}));
         out + "data: [DONE]\n\n"
     }

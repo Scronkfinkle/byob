@@ -209,7 +209,9 @@ impl Engine {
                 self.send_viewers(&chat, ServerMsg::Notice { level: NoticeLevel::Info, text });
             }
             // Child turns don't compact and are finished by their `delegate` step.
-            turn::TurnEvent::Finished { .. } | turn::TurnEvent::Compacting { .. } | turn::TurnEvent::Compacted { .. } => {}
+            // A subagent's broken request that is tried again shows both tries (its
+            // transcript only grows); what the subagent reports back has the second only.
+            turn::TurnEvent::Finished { .. } | turn::TurnEvent::Compacting { .. } | turn::TurnEvent::Compacted { .. } | turn::TurnEvent::Retract { .. } => {}
         }
     }
 

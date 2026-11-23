@@ -41,6 +41,9 @@ pub enum AgentEvent {
     Done {
         usage: Option<Usage>,
     },
+    /// The reply reached the model's output limit and was cut short there (what came
+    /// before it stands).
+    CutOff,
     Error {
         kind: ErrorKind,
         message: String,
@@ -186,10 +189,10 @@ fn sandbox_dir() -> PathBuf {
 fn llm_error(name: &str, login: &str, kind: ErrorKind, message: &str) -> LlmError {
     let message = message.trim();
     match kind {
-        ErrorKind::NotInstalled => LlmError::Stream(format!("{name} isn't installed on this computer (or byob can't find it): {message}")),
+        ErrorKind::NotInstalled => LlmError::Agent(format!("{name} isn't installed on this computer (or byob can't find it): {message}")),
         ErrorKind::NotLoggedIn => LlmError::Http { status: 401, message: format!("{name} isn't signed in. Run `{login}` in Terminal. {message}") },
         ErrorKind::RateLimited | ErrorKind::Quota => LlmError::Http { status: 429, message: format!("{name}: {message}") },
-        ErrorKind::Timeout => LlmError::Stream(format!("{name} took too long and was stopped")),
+        ErrorKind::Timeout => LlmError::Agent(format!("{name} took too long and was stopped")),
         ErrorKind::Other => LlmError::Stream(format!("{name}: {message}")),
     }
 }
@@ -331,6 +334,7 @@ pub(crate) fn stream(
     log::info!("agent {id}: model {:?}, system {} chars, prompt {} chars", req.model, system.len(), prompt.len());
     let mut out = ChatOutcome::default();
     let mut failure: Option<(ErrorKind, String)> = None;
+    let mut cut_off = false;
     let started = Instant::now();
     p.run(&req, &|| stop_when.now(), &mut |ev| match ev {
         AgentEvent::Text(t) => {
@@ -343,6 +347,7 @@ pub(crate) fn stream(
         }
         AgentEvent::Tool { name, summary } => log::warn!("agent {id} ran its own tool {name}: {summary}"),
         AgentEvent::Done { usage } => out.usage = usage,
+        AgentEvent::CutOff => cut_off = true,
         AgentEvent::Error { kind, message } => failure = Some((kind, message)),
     });
     if stop_when.now() {
@@ -363,7 +368,16 @@ pub(crate) fn stream(
             out.tool_calls = parsed.calls;
         }
     }
-    out.finish_reason = Some(if out.tool_calls.is_empty() { "stop" } else { "tool_calls" }.into());
+    out.finish_reason = Some(
+        if cut_off {
+            "length"
+        } else if out.tool_calls.is_empty() {
+            "stop"
+        } else {
+            "tool_calls"
+        }
+        .into(),
+    );
     Ok(out)
 }
 

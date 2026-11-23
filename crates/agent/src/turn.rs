@@ -144,6 +144,13 @@ pub enum TurnEvent {
         id: u64,
         text: String,
     },
+    /// Take back what entry `id` streamed after the first `content` bytes of its text and
+    /// `reasoning` bytes of its reasoning (a request that broke off is tried again).
+    Retract {
+        id: u64,
+        content: usize,
+        reasoning: usize,
+    },
 }
 
 /// A compaction a turn made.
@@ -353,6 +360,8 @@ struct Turn {
     tail_newlines: usize,
     /// Some reasoning was streamed this turn (a later round's starts a new paragraph).
     reasoned: bool,
+    /// Bytes of reasoning streamed so far.
+    reasoning_len: usize,
     /// Tool calls attempted this turn (including refused ones).
     calls: usize,
     /// Bytes of tool output given to the model this turn.
@@ -443,6 +452,7 @@ impl Turn {
             content_len: 0,
             tail_newlines: 0,
             reasoned: false,
+            reasoning_len: 0,
             calls: 0,
             output_used: 0,
             seen: BTreeMap::new(),
@@ -501,20 +511,25 @@ impl Turn {
             }
             let cut_off = out.finish_reason.as_deref() == Some("length");
             let prompt = self.s.plan.prompt_tools;
-            let (text, calls) = if prompt && tools_on {
+            let (text, calls, unfinished) = if prompt && tools_on {
                 let mut parsed = toolprompt::parse_tool_calls(&out.content, &specs);
+                let unfinished = parsed.unfinished && out.tool_calls.is_empty();
                 // Servers with a tool parser may turn call text into structured calls anyway.
                 parsed.calls.extend(out.tool_calls);
-                (parsed.text, parsed.calls)
+                (parsed.text, parsed.calls, unfinished)
             } else {
-                (out.content, out.tool_calls)
+                (out.content, out.tool_calls, false)
             };
             let calls = usable_calls(calls, self.s.entry);
+            // Cut off at the output limit while writing its last call: that call's arguments
+            // are incomplete (half a file, say), so it isn't run.
+            let cut_call = cut_off && calls.last().is_some_and(|c| if prompt { unfinished } else { parse_arguments(&c.arguments).is_err() });
             // With tools off, calls the model makes anyway are ignored: its text is the answer.
             if calls.is_empty() || !tools_on {
                 // It stopped without a word for the user (its thinking said what it meant to
-                // do next, nothing else did): ask once for the reply, tools still on.
-                if text.trim().is_empty() && self.content.trim().is_empty() && !self.nudged && round + 1 < max_rounds {
+                // do next, nothing else did): ask once for the reply, tools still on. Not when
+                // the output limit cut it off: asking again would only hit the limit again.
+                if text.trim().is_empty() && self.content.trim().is_empty() && !self.nudged && !cut_off && round + 1 < max_rounds {
                     self.nudged = true;
                     self.messages.push(ChatMessage::user(NO_ANSWER_NUDGE));
                     continue;
@@ -533,7 +548,11 @@ impl Turn {
                 // (Anthropic: the reply's own blocks, thinking included).
                 self.messages.push(ChatMessage::assistant_tool_calls(text, &calls).with_native(out.native).with_reasoning(out.reasoning, out.reasoning_field));
             }
-            for (call, result) in calls.iter().zip(self.call_all(&calls)) {
+            let mut results = self.call_all(calls.get(..calls.len().saturating_sub(usize::from(cut_call))).unwrap_or_default());
+            if let Some(call) = calls.last().filter(|_| cut_call) {
+                results.push(self.refuse_cut_call(call));
+            }
+            for (call, result) in calls.iter().zip(results) {
                 self.messages.push(if prompt { toolprompt::fallback_tool_result(call, &result) } else { ChatMessage::tool_result(call.id.clone(), result) });
             }
             self.show_round_images(prompt);
@@ -632,8 +651,16 @@ impl Turn {
     fn model_call(&mut self, specs: &[byob_llm::ToolSpec]) -> Result<byob_llm::ChatOutcome, End> {
         let mut tries = 0usize;
         loop {
+            let mark = (self.content_len, self.tail_newlines, self.content.len(), self.reasoned, self.reasoning_len);
             match self.model_call_once(specs) {
                 Err(e) if tries < MODEL_RETRIES && !self.cancelled() && retryable(&e) => {
+                    // What the broken request streamed goes: the next try writes it again.
+                    let (content_len, tail_newlines, streamed, reasoned, reasoning_len) = mark;
+                    if (self.content_len, self.reasoning_len) != (content_len, reasoning_len) {
+                        self.emit(TurnEvent::Retract { id: self.s.entry, content: content_len, reasoning: reasoning_len });
+                    }
+                    (self.content_len, self.tail_newlines, self.reasoned, self.reasoning_len) = (content_len, tail_newlines, reasoned, reasoning_len);
+                    self.content.truncate(streamed);
                     let e = e.to_string();
                     tries = tries.saturating_add(1);
                     log::warn!("model request failed ({e}); trying again ({tries}/{MODEL_RETRIES})");
@@ -701,17 +728,27 @@ impl Turn {
         let mut shown = Shown::new(self.content_len);
         shown.tail_newlines = self.tail_newlines;
         shown.think_separate = self.reasoned;
+        shown.reasoning_len = self.reasoning_len;
         let mut filter = (prompt && !specs.is_empty()).then(ToolCallFilter::default);
         let child = self.s.child;
         let streamed = &mut self.content;
         let slot = self.s.slot.as_ref().map(SlotLease::id);
-        let result = self.s.llm.stream_chat_in_slot(&request, wire_specs, slot, &self.s.cancel, |ev| {
+        // Set when the model runs on into results it made up: the reply ends there.
+        let made_up = AtomicBool::new(false);
+        let stop_when = byob_llm::StopWhen { cancel: &self.s.cancel, also: Some(&made_up), deadline: None };
+        let result = self.s.llm.stream_chat_in_slot_until(&request, wire_specs, slot, stop_when, |ev| {
             let (content, reasoning) = match ev {
                 StreamEvent::Content(t) => (t, String::new()),
                 StreamEvent::Reasoning(t) => (String::new(), t),
             };
             let content = match filter.as_mut() {
-                Some(f) => f.push(&content),
+                Some(f) => {
+                    let shown = f.push(&content);
+                    if f.made_up_at().is_some() {
+                        made_up.store(true, Ordering::Relaxed);
+                    }
+                    shown
+                }
                 None => content,
             };
             streamed.push_str(&content);
@@ -725,7 +762,17 @@ impl Turn {
         self.content_len = shown.len;
         self.tail_newlines = shown.tail_newlines;
         self.reasoned |= shown.reasoned;
-        let out = result?;
+        self.reasoning_len = shown.reasoning_len;
+        let mut out = result?;
+        // It wrote its calls, then results of its own and more on top: what it wrote up to
+        // the made-up results is the reply (the calls run for real), the rest is dropped.
+        if let Some(at) = filter.as_ref().and_then(ToolCallFilter::made_up_at) {
+            log::warn!("the model went on past its tool calls with results it made up ({} bytes); stopped it there", out.content.len().saturating_sub(at));
+            if out.content.is_char_boundary(at) {
+                out.content.truncate(at);
+            }
+            out.cancelled = self.cancelled();
+        }
         self.rounds_done = true;
         self.model_calls = self.model_calls.saturating_add(1);
         let (prompt_tokens, completion, context, estimated) = match out.usage {
@@ -1148,6 +1195,20 @@ impl Turn {
         wait_verdict(&answer, &self.s.cancel)
     }
 
+    /// A call the reply was cut off in (at the output limit): not run; the model is told
+    /// to make it smaller.
+    fn refuse_cut_call(&mut self, call: &ToolCall) -> String {
+        if let Some(refused) = self.count_call() {
+            return refused;
+        }
+        let name = call.name.trim();
+        self.failed_step(name, format!("{name}: cut off"), ToolAccess::Read, "not run: the reply reached the model's output limit while writing this call");
+        format!(
+            "Not run: your reply reached the output limit (max tokens) while you were writing this {name} call, so its arguments are incomplete. \
+             Make it smaller: write a long file in parts (a first part, then edits that add the rest), or write less before the call."
+        )
+    }
+
     /// A step that failed before the tool could run (unknown tool, bad arguments).
     fn failed_step(&self, tool: &str, title: String, access: ToolAccess, detail: &str) {
         let step = Step {
@@ -1195,6 +1256,8 @@ fn retryable(e: &LlmError) -> bool {
         LlmError::Busy { .. } => true,
         // The model declined; asking again gets the same answer.
         LlmError::Refused(_) => false,
+        // An agent CLI that isn't there, or ran its full time: again would be the same.
+        LlmError::Agent(_) => false,
         LlmError::BadUrl(_) | LlmError::Transport { .. } => false,
     }
 }
@@ -1371,11 +1434,13 @@ struct Shown {
     think_separate: bool,
     /// Reasoning was sent.
     reasoned: bool,
+    /// Bytes of reasoning sent (with earlier rounds' when set so).
+    reasoning_len: usize,
 }
 
 impl Shown {
     fn new(len: usize) -> Self {
-        Self { len, separate: len > 0, tail_newlines: 0, think_separate: false, reasoned: false }
+        Self { len, separate: len > 0, tail_newlines: 0, think_separate: false, reasoned: false, reasoning_len: 0 }
     }
 
     fn send(&mut self, inbox: &Sender<Input>, child: Option<u64>, id: u64, mut content: String, mut reasoning: String) {
@@ -1398,6 +1463,7 @@ impl Shown {
             self.tail_newlines = if trailing == content.len() { self.tail_newlines.saturating_add(trailing) } else { trailing };
         }
         self.len = self.len.saturating_add(content.len());
+        self.reasoning_len = self.reasoning_len.saturating_add(reasoning.len());
         emit_to(inbox, child, TurnEvent::Delta { id, content, reasoning });
     }
 }

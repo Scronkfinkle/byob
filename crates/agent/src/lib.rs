@@ -2080,6 +2080,7 @@ impl Engine {
                 }
                 self.send_usage(&chat);
             }
+            turn::TurnEvent::Retract { id, content, reasoning } => self.retract(id, content, reasoning),
             turn::TurnEvent::Compacting { id, on } => {
                 let Some(chat) = self.turns.get(&id).map(|t| t.chat.clone()) else { return };
                 if let Some(live) = self.live.get_mut(&chat) {
@@ -2362,6 +2363,28 @@ impl Engine {
         };
         self.queue_turn_ended(&run.chat, pause);
         self.gc();
+    }
+
+    /// Cut reply `id` back to its first `content` bytes of text and `reasoning` bytes of
+    /// reasoning (what a broken request streamed before it was tried again), saved and shown.
+    fn retract(&mut self, id: u64, content: usize, reasoning: usize) {
+        self.flush(id);
+        let Some(chat) = self.turns.get(&id).map(|t| t.chat.clone()) else { return };
+        let Some(entry) = self.reply_mut(id) else { return };
+        let cut = |s: &mut String, n: usize| {
+            let n = limits::prefix(s, n).len();
+            s.truncate(n);
+        };
+        cut(&mut entry.content, content);
+        cut(&mut entry.reasoning, reasoning);
+        let (text, thought) = (entry.content.clone(), entry.reasoning.clone());
+        if let Err(e) = self.store.update_message(chats::message_id(id), &text, &thought, false) {
+            log::error!("saving a reply taken back to before a broken request: {e}");
+        }
+        // There's no message for part of an entry: the transcript again.
+        if let Some(entries) = self.live.get(&chat).map(|l| l.entries.clone()) {
+            self.send_viewers(&chat, ServerMsg::Transcript { entries });
+        }
     }
 
     /// Write batched stream text of turns that haven't saved for [`FLUSH_EVERY`].

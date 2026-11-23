@@ -132,6 +132,9 @@ fn user_message(lead: &str, parts: &[Part]) -> String {
 #[derive(Default)]
 struct Stream {
     finished: bool,
+    /// A message of the reply ended at the output limit (Claude Code then asks the model to
+    /// go on, a few times, before it gives up with an error).
+    cut: bool,
     rate_limited: bool,
     usage: Option<PlanUsage>,
 }
@@ -143,6 +146,9 @@ impl Stream {
         match v.get("type").and_then(Value::as_str) {
             Some("stream_event") => {
                 let Some(delta) = v.pointer("/event/delta") else { return };
+                if delta.get("stop_reason").and_then(Value::as_str) == Some("max_tokens") {
+                    self.cut = true;
+                }
                 match delta.get("type").and_then(Value::as_str) {
                     Some("text_delta") => {
                         if let Some(t) = s(delta, "text") {
@@ -178,6 +184,11 @@ impl Stream {
             Some("result") => {
                 self.finished = true;
                 let is_error = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                // Out of output even after going on: what it wrote stands, cut off.
+                if is_error && self.cut {
+                    on_event(AgentEvent::CutOff);
+                    return;
+                }
                 if is_error {
                     let message = s(&v, "result").or_else(|| s(&v, "subtype")).unwrap_or_default();
                     let kind = if self.rate_limited { ErrorKind::RateLimited } else { classify(&message) };
@@ -256,6 +267,23 @@ mod tests {
         let (got, _) =
             feed(&[r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}"#, r#"{"type":"result","is_error":true,"result":"limit reached"}"#]);
         assert!(matches!(&got[..], [AgentEvent::Error { kind: ErrorKind::RateLimited, .. }]));
+    }
+
+    /// Regression: a reply past Claude Code's output limit (after it asked the model to go
+    /// on) failed the turn and was tried again from the start, twice. It's a cut-off reply.
+    #[test]
+    fn a_reply_past_the_output_limit_is_cut_off_not_an_error() {
+        let (got, _) = feed(&[
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Rivers"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" run"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null}}}"#,
+            r#"{"type":"result","subtype":"success","is_error":true,"result":"API Error: Claude's response exceeded the 32000 output token maximum."}"#,
+        ]);
+        assert_eq!(got, vec![AgentEvent::Text("Rivers".into()), AgentEvent::Text(" run".into()), AgentEvent::CutOff]);
+        // Other errors stay errors.
+        let (got, _) = feed(&[r#"{"type":"result","is_error":true,"result":"API Error: 500"}"#]);
+        assert!(matches!(&got[..], [AgentEvent::Error { .. }]));
     }
 
     #[test]

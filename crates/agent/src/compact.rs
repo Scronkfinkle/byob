@@ -141,19 +141,34 @@ pub fn history(entries: &[Entry], latest: Option<(u64, &str)>, new_user: Option<
         out.extend(summary_messages(summary));
         ids.extend([0, 0]);
     }
+    // A user message whose reply was skipped stands before the next one: a stand-in reply
+    // between them keeps the roles alternating (some chat templates refuse two user
+    // messages in a row, and the chat would fail from then on).
+    let user = |out: &mut Vec<ChatMessage>, ids: &mut Vec<u64>, m: ChatMessage, id: u64| {
+        if out.last().is_some_and(|m| m.role == "user") {
+            out.push(ChatMessage::assistant(NO_REPLY));
+            ids.push(0);
+        }
+        out.push(m);
+        ids.push(id);
+    };
     for e in entries.iter().filter(|e| e.id > through && e.done && e.error.is_none() && (!e.content.is_empty() || !e.attachments.is_empty())) {
-        out.push(match e.role {
-            EntryRole::User => ChatMessage::user(crate::attachments::with_names(&e.content, &e.attachments)),
-            EntryRole::Assistant => ChatMessage::assistant(e.content.clone()),
-        });
-        ids.push(e.id);
+        match e.role {
+            EntryRole::User => user(&mut out, &mut ids, ChatMessage::user(crate::attachments::with_names(&e.content, &e.attachments)), e.id),
+            EntryRole::Assistant => {
+                out.push(ChatMessage::assistant(e.content.clone()));
+                ids.push(e.id);
+            }
+        }
     }
     if let Some(text) = new_user {
-        out.push(ChatMessage::user(text));
-        ids.push(0);
+        user(&mut out, &mut ids, ChatMessage::user(text), 0);
     }
     (out, ids)
 }
+
+/// The stand-in for a reply that was stopped or failed (see [`history`]).
+pub const NO_REPLY: &str = "(No reply: it was stopped or failed.)";
 
 /// Index of the first message that isn't a system prompt.
 pub fn content_start(messages: &[ChatMessage]) -> usize {

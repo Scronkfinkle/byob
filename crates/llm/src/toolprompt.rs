@@ -120,6 +120,11 @@ pub struct ParsedToolCalls {
     /// The reply with all recognized call markup removed, trimmed.
     pub text: String,
     pub calls: Vec<ToolCall>,
+    /// The last call's markup ran to the end of the reply without its closing tag, so its
+    /// arguments may be cut short (only XML-style calls: cut JSON doesn't parse at all).
+    /// Models often stop right before a closing tag, so this alone doesn't mean anything is
+    /// missing; together with a reply cut off at the output limit it does.
+    pub unfinished: bool,
 }
 
 /// Extract tool calls written as text. `tools` (may be empty) is used to reject bare JSON
@@ -128,14 +133,17 @@ pub struct ParsedToolCalls {
 pub fn parse_tool_calls(content: &str, tools: &[ToolSpec]) -> ParsedToolCalls {
     let content = prefix_at_boundary(content, MAX_SCAN);
     let mut calls = Vec::new();
-    let text = extract_tagged(content, tools, &mut calls);
+    let (text, unfinished) = extract_tagged(content, tools, &mut calls);
+    let tagged = calls.len();
     let text = extract_fenced(&text, tools, &mut calls);
     let text = extract_bare(&text, tools, &mut calls);
+    // Fenced and bare calls are whole JSON (they don't parse otherwise).
+    let unfinished = unfinished && calls.len() == tagged && tagged <= MAX_CALLS;
     calls.truncate(MAX_CALLS);
     for (i, c) in calls.iter_mut().enumerate() {
         c.id = format!("call_text_{i}");
     }
-    ParsedToolCalls { text: text.trim().to_owned(), calls }
+    ParsedToolCalls { text: text.trim().to_owned(), calls, unfinished }
 }
 
 fn prefix_at_boundary(s: &str, max: usize) -> &str {
@@ -149,10 +157,12 @@ fn prefix_at_boundary(s: &str, max: usize) -> &str {
     s.get(..end).unwrap_or_default()
 }
 
-/// `<tool_call>…</tool_call>` spans (an unterminated last one runs to the end).
-fn extract_tagged(content: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>) -> String {
+/// `<tool_call>…</tool_call>` spans (an unterminated last one runs to the end). Also says
+/// whether the last call found is an XML one whose body ran to the end unclosed.
+fn extract_tagged(content: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>) -> (String, bool) {
     let mut text = String::new();
     let mut rest = content;
+    let mut unfinished = false;
     while let Some((start, open, close)) = first_open(rest) {
         text.push_str(rest.get(..start).unwrap_or_default());
         let after = rest.get(start + open.len()..).unwrap_or_default();
@@ -162,21 +172,36 @@ fn extract_tagged(content: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>) 
         };
         let inner = strip_fence(inner.trim());
         let before = calls.len();
-        if open == INVOKE {
+        let open_ended = if open == INVOKE {
             calls_from_invoke_xml(&format!("{INVOKE}{inner}</invoke>"), tools, calls);
+            !after.contains(close)
         } else {
             calls_from_json_text(inner, None, calls);
+            let mut open_ended = false;
             if calls.len() == before {
-                calls_from_qwen_xml(inner, tools, calls);
+                open_ended = calls_from_qwen_xml(inner, tools, calls);
             }
             if calls.len() == before {
-                calls_from_invoke_xml(inner, tools, calls);
+                open_ended = calls_from_invoke_xml(inner, tools, calls);
             }
+            open_ended
+        };
+        if calls.len() > before {
+            unfinished = open_ended;
         }
         rest = next;
     }
     text.push_str(rest);
-    text
+    (text, unfinished)
+}
+
+/// Claude's wrapper around its `<invoke>` calls.
+const WRAP_OPEN: &str = "<function_calls>";
+const WRAP_CLOSE: &str = "</function_calls>";
+
+/// [`first_open`] but for the calls themselves, not the `<function_calls>` wrapper.
+fn first_call_open(s: &str) -> Option<(usize, &'static str, &'static str)> {
+    TAGS.iter().filter(|(open, _)| *open != WRAP_OPEN).filter_map(|&(open, close)| s.find(open).map(|p| (p, open, close))).min_by_key(|&(p, _, _)| p)
 }
 
 /// The earliest opening call tag in `s`: (position, open tag, matching close tag).
@@ -330,15 +355,17 @@ fn call_from_object(v: &Value) -> Option<(String, String, bool)> {
     Some((name.to_owned(), arguments, args.is_some()))
 }
 
-/// Qwen3-Coder style: `<function=name><parameter=key>value</parameter>…</function>`.
-fn calls_from_qwen_xml(text: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>) {
+/// Qwen3-Coder style: `<function=name><parameter=key>value</parameter>…</function>`. True
+/// if the last call's body has no `</function>`.
+fn calls_from_qwen_xml(text: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>) -> bool {
     let mut rest = text;
+    let mut open_ended = false;
     while let Some(start) = rest.find("<function=") {
         if calls.len() >= MAX_CALLS {
-            return;
+            return open_ended;
         }
         let after = rest.get(start + "<function=".len()..).unwrap_or_default();
-        let Some(gt) = after.find('>') else { return };
+        let Some(gt) = after.find('>') else { return open_ended };
         let name = after.get(..gt).unwrap_or_default().trim().trim_matches(['"', '\'']).to_owned();
         let body_all = after.get(gt + 1..).unwrap_or_default();
         let (body, next) = match body_all.find("</function>") {
@@ -349,20 +376,24 @@ fn calls_from_qwen_xml(text: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>
             let schema = tools.iter().find(|t| t.name == name).map(|t| &t.parameters);
             let args = qwen_params(body, schema);
             calls.push(ToolCall { id: String::new(), name, arguments: Value::Object(args).to_string() });
+            open_ended = !body_all.contains("</function>");
         }
         rest = next;
     }
+    open_ended
 }
 
 /// Claude's `<invoke name="tool"><parameter name="k">v</parameter></invoke>` calls in `text`.
-fn calls_from_invoke_xml(text: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>) {
+/// True if the last call's body has no `</invoke>`.
+fn calls_from_invoke_xml(text: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>) -> bool {
     let mut rest = text;
+    let mut open_ended = false;
     while let Some(start) = rest.find(INVOKE) {
         if calls.len() >= MAX_CALLS {
-            return;
+            return open_ended;
         }
         let after = rest.get(start + INVOKE.len()..).unwrap_or_default();
-        let Some(gt) = after.find('>') else { return };
+        let Some(gt) = after.find('>') else { return open_ended };
         let name = attr_name(after.get(..gt).unwrap_or_default());
         let body_all = after.get(gt + 1..).unwrap_or_default();
         let (body, next) = match body_all.find("</invoke>") {
@@ -373,9 +404,11 @@ fn calls_from_invoke_xml(text: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCal
             let schema = tools.iter().find(|t| t.name == name).map(|t| &t.parameters);
             let args = qwen_params(body, schema);
             calls.push(ToolCall { id: String::new(), name, arguments: Value::Object(args).to_string() });
+            open_ended = !body_all.contains("</invoke>");
         }
         rest = next;
     }
+    open_ended
 }
 
 /// The name in a tag's attributes: `name="x"` (or Qwen's `=x`).
@@ -412,15 +445,31 @@ fn qwen_params(body: &str, schema: Option<&Value>) -> serde_json::Map<String, Va
     args
 }
 
+/// Openings of tool results a model writes itself after its call, instead of stopping to
+/// wait for the real ones (Claude's `<function_results>`, ours, and other common ones).
+const MADE_UP_RESULTS: [&str; 4] = ["<function_results>", "<function_result>", "<tool_response", "<tool_result>"];
+
 /// Streaming display filter: passes text through but hides `<function_call>…</function_call>`
 /// and `<tool_call>…</tool_call>` spans, holding back any suffix that could be the start of a
 /// tag. Feed the *unfiltered* content to [`parse_tool_calls`] once the reply is complete.
 /// Fenced/bare JSON is not hidden.
+///
+/// It also notices a reply that runs on past its calls into results it made up (a model
+/// that should stop and wait writes `<function_results>` itself, then more calls on those
+/// imagined results, sometimes for tens of thousands of tokens): from there nothing more is
+/// shown and [`ToolCallFilter::made_up_at`] says where it began, so the caller can stop the
+/// stream and keep only what came before.
 #[derive(Debug, Default)]
 pub struct ToolCallFilter {
     /// Inside a call: the close tag we are waiting for.
     close: Option<&'static str>,
     held: String,
+    /// Bytes pushed so far.
+    pushed: usize,
+    /// A call was closed (made-up results can follow from then on).
+    called: bool,
+    /// Byte offset in the pushed content where a made-up result began.
+    made_up: Option<usize>,
 }
 
 /// Length of the longest proper prefix of `tag` that `s` ends with.
@@ -431,36 +480,70 @@ fn partial_tag(s: &str, tag: &str) -> usize {
 impl ToolCallFilter {
     /// Visible text from the next chunk (possibly empty).
     pub fn push(&mut self, chunk: &str) -> String {
+        if self.made_up.is_some() {
+            return String::new();
+        }
         self.held.push_str(chunk);
+        self.pushed = self.pushed.saturating_add(chunk.len());
         let mut out = String::new();
         loop {
             if let Some(close) = self.close {
                 if let Some(pos) = self.held.find(close) {
                     self.held.drain(..pos + close.len());
                     self.close = None;
+                    self.called = true;
                     continue;
                 }
                 let split = self.held.len().saturating_sub(partial_tag(&self.held, close));
                 self.held.drain(..split);
                 return out;
             }
-            if let Some((pos, open, close)) = first_open(&self.held) {
-                out.extend(self.held.drain(..pos));
+            // The earliest of: a call opening, Claude's `<function_calls>` wrapper tags
+            // (hidden themselves; the `<invoke>` calls inside are the calls), results made up
+            // after a call.
+            let wrapper = [WRAP_OPEN, WRAP_CLOSE].iter().filter_map(|t| self.held.find(t).map(|p| (p, *t))).min();
+            let made_up = if self.called { MADE_UP_RESULTS.iter().filter_map(|t| self.held.find(t)).min() } else { None };
+            let open = first_call_open(&self.held);
+            let first = [open.map(|(p, _, _)| p), wrapper.map(|(p, _)| p), made_up].into_iter().flatten().min();
+            let Some(pos) = first else {
+                let results = if self.called { &MADE_UP_RESULTS[..] } else { &[] };
+                let keep = TAGS
+                    .iter()
+                    .map(|(open, _)| *open)
+                    .chain([WRAP_CLOSE])
+                    .chain(results.iter().copied())
+                    .map(|t| partial_tag(&self.held, t))
+                    .max()
+                    .unwrap_or(0);
+                let split = self.held.len().saturating_sub(keep);
+                out.extend(self.held.drain(..split));
+                return out;
+            };
+            out.extend(self.held.drain(..pos));
+            if made_up == Some(pos) {
+                self.made_up = Some(self.pushed.saturating_sub(self.held.len()));
+                self.held.clear();
+                return out;
+            }
+            if let Some((_, tag)) = wrapper.filter(|(p, _)| *p == pos) {
+                self.held.drain(..tag.len());
+            } else if let Some((_, open, close)) = open {
                 self.held.drain(..open.len());
                 self.close = Some(close);
-                continue;
             }
-            let keep = TAGS.iter().map(|(open, _)| partial_tag(&self.held, open)).max().unwrap_or(0);
-            let split = self.held.len().saturating_sub(keep);
-            out.extend(self.held.drain(..split));
-            return out;
         }
     }
 
     /// Flush what is left at the end of the stream.
     pub fn finish(&mut self) -> String {
         let rest = std::mem::take(&mut self.held);
-        if self.close.is_some() { String::new() } else { rest }
+        if self.close.is_some() || self.made_up.is_some() { String::new() } else { rest }
+    }
+
+    /// Where results the model made up began (a byte offset in the content pushed), if it
+    /// wrote any after a call: the reply is over there.
+    pub fn made_up_at(&self) -> Option<usize> {
+        self.made_up
     }
 
     /// Convenience for [`StreamEvent`]s: reasoning passes through, content is filtered.
@@ -558,6 +641,19 @@ mod tests {
     }
 
     #[test]
+    fn unclosed_xml_calls_are_marked_unfinished() {
+        let tools = [tool("write_file")];
+        let cut = "<function_calls>\n<invoke name=\"write_file\">\n<parameter name=\"content\">half";
+        assert!(parse_tool_calls(cut, &tools).unfinished);
+        assert!(parse_tool_calls("<invoke name=\"write_file\"><parameter name=\"content\">half", &tools).unfinished);
+        assert!(parse_tool_calls("<tool_call><function=write_file><parameter=content>half", &tools).unfinished);
+        // Closed calls (the wrapper may be missing), JSON, and a cut call before a whole one.
+        assert!(!parse_tool_calls("<function_calls><invoke name=\"write_file\"><parameter name=\"content\">x</parameter></invoke>", &tools).unfinished);
+        assert!(!parse_tool_calls("<function_call>{\"name\":\"write_file\",\"arguments\":{}}", &tools).unfinished);
+        assert!(!parse_tool_calls("<invoke name=\"write_file\">x</invoke> and <invoke name=\"write_file\">y</invoke>", &tools).unfinished);
+    }
+
+    #[test]
     fn json_fence_with_known_tool() {
         let s = "Sure:\n```json\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"x\"}}\n```\nDone.";
         let p = parse_tool_calls(s, &[tool("read_file")]);
@@ -644,6 +740,36 @@ mod tests {
         let mut f = ToolCallFilter::default();
         assert_eq!(f.push("a<tool_call>{"), "a");
         assert_eq!(f.finish(), "");
+    }
+
+    #[test]
+    fn made_up_results_after_a_call_end_the_reply() {
+        let reply = "Reading.\n<function_calls>\n<invoke name=\"read_file\"><parameter name=\"path\">a</parameter></invoke>\n</function_calls>\n<function_results>\nimagined</function_results>\n<invoke name=\"write_file\">";
+        // Split everywhere, tags included.
+        for size in [1, 3, 7, 1000] {
+            let mut f = ToolCallFilter::default();
+            let chars: Vec<char> = reply.chars().collect();
+            let mut shown = String::new();
+            for piece in chars.chunks(size) {
+                shown.push_str(&f.push(&piece.iter().collect::<String>()));
+            }
+            shown.push_str(&f.finish());
+            assert_eq!(shown.trim(), "Reading.", "chunks of {size}");
+            let at = f.made_up_at().unwrap();
+            assert!(reply[at..].starts_with("<function_results>"), "chunks of {size}: {}", &reply[at..]);
+            let p = parse_tool_calls(&reply[..at], &[tool("read_file"), tool("write_file")]);
+            assert_eq!(names(&p), ["read_file"]);
+        }
+        // The wrapper left open, results right after the call.
+        let mut f = ToolCallFilter::default();
+        let reply = "<function_calls><invoke name=\"read_file\"></invoke>\n<function_results>x";
+        assert_eq!(f.push(reply).trim(), "");
+        assert!(reply[f.made_up_at().unwrap()..].starts_with("<function_results>"));
+        // Before any call, or with none, a result tag is just text.
+        let mut f = ToolCallFilter::default();
+        let text = "Claude writes <function_results> blocks.";
+        assert_eq!(f.push(text) + &f.finish(), text);
+        assert_eq!(f.made_up_at(), None);
     }
 
     #[test]
