@@ -229,12 +229,17 @@ impl ByobApp {
                 self.conn.send(msg);
             }
         }
-        if ctx.input_mut(|i| {
-            !i.modifiers.shift && (i.consume_shortcut(&crate::sidebar::SEARCH_SHORTCUT) || i.consume_shortcut(&crate::sidebar::PALETTE_SHORTCUT))
-        }) {
+        let (find, palette) = ctx.input_mut(|i| {
+            let find = !i.modifiers.shift && i.consume_shortcut(&crate::sidebar::SEARCH_SHORTCUT);
+            (find, !find && !i.modifiers.shift && i.consume_shortcut(&crate::sidebar::PALETTE_SHORTCUT))
+        });
+        if find || palette {
             if self.show_settings {
                 // In the settings, Find searches them.
                 self.appearance.focus_search = true;
+            } else if find && self.page == crate::Page::Projects {
+                // On the Projects page, Find searches the projects (its field shows the key).
+                self.projects.find();
             } else {
                 self.sidebar.focus_search();
             }

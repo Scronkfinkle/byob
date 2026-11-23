@@ -125,6 +125,9 @@ pub struct Projects {
     focus_search: bool,
     /// Where the search field was drawn last (its clear button sits in its right end).
     search_rect: Option<Rect>,
+    /// The search had the keyboard last frame (egui lets go of it on Esc before anyone
+    /// sees the key, so this is how Esc knows it was pressed in the search).
+    search_focused: bool,
 }
 
 /// The folders a project works in, as people see them: its own folder when it's one they
@@ -196,6 +199,11 @@ impl Projects {
         self.show = Show::All;
     }
 
+    /// Put the keyboard in the search on the next frame (⌘F, Ctrl F elsewhere).
+    pub fn find(&mut self) {
+        self.focus_search = true;
+    }
+
     /// Restore the view and sort (remembered per device).
     pub fn set_prefs(&mut self, view: View, sort: Sort) {
         self.view = view;
@@ -215,12 +223,14 @@ impl Projects {
         scope: Option<&SpaceScope>,
         now_ms: i64,
     ) -> Option<Action> {
+        // Esc goes back to the chat, unless a menu or a dialog over the page has it, or it's
+        // in the search (there it clears what's typed, then leaves the field).
         let menus_open = egui::Popup::is_any_open(ui.ctx());
-        if !menus_open && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        let behind_dialog = !ui.ctx().memory(|m| m.is_above_modal_layer(ui.layer_id()));
+        // Last frame's, then this frame's (the search may not be drawn).
+        let searching = std::mem::take(&mut self.search_focused);
+        if !menus_open && !behind_dialog && !searching && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             return Some(Action::Close);
-        }
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
-            self.focus_search = true;
         }
         let mut action = None;
         let page_w = (ui.available_width() - 64.0).clamp(240.0, 880.0);
@@ -256,7 +266,7 @@ impl Projects {
                     }
                     return;
                 }
-                self.toolbar(ui, t, page_w);
+                self.toolbar(ui, t, page_w, searching);
                 let facts = Facts { pinned, root, now_ms };
                 let shown = self.shown(all, scope, &facts);
                 if let Some(s) = scope {
@@ -285,7 +295,7 @@ impl Projects {
 
     /// Search on the left (a clear button once you type, ⌘F while it's empty); Show, Sort
     /// and the view on the right. One height, one corner, one border for all of them.
-    fn toolbar(&mut self, ui: &mut Ui, t: &Tokens, page_w: f32) {
+    fn toolbar(&mut self, ui: &mut Ui, t: &Tokens, page_w: f32, searching: bool) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let id = egui::Id::unique("projects-search");
@@ -319,13 +329,15 @@ impl Projects {
             if std::mem::take(&mut self.focus_search) {
                 r.request_focus();
             }
-            if r.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            if searching && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 if self.query.is_empty() {
                     r.surrender_focus();
                 } else {
                     self.query.clear();
+                    r.request_focus();
                 }
             }
+            self.search_focused = ui.ctx().memory(|m| m.has_focus(id));
             let h = r.rect.height().max(34.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;

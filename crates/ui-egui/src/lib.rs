@@ -1971,6 +1971,9 @@ mod app_tests {
     mod look;
     mod rewind;
 
+    /// The Projects page and the project dialogs over it.
+    mod projects_page;
+
     /// A connection that delivers queued messages and records what the app sends.
     #[derive(Clone, Default)]
     struct Fake {
