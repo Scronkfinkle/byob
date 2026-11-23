@@ -204,10 +204,11 @@ impl Projects {
         self.focus_search = true;
     }
 
-    /// Restore the view and sort (remembered per device).
-    pub fn set_prefs(&mut self, view: View, sort: Sort) {
+    /// Restore the view and sort, and which way it goes (remembered per device).
+    pub fn set_prefs(&mut self, view: View, sort: Sort, reverse: bool) {
         self.view = view;
         self.sort = sort;
+        self.reverse = reverse;
     }
 
     /// The page: title and New project, the toolbar (search, view, sort), the Space line,

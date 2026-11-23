@@ -494,6 +494,7 @@ impl ByobApp {
         let mut p = self.sidebar.prefs();
         p.projects_view = self.projects.view;
         p.projects_sort = self.projects.sort;
+        p.projects_reverse = self.projects.reverse;
         let current = (!self.draft_key.is_empty() && !self.input.trim().is_empty()).then(|| (self.draft_key.clone(), self.input.clone()));
         p.drafts = self.drafts.iter().map(|(k, v)| (k.clone(), v.clone())).chain(current).take(MAX_DRAFTS).collect();
         p
@@ -502,7 +503,7 @@ impl ByobApp {
     /// Restore them (at startup, before the engine said which chat is in view).
     pub fn set_sidebar_prefs(&mut self, prefs: &sidebar::SidebarPrefs) {
         self.sidebar.set_prefs(prefs);
-        self.projects.set_prefs(prefs.projects_view, prefs.projects_sort);
+        self.projects.set_prefs(prefs.projects_view, prefs.projects_sort, prefs.projects_reverse);
         self.drafts = prefs.drafts.iter().filter(|(_, v)| !v.trim().is_empty()).take(MAX_DRAFTS).map(|(k, v)| (k.clone(), v.clone())).collect();
     }
 

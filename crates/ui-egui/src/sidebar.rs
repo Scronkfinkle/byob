@@ -337,6 +337,8 @@ pub struct SidebarPrefs {
     /// The Projects page: rows or cards, and its order.
     pub projects_view: crate::projects::View,
     pub projects_sort: crate::projects::Sort,
+    /// The order turned around (its column's header clicked again).
+    pub projects_reverse: bool,
 }
 
 /// The person's own sections and the list's view: shared through the engine's layout, so

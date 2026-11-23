@@ -71,3 +71,16 @@ fn a_long_project_name_keeps_its_settings_dialog_in_the_window() {
         assert!(dialog.left() >= 0.0 && dialog.right() <= width, "width {width}: {dialog:?}");
     }
 }
+
+/// The page's order is remembered whole: a column sorted the other way (Z to A, oldest
+/// first) comes back so after a restart, not just the column.
+#[test]
+fn the_page_remembers_which_way_it_is_sorted() {
+    let (_fake, mut app) = two_workspaces();
+    app.projects.sort = projects::Sort::Name;
+    app.projects.reverse = true;
+    let saved: sidebar::SidebarPrefs = serde_json::from_str(&serde_json::to_string(&app.sidebar_prefs()).unwrap()).unwrap();
+    let (_fake, mut again) = two_workspaces();
+    again.set_sidebar_prefs(&saved);
+    assert_eq!((again.projects.sort, again.projects.reverse), (projects::Sort::Name, true));
+}
