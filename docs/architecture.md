@@ -204,6 +204,9 @@ Funnel (public internet) requests get `Tailscale-Funnel-Request: ?1` and no iden
   `X-Forwarded-Host`, honored only from a loopback proxy), so a random website open in your
   browser can't drive the harness (cross-site WebSocket hijacking). Behind `tailscale serve`
   `Host` already equals the tailnet name, so the check holds unchanged.
+- **DNS rebinding.** A website can point its own name at 127.0.0.1, making `Host` and
+  `Origin` agree. So direct loopback requests (no proxy headers) must name the loopback in
+  `Host` (`localhost`, `*.localhost`, `127.x.x.x`, `[::1]`); anything else gets a 403.
 - **Identity.** `Tailscale-User-*` headers are trusted only when the TCP peer is loopback;
   from any other peer they are attacker-controlled and ignored (and logged). Every WebSocket
   connect/disconnect is logged with who it was (`Ann <ann@…>`, `local user`, `anonymous`).

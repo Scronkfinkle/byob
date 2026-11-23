@@ -56,6 +56,12 @@ pub fn authorize(peer: IpAddr, req: &Request, allowed_users: &[String]) -> Acces
         return Access::Deny("byob does not accept Tailscale Funnel (public internet) traffic. Use `tailscale serve`, which stays inside your tailnet.".into());
     }
     let who = identify(trusted, req);
+    // A website can point its own name at 127.0.0.1 (DNS rebinding); its pages then reach
+    // us with that name in both `Host` and `Origin`, so the Origin check alone would pass.
+    // Direct local requests must therefore name the loopback.
+    if who == Who::Local && !req.header("host").is_none_or(is_loopback_host) {
+        return Access::Deny("byob only answers local requests addressed to the loopback (open it as http://localhost or http://127.0.0.1).".into());
+    }
     if allowed_users.is_empty() {
         return Access::Allow(who);
     }
@@ -81,6 +87,23 @@ fn identify(trusted: bool, req: &Request) -> Who {
 
 fn is_loopback(ip: IpAddr) -> bool {
     ip.to_canonical().is_loopback()
+}
+
+/// Does a `Host` header name the loopback (`localhost`, `*.localhost`, `127.x.x.x`, `[::1]`),
+/// with or without a port?
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim();
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        rest.split_once(']').map_or(rest, |(ip, _)| ip)
+    } else {
+        host.rsplit_once(':').map_or(host, |(name, _)| name)
+    };
+    let name = name.trim_end_matches('.');
+    if let Ok(ip) = name.parse::<IpAddr>() {
+        return is_loopback(ip);
+    }
+    let lower = name.to_ascii_lowercase();
+    lower == "localhost" || lower.ends_with(".localhost")
 }
 
 /// Tailscale RFC 2047 Q-encodes non-ASCII values (`=?utf-8?q?J=C3=BCrgen?=`); plain ASCII
@@ -191,6 +214,25 @@ mod tests {
         assert!(matches!(authorize(LOOPBACK, &tagged, &list), Access::Deny(_)));
         // Direct local access still works.
         assert_eq!(authorize(LOOPBACK, &Request::for_test(&[("Host", "localhost:7470")]), &list), Access::Allow(Who::Local));
+    }
+
+    /// Regression: a website rebinding its own name to 127.0.0.1 sent matching `Host` and
+    /// `Origin` headers and was let in as the local user (and so could drive the engine).
+    #[test]
+    fn dns_rebinding_is_refused() {
+        let rebound = Request::for_test(&[("Host", "evil.example:7470"), ("Origin", "http://evil.example:7470")]);
+        assert!(matches!(authorize(LOOPBACK, &rebound, &[]), Access::Deny(_)));
+        for host in ["localhost:7470", "LOCALHOST", "app.localhost:1", "127.0.0.1:7470", "127.1.2.3", "[::1]:7470", "[::1]", "localhost."] {
+            assert_eq!(authorize(LOOPBACK, &Request::for_test(&[("Host", host)]), &[]), Access::Allow(Who::Local), "{host}");
+        }
+        for host in ["evil.example", "localhost.evil.example", "10.0.0.1:7470", "[fd00::1]:7470", ""] {
+            assert!(matches!(authorize(LOOPBACK, &Request::for_test(&[("Host", host)]), &[]), Access::Deny(_)), "{host}");
+        }
+        // No Host at all (a native HTTP/1.0 client; browsers always send one).
+        assert_eq!(authorize(LOOPBACK, &Request::for_test(&[]), &[]), Access::Allow(Who::Local));
+        // Proxied (tailscale serve) and non-loopback peers are judged as before.
+        assert!(matches!(authorize(LOOPBACK, &via_serve("ann@example.com"), &[]), Access::Allow(Who::Tailnet { .. })));
+        assert_eq!(authorize(REMOTE, &Request::for_test(&[("Host", "box:7470")]), &[]), Access::Allow(Who::Anonymous));
     }
 
     #[test]
