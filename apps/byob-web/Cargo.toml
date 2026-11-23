@@ -14,8 +14,9 @@ eframe = { workspace = true, features = ["persistence"] }
 log.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-# Element: `<html data-byob="ready">` for `cargo xtask browser-smoke`.
-web-sys = { workspace = true, features = ["Element"] }
+# Element: `<html data-byob="ready">` for `cargo xtask browser-smoke`. VisualViewport,
+# HtmlElement, CssStyleDeclaration: the page follows the on-screen keyboard.
+web-sys = { workspace = true, features = ["Element", "HtmlElement", "CssStyleDeclaration", "VisualViewport"] }
 
 [lints]
 workspace = true

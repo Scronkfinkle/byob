@@ -17,6 +17,7 @@ fn main() {
             return;
         };
         keep_ctrl_f(&document);
+        follow_the_keyboard();
         let result = eframe::WebRunner::new()
             .start(
                 canvas,
@@ -72,6 +73,51 @@ fn keep_ctrl_f(document: &web_sys::Document) {
     });
     let _ = document.add_event_listener_with_callback("keydown", on_key.as_ref().unchecked_ref());
     on_key.forget();
+}
+
+/// The page's height follows the visual viewport, so the on-screen keyboard shrinks the app
+/// (the message box stays above it) instead of covering its bottom. Browsers that honor the
+/// viewport's `interactive-widget=resizes-content` (index.html) already shrink the page;
+/// this covers the rest (Safari, older Firefox), where only the visual viewport shrinks.
+#[cfg(target_arch = "wasm32")]
+fn follow_the_keyboard() {
+    use wasm_bindgen::JsCast as _;
+    let Some(window) = web_sys::window() else { return };
+    let Some(viewport) = window.visual_viewport() else { return };
+    let fit = {
+        let (window, viewport) = (window.clone(), viewport.clone());
+        move || {
+            let Some(root) = window.document().and_then(|d| d.document_element()).and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok()) else {
+                return;
+            };
+            let layout = window.inner_height().ok().and_then(|h| h.as_f64()).unwrap_or(0.0);
+            let shown = keyboard_height(layout, viewport.height(), viewport.scale());
+            let style = root.style();
+            let _ = match shown {
+                Some(h) => style.set_property("height", &format!("{h}px")),
+                None => style.remove_property("height").map(drop),
+            };
+            // Safari scrolls the page to the focused field; the app is all there is to see.
+            if viewport.offset_top() > 0.0 || window.scroll_y().unwrap_or(0.0) > 0.0 {
+                window.scroll_to_with_x_and_y(0.0, 0.0);
+            }
+        }
+    };
+    let on_change = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(fit);
+    for event in ["resize", "scroll"] {
+        let _ = viewport.add_event_listener_with_callback(event, on_change.as_ref().unchecked_ref());
+    }
+    on_change.forget();
+}
+
+/// The page height to use while something (the on-screen keyboard) covers the bottom of
+/// the window: the visual viewport's, when it is shorter than the layout viewport (`layout`)
+/// by more than rounding. `scale`: pinch zoom, which shrinks the visual viewport without
+/// covering anything (`None` then).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn keyboard_height(layout: f64, visual: f64, scale: f64) -> Option<f64> {
+    let visible = visual * scale.max(1.0);
+    (layout.is_finite() && visible.is_finite() && visible > 100.0 && visible < layout - 1.0).then(|| visible.floor())
 }
 
 /// `ws(s)://<same host>/ws` — the page is always served by the byob server it talks to.
@@ -181,4 +227,23 @@ fn mark_ready() {
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
     eprintln!("byob-web only runs in the browser: build it with `cargo xtask web`");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keyboard_height;
+
+    #[test]
+    fn the_page_shrinks_only_for_the_keyboard() {
+        // Nothing covers the window.
+        assert_eq!(keyboard_height(844.0, 844.0, 1.0), None);
+        assert_eq!(keyboard_height(844.0, 843.6, 1.0), None);
+        // The keyboard: the visual viewport is shorter.
+        assert_eq!(keyboard_height(844.0, 500.4, 1.0), Some(500.0));
+        // Pinch zoom (twice as big): shorter in CSS pixels, but nothing is covered.
+        assert_eq!(keyboard_height(844.0, 422.0, 2.0), None);
+        // Nonsense from the browser.
+        assert_eq!(keyboard_height(844.0, f64::NAN, 1.0), None);
+        assert_eq!(keyboard_height(844.0, 0.0, 1.0), None);
+    }
 }
