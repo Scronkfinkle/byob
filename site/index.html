@@ -37,10 +37,13 @@
     <p class="lede">A desktop AI coworker for the model you already run. Free, open source, no
       account.</p>
     <div class="get">
-      <a class="button dl" href="#install" data-version="0.3.10">Download byob</a>
+      <a class="button dl" href="#install" data-version="0.3.11">Download byob</a>
       <a class="quiet" href="#install">All downloads</a>
     </div>
     <p class="dl-note" aria-live="polite"></p>
+    <p class="new">New in 0.3.11: change anything on screen (press F2, or ask), projects with
+      several folders, and a cleaner look all round.
+      <a href="https://github.com/Scronkfinkle/byob/releases/tag/v0.3.11">What's new</a></p>
   </div>
   <figure class="poster">
     <img src="poster.jpg" width="722" height="812"
@@ -228,7 +231,7 @@
     <p>byob isn't signed by an Apple developer yet. Try to open it once, then choose
       <b>Open Anyway</b> in System Settings → Privacy &amp; Security. Or fetch it from a
       terminal, which skips the check:</p>
-    <pre><code>v=0.3.10 t=aarch64-apple-darwin   # x86_64-apple-darwin on Intel
+    <pre><code>v=0.3.11 t=aarch64-apple-darwin   # x86_64-apple-darwin on Intel
 curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.tar.gz | tar xz
 ./byob-$v-$t/byob</code></pre>
   </details>
@@ -260,10 +263,10 @@ curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.ta
 <section class="install" id="install">
   <h2>Download byob.</h2>
   <div class="get">
-    <a class="button dl" href="#all" data-version="0.3.10">Download byob</a>
+    <a class="button dl" href="#all" data-version="0.3.11">Download byob</a>
   </div>
   <p class="dl-note" aria-live="polite"></p>
-  <p class="version" id="all">Version 0.3.10. Each download has everything in it, about 60 MB,
+  <p class="version" id="all">Version 0.3.11. Each download has everything in it, about 60 MB,
     and a <code>.sha256</code> beside it to check it against. Slim builds without the browser UI
     and the HTML renderer are on the
     <a href="https://github.com/Scronkfinkle/byob/releases/latest">releases page</a>.</p>
@@ -272,8 +275,8 @@ curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.ta
     <div class="platform">
       <h3>macOS</h3>
       <ul class="files">
-        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.10/byob-0.3.10-aarch64-apple-darwin.dmg">Apple silicon (.dmg)</a></li>
-        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.10/byob-0.3.10-x86_64-apple-darwin.dmg">Intel (.dmg)</a></li>
+        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.11/byob-0.3.11-aarch64-apple-darwin.dmg">Apple silicon (.dmg)</a></li>
+        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.11/byob-0.3.11-x86_64-apple-darwin.dmg">Intel (.dmg)</a></li>
       </ul>
       <p>macOS refuses it the first time: see <a href="#faq">the FAQ</a>.</p>
     </div>
@@ -281,8 +284,8 @@ curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.ta
     <div class="platform">
       <h3>Linux</h3>
       <ul class="files">
-        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.10/byob-0.3.10-x86_64-unknown-linux-gnu.tar.gz">x86_64 (.tar.gz)</a></li>
-        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.10/byob-0.3.10-aarch64-unknown-linux-gnu.tar.gz">ARM64 (.tar.gz)</a></li>
+        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.11/byob-0.3.11-x86_64-unknown-linux-gnu.tar.gz">x86_64 (.tar.gz)</a></li>
+        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.11/byob-0.3.11-aarch64-unknown-linux-gnu.tar.gz">ARM64 (.tar.gz)</a></li>
       </ul>
       <p>Unpack it and run <code>byob</code>. With Nix: <code>nix run github:Scronkfinkle/byob</code></p>
     </div>
@@ -290,7 +293,7 @@ curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.ta
     <div class="platform">
       <h3>Windows</h3>
       <ul class="files">
-        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.10/byob-0.3.10-x86_64-pc-windows-msvc.zip">x86_64 (.zip)</a></li>
+        <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.11/byob-0.3.11-x86_64-pc-windows-msvc.zip">x86_64 (.zip)</a></li>
       </ul>
       <p>Unzip it and run <code>byob.exe</code>, keeping the other files next to it.</p>
     </div>

@@ -114,6 +114,7 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
 .button:active { transform: translate(5px, 5px); box-shadow: 0 0 0 var(--red); }
 .quiet { font-weight: 600; }
 .dl-note { margin: 0.9rem 0 0; font-size: 0.9375rem; min-height: 1.5em; }
+.new { margin: 1.25rem 0 0; font-size: 0.9375rem; border-left: 4px solid var(--red); padding-left: 0.8rem; max-width: 34em; }
 
 .poster img {
   border: 6px solid var(--navy);
