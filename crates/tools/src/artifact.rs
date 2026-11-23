@@ -214,6 +214,10 @@ pub fn add_live(types: &ArtifactTypes, workspace: &Path, chat: &str, path: &str)
         return Err("that file can't be added".into());
     }
     let r = sandbox::resolve(workspace, &rel)?;
+    // by its full path too (`rel` may be absolute)
+    if r.abs.strip_prefix(&r.root).ok().and_then(|p| p.components().next()).is_some_and(|c| c.as_os_str() == sandbox::RESERVED_DIR) {
+        return Err("that file can't be added".into());
+    }
     let info = std::fs::symlink_metadata(&r.abs).map_err(|_| format!("there is no file {rel:?}"))?;
     if !info.is_file() {
         return Err(format!("{rel:?} isn't a file"));
@@ -1368,6 +1372,12 @@ mod tests {
         std::fs::write(ws.join("budget.csv"), "a,b\n1,2\n").unwrap();
         assert!(add_live(&types, ws, "c1", "../escape.csv").is_err(), "outside the folder");
         assert!(add_live(&types, ws, "c1", ".byob/artifacts/x/v1.md").is_err(), "byob's own folder");
+        // Regression: by its full path, byob's own folder was let through.
+        std::fs::create_dir_all(ws.join(".byob/undo/t")).unwrap();
+        std::fs::write(ws.join(".byob/undo/t/0-x.md"), "kept").unwrap();
+        let full = ws.canonicalize().unwrap().join(".byob/undo/t/0-x.md");
+        let got = add_live(&types, ws, "c1", &full.display().to_string());
+        assert!(got.is_err(), "byob's own folder, by its full path: {got:?}");
         assert!(add_live(&types, ws, "c1", "missing.csv").is_err());
         let a = add_live(&types, ws, "c1", "budget.csv").unwrap();
         assert_eq!(a.versions.len(), 1);
