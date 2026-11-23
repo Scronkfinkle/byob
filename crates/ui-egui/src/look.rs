@@ -65,7 +65,11 @@ fn arrangement_fields(a: &cockpit::arrange::Arrangement, fields: &mut Vec<LookFi
             json!(a.bezel(m).name()),
             &format!("its frame when free: {} (metal: a metal plate with screws, a stamped label and a lit screen)", bezels.join(", ")),
         ));
-        fields.push(field(&format!("label.{id}"), json!(a.label(m)), "text stamped on its bezel when free (\"COMMS\"), up to 24 characters, \"\" for none"));
+        fields.push(field(
+            &format!("label.{id}"),
+            json!(a.label(m)),
+            "text stamped on its bezel when free (\"COMMS\"; a bare one shows it above the part), up to 24 characters, \"\" for none",
+        ));
     }
 }
 

@@ -150,6 +150,7 @@ pub enum Bezel {
     #[serde(alias = "instrument")]
     Metal,
     /// Nothing: the part straight on the backdrop.
+    /// Its label, if it has one, is still shown: over the part, on the backdrop.
     Bare,
 }
 
@@ -174,7 +175,7 @@ impl Bezel {
     pub fn overhead(self, labeled: bool) -> Vec2 {
         let label = if labeled { LABEL_HEIGHT } else { 0.0 };
         match self {
-            Self::Bare => Vec2::ZERO,
+            Self::Bare => vec2(0.0, label),
             Self::Glass => vec2(12.0, 12.0 + label),
             Self::Metal => vec2(32.0, 34.0 + if labeled { LABEL_HEIGHT - 12.0 + 2.0 } else { 0.0 }),
         }
@@ -293,7 +294,9 @@ impl Arrangement {
 pub fn paint(painter: &egui::Painter, rect: Rect, bezel: Bezel, label: &str, t: &Tokens) -> Rect {
     let r = t.round(10.0).round().clamp(0.0, 24.0);
     match bezel {
-        Bezel::Bare => rect,
+        // No frame, but a label asked for is still shown (it used to vanish silently).
+        Bezel::Bare if label.is_empty() => rect,
+        Bezel::Bare => stamp(painter, rect.translate(vec2(-12.0, -2.0)), label, t.text_dim, t).1.translate(vec2(12.0, 2.0)).intersect(rect),
         Bezel::Glass => {
             painter.rect(rect, CornerRadius::same(r as u8), t.panel_bg, Stroke::new(1.0, t.border.gamma_multiply(0.7)), StrokeKind::Inside);
             let inner = rect.shrink(6.0);
@@ -390,6 +393,26 @@ mod tests {
         a.place(Module::Chat, Rect::from_min_size(pos2(101.0, 83.0), vec2(503.0, 401.0)), screen);
         assert_eq!(a.spot(Module::Chat), Spot::At([10.0, 10.5, 50.5, 50.0]));
         assert_eq!(a.spot(Module::Composer), Arrangement::FLOATING[3].1, "the rest float where byob has them");
+    }
+
+    /// Regression: a label on a bare bezel (the focus preset's chat, labeled) was never drawn.
+    #[test]
+    fn a_bare_bezel_still_shows_its_label() {
+        let ctx = egui::Context::default();
+        let t = Tokens::dark();
+        let rect = Rect::from_min_size(pos2(100.0, 100.0), vec2(400.0, 300.0));
+        let draw = |label: &'static str| {
+            let mut inner = Rect::NOTHING;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| inner = paint(ui.painter(), rect, Bezel::Bare, label, &t));
+            out.textures_delta.clear();
+            (inner, out.shapes.len())
+        };
+        let ((plain, base), (labeled, with_label)) = (draw(""), draw("COMMS"));
+        let drawn_labeled = with_label.saturating_sub(base);
+        assert_eq!(plain, rect, "bare and unlabeled: the part fills it");
+        assert!(drawn_labeled > 0, "the label is drawn");
+        assert!(labeled.top() > rect.top() && labeled.bottom() == rect.bottom() && labeled.left() == rect.left(), "the part below its label: {labeled:?}");
+        assert!(Bezel::Bare.overhead(true).y >= labeled.top() - rect.top(), "room is made for it");
     }
 
     #[test]
