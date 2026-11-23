@@ -2372,7 +2372,10 @@ impl Sidebar {
     fn by_time(&mut self, ui: &mut Ui, t: &Tokens, recent: &[ChatSummary], placed: &BTreeSet<String>, narrow: bool, out: &mut Vec<ClientMsg>) {
         let mut chats: Vec<&ChatSummary> = recent.iter().filter(|c| !placed.contains(&format!("chat:{}", c.id))).collect();
         if self.sort_by == SortBy::Name {
-            chats.sort_by_key(|c| c.title.to_lowercase());
+            // By date, A to Z within each date (the dates stay newest first, each heading once).
+            let by_date = self.group_by == GroupBy::Date;
+            let now = self.now_ms;
+            chats.sort_by_cached_key(|c| (by_date.then(|| WHEN.iter().position(|h| *h == when_heading(c.updated_at, now))), c.title.to_lowercase()));
         }
         let all_open = self.fold(ui, t, "grp:chats", "Chats", chats.len(), true, Some(Drop::Chats));
         self.head_tools(ui, t, "grp:chats", true, narrow, out);
@@ -3008,6 +3011,9 @@ pub fn window_button(ui: &mut Ui, t: &Tokens, rect: Rect, id: Id, paint: icons::
     resp
 }
 
+/// The date headings ([`when_heading`]), newest first.
+const WHEN: [&str; 4] = ["Today", "Yesterday", "This week", "Earlier"];
+
 /// The heading a chat goes under when the list is grouped by date.
 fn when_heading(updated_at: i64, now_ms: i64) -> &'static str {
     const DAY: i64 = 24 * 60 * 60 * 1000;
@@ -3323,6 +3329,34 @@ mod tests {
         assert_eq!(when_heading(0, 30 * 60 * 60 * 1000), "Yesterday");
         assert_eq!(when_heading(0, 3 * 24 * 60 * 60 * 1000), "This week");
         assert_eq!(when_heading(0, 30 * 24 * 60 * 60 * 1000), "Earlier");
+    }
+
+    /// By date, sorted by name: A to Z within each date, the dates still newest first (each
+    /// heading once, not again wherever the names cross a date).
+    #[test]
+    fn by_date_sorted_by_name_keeps_the_dates_in_order() {
+        let ctx = egui::Context::default();
+        let now = now_ms();
+        let mut s = Sidebar::default();
+        let titled = |id: &str, title: &str, at: i64| ChatSummary { title: title.into(), ..chat(id, at, None) };
+        let month = 30 * 24 * 60 * 60 * 1000;
+        s.apply(&ServerMsg::Chats {
+            pinned: vec![],
+            recent: vec![
+                titled("z", "Zebra", now - 1000),
+                titled("m", "Mango", now - 2000),
+                titled("a", "Apple", now - month),
+                titled("b", "Banana", now - month),
+            ],
+            after: None,
+            next: None,
+        });
+        (s.group_by, s.sort_by) = (GroupBy::Date, SortBy::Name);
+        draw(&ctx, &mut s, None);
+        let y = |id: &str| s.rects.titles[&format!("chat:{id}")].top();
+        let (today, earlier) = (s.rects.headings["grp:Today"], s.rects.headings["grp:Earlier"]);
+        assert!(today.bottom() <= y("m") && y("m") < y("z"), "today's A to Z under Today");
+        assert!(y("z") < earlier.top() && earlier.bottom() <= y("a") && y("a") < y("b"), "then Earlier's, A to Z");
     }
 
     #[test]
