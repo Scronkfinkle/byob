@@ -30,6 +30,8 @@ Conventions are adapted from filmcraft. When this file and other docs disagree, 
   Libraries that use a runtime internally are fine; don't contort designs to avoid them.
 - Remote access is a security boundary: keep the Origin check, input caps, and loopback
   default bind. Secrets never go to clients.
+- No telemetry: byob sends nothing anywhere except to the model server, and the services
+  (web, mail, calendar) the user's own requests reach. byob.chat promises this; keep it true.
 - Native apps are Rust only: no Tauri, Electron, webviews or handwritten JS/TS. (HTML
   artifacts the model writes run in the Servo helper process, see §3.)
 
