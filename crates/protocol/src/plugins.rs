@@ -209,7 +209,7 @@ pub struct PluginInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fluid: Option<serde_json::Value>,
     /// Its folder has a logo (`logo.png` or `logo.jpg`); ask for it with
-    /// [`crate::ClientMsg::GetPluginLogo`] (15+, cap [`crate::version::CAP_PLUGIN_LOGOS`]).
+    /// [`crate::ClientMsg::GetPluginLogo`] (17+, cap [`crate::version::CAP_PLUGIN_LOGOS`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub logo: bool,
 }

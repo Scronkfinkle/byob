@@ -18,7 +18,7 @@ pub const MAX_NAME_CHARS: usize = 200;
 pub const MAX_PATH_CHARS: usize = 4096;
 /// Most folders listed by one [`ServerMsg::Folders`](crate::ServerMsg::Folders).
 pub const MAX_LISTED_FOLDERS: usize = 500;
-/// Most folders a project links besides its own (13.16+).
+/// Most folders a project links besides its own (13.18+).
 pub const MAX_LINKED_FOLDERS: usize = 16;
 /// Longest goal a project summary carries (its full text is the project's instructions).
 pub const MAX_GOAL_CHARS: usize = 280;
@@ -32,10 +32,10 @@ pub struct WorkspaceSummary {
     pub name: String,
     /// Its own folder on the engine's machine: where its chats run.
     pub folder: String,
-    /// Other folders it works in (13.16+): its chats may read and change them too.
+    /// Other folders it works in (13.18+): its chats may read and change them too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub folders: Vec<String>,
-    /// What it's for (13.16+): the start of its instructions, at most [`MAX_GOAL_CHARS`].
+    /// What it's for (13.18+): the start of its instructions, at most [`MAX_GOAL_CHARS`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub goal: String,
     /// How many chats it has.

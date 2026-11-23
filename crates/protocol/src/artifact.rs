@@ -128,7 +128,7 @@ pub struct Artifact {
     pub network: bool,
 }
 
-/// One artifact in the Library: every chat's artifacts in one place (15+, cap
+/// One artifact in the Library: every chat's artifacts in one place (17+, cap
 /// [`crate::version::CAP_LIBRARY`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LibraryItem {

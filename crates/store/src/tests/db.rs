@@ -253,3 +253,32 @@ fn a_deleted_chat_leaves_no_text_on_disk() {
     }
     assert!(s.chat("keep").unwrap().is_some());
 }
+
+/// A database written by 0.3.10 (schema v5, no `archived_at`) opens, keeps its chats as
+/// they were (a pinned one stays pinned, none archived), and archiving works on them.
+#[test]
+fn migrates_v5_to_latest_keeping_pins_and_archiving_works() {
+    let dir = TempDir::new();
+    let path = dir.path().join("byob.db");
+    {
+        let c = Connection::open(&path).unwrap();
+        schema::migrate_to(&c, 5).unwrap();
+        c.execute_batch(
+            "INSERT INTO chats (id, title, workspace, created_at, updated_at, pinned_at) VALUES ('p', 'Pinned', '/w', 1, 5, 4);
+             INSERT INTO chats (id, title, workspace, created_at, updated_at, pinned_at) VALUES ('q', 'Plain', '/w', 2, 3, NULL);
+             INSERT INTO messages (chat_id, role, content, task_id, created_at) VALUES ('p', 'user', 'hi', NULL, 1);",
+        )
+        .unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+    let p = s.chat("p").unwrap().unwrap();
+    assert_eq!((p.title.as_str(), p.updated_at, p.pinned_at, p.archived_at), ("Pinned", 5, Some(4), None));
+    assert_eq!(s.pinned_chats().unwrap().len(), 1);
+    assert_eq!(s.list_chats(10, None).unwrap().chats.len(), 2);
+    assert_eq!(s.messages("p").unwrap().len(), 1);
+    s.archive_chat("q", true).unwrap();
+    drop(s);
+    let s = Store::open(&path).unwrap();
+    assert!(s.chat("q").unwrap().unwrap().archived_at.is_some(), "archiving is kept across a reopen");
+}
