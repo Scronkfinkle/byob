@@ -199,6 +199,30 @@ pub fn module(source: &str, linear: bool) -> String {
     format!("{source}\n{PRELUDE}{overlay}").replace("BYOB_LINEAR_TARGET", if linear { "true" } else { "false" })
 }
 
+/// naga parses and checks expressions recursively, without a limit on prefix operators or
+/// on terms, and a 16 KB `- - - … 1.0` or `1.0+1.0+…` overflowed the stack (2 MB and 1 MB),
+/// which aborts the process (the browser UI has a 1 MB stack). So: at most this many prefix
+/// operators and opening parentheses in a row…
+const MAX_PREFIX_RUN: usize = 64;
+/// …and at most this many characters (outside whitespace and `//` comments) in a statement.
+const MAX_STATEMENT: usize = 2000;
+
+/// The longest run of `-`, `!`, `~`, `*`, `&` and `(`, and the longest stretch between `;`,
+/// `{` and `}`, in `source` (whitespace and line comments skipped).
+fn runs(source: &str) -> (usize, usize) {
+    let (mut run, mut prefixes, mut stretch, mut statement) = (0usize, 0usize, 0usize, 0usize);
+    for line in source.lines() {
+        let code = line.split_once("//").map_or(line, |(code, _)| code);
+        for c in code.chars().filter(|c| !c.is_whitespace()) {
+            run = if matches!(c, '-' | '!' | '~' | '*' | '&' | '(') { run + 1 } else { 0 };
+            stretch = if matches!(c, ';' | '{' | '}') { 0 } else { stretch + 1 };
+            prefixes = prefixes.max(run);
+            statement = statement.max(stretch);
+        }
+    }
+    (prefixes, statement)
+}
+
 /// The line count of `source` as [`module`] places it, for errors past its end.
 fn lines(source: &str) -> usize {
     source.lines().count()
@@ -212,6 +236,13 @@ pub fn check(source: &str) -> Result<(), String> {
     }
     if !source.contains("fn scene") {
         return Err("it needs fn scene(p: vec2<f32>) -> vec4<f32>".into());
+    }
+    let (prefixes, statement) = runs(source);
+    if prefixes > MAX_PREFIX_RUN {
+        return Err(format!("it chains more than {MAX_PREFIX_RUN} prefix operators or parentheses in a row"));
+    }
+    if statement > MAX_STATEMENT {
+        return Err(format!("a statement is over {MAX_STATEMENT} characters; split it up"));
     }
     let full = module(source, false);
     let at = |loc: Option<naga::SourceLocation>| match loc {
@@ -257,6 +288,35 @@ mod tests {
         assert_eq!(check(src), Ok(()));
         assert!(!animated(src));
         assert!(animated("fn scene(p: vec2<f32>) -> vec4<f32> { return vec4<f32>(sin(u.time)); }"));
+    }
+
+    /// Regression: a backdrop of `- - - … 1.0` overflowed the stack inside naga's parser,
+    /// aborting byob (the model writes backdrops, and saved ones are checked at startup).
+    /// The longest hostile sources are refused or checked within a 1 MB stack.
+    #[test]
+    fn hostile_nesting_is_refused_without_overflowing() {
+        let wrap = |e: &str| format!("fn scene(p: vec2<f32>) -> vec4<f32> {{ let x = {e}; return vec4<f32>(x); }}");
+        let room = MAX_SOURCE - 200;
+        let hostile = [
+            wrap(&format!("{}1.0", "- ".repeat(room / 2))),
+            wrap(&format!("{}1.0", "-(".repeat(room / 3))),
+            wrap(&format!("{}1.0{}", "(".repeat(room / 2), ")".repeat(room / 2))),
+            wrap(&format!("1.0{}", "+1.0".repeat(room / 4))),
+            wrap(&format!("1.0{}", "*(1.0".repeat(room / 6) + &")".repeat(room / 6))),
+        ];
+        let worker = std::thread::Builder::new().stack_size(1 << 20).spawn(move || {
+            for (i, src) in hostile.iter().enumerate() {
+                assert!(src.len() <= MAX_SOURCE, "{i}");
+                let _ = check(src);
+            }
+        });
+        worker.unwrap().join().unwrap();
+        assert!(check(&wrap(&format!("{}1.0", "- ".repeat(65)))).unwrap_err().contains("in a row"));
+        assert!(check(&wrap(&format!("1.0{}", "+1.0".repeat(500)))).unwrap_err().contains("split it up"));
+        // Long comments are fine.
+        assert_eq!(check(&format!("// {}\n{}", "x".repeat(3000), wrap("1.0"))), Ok(()));
+        // Ordinary code stays well under the limit.
+        assert_eq!(check(&wrap("-(-(1.0 * -2.0)) + (((0.5)))")), Ok(()));
     }
 
     #[test]
