@@ -69,6 +69,8 @@ fn a_csv_sheet_is_one_artifact_whether_named_by_id_or_path() {
     w.model.says("Made a copy here.");
     let other = w.send(&format!("Add a notes column to {sheet}"));
     other.step("read_cells").failed();
+    // A failed call keeps its manifest title (it said "Run read_cells").
+    assert_eq!(other.step("read_cells").title, "Read cells");
     let refused = other.result("read_cells");
     assert!(refused.contains("another chat"), "{refused}");
     other.step("write_cells").done();

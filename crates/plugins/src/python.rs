@@ -305,6 +305,15 @@ impl Tool for PythonTool {
         }
     }
 
+    /// The declared title too while it runs, on approval cards and when it fails (not
+    /// "Run describe_sheet").
+    fn pending_title(&self, args: &Value) -> String {
+        match &self.decl.title {
+            Some(t) => fill_title(t, args),
+            None => format!("Use {}: {}", self.plugin.name, self.decl.name),
+        }
+    }
+
     fn access(&self, _args: &Value) -> Access {
         self.decl.access.unwrap_or(Access::Execute)
     }
