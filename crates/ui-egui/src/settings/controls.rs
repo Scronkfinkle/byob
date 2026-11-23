@@ -53,6 +53,10 @@ impl ByobApp {
         if let Some(def) = d.remove {
             self.remove_theme(&def);
         } else if d.prefs != self.prefs {
+            // Removing the backdrop says byob can undo it: then it can.
+            if d.prefs.cockpit.backdrop != self.prefs.cockpit.backdrop {
+                crate::look::remember(&mut self.look_history, self.prefs.clone());
+            }
             self.set_prefs(d.prefs);
         }
     }
@@ -202,10 +206,10 @@ impl ByobApp {
             Key::ResetAppearance => {
                 // The one destructive action on the page: in the error color, outlined.
                 if form::danger_button(ui, t, "Reset everything")
-                    .on_hover_text("Themes, accent, text, layout and color overrides (keeps imported themes)")
+                    .on_hover_text("Themes, accent, text, layout and color overrides (keeps imported themes and saved scenes)")
                     .clicked()
                 {
-                    d.prefs = Prefs { imported: std::mem::take(&mut d.prefs.imported), ..Prefs::default() };
+                    d.prefs = crate::look::reset(&mut d.prefs);
                 }
             }
             Key::Zoom => {

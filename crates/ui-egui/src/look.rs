@@ -206,7 +206,7 @@ pub fn change(prefs: &mut Prefs, history: &mut Vec<Prefs>, changes: &LookChanges
             dark_theme: prefs.dark_theme.clone(),
             light_theme: prefs.light_theme.clone(),
             zoom: prefs.zoom,
-            ..Prefs::default()
+            ..reset(prefs)
         };
     }
     let rest: LookChanges = changes.iter().filter(|(k, _)| *k != "reset" && *k != "undo").map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -215,6 +215,13 @@ pub fn change(prefs: &mut Prefs, history: &mut Vec<Prefs>, changes: &LookChanges
         remember(history, before);
     }
     problems
+}
+
+/// byob's default look, keeping what a reset doesn't take: imported themes and fluid's
+/// saved scenes (as fluid's own resets keep them).
+pub fn reset(prefs: &mut Prefs) -> Prefs {
+    let scenes = std::mem::take(&mut prefs.fluid.scenes);
+    Prefs { imported: std::mem::take(&mut prefs.imported), fluid: crate::fluid::FluidDoc { scenes, ..Default::default() }, ..Prefs::default() }
 }
 
 /// Keep `before` to undo to (the last [`HISTORY`] of them), once: a change made in two
@@ -659,5 +666,10 @@ mod tests {
         change(&mut p, &mut history, &changes(json!({"reset": true})), true, &[], true);
         assert_eq!((p.theme, p.knobs.radius), (ThemeKind::Dark, Knobs::default().radius));
         assert!(p.overrides.values().all(std::collections::BTreeMap::is_empty), "{:?}", p.overrides);
+        // Regression: a reset dropped fluid's saved scenes (fluid's own resets keep them).
+        p.fluid.save("calm");
+        change(&mut p, &mut history, &changes(json!({"corners": 5, "fluid": {"set": [{"path": "header", "hidden": true}]}})), true, &[], true);
+        change(&mut p, &mut history, &changes(json!({"reset": true})), true, &[], true);
+        assert!(p.fluid.rules.is_empty() && p.fluid.scenes.contains_key("calm"), "{:?}", p.fluid);
     }
 }

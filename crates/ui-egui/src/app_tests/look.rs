@@ -94,3 +94,24 @@ fn one_undo_takes_back_a_look_and_fluid_change() {
     app.logic(&ctx);
     assert!(app.look_history.len() <= crate::look::HISTORY, "{}", app.look_history.len());
 }
+
+/// Regression: Settings' Remove (backdrop) says "byob can undo it", but a change made in
+/// Settings wasn't kept to undo to, so the model's undo put back something else.
+#[test]
+fn removing_the_backdrop_in_settings_can_be_undone() {
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    let ctx = egui::Context::default();
+    fake.inbox.lock().unwrap().push(ServerMsg::Welcome(Welcome::current()));
+    frames(&ctx, &mut app, 2);
+    let mut prefs = app.prefs().clone();
+    prefs.cockpit.backdrop = crate::cockpit::tests::SCENE.into();
+    app.set_prefs(prefs);
+    let mut d = app.begin_draw();
+    d.prefs.cockpit.set_backdrop("");
+    app.end_draw(d);
+    assert!(app.prefs().cockpit.backdrop.is_empty());
+    fake.inbox.lock().unwrap().push(ServerMsg::SetLook { request: 1, changes: serde_json::from_value(serde_json::json!({"undo": true})).unwrap() });
+    frames(&ctx, &mut app, 2);
+    assert_eq!(app.prefs().cockpit.backdrop, crate::cockpit::tests::SCENE);
+}
