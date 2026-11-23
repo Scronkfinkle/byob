@@ -44,7 +44,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-img { max-width: 100%; height: auto; display: block; }
+img, video { max-width: 100%; height: auto; display: block; }
 a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 3px; }
 a:hover { text-decoration-color: var(--red); }
 :focus-visible { outline: 3px solid var(--red); outline-offset: 3px; }
@@ -77,6 +77,9 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
 .top nav { display: flex; gap: 1.5rem; font-weight: 600; }
 .top nav a { text-decoration: none; }
 .top nav a:hover { text-decoration: underline; text-decoration-color: var(--red); }
+.top nav .nav-dl { background: var(--navy); color: var(--paper); padding: 0.3rem 0.8rem; }
+.top nav .nav-dl:hover { text-decoration: none; background: var(--navy-deep); }
+.top nav { align-items: center; }
 
 /* ---------- hero: the poster is the loud part ---------- */
 .hero {
@@ -110,6 +113,7 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
 .button:hover { transform: translate(2px, 2px); box-shadow: 3px 3px 0 var(--red); }
 .button:active { transform: translate(5px, 5px); box-shadow: 0 0 0 var(--red); }
 .quiet { font-weight: 600; }
+.dl-note { margin: 0.9rem 0 0; font-size: 0.9375rem; min-height: 1.5em; }
 
 .poster img {
   border: 6px solid var(--navy);
@@ -118,9 +122,27 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
 
 /* ---------- demo ---------- */
 .demo { background: var(--navy); color: var(--paper); padding: clamp(2.5rem, 6vw, 4.5rem) var(--pad); }
-.demo figure { max-width: 62rem; margin: 0 auto; }
-.demo img { border: 1px solid #3c5797; }
+.demo h2 { max-width: 76rem; margin: 0 auto 1.75rem; color: var(--yellow); }
+.demo figure { max-width: 76rem; margin: 0 auto; }
+.demo video { border: 1px solid #3c5797; background: var(--navy-deep); }
 .demo figcaption { color: #d8deec; }
+
+/* ---------- slogans: four stencil lines ---------- */
+.slogans { max-width: var(--wide); margin: 0 auto; padding: clamp(2.5rem, 6vw, 4rem) var(--pad); }
+.slogans ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1.5rem clamp(1.25rem, 3vw, 2.5rem);
+}
+.slogans li { font-size: 0.9875rem; border-top: 3px solid var(--navy); padding-top: 0.8rem; }
+.slogans b {
+  display: block;
+  font: 900 clamp(1.9rem, 3.4vw, 2.6rem)/1 var(--display);
+  margin-bottom: 0.5rem;
+}
 
 /* ---------- make it yours: the requests are the poster's speech bubbles ---------- */
 .looks {
@@ -180,8 +202,8 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
   outline: 3px solid var(--red);
   outline-offset: 4px;
 }
-.frames figure { display: none; max-width: 62rem; }
-.frames img { border: 3px solid var(--navy); background: var(--navy); box-shadow: 10px 10px 0 var(--navy); }
+.frames figure { display: none; max-width: 76rem; }
+.frames img, .frames video { border: 3px solid var(--navy); background: var(--navy); box-shadow: 10px 10px 0 var(--navy); }
 .frames figcaption { margin-top: 1.4rem; font-size: 1rem; }
 #look-light:checked ~ .frames .f-light,
 #look-dark:checked ~ .frames .f-dark,
@@ -195,14 +217,14 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 2.25rem clamp(1.5rem, 3vw, 3rem);
-  margin: 2.5rem 0 4rem;
+  margin: clamp(3.5rem, 7vw, 5rem) 0 0;
 }
 .points > div { border-top: 3px solid var(--navy); padding-top: 1rem; }
 .points h3 { margin-bottom: 0.6rem; }
 .points p { font-size: 1rem; }
 
-.shots { display: grid; gap: clamp(3rem, 6vw, 4.5rem); }
-.shots figure { max-width: 62rem; }
+.shots { display: grid; gap: clamp(3rem, 6vw, 4.5rem); margin-top: 2.5rem; }
+.shots figure { max-width: 76rem; }
 .shots figcaption { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 0.5rem 2rem; margin-top: 1.5rem; align-items: baseline; }
 .shots a { display: block; }
 .shots img { border: 3px solid var(--navy); background: var(--navy); box-shadow: 8px 8px 0 var(--navy); }
@@ -221,6 +243,7 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
   font-size: 1.5rem;
   font-weight: 700;
 }
+.servers p { margin: 1rem 0 0; font-size: 1rem; }
 .servers ul {
   margin: 0;
   padding: 0;
@@ -231,6 +254,24 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
   font: 900 clamp(2rem, 4.5vw, 3.25rem)/1.1 var(--display);
 }
 
+/* ---------- faq ---------- */
+.faq { max-width: var(--wide); margin: 0 auto; padding: clamp(3rem, 7vw, 5.5rem) var(--pad); }
+.faq h2 { margin-bottom: 2rem; }
+.faq details { border-top: 3px solid var(--navy); max-width: 48rem; }
+.faq details:last-of-type { border-bottom: 3px solid var(--navy); }
+.faq summary {
+  cursor: pointer;
+  list-style: none;
+  font: 800 1.45rem/1.15 var(--display);
+  padding: 0.9rem 2.5rem 0.9rem 0;
+  position: relative;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: "+"; position: absolute; right: 0.25rem; top: 0.75rem; font-size: 1.6rem; }
+.faq details[open] summary::after { content: "–"; }
+.faq details p { font-size: 1rem; }
+.faq details pre { background: var(--navy); }
+
 /* ---------- install ---------- */
 .install {
   background: var(--navy);
@@ -240,7 +281,10 @@ figcaption { font-size: 0.9375rem; margin-top: 0.75rem; max-width: 40em; }
 .install a { color: var(--paper); }
 .install a:hover { text-decoration-color: var(--yellow); }
 .install :focus-visible { outline-color: var(--yellow); }
-.version { margin-top: 1rem; color: #d8deec; }
+.install h2 { font-size: clamp(3rem, 7vw, 5rem); font-weight: 900; color: var(--yellow); margin-bottom: 1.5rem; }
+.install .button { background: var(--yellow); color: var(--navy); }
+.install .dl-note { color: #d8deec; }
+.version { margin-top: 1.5rem; color: #d8deec; }
 .platforms {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -280,7 +324,8 @@ footer p { margin: 0; }
 /* ---------- narrow screens ---------- */
 @media (max-width: 56rem) {
   .hero { grid-template-columns: 1fr; }
-  .poster { max-width: 30rem; order: -1; }
+  .poster { max-width: 24rem; }
+  .slogans ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .points { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .shots figcaption { grid-template-columns: minmax(0, 1fr); }
 }
@@ -288,7 +333,7 @@ footer p { margin: 0; }
   .top nav a:not(:last-child) { display: none; }
   .asks label { font-size: 1.15rem; }
   .frames img { box-shadow: 6px 6px 0 var(--navy); }
-  .points, .platforms { grid-template-columns: minmax(0, 1fr); }
+  .points, .platforms, .slogans ul { grid-template-columns: minmax(0, 1fr); }
   .poster img { box-shadow: 8px 8px 0 var(--navy); }
 }
 @media (prefers-reduced-motion: reduce) {

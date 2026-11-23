@@ -7,12 +7,15 @@
 # HEADLESS_TIMEOUT (default 300 s) kills a stuck run. HEADLESS_DRIVE=script.sh runs alongside
 # (with $DISPLAY set), e.g. to drive input with xdotool. HEADLESS_RECORD=out.mp4 records the
 # virtual display (ffmpeg) for the whole run; the window sits at the top left, so crop to its size.
+# HEADLESS_SCREEN (default 1600x900) sizes that display: make room for a big window, or for
+# WINIT_X11_SCALE_FACTOR=2 (the window at twice the pixels, sharp on HiDPI screens).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 if ! command -v Xvfb >/dev/null || ! command -v cargo >/dev/null; then exec nix develop -c "$0" "$@"; fi
 cargo build -q -p byob
 display_file="$(mktemp)"
-Xvfb -displayfd 3 -screen 0 1600x900x24 -nolisten tcp 3>"$display_file" 2>/dev/null &
+screen="${HEADLESS_SCREEN:-1600x900}"
+Xvfb -displayfd 3 -screen 0 "${screen}x24" -nolisten tcp 3>"$display_file" 2>/dev/null &
 xvfb_pid=$!
 trap 'kill "$xvfb_pid" 2>/dev/null; rm -f "$display_file"' EXIT
 for _ in $(seq 50); do [[ -s "$display_file" ]] && break; sleep 0.1; done
@@ -23,7 +26,7 @@ if [[ -n "${HEADLESS_RECORD:-}" ]]; then
   # x11grab is only in ffmpeg-full (pinned by the flake's nixpkgs, fetched on first use); the
   # dev shell's LD_LIBRARY_PATH would break it.
   ffmpeg="$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#ffmpeg-full.bin)/bin/ffmpeg"
-  env -u LD_LIBRARY_PATH "$ffmpeg" -loglevel error -y -f x11grab -draw_mouse 0 -framerate 15 -video_size 1600x900 -i "${env[0]#DISPLAY=}" \
+  env -u LD_LIBRARY_PATH "$ffmpeg" -loglevel error -y -f x11grab -draw_mouse 0 -framerate 15 -video_size "$screen" -i "${env[0]#DISPLAY=}" \
     -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "$HEADLESS_RECORD" <"$rec_ctl" &
   rec_pid=$!
   exec 4>"$rec_ctl"

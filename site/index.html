@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>byob: bring your own brain</title>
-<meta name="description" content="A desktop AI coworker for the model you already run. Point byob at llama.cpp, Ollama, LM Studio, vLLM, Claude or another hosted API and it works in a folder with you, and looks however you ask it to.">
+<meta name="description" content="Get things done, however you want. byob is a free, open-source desktop AI coworker for the model you already run: llama.cpp, Ollama, LM Studio, vLLM, Claude or another hosted API.">
 <meta property="og:title" content="byob: bring your own brain">
-<meta property="og:description" content="A desktop AI coworker for the model you already run.">
+<meta property="og:description" content="Get things done, however you want. A desktop AI coworker for the model you already run.">
 <meta property="og:image" content="https://byob.chat/og.png">
 <meta property="og:url" content="https://byob.chat/">
 <meta name="twitter:card" content="summary_large_image">
@@ -23,8 +23,9 @@
   <nav>
     <a href="#looks">Make it yours</a>
     <a href="#what">What it does</a>
-    <a href="#install">Install</a>
+    <a href="#faq">FAQ</a>
     <a href="https://github.com/Scronkfinkle/byob">GitHub</a>
+    <a class="nav-dl" href="#install">Download</a>
   </nav>
 </header>
 
@@ -32,16 +33,14 @@
 
 <section class="hero">
   <div class="hero-text">
-    <h1>A desktop AI coworker for the model you already run.</h1>
-    <p class="lede">Point byob at llama.cpp, Ollama, LM Studio, vLLM, Claude or another hosted API. It works in a
-      folder with you: reads and writes files, runs code, and builds spreadsheets, charts,
-      documents and small apps beside the chat.</p>
-    <p class="lede">No bundled model, no account, no Electron. One native program for Linux,
-      macOS and Windows, and it looks however you ask it to.</p>
+    <h1>Get things done, however you want.</h1>
+    <p class="lede">A desktop AI coworker for the model you already run. Free, open source, no
+      account.</p>
     <div class="get">
-      <a class="button" href="#install">Download byob 0.3.10</a>
-      <a class="quiet" href="https://github.com/Scronkfinkle/byob">Source on GitHub</a>
+      <a class="button dl" href="#install" data-version="0.3.10">Download byob</a>
+      <a class="quiet" href="#install">All downloads</a>
     </div>
+    <p class="dl-note" aria-live="polite"></p>
   </div>
   <figure class="poster">
     <img src="poster.jpg" width="722" height="812"
@@ -50,12 +49,27 @@
 </section>
 
 <section class="demo">
+  <h2>Give it data, and it gets to work.</h2>
   <figure>
-    <img src="media/beside.png" width="1440" height="810" loading="lazy"
-      alt="byob with a chat about an allotment's harvest on the left and a stacked bar chart of the harvest by month beside it">
-    <figcaption>“Chart our allotment harvest by month from harvest.csv.” byob reads the file,
-      draws the chart beside the chat and answers the question.</figcaption>
+    <video autoplay muted loop playsinline width="1100" height="620"
+      aria-label="Recorded: a harvest log is attached to a message asking for a chart; byob reads it, draws a stacked bar chart beside the chat and says which months were best per hour worked">
+      <source src="media/at-work.webm" type="video/webm">
+      <source src="media/at-work.mp4" type="video/mp4">
+    </video>
+    <figcaption>Recorded live: attach a file, say what you want. byob reads it, draws the chart
+      beside the chat and answers the question.</figcaption>
   </figure>
+</section>
+
+<section class="slogans">
+  <ul>
+    <li><b>Any model.</b> llama.cpp, Ollama, LM Studio, vLLM, a hosted API, or the Claude or
+      ChatGPT plan you already have.</li>
+    <li><b>Your machine.</b> It works in your folders. Your chats go to the model you pick and
+      nowhere else.</li>
+    <li><b>Native.</b> One program for Linux, macOS and Windows, drawn on the GPU. No Electron.</li>
+    <li><b>Open source.</b> MIT or Apache-2.0. Read it, fork it, or ask byob to extend it.</li>
+  </ul>
 </section>
 
 <section class="looks" id="looks">
@@ -79,30 +93,38 @@
 
   <div class="frames">
     <figure class="f-light">
-      <img src="media/look-light.png" width="1440" height="810" loading="lazy" alt="byob in its light theme, the harvest chart inline in the chat">
+      <img src="media/look-light.png" width="1100" height="620" loading="lazy" alt="byob in its light theme, the harvest chart inline in the chat">
       <figcaption>The light theme, as byob starts. Settings → Appearance has more (Nord, Gruvbox,
         Solarized, Dracula, Tokyo Night, Rosé Pine), any accent, corners, text size and
         spacing.</figcaption>
     </figure>
     <figure class="f-dark">
-      <img src="media/look-dark.png" width="1440" height="810" loading="lazy" alt="The same chat in byob's dark theme, the chart shown inline">
+      <img src="media/look-dark.png" width="1100" height="620" loading="lazy" alt="The same chat in byob's dark theme, the chart shown inline">
       <figcaption>The same chat in the dark theme. Looks are kept per device, so the phone can
         stay light while the desktop goes dark.</figcaption>
     </figure>
     <figure class="f-backdrop">
-      <img src="media/look-theme.gif" width="960" height="540" loading="lazy" alt="Recorded: byob is asked for a deep-sea submarine control room and turns its light window into dark glass panels in metal frames with stamped labels, HUD controls and a living deep-ocean shader behind them">
+      <video autoplay muted loop playsinline preload="metadata" width="1100" height="620"
+        aria-label="Recorded: byob is asked for a deep-sea submarine control room and turns its light window into dark glass panels in metal frames with stamped labels, HUD controls and a living deep-ocean shader behind them">
+        <source src="media/look-theme.webm" type="video/webm">
+        <source src="media/look-theme.mp4" type="video/mp4">
+      </video>
       <figcaption>One request, recorded live (the model's thinking is sped up): byob picks the
         palette, writes a deep-ocean shader for behind the glass, frames each panel in metal with
         stamped labels, switches to HUD controls, then checks a screenshot of its own work.</figcaption>
     </figure>
     <figure class="f-fluid">
-      <img src="media/look-fluid.png" width="1440" height="810" loading="lazy" alt="byob after the request: the model picker sits in the header beside Memory, and a running watering timer with Restart and Stop sits under the chats in the sidebar; the chat shows byob looking at the screen, changing it, checking a screenshot and fixing an overlap">
+      <img src="media/look-fluid.png" width="1100" height="620" loading="lazy" alt="byob after the request: the model picker sits in the header beside Memory, and a running watering timer with Restart and Stop sits under the chats in the sidebar">
       <figcaption>Asked for real: byob lists what's on screen, moves the picker, adds a timer that
-        counts down under the chats, then looks at the window, sees the picker overlapping a
-        button and moves it again. New elements like the timer keep their own state.</figcaption>
+        counts down under the chats, then checks a screenshot of the window and fixes what it
+        got wrong. New elements like the timer keep their own state.</figcaption>
     </figure>
     <figure class="f-edit">
-      <img src="media/fluid-edit.gif" width="960" height="540" loading="lazy" alt="Recorded: F2 opens the editor; Plugins is dragged onto New chat and Library onto Search, and the sidebar's buttons trade places">
+      <video autoplay muted loop playsinline preload="metadata" width="1100" height="620"
+        aria-label="Recorded: F2 opens the editor; Plugins is dragged onto New chat and Library onto Search, and the sidebar's buttons trade places">
+        <source src="media/fluid-edit.webm" type="video/webm">
+        <source src="media/fluid-edit.mp4" type="video/mp4">
+      </video>
       <figcaption>F2 opens the editor. Drag anything; with Alt, drop it on another element's middle
         to swap the two, or on an edge to keep it beside that one. Here the sidebar's buttons
         trade places. The inspector sets text, colors and motion, and an arrangement can be
@@ -113,24 +135,46 @@
 
 <section class="what" id="what">
   <h2>What it does</h2>
+  <div class="shots">
+    <figure>
+      <a href="media/html-app.png"><img src="media/html-app.png" width="1100" height="620" loading="lazy" alt="A sowing calendar HTML app running beside the chat: vegetable buttons and a 12-month strip of when to sow and harvest"></a>
+      <figcaption><h3>It writes custom apps</h3>
+        <p>“Make a sowing calendar.” HTML apps run right there, on the desktop and in the
+          browser, and can use the internet when you turn it on.</p></figcaption>
+    </figure>
+    <figure>
+      <a href="media/self-plugin.png"><img src="media/self-plugin.png" width="1100" height="620" loading="lazy" alt="Asking byob for a counter plugin: it writes the plugin, fixes its own load error, and the counter pane is open beside the chat"></a>
+      <figcaption><h3>Tell it to extend itself</h3>
+        <p>The prompt, the core tools, artifacts and subagents are all plugins, on the same API
+          anyone gets. “Make me a plugin with a counter pane”: byob writes it, reads its own load
+          errors, fixes them, and the pane appears.</p></figcaption>
+    </figure>
+    <figure>
+      <a href="media/sheets.png"><img src="media/sheets.png" width="1100" height="620" loading="lazy" alt="harvest.csv open as a spreadsheet beside the chat, with a new kg_per_hour column and the best month in bold"></a>
+      <figcaption><h3>Spreadsheets that check themselves</h3>
+        <p>“Open harvest.csv as a spreadsheet, add a kg_per_hour column and bold the best
+          month.” Every write recalculates and reports errors back to the model.</p></figcaption>
+    </figure>
+    <figure>
+      <a href="media/approval.png"><img src="media/approval.png" width="1100" height="620" loading="lazy" alt="&quot;Fix the spelling mistakes in plan.md&quot;: an approval card shows the diff byob wants to make, with Allow, Always allow and Deny"></a>
+      <figcaption><h3>Hands, on a leash</h3>
+        <p>“Fix the spelling mistakes in plan.md.” File tools, shell commands and Python,
+          sandboxed on Linux. Before anything changes you see the diff and say yes or no, and every
+          turn can be undone.</p></figcaption>
+    </figure>
+  </div>
+
   <div class="points">
     <div>
       <h3>Your model, your machine</h3>
       <p>Any OpenAI-compatible URL, or Claude over Anthropic's own API. On first run byob finds
         the servers already running on this computer and offers presets for hosted APIs. Save
-        several models and give each a job: subagents, image descriptions, chat titles.
-        <code>/bench</code> measures how fast yours really is.</p>
+        several models and give each a job: subagents, image descriptions, chat titles.</p>
     </div>
     <div>
       <h3>Work beside the chat</h3>
       <p>Spreadsheets (xlsx and csv), charts, Markdown documents, images and HTML apps open next
-        to the conversation, each with its own version history. Apps can use the internet when
-        you let them.</p>
-    </div>
-    <div>
-      <h3>Hands, on a leash</h3>
-      <p>File tools, shell commands and Python, sandboxed on Linux. Approval cards show the diff
-        before anything changes, and every turn can be undone.</p>
+        to the conversation, each with its own version history.</p>
     </div>
     <div>
       <h3>Projects</h3>
@@ -147,42 +191,78 @@
       <p>The browser UI is the same app compiled to WebAssembly, live on the same session.
         Put it behind <code>tailscale serve</code> and it follows you around.</p>
     </div>
-  </div>
-
-  <div class="shots">
-    <figure>
-      <a href="media/self-plugin.png"><img src="media/self-plugin.png" width="1440" height="810" loading="lazy" alt="Asking byob for a counter plugin: it writes the plugin, fixes its own load error, and the counter pane is open beside the chat"></a>
-      <figcaption><h3>It writes its own plugins</h3>
-        <p>The prompt, the core tools, artifacts and subagents are all plugins, on the same API
-          anyone gets. “Make me a plugin with a counter pane”: byob writes it, reads its own load
-          errors, fixes them, and the pane appears.</p></figcaption>
-    </figure>
-    <figure>
-      <a href="media/sheets.png"><img src="media/sheets.png" width="1440" height="810" loading="lazy" alt="harvest.csv open as a spreadsheet beside the chat, with a new kg_per_hour column and the best month in bold"></a>
-      <figcaption><h3>Spreadsheets that check themselves</h3>
-        <p>“Open harvest.csv as a spreadsheet, add a kg_per_hour column and bold the best
-          month.” Every write recalculates and reports errors back to the model.</p></figcaption>
-    </figure>
-    <figure>
-      <a href="media/html-app.png"><img src="media/html-app.png" width="1440" height="810" loading="lazy" alt="A sowing calendar HTML app running beside the chat: vegetable buttons and a 12-month strip of when to sow and harvest"></a>
-      <figcaption><h3>Small apps, beside the chat</h3>
-        <p>“Make a sowing calendar.” HTML apps run right there, on the desktop and in the
-          browser, and can use the internet when you turn it on.</p></figcaption>
-    </figure>
+    <div>
+      <h3>Knows how fast it is</h3>
+      <p><code>/bench</code> measures your model: tokens per second, prompt speed and time to the
+        first token, at every number of parallel requests your server allows.</p>
+    </div>
   </div>
 </section>
 
 <section class="servers">
-  <h2>Works with the server you already have</h2>
+  <h2>It finds the server you already have</h2>
   <ul>
     <li>llama.cpp</li><li>Ollama</li><li>LM Studio</li><li>vLLM</li><li>Anthropic (Claude)</li><li>OpenAI-compatible APIs</li>
   </ul>
+  <p>On first run byob looks on their usual ports and offers presets for hosted APIs.</p>
+</section>
+
+<section class="faq" id="faq">
+  <h2>A few things to know</h2>
+  <details>
+    <summary>Is it as good as Claude or ChatGPT?</summary>
+    <p>It's as capable as the model you point it at. Connect it to Claude and you get Claude,
+      with byob's files, apps, spreadsheets and plugins around it. A small local model is faster
+      and private, but it will make more mistakes on long tasks.</p>
+  </details>
+  <details>
+    <summary>Do I need a GPU or a server?</summary>
+    <p>Not if you use a hosted model: an API key, or the Claude or ChatGPT plan you already pay
+      for (through Claude Code or Codex, if you have them installed). To run models on your own
+      computer you need llama.cpp, Ollama, LM Studio or vLLM, and hardware that can run the
+      model you choose.</p>
+  </details>
+  <details>
+    <summary>What leaves my computer?</summary>
+    <p>Your messages and the files you share go to the model server you set up, and only there.
+      byob has no account, no telemetry and no server of its own. The web, mail and calendar
+      tools reach those services only when you use them.</p>
+  </details>
+  <details>
+    <summary>macOS says byob can't be opened.</summary>
+    <p>byob isn't signed by an Apple developer yet. Try to open it once, then choose
+      <b>Open Anyway</b> in System Settings → Privacy &amp; Security. Or fetch it from a
+      terminal, which skips the check:</p>
+    <pre><code>v=0.3.10 t=aarch64-apple-darwin   # x86_64-apple-darwin on Intel
+curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.tar.gz | tar xz
+./byob-$v-$t/byob</code></pre>
+  </details>
+  <details>
+    <summary>Windows says "Windows protected your PC."</summary>
+    <p>The Windows build isn't code-signed yet, so SmartScreen warns about it. Choose
+      <b>More info</b>, then <b>Run anyway</b>.</p>
+  </details>
+  <details>
+    <summary>Can I use it from my phone?</summary>
+    <p>Yes. Start it with <code>byob --serve</code> and open
+      <code>http://127.0.0.1:7470</code>, or put it behind <code>tailscale serve</code> to reach
+      it from anywhere. It's the same app and the same chats, live.</p>
+  </details>
+  <details>
+    <summary>Does it cost anything?</summary>
+    <p>byob is free. A hosted model costs what its provider charges; a local one costs
+      nothing but electricity.</p>
+  </details>
 </section>
 
 <section class="install" id="install">
-  <h2>Install</h2>
-  <p class="version">Version 0.3.10. Each download has everything in it, about 60 MB. Slim builds
-    without the browser UI and the HTML renderer are on the
+  <h2>Download byob.</h2>
+  <div class="get">
+    <a class="button dl" href="#all" data-version="0.3.10">Download byob</a>
+  </div>
+  <p class="dl-note" aria-live="polite"></p>
+  <p class="version" id="all">Version 0.3.10. Each download has everything in it, about 60 MB.
+    Slim builds without the browser UI and the HTML renderer are on the
     <a href="https://github.com/Scronkfinkle/byob/releases/latest">releases page</a>.</p>
 
   <div class="platforms">
@@ -192,12 +272,7 @@
         <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.10/byob-0.3.10-aarch64-apple-darwin.dmg">Apple silicon (.dmg)</a></li>
         <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.10/byob-0.3.10-x86_64-apple-darwin.dmg">Intel (.dmg)</a></li>
       </ul>
-      <p>byob isn't signed by an Apple developer yet, so macOS refuses it the first time. Try to
-        open it once, then choose <b>Open Anyway</b> in System Settings → Privacy &amp; Security.
-        Or skip that by fetching it from a terminal:</p>
-      <pre><code>v=0.3.10 t=aarch64-apple-darwin   # x86_64-apple-darwin on Intel
-curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.tar.gz | tar xz
-./byob-$v-$t/byob</code></pre>
+      <p>macOS refuses it the first time: see <a href="#faq">the FAQ</a>.</p>
     </div>
 
     <div class="platform">
@@ -206,8 +281,7 @@ curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.ta
         <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.10/byob-0.3.10-x86_64-unknown-linux-gnu.tar.gz">x86_64 (.tar.gz)</a></li>
         <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.10/byob-0.3.10-aarch64-unknown-linux-gnu.tar.gz">ARM64 (.tar.gz)</a></li>
       </ul>
-      <p>Unpack it and run <code>byob</code>. No GUI toolkit needed. With Nix:</p>
-      <pre><code>nix run github:Scronkfinkle/byob</code></pre>
+      <p>Unpack it and run <code>byob</code>. With Nix: <code>nix run github:Scronkfinkle/byob</code></p>
     </div>
 
     <div class="platform">
@@ -215,24 +289,21 @@ curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.ta
       <ul class="files">
         <li><a href="https://github.com/Scronkfinkle/byob/releases/download/v0.3.10/byob-0.3.10-x86_64-pc-windows-msvc.zip">x86_64 (.zip)</a></li>
       </ul>
-      <p>Unzip it and run <code>byob.exe</code>. Keep the other files in the folder next to it.</p>
+      <p>Unzip it and run <code>byob.exe</code>, keeping the other files next to it.</p>
     </div>
 
     <div class="platform">
       <h3>From source</h3>
-      <pre><code>cargo install byob</code></pre>
-      <p>This builds everything except the HTML renderer; without it, HTML apps open in your
-        browser with one click.</p>
+      <p><code>cargo install byob</code> builds everything except the HTML renderer; without it,
+        HTML apps open in your browser.</p>
     </div>
   </div>
 
   <div class="run">
     <h3>Then point it at a model</h3>
-    <p>On first run byob looks for servers on their usual ports (llama-server 8080, Ollama 11434,
-      LM Studio 1234, vLLM 8000). Or say where yours is:</p>
+    <p>byob finds servers on their usual ports and offers presets on first run. From a terminal:</p>
     <pre><code>byob --inference-url http://localhost:8080/v1
 BYOB_API_KEY=sk-... byob     # for a hosted API
-BYOB_API_KEY=sk-ant-... byob --inference-url https://api.anthropic.com/v1 --model claude-opus-5-5
 byob --serve                 # also open it to browsers on http://127.0.0.1:7470</code></pre>
   </div>
 </section>
@@ -243,6 +314,30 @@ byob --serve                 # also open it to browsers on http://127.0.0.1:7470
   <p>byob is free software under MIT or Apache-2.0.
     <a href="https://github.com/Scronkfinkle/byob">Code, issues and docs on GitHub</a>.</p>
 </footer>
+
+<script>
+// The download buttons fetch this computer's build (they link to the list of downloads
+// otherwise, and on phones).
+(function () {
+  var ua = navigator.userAgent, p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+  if (/Android|iPhone|iPad|iPod/.test(ua)) return;
+  var os = /Mac/.test(p + ua) ? "mac" : /Win/.test(p + ua) ? "windows" : /Linux|X11/.test(p + ua) ? "linux" : "";
+  if (!os) return;
+  var arm = /aarch64|arm64/i.test(p + ua);
+  var builds = {
+    mac: ["aarch64-apple-darwin.dmg", "Download for Mac", "Apple silicon. On an Intel Mac, pick Intel below."],
+    windows: ["x86_64-pc-windows-msvc.zip", "Download for Windows", "64-bit, a .zip to unpack."],
+    linux: [(arm ? "aarch64" : "x86_64") + "-unknown-linux-gnu.tar.gz", "Download for Linux", (arm ? "ARM64" : "x86_64") + ", a .tar.gz to unpack."]
+  };
+  var b = builds[os];
+  document.querySelectorAll("a.dl").forEach(function (a) {
+    var v = a.getAttribute("data-version");
+    a.href = "https://github.com/Scronkfinkle/byob/releases/download/v" + v + "/byob-" + v + "-" + b[0];
+    a.textContent = b[1];
+  });
+  document.querySelectorAll(".dl-note").forEach(function (n) { n.textContent = b[2]; });
+})();
+</script>
 
 </body>
 </html>

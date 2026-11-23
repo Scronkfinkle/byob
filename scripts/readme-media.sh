@@ -20,7 +20,10 @@ url="${BYOB_DEMO_URL:-cli://claude}" model="${BYOB_DEMO_MODEL:-sonnet}"
 pngquant="$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#pngquant)/bin/pngquant"
 
 ALL="beside self-plugin html-app sheets connect phone"
-W=1440 H=810
+# Sized so the interface reads on the page (it's shown about this wide), drawn at twice the
+# pixels so it's sharp on HiDPI screens.
+W=1100 H=620
+export HEADLESS_SCREEN=2400x1400 WINIT_X11_SCALE_FACTOR=2
 
 # fresh NAME: a clean profile + workspace for one shot; sets HOME_DIR / WS.
 fresh() {
