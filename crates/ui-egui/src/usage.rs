@@ -162,7 +162,7 @@ impl Usage {
             if u.compacting {
                 row(ui, "Compacting", "", false);
             } else if crate::menu::item(ui, t, Some(crate::icons::lines), "Compact now", Some("/compact"))
-                .on_hover_text("Summarise the chat so far so it takes less room. To say what to keep, type /compact and what matters")
+                .on_hover_text("Summarize the chat so far so it takes less room. To say what to keep, type /compact and what matters")
                 .clicked()
             {
                 out = Some(ClientMsg::Compact { focus: None });

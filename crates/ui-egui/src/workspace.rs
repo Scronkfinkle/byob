@@ -424,7 +424,7 @@ impl LayerEditor {
                             ui.selectable_value(&mut v, (Some(false), None), "Off");
                         })
                         .response
-                        .on_hover_text("Summarise older messages once a request fills this much of the model's context");
+                        .on_hover_text("Summarize older messages once a request fills this much of the model's context");
                     if v != now {
                         (self.draft.auto_compact, self.draft.compact_percent) = v;
                         out = Some(self.send(None));
@@ -842,7 +842,7 @@ pub fn short_path(path: &str, max: usize) -> String {
 /// workspace's name until the user types one.
 /// `path` with the home folder written `~`, as people read it. The browser UI can't ask
 /// where home is, so the usual home folders (`/Users/<name>`, `/home/<name>`,
-/// `C:\Users\<name>`) are recognised by their shape too.
+/// `C:\Users\<name>`) are recognized by their shape too.
 pub fn short_home(path: &str) -> String {
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
     let home = home.trim_end_matches(['/', '\\']);
@@ -1391,7 +1391,7 @@ fn folder_row(ui: &mut egui::Ui, t: &Tokens, path: &str, width: f32, first: bool
         let gy = rect.center().y - g.size().y / 2.0;
         ui.painter().galley(egui::pos2(x_rect.left() - 8.0 - g.size().x, gy), g, t.text_faint);
     }
-    // The folder's own name first (what people recognise), where it is after it, dimmer;
+    // The folder's own name first (what people recognize), where it is after it, dimmer;
     // whatever doesn't fit goes from the end of the location, never from the name.
     let left = rect.left() + 38.0;
     let room = (x_rect.left() - 8.0 - note_w - left).max(20.0);
@@ -1956,7 +1956,7 @@ fn field_help(f: Field) -> &'static str {
         Field::Endpoint => "The model its chats use.",
         Field::Approvals => "What it may do without asking you first.",
         Field::ToolMode => "How the model calls tools.",
-        Field::Compaction => "Summarise older messages when a chat gets long.",
+        Field::Compaction => "Summarize older messages when a chat gets long.",
         Field::Subagents => "Let a chat hand side tasks to helpers.",
         Field::SubagentModel => "The model the helpers use.",
         Field::ToolCalls => "How many steps one reply can take.",

@@ -660,7 +660,7 @@ impl Calendar {
                             .is_some_and(|a| a.as_array().is_some_and(|a| !a.is_empty()) || a.as_str().is_some_and(|s| !s.trim().is_empty()));
                         if deleting {
                             let tell = if people > 0 {
-                                format!(" It has {people} attendee(s); your calendar server may tell them it's cancelled.")
+                                format!(" It has {people} attendee(s); your calendar server may tell them it's canceled.")
                             } else {
                                 String::new()
                             };
