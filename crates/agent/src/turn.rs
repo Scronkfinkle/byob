@@ -58,6 +58,10 @@ const NO_ANSWER_NUDGE: &str = "(byob: your last reply had no text, so the user s
 const CUT_OFF: &str =
     "(The reply was cut off: the model reached its output limit before it finished. Ask it to go on, or raise Max tokens in the model's settings.)";
 
+/// Shown at the end of a reply the server's content filter stopped (OpenAI, Azure:
+/// `finish_reason: content_filter`).
+const FILTERED: &str = "(The server's content filter stopped this reply.)";
+
 /// Images from tool calls kept in a turn's messages (the latest ones).
 const MAX_LIVE_IMAGES: usize = 8;
 const OLD_IMAGE_NOTE: &str = "[an image shown earlier, no longer kept; look at it again if you need it]";
@@ -536,14 +540,17 @@ impl Turn {
                 // It stopped without a word for the user (its thinking said what it meant to
                 // do next, nothing else did): ask once for the reply, tools still on. Not when
                 // the output limit cut it off: asking again would only hit the limit again.
-                if text.trim().is_empty() && self.content.trim().is_empty() && !self.nudged && !cut_off && round + 1 < max_rounds {
+                let filtered = out.finish_reason.as_deref() == Some("content_filter");
+                if text.trim().is_empty() && self.content.trim().is_empty() && !self.nudged && !cut_off && !filtered && round + 1 < max_rounds {
                     self.nudged = true;
-                    self.messages.push(ChatMessage::user(NO_ANSWER_NUDGE));
+                    self.note_for_model(NO_ANSWER_NUDGE.to_owned());
                     continue;
                 }
                 self.answer = text;
                 if cut_off {
-                    self.say_cut_off();
+                    self.say_cut_off(CUT_OFF);
+                } else if filtered {
+                    self.say_cut_off(FILTERED);
                 }
                 return Ok(());
             }
@@ -818,16 +825,16 @@ impl Turn {
         Ok(out)
     }
 
-    /// The reply ended at the model's output limit: say so after what it wrote, so it isn't
-    /// mistaken for a finished answer (or for nothing at all).
-    fn say_cut_off(&mut self) {
+    /// The reply ended early (the model's output limit, a content filter): say `why` after
+    /// what it wrote, so it isn't mistaken for a finished answer (or for nothing at all).
+    fn say_cut_off(&mut self, why: &str) {
         // Shown in a paragraph of its own (`Shown` starts one after earlier text).
         let mut shown = Shown::new(self.content_len);
         shown.tail_newlines = self.tail_newlines;
-        shown.send(&self.s.inbox, self.s.child, self.s.entry, CUT_OFF.to_owned(), String::new());
+        shown.send(&self.s.inbox, self.s.child, self.s.entry, why.to_owned(), String::new());
         self.content_len = shown.len;
         self.tail_newlines = shown.tail_newlines;
-        let note = format!("{}{CUT_OFF}", if self.content.trim().is_empty() { "" } else { "\n\n" });
+        let note = format!("{}{why}", if self.content.trim().is_empty() { "" } else { "\n\n" });
         self.content.push_str(&note);
         self.answer.push_str(&note);
     }

@@ -172,3 +172,37 @@ fn a_call_past_the_limit_is_ignored_and_not_shown() {
     let saved = w.seen.entries.iter().find(|e| e.id == turn.reply.id).unwrap();
     assert!(!saved.content.contains("function_call"), "{}", saved.content);
 }
+
+/// Regression: a first reply with only thinking got the "you said nothing" nudge as a
+/// second user message in a row, which templates that insist on alternating roles refuse.
+/// The nudge goes onto the user's message.
+#[test]
+fn the_nudge_after_a_blank_reply_keeps_the_roles_alternating() {
+    let mut w = World::new();
+    w.model.says("<think>The user wants a haiku. I'll write one.</think>");
+    w.model.answers(|r| {
+        let roles: Vec<&str> = r.messages().iter().map(|m| m["role"].as_str().unwrap_or("")).collect();
+        assert_eq!(roles, ["system", "user"]);
+        assert!(r.user_texts()[0].starts_with("a haiku please") && r.user_texts()[0].contains("the user saw nothing"), "{:?}", r.user_texts());
+        Answer::text("Leaves fall.")
+    });
+    let turn = w.send("a haiku please");
+    assert_eq!(turn.text(), "Leaves fall.");
+}
+
+/// Regression: a reply the server's content filter stopped (`finish_reason:
+/// content_filter`, OpenAI and Azure) ended blank, after a nudge that got the same. It says
+/// what happened.
+#[test]
+fn a_reply_stopped_by_a_content_filter_says_so() {
+    let mut w = World::new();
+    w.model.answers(|_| {
+        let mut a = Answer::text("");
+        a.finish = Some("content_filter".into());
+        a
+    });
+    let turn = w.send("something the filter dislikes");
+    assert_eq!(turn.error, None);
+    assert_eq!(turn.text(), "(The server's content filter stopped this reply.)");
+    assert_eq!(w.model.requests().len(), 1);
+}
