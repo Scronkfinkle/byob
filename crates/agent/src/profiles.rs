@@ -423,7 +423,13 @@ impl Engine {
         };
         self.endpoints.probe(&client_llm, &self.inbox);
         let key = adapt::key(&config);
-        let started = connect::spawn("byob-test", &self.inbox, move || connect::Event::ProfileTested {
+        let crashed = connect::Event::ProfileTested {
+            client,
+            id: id.clone(),
+            key: key.clone(),
+            test: Box::new(InferenceTest { base_url: config.base_url, model: config.model, detail: connect::CRASHED.into(), ..InferenceTest::default() }),
+        };
+        let started = connect::spawn("byob-test", &self.inbox, crashed, move || connect::Event::ProfileTested {
             client,
             id: id.clone(),
             key,

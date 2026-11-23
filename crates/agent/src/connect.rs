@@ -46,14 +46,17 @@ pub enum Event {
     },
 }
 
-/// Run `work` on a named thread; its event (if the thread didn't crash) goes to the engine.
-pub(crate) fn spawn(name: &str, inbox: &Sender<Input>, work: impl FnOnce() -> Event + Send + 'static) -> bool {
+/// Run `work` on a named thread; its event goes to the engine. If it crashes, `crashed`
+/// goes instead, so the engine doesn't wait for it forever (a test "already running", a
+/// check stuck on Checking).
+pub(crate) fn spawn(name: &str, inbox: &Sender<Input>, crashed: Event, work: impl FnOnce() -> Event + Send + 'static) -> bool {
     let inbox = inbox.clone();
-    let spawned = thread::Builder::new().name(name.into()).spawn(move || match catch_unwind(AssertUnwindSafe(work)) {
-        Ok(event) => {
-            let _ = inbox.send(Input::Link(event));
-        }
-        Err(_) => log::error!("the connection check crashed"),
+    let spawned = thread::Builder::new().name(name.into()).spawn(move || {
+        let event = catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|_| {
+            log::error!("the connection check crashed");
+            crashed
+        });
+        let _ = inbox.send(Input::Link(event));
     });
     match spawned {
         Ok(_) => true,
@@ -63,6 +66,9 @@ pub(crate) fn spawn(name: &str, inbox: &Sender<Input>, work: impl FnOnce() -> Ev
         }
     }
 }
+
+/// What a check or test that crashed reports.
+pub(crate) const CRASHED: &str = "the check crashed (byob's bug); try again";
 
 /// What a failed `GET /models` means for the user. A 404 there is a wrong path, whatever
 /// the body says (it often echoes the path, which mentions "models").
@@ -191,7 +197,8 @@ impl Engine {
             return;
         }
         let key = adapt::key(client.config());
-        if spawn("byob-check", &self.inbox, move || Event::Checked { key, link: link_of(&client.list_models_within(CHECK_TIMEOUT)) }) {
+        let crashed = Event::Checked { key: key.clone(), link: Link::failed(CRASHED) };
+        if spawn("byob-check", &self.inbox, crashed, move || Event::Checked { key, link: link_of(&client.list_models_within(CHECK_TIMEOUT)) }) {
             self.set_link(Link::Checking);
         }
     }
@@ -292,7 +299,8 @@ impl Engine {
                 return;
             }
         };
-        if spawn("byob-test", &self.inbox, move || Event::Tested { client: id, test: Box::new(test(&client)) }) {
+        let crashed = Event::Tested { client: id, test: Box::new(answer(None, CRASHED.into())) };
+        if spawn("byob-test", &self.inbox, crashed, move || Event::Tested { client: id, test: Box::new(test(&client)) }) {
             self.testing.insert(id);
         }
     }
@@ -302,7 +310,7 @@ impl Engine {
         if self.detecting {
             return;
         }
-        if spawn("byob-detect", &self.inbox, || Event::Detected(detect())) {
+        if spawn("byob-detect", &self.inbox, Event::Detected(Vec::new()), || Event::Detected(detect())) {
             self.detecting = true;
             self.broadcast_state();
         }
@@ -353,6 +361,31 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a check or test whose thread crashed sent nothing back, so the engine
+    /// waited for it forever: that client's every later test was "already running", "Look
+    /// again" never looked again, a check stayed on Checking. The crash's event goes instead.
+    #[test]
+    fn a_crashed_check_still_reports_back() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let crashed = Event::Tested { client: 7, test: Box::new(InferenceTest { detail: CRASHED.into(), ..Default::default() }) };
+        #[allow(clippy::panic)]
+        let started = spawn("byob-test", &tx, crashed, || panic!("a hostile server's answer"));
+        assert!(started);
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Input::Link(Event::Tested { client, test })) => assert_eq!((client, test.ok, test.detail.as_str()), (7, false, CRASHED)),
+            _ => panic!("no answer from the crashed test"),
+        }
+        assert!(spawn("byob-detect", &tx, Event::Detected(Vec::new()), || Event::Detected(vec![Detected {
+            preset: "ollama".into(),
+            base_url: "u".into(),
+            models: vec![]
+        }])));
+        assert!(
+            matches!(rx.recv_timeout(Duration::from_secs(5)), Ok(Input::Link(Event::Detected(found))) if found.len() == 1),
+            "the work's own event when it doesn't crash"
+        );
+    }
 
     #[test]
     fn origins_compare_scheme_host_and_port() {
