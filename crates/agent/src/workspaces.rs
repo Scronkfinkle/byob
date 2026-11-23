@@ -635,6 +635,8 @@ impl Engine {
             return;
         }
         self.set_scoped_key(&format!("workspace:{id}"), None);
+        // Its folders closed to tools before anyone hears it's gone.
+        byob_tools::sandbox::set_linked(&row.folder, &[]);
         let mut moved = Vec::new();
         for (cid, c) in self.clients.iter_mut().filter(|(_, c)| c.new_in.as_deref() == Some(id)) {
             c.new_in = None;
@@ -654,7 +656,6 @@ impl Engine {
             1 => " and its chat".to_owned(),
             n => format!(" and its {n} chats"),
         };
-        byob_tools::sandbox::set_linked(&row.folder, &[]);
         let text = format!("Removed the project {:?}{chats} from byob; {} and its files are untouched.", row.name, row.folder.display());
         self.send_to(client, ServerMsg::Notice { level: NoticeLevel::Info, text });
         if clean && let Some(envs) = self.envs.clone() {
