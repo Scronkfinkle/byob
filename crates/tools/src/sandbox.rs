@@ -49,9 +49,13 @@ pub fn set_linked(workspace: &Path, folders: &[PathBuf]) {
 }
 
 /// The other folders `workspace` works in (canonical), as [`set_linked`] recorded them.
+/// One that is no longer there as it was linked (gone, or swapped for a link to somewhere
+/// else) is left out, as the workspace's own folder is canonicalized on every use.
 pub fn linked(workspace: &Path) -> Vec<PathBuf> {
     let Ok(root) = workspace.canonicalize() else { return Vec::new() };
-    LINKED.read().unwrap_or_else(PoisonError::into_inner).get(&root).cloned().unwrap_or_default()
+    let mut out = LINKED.read().unwrap_or_else(PoisonError::into_inner).get(&root).cloned().unwrap_or_default();
+    out.retain(|f| f.canonicalize().is_ok_and(|c| c == *f && c.is_dir()));
+    out
 }
 
 /// Is `root` a folder some workspace links (paths in it show in full)?
@@ -320,6 +324,34 @@ mod tests {
         set_linked(home.path(), &[]);
         assert!(linked(home.path()).is_empty());
         assert!(resolve(home.path(), inside.to_str().unwrap()).is_err());
+    }
+
+    /// Regression: a linked folder replaced by a link after it was linked (moved away, a
+    /// link to somewhere else left in its place) opened that somewhere else to the file tools
+    /// and to commands. Linked folders that no longer are what was linked are left out.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_folder_swapped_for_a_link_is_closed() {
+        let home = ws();
+        let parent = ws();
+        let secret = ws();
+        std::fs::write(secret.path().join("key"), "s3cret").unwrap();
+        let app = parent.path().canonicalize().unwrap().join("app");
+        std::fs::create_dir(&app).unwrap();
+        set_linked(home.path(), std::slice::from_ref(&app));
+        assert!(resolve(home.path(), &format!("{}/key", app.display())).is_ok());
+        std::fs::rename(&app, parent.path().join("app-moved")).unwrap();
+        std::os::unix::fs::symlink(secret.path(), &app).unwrap();
+        assert!(linked(home.path()).is_empty(), "no longer the folder that was linked");
+        for p in [format!("{}/key", app.display()), format!("{}/sub/key", app.display())] {
+            assert!(resolve(home.path(), &p).is_err(), "{p} should be refused");
+            assert!(resolve_follow(home.path(), &p).is_err(), "{p} should be refused");
+        }
+        // Back in place: open again.
+        std::fs::remove_file(&app).unwrap();
+        std::fs::rename(parent.path().join("app-moved"), &app).unwrap();
+        assert_eq!(linked(home.path()), std::slice::from_ref(&app));
+        set_linked(home.path(), &[]);
     }
 
     #[test]
