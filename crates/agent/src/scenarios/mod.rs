@@ -28,8 +28,10 @@
 
 mod chats;
 mod folders;
+mod images;
 mod recovery;
 mod sheets;
+mod stopping;
 mod streams;
 
 use std::collections::VecDeque;
@@ -64,6 +66,10 @@ pub(crate) struct Answer {
     finish: Option<String>,
     /// End the stream with this error instead of finishing (a server that broke off).
     fail: Option<String>,
+    /// A pause before each frame (a slow model, to stop it mid-reply).
+    pace: Option<Duration>,
+    /// Answer with this HTTP error (status, message) instead of a stream.
+    http: Option<(u16, String)>,
 }
 
 impl Answer {
@@ -83,6 +89,17 @@ impl Answer {
     /// Cut off at the model's output limit (`finish_reason: length`).
     pub(crate) fn cut(mut self) -> Self {
         self.finish = Some("length".into());
+        self
+    }
+
+    /// An HTTP error instead of a reply.
+    pub(crate) fn http(status: u16, message: &str) -> Self {
+        Self { http: Some((status, message.into())), ..Self::default() }
+    }
+
+    /// Streamed slowly: `pace` before each frame.
+    pub(crate) fn slowly(mut self, pace: Duration) -> Self {
+        self.pace = Some(pace);
         self
     }
 
@@ -232,8 +249,25 @@ impl Model {
                 };
                 log.lock().unwrap().push(req);
                 match answer {
+                    Some(Answer { http: Some((status, message)), .. }) => {
+                        let body = json!({"error": {"message": message}}).to_string();
+                        let _ = write!(
+                            s,
+                            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                    }
                     Some(a) => {
-                        let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{}", a.sse());
+                        let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
+                        // Frame by frame (a stopped reader ends the writing).
+                        for frame in a.sse().split_inclusive("\n\n") {
+                            if let Some(pace) = a.pace {
+                                std::thread::sleep(pace);
+                            }
+                            if s.write_all(frame.as_bytes()).and_then(|()| s.flush()).is_err() {
+                                break;
+                            }
+                        }
                     }
                     None => {
                         let body = json!({"error": {"message": "the scenario's model script ran out"}}).to_string();

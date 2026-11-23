@@ -371,6 +371,8 @@ struct Turn {
     repeats: usize,
     /// The model was asked once to answer after it ended with nothing to show.
     nudged: bool,
+    /// The request was fitted into a smaller context after the server said it was too long.
+    shrunk: bool,
     /// Undo journal for the file changes of this turn.
     journal: Journal,
     /// This turn, for tools ([`ToolContext::turn`]): `<entry>-<started>[-a<child>]`.
@@ -458,6 +460,7 @@ impl Turn {
             seen: BTreeMap::new(),
             repeats: 0,
             nudged: false,
+            shrunk: false,
             journal,
             turn_id: turn_id.into(),
             model_calls: 0,
@@ -710,6 +713,27 @@ impl Turn {
                 self.s.plan.fallback = false;
                 self.messages = toolprompt::to_fallback(&self.messages);
                 let _ = self.s.inbox.send(Input::Adapt(adapt::Event::ToolsRejected { key: self.s.plan.key.clone() }));
+                self.stream(specs)
+            }
+            // Too long for the model's real context window (smaller than byob thought, or the
+            // estimate was off): once, fitted into two thirds of what was sent.
+            Err(e) if !self.shrunk && adapt::overflows_context(&e) => {
+                self.shrunk = true;
+                let sent = self.s.plan.raw_tokens(&self.messages, specs);
+                let context = self.s.plan.context.min(sent).saturating_mul(2) / 3;
+                log::warn!("the request was too long for the model ({e}); fitting it into {context} tokens and trying again");
+                self.s.plan.context = context.max(1024);
+                self.s.plan.reserve = byob_llm::budget::default_reply_reserve(self.s.plan.context);
+                let text = "The conversation was too long for the model's context window, so older messages were shortened. If this keeps happening, set the model's context window in its settings.".to_owned();
+                self.emit(TurnEvent::Notice { id: self.s.entry, text });
+                self.stream(specs)
+            }
+            // A model that can't take images, on a server that didn't say so: again without them.
+            Err(e) if self.s.plan.vision != Some(false) && self.messages.iter().any(|m| !m.images.is_empty()) && adapt::rejects_images(&e) => {
+                log::warn!("the server refused the images ({e}); sending the request without them");
+                self.s.plan.vision = Some(false);
+                let text = "This model can't take images, so they were left out. A \"vision\" model role in settings can look at them for it.".to_owned();
+                self.emit(TurnEvent::Notice { id: self.s.entry, text });
                 self.stream(specs)
             }
             result => result,

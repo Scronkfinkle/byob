@@ -114,6 +114,36 @@ pub fn rejects_tools(err: &LlmError) -> bool {
     *status >= 400 && ["tool", "jinja", "function"].iter().any(|w| m.contains(w)) && !m.contains("parse")
 }
 
+/// Did the server refuse the request because it has images the model can't take? (llama-
+/// server without a projector: "image input is not supported … mmproj"; vLLM: "… is not a
+/// multimodal model"; OpenAI-style: "image_url is only supported by certain models".)
+pub fn rejects_images(err: &LlmError) -> bool {
+    let LlmError::Http { status, message } = err else { return false };
+    let m = message.to_ascii_lowercase();
+    (400..600).contains(status) && ["image", "multimodal", "vision", "mmproj"].iter().any(|w| m.contains(w))
+}
+
+/// Did the server refuse the request as too long for the model's context window? (llama-
+/// server, vLLM, OpenAI, Anthropic, LM Studio wordings.)
+pub fn overflows_context(err: &LlmError) -> bool {
+    let m = match err {
+        LlmError::Http { status, message } if (400..600).contains(status) => message,
+        LlmError::Stream(message) => message,
+        _ => return false,
+    };
+    let m = m.to_ascii_lowercase();
+    let any = |words: &[&str]| words.iter().any(|w| m.contains(w));
+    any(&[
+        "exceeds the available context",
+        "context_length_exceeded",
+        "maximum context length",
+        "prompt is too long",
+        "context size has been exceeded",
+        "context overflow",
+        "context the overflows",
+    ]) || (any(&["context length", "context window", "context size"]) && any(&["exceed", "greater than", "too long", "too many", "larger than"]))
+}
+
 /// Cache key of an endpoint: base URL and model.
 pub fn key(config: &InferenceConfig) -> String {
     format!("{} {}", config.base_url.trim().trim_end_matches('/'), config.model.trim())
@@ -357,6 +387,26 @@ mod tests {
         assert!(!rejects_tools(&http(400, "context length exceeded")));
         assert!(!rejects_tools(&http(200, "tools")));
         assert!(!rejects_tools(&LlmError::Stream("tool".into())));
+    }
+
+    #[test]
+    fn recognizes_context_overflows_and_image_refusals() {
+        let http = |status, message: &str| LlmError::Http { status, message: message.into() };
+        for m in [
+            "the request exceeds the available context size, try increasing it",
+            "This model's maximum context length is 4096 tokens. However, you requested 5000 tokens",
+            "prompt is too long: 210000 tokens > 200000 maximum",
+            "Trying to keep the first 5000 tokens when context the overflows. However, the model is loaded with context length of only 4096 tokens, which is not enough. Try to load the model with a larger context length, or provide a shorter input",
+        ] {
+            assert!(overflows_context(&http(400, m)), "{m}");
+        }
+        assert!(overflows_context(&LlmError::Stream("Context size has been exceeded.".into())));
+        assert!(!overflows_context(&http(400, "Invalid API key")));
+        assert!(!overflows_context(&http(400, "tools param requires --jinja flag")));
+        assert!(rejects_images(&http(400, "image input is not supported - hint: if this is unexpected, you may need to provide the mmproj")));
+        assert!(rejects_images(&http(400, "Qwen/Qwen3-8B is not a multimodal model")));
+        assert!(!rejects_images(&http(400, "context length exceeded")));
+        assert!(!rejects_images(&LlmError::Stream("image".into())));
     }
 
     #[test]

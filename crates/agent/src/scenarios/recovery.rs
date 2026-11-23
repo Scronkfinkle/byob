@@ -79,3 +79,34 @@ fn a_turn_that_outgrows_the_context_is_compacted_and_carries_on() {
     });
     assert_eq!(w.send("Which bed again?").text(), "Still bed 3.");
 }
+
+/// Regression: a server whose context window is smaller than byob thought (LM Studio loads
+/// models with 4096 tokens by default; byob assumes 32k when it can't tell) refused every
+/// request once the chat grew, and the chat was stuck. The request is fitted into less and
+/// sent again, and the user is told why.
+#[test]
+fn a_request_too_long_for_the_server_is_shortened_and_sent_again() {
+    let mut w = World::new();
+    for i in 0..3 {
+        let long = format!("Part {i}: {}", "the beans need water every morning. ".repeat(500));
+        w.model.answers(move |_| Answer::text(&long));
+        w.send(&format!("tell me part {i}"));
+    }
+    let sizes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = std::sync::Arc::clone(&sizes);
+    w.model.answers(move |r| {
+        seen.lock().unwrap().push(r.0.to_string().len());
+        Answer::http(400, "the request exceeds the available context size, try increasing it")
+    });
+    let seen = std::sync::Arc::clone(&sizes);
+    w.model.answers(move |r| {
+        seen.lock().unwrap().push(r.0.to_string().len());
+        Answer::text("Water them every morning.")
+    });
+    let turn = w.send("so what do the beans need?");
+    assert_eq!(turn.error, None);
+    assert_eq!(turn.text(), "Water them every morning.");
+    let sizes = sizes.lock().unwrap();
+    assert!(sizes[1] < sizes[0] * 3 / 4, "the second request is shorter: {sizes:?}");
+    assert!(w.seen.notices.iter().any(|(_, t)| t.contains("too long for the model's context window")), "{:?}", w.seen.notices);
+}
