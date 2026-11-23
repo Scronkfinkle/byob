@@ -37,7 +37,7 @@ pub struct WorkspaceRow {
     pub folder: PathBuf,
     /// Other folders it works in (canonical, existing when linked): its chats may read and
     /// change them too. Its own `folder` is never one of them.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "lenient_folders", skip_serializing_if = "Vec::is_empty")]
     pub folders: Vec<PathBuf>,
     #[serde(default)]
     pub created_at: Millis,
@@ -51,6 +51,28 @@ pub struct WorkspaceRow {
     pub plugin_trust: BTreeMap<String, PluginTrust>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// `folders` as hand edits may leave it: a value of the wrong shape is no folders, an entry
+/// that isn't text is dropped, so one bad value doesn't make every project unreadable.
+fn lenient_folders<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<PathBuf>, D::Error> {
+    let v = Value::deserialize(d)?;
+    let Value::Array(items) = v else {
+        if !v.is_null() {
+            log::warn!("byob-store: ignoring a project's folders {v}: not a list");
+        }
+        return Ok(Vec::new());
+    };
+    Ok(items
+        .into_iter()
+        .filter_map(|f| match f {
+            Value::String(s) => Some(PathBuf::from(s)),
+            other => {
+                log::warn!("byob-store: ignoring a project's folder {other}: not a path");
+                None
+            }
+        })
+        .collect())
 }
 
 /// Why a workspace plugin may (or may not) run its code.
@@ -462,6 +484,54 @@ mod tests {
         w.rename("w1", "Renamed").unwrap();
         let text = std::fs::read_to_string(p.workspaces()).unwrap();
         assert!(text.contains("\"color\": \"red\"") && text.contains("\"version\": 3"), "unknown fields are kept: {text}");
+    }
+
+    /// A file 0.3.10 wrote (no `folders`) loads with everything in it, and gets `folders`
+    /// added without losing the rest.
+    #[test]
+    fn a_file_from_before_linked_folders_loads_and_keeps_everything() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(d.path());
+        std::fs::write(
+            p.workspaces(),
+            r#"{"workspaces":[{"id":"w1","name":"App","folder":"/srv/app","created_at":7,
+                "config":{"model":"m","instructions":"Be brief."},"plugin_trust":{"calc":"trusted"}}]}"#,
+        )
+        .unwrap();
+        let mut w = Workspaces::open(Some(&p)).value;
+        let row = w.get("w1").unwrap().clone();
+        assert!(row.folders.is_empty());
+        assert_eq!((row.name.as_str(), row.created_at, row.config.model.as_deref()), ("App", 7, Some("m")));
+        assert_eq!(row.plugin_trust.get("calc"), Some(&PluginTrust::Trusted));
+        w.set_folders("w1", &[PathBuf::from("/srv/api")]).unwrap();
+        let back = Workspaces::open(Some(&p)).value;
+        let row = back.get("w1").unwrap();
+        assert_eq!(row.folders, [PathBuf::from("/srv/api")]);
+        assert_eq!(row.config.instructions.as_deref(), Some("Be brief."));
+        assert_eq!(row.plugin_trust.get("calc"), Some(&PluginTrust::Trusted));
+    }
+
+    /// Regression: a hand-edited `folders` of the wrong shape (`null`, one string, a number
+    /// in the list) made the whole file unreadable, so every project was set aside.
+    #[test]
+    fn a_bad_folders_value_loses_only_itself() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(d.path());
+        std::fs::write(
+            p.workspaces(),
+            r#"{"workspaces":[
+                {"id":"w1","name":"A","folder":"/a","folders":null},
+                {"id":"w2","name":"B","folder":"/b","folders":"/srv/api"},
+                {"id":"w3","name":"C","folder":"/c","folders":["/srv/api", 5, "/srv/docs"]}
+            ]}"#,
+        )
+        .unwrap();
+        let loaded = Workspaces::open(Some(&p));
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        let w = loaded.value;
+        assert_eq!(w.list().len(), 3);
+        assert!(w.get("w1").unwrap().folders.is_empty() && w.get("w2").unwrap().folders.is_empty());
+        assert_eq!(w.get("w3").unwrap().folders, [PathBuf::from("/srv/api"), PathBuf::from("/srv/docs")]);
     }
 
     #[test]
