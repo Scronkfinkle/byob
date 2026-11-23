@@ -156,6 +156,35 @@ fn bad_input_is_a_sentence() {
     assert!(out.contains("Wrote 2 cells"), "{out}");
 }
 
+/// Regression: sorting or inserting rows moves formulas, and the reply compared cells by
+/// address, so formulas that only moved were listed as "Formulas elsewhere that changed"
+/// (a sort of a sheet with a =SUM(…) error said `C3 #ERROR! (was 2400)`).
+#[test]
+fn moved_formulas_are_not_reported_as_changed() {
+    let mut b = Byob::new();
+    let (aid, _) = b.new_sheet("Budget");
+    b.tool("write_cells", json!({"sheet": aid, "rows": [["Name", "Score", "Double"], ["b", 2, "=B2*2"], ["a", 9, "=B3*2"], ["c", 5, "=B4*2"]]}));
+    for args in [
+        json!({"sheet": aid, "op": "sort", "range": "A1:C4", "by": "B", "descending": true}),
+        json!({"sheet": aid, "op": "insert_rows", "at": 2, "count": 1}),
+        json!({"sheet": aid, "op": "delete_cols", "at": "A"}),
+    ] {
+        let out = b.tool("edit_sheet", args);
+        assert!(!out.contains("Formulas elsewhere"), "{out}");
+    }
+}
+
+/// A CSV wider than a sheet is refused in a sentence (the engine said "Row or column is
+/// outside valid range").
+#[test]
+fn a_csv_too_wide_for_a_sheet_says_so() {
+    let mut b = Byob::new();
+    let wide: Vec<String> = (0..17_000).map(|i| i.to_string()).collect();
+    b.file("wide.csv", format!("{}\n", wide.join(",")).as_bytes());
+    let out = b.tool("describe_sheet", json!({"sheet": "wide.csv"}));
+    assert!(out.contains("up to 17000 columns") && out.contains("16384 columns"), "{out}");
+}
+
 #[test]
 fn format_then_view() {
     let mut b = Byob::new();

@@ -279,7 +279,6 @@ Data!A1:I11 now:
 9	North	Cherry	7	3	2026-03-12	21	0.1414141414		8
 10	North	Banana	5	0.5	2026-02-01	2.5	0.01683501684		6
 11	West	Cherry	4	3	2026-04-18	12	0.08080808081		5
-Formulas elsewhere that changed: Data!F2 12.5 (was 15); Data!G2 0.08417508418 (was 0.101010101); Data!I2 26 (was 11); Data!F3 7.5 (was 12.5); Data!G3 0.05050505051 (was 0.08417508418); Data!I3 16 (was 26); Data!F4 36 (was 2.5); Data!G4 0.2424242424 (was 0.01683501684); Data!F5 16.5 (was 12); Data!G5 0.1111111111 (was 0.08080808081) and 23 more.
 Errors (4): Calc!C31 #DIV/0! (=1/0); Calc!C32 #N/A (=VLOOKUP("Kiwi",Data!B2:D11,2,FALSE)); Calc!C33 #REF! (=INDEX(Data!C2:C11,99)); Calc!C34 #NAME? (=nope(1))
 Saved: artifact fruit-sales-0001, version 13.
 ### 17 edit_sheet {"cols":1,"op":"freeze","rows":1,"sheet":"fruit-sales-0001","sheet_name":"Data"}
@@ -288,12 +287,10 @@ Errors (4): Calc!C31 #DIV/0! (=1/0); Calc!C32 #N/A (=VLOOKUP("Kiwi",Data!B2:D11,
 Saved: artifact fruit-sales-0001, version 14.
 ### 18 edit_sheet {"at":3,"count":2,"op":"insert_rows","sheet":"fruit-sales-0001","sheet_name":"Data"}
 Inserted 2 empty rows at row 3 of 'Data'; rows below moved down by 2 and formulas were adjusted.
-Formulas elsewhere that changed: Data!F5 7.5 (was 16.5); Data!G5 0.05050505051 (was 0.1111111111); Data!I5 16 (was 12); Data!F6 36 (was 15); Data!G6 0.2424242424 (was 0.101010101); Data!F7 16.5 (was 13.5); Data!G7 0.1111111111 (was 0.09090909091); Data!I7 12 (was 10); Data!F8 15 (was 12); Data!G8 0.101010101 (was 0.08080808081) and 13 more.
 Errors (4): Calc!C31 #DIV/0! (=1/0); Calc!C32 #N/A (=VLOOKUP("Kiwi",Data!B2:D13,2,FALSE)); Calc!C33 #REF! (=INDEX(Data!C2:C13,99)); Calc!C34 #NAME? (=nope(1))
 Saved: artifact fruit-sales-0001, version 15.
 ### 19 edit_sheet {"at":"H","op":"delete_cols","sheet":"fruit-sales-0001","sheet_name":"Data"}
 Deleted columns H–H of 'Data'; formulas were adjusted.
-Formulas elsewhere that changed: Data!H8 11 (was ).
 Errors (4): Calc!C31 #DIV/0! (=1/0); Calc!C32 #N/A (=VLOOKUP("Kiwi",Data!B2:D13,2,FALSE)); Calc!C33 #REF! (=INDEX(Data!C2:C13,99)); Calc!C34 #NAME? (=nope(1))
 Saved: artifact fruit-sales-0001, version 16.
 ### 20 edit_sheet {"name":"Notes","op":"add_sheet","sheet":"fruit-sales-0001"}

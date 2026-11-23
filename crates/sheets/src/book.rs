@@ -348,6 +348,16 @@ impl Book {
         if n > MAX_IMPORT_CELLS {
             return Err(SheetError::Msg(format!("That table has {n} cells; spreadsheets here hold at most {MAX_IMPORT_CELLS}.")));
         }
+        // Said plainly (the engine only said "Row or column is outside valid range").
+        let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+        if i64::try_from(cols).unwrap_or(i64::MAX) > crate::refs::MAX_COLS || i64::try_from(rows.len()).unwrap_or(i64::MAX) > crate::refs::MAX_ROWS {
+            return Err(SheetError::Msg(format!(
+                "That table has {} rows and up to {cols} columns; a sheet holds at most {} rows and {} columns. Read it as text with read_file instead.",
+                rows.len(),
+                crate::refs::MAX_ROWS,
+                crate::refs::MAX_COLS
+            )));
+        }
         for (i, row) in rows.iter().enumerate() {
             for (j, v) in row.iter().enumerate() {
                 if v.is_empty() {

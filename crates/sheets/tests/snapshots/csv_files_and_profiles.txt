@@ -560,7 +560,6 @@ A1:G401 now:
 39	2024-09-21	Food	99.45	FALSE	06617	x, 356	198.9
 40	2024-07-07	Travel	102.87	TRUE	03638	x, 174	205.74
 (Showing A1:G40; read_cells shows the rest.)
-Formulas elsewhere that changed: G2 6.22 (was 339.42); G3 7.62 (was 1368); G4 10 (was 1035.54); G5 10.32 (was 695.7); G6 15.36 (was 1709.5); G7 21.86 (was 1461.34); G8 24.32 (was 335.58); G9 31.78 (was 990.16); G10 32.64 (was 279.96); G11 38.12 (was 1315.94) and 389 more.
 No error cells.
 Saved: artifact big-0001, version 3.
 ### 11 describe_sheet {"sheet":"big-0001"}

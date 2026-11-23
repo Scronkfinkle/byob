@@ -35,6 +35,12 @@ pub(super) fn pages_arg(args: &Value) -> Result<Option<String>, String> {
 pub(super) fn read(kind: Kind, abs: &Path, name: &str, size: u64, args: &Value, ctx: &ToolContext<'_>) -> Result<String, String> {
     let head = |what: &str| format!("File: {name} ({what}, {})", bytes(size));
     match kind {
+        // The sheet tools open .xlsx only (and .csv/.tsv, which are read as text here):
+        // sending the model to them with an .xls or .ods cost it a refused call.
+        Kind::Spreadsheet if !name.to_ascii_lowercase().ends_with(".xlsx") => Ok(format!(
+            "{}\nThis is a spreadsheet in a format byob's spreadsheet tools can't open (they read .xlsx, .csv and .tsv). Convert it to .xlsx or .csv first (for example with LibreOffice: soffice --headless --convert-to xlsx {name}), or read it with run_python.",
+            head("spreadsheet")
+        )),
         Kind::Spreadsheet => Ok(format!(
             "{}\nThis is a spreadsheet. Look at it with the spreadsheet tools (describe_sheet with sheet=\"{name}\") if you have them, or with run_python.",
             head("spreadsheet")
@@ -274,9 +280,17 @@ mod tests {
             image::DynamicImage::ImageRgb8(image::RgbImage::new(2, 2)).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
             out
         };
-        let d = ws(&[("b.xlsx", b"PK\x03\x04".to_vec()), ("old.doc", vec![0xd0, 0xcf, 0x11, 0xe0, 0]), ("c.png", png), ("fake.docx", b"plain text".to_vec())]);
+        let d = ws(&[
+            ("b.xlsx", b"PK\x03\x04".to_vec()),
+            ("t.ods", b"PK\x03\x04".to_vec()),
+            ("old.doc", vec![0xd0, 0xcf, 0x11, 0xe0, 0]),
+            ("c.png", png),
+            ("fake.docx", b"plain text".to_vec()),
+        ]);
         let text = |p: &str| run(&ReadFile, d.path(), serde_json::json!({"path": p})).text;
         assert!(text("b.xlsx").contains("describe_sheet"));
+        // The sheet tools refuse an .ods: not suggested, converting is.
+        assert!(!text("t.ods").contains("describe_sheet") && text("t.ods").contains("convert-to xlsx"), "{}", text("t.ods"));
         assert!(text("old.doc").contains("can't read"));
         // Images are shown, not pointed at.
         let img = run(&ReadFile, d.path(), serde_json::json!({"path": "c.png"}));

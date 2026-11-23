@@ -530,6 +530,8 @@ struct Change {
     cells: Vec<(u32, i64, i64)>,
     listed: Option<Vec<(u32, i64, i64)>>,
     added: Vec<String>,
+    /// Cells moved (a sort): comparing them by address reports moves as changes.
+    sorted: bool,
 }
 
 /// Run `action` on the workbook `sheet` names, recalculate, and save a new version; the tool
@@ -590,7 +592,8 @@ fn write_op(store: &mut Store, cx: &Ctx<'_>, sheet: Option<&Value>, note: &str, 
             lines.push(format!("(Showing {}; read_cells shows the rest.)", range_name(r1, c1, end, cend)));
         }
     }
-    if let Some(before) = &before {
+    // Rows or columns that moved (inserted, deleted, sorted) aren't changes of what they hold.
+    if let Some(before) = before.as_ref().filter(|_| ch.moves.is_empty() && !ch.sorted) {
         let after = snapshot(book, 50_000).unwrap_or_default();
         let changed: Vec<((u32, i64, i64), String, String)> = after
             .into_iter()
@@ -1010,6 +1013,7 @@ fn sort(book: &mut Book, ch: &mut Change, s: u32, r1: i64, c1: i64, r2: i64, c2:
     if !(c1..=c2).contains(&by_c) {
         return msg(format!("Column {} isn't inside the range {}.", col_name(by_c), range_name(r1, c1, r2, c2)));
     }
+    ch.sorted = true;
     let header = header.unwrap_or_else(|| detect_header(book, s, r1, r2, c1, c2));
     let start = if header { r1 + 1 } else { r1 };
     let mut rows = Vec::new();
