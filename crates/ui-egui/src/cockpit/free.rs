@@ -99,6 +99,9 @@ impl ByobApp {
             }
         }
         let open = if self.arranging.on { open } else { make_room(open) };
+        // The chat list's module carries the window controls (its top bar) while it is
+        // shown, as when docked: the header shows them only while it isn't.
+        self.sidebar_docked = open.iter().any(|(m, _)| *m == Module::Chats);
         for (m, rect) in open {
             let inner = super::arrange::paint(ui.painter(), rect, arrangement.bezel(m), arrangement.label(m), &t);
             super::mark_exact(&ctx, rect);

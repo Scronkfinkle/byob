@@ -2094,6 +2094,26 @@ mod app_tests {
         }
     }
 
+    /// A free arrangement (floating) draws the list toggle, Back and Forward once: at the top
+    /// of the chat list while it is shown, in the header once it is hidden.
+    #[test]
+    fn free_arrangements_show_the_window_controls_once() {
+        let ctx = egui::Context::default();
+        let mut app = crowded_app();
+        app.prefs.cockpit.arrangement = cockpit::arrange::Arrangement::preset("floating").unwrap();
+        for _ in 0..3 {
+            frame(&ctx, &mut app, 1100.0);
+        }
+        assert!(app.sidebar.is_open(false), "the list is shown");
+        assert!(app.sidebar.rects.toggle.is_positive(), "the list carries the controls");
+        assert!(!app.header_rects.chats.is_positive(), "and the header doesn't repeat them: {:?}", app.header_rects.chats);
+        app.sidebar.toggle();
+        for _ in 0..3 {
+            frame(&ctx, &mut app, 1100.0);
+        }
+        assert!(app.header_rects.chats.is_positive(), "the list hidden, the header has them");
+    }
+
     /// The composer in a state: a reply running or not, a queued message being edited or
     /// not, and what is typed; drawn until it settles in a window `width` wide.
     fn composer_in(ctx: &egui::Context, app: &mut ByobApp, width: f32, busy: bool, editing: bool, input: &str) -> composer::Rects {
