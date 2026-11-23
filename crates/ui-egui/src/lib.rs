@@ -2094,6 +2094,32 @@ mod app_tests {
         }
     }
 
+    /// This crate runs in the browser, where std's clock panics ("time not implemented on
+    /// this platform"): outside tests, the time comes from `web_time`.
+    #[test]
+    fn the_browser_build_never_asks_std_for_the_time() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("tests.rs") && !p.to_string_lossy().contains("_tests") {
+                    let text = std::fs::read_to_string(&p).unwrap();
+                    // Up to the file's tests (they run natively).
+                    let code = text.split("#[cfg(test)]").next().unwrap_or_default();
+                    for (n, line) in code.lines().enumerate() {
+                        if ["std::time::Instant", "std::time::SystemTime", "use std::time::{"].iter().any(|bad| line.contains(bad)) {
+                            out.push(format!("{}:{}: {}", p.display(), n + 1, line.trim()));
+                        }
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut found);
+        assert!(found.is_empty(), "use web_time's Instant / SystemTime:\n{}", found.join("\n"));
+    }
+
     /// A free arrangement (floating) draws the list toggle, Back and Forward once: at the top
     /// of the chat list while it is shown, in the header once it is hidden.
     #[test]

@@ -145,7 +145,7 @@ pub struct Fluid {
     moved_popups: Vec<LayerId>,
     /// The layers open when that press came (a popup is one that opened after it).
     open_before: Vec<LayerId>,
-    start: std::time::Instant,
+    start: web_time::Instant,
     /// Plugins' changes left out (edit mode's switch, for a plugin whose changes are in the
     /// way of turning it off); not kept across a restart.
     pub ignore_base: bool,
@@ -178,7 +178,7 @@ impl Default for Fluid {
             opener: None,
             moved_popups: Vec::new(),
             open_before: Vec::new(),
-            start: std::time::Instant::now(),
+            start: web_time::Instant::now(),
             ignore_base: false,
             warm_until: None,
             scans: 0,
