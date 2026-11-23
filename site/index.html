@@ -244,6 +244,13 @@ curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.ta
       it from anywhere. It's the same app and the same chats, live.</p>
   </details>
   <details>
+    <summary>Can I run it on a server, without a window?</summary>
+    <p>Yes. <code>byob --headless</code> runs byob with no window and serves the same app to any
+      browser, on <code>http://127.0.0.1:7470</code> by default. Run it on a home server or a VM,
+      put it behind <code>tailscale serve</code>, and <code>--allow-user</code> limits it to your
+      Tailscale login.</p>
+  </details>
+  <details>
     <summary>Does it cost anything?</summary>
     <p>byob is free. A hosted model costs what its provider charges; a local one costs
       nothing but electricity.</p>
@@ -300,7 +307,8 @@ curl -L https://github.com/Scronkfinkle/byob/releases/download/v$v/byob-$v-$t.ta
     <p>byob finds servers on their usual ports and offers presets on first run. From a terminal:</p>
     <pre><code>byob --inference-url http://localhost:8080/v1
 BYOB_API_KEY=sk-... byob     # for a hosted API
-byob --serve                 # also open it to browsers on http://127.0.0.1:7470</code></pre>
+byob --serve                 # also open it to browsers on http://127.0.0.1:7470
+byob --headless              # no window: a server for browsers only</code></pre>
   </div>
 </section>
 
