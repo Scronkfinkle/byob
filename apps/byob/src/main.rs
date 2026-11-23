@@ -118,7 +118,11 @@ struct Args {
     chats_folder: Option<PathBuf>,
     export_to: Option<StorageKind>,
     script: testing::Script,
+    /// `--help`: print [`USAGE`] and exit.
+    help: bool,
 }
+
+const USAGE: &str = "usage: byob [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--storage sqlite|folder] [--chats-folder DIR] [--export-chats-to sqlite|folder] [--plugin DIR]... [--auto-approve | --yolo] [--dev-tools] [--theme system|dark|light|THEME] [--backdrop FILE|off] [--arrangement docked|floating|focus] [--look KEY=VALUE]...";
 
 fn storage_kind(flag: &str, v: Option<String>) -> Result<StorageKind, String> {
     match v.as_deref() {
@@ -141,6 +145,10 @@ fn web_dir(explicit: Option<PathBuf>) -> Option<PathBuf> {
 }
 
 fn parse_args() -> Result<Args, String> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let default_addr = SocketAddr::from(([127, 0, 0, 1], 7470));
     let mut args = Args {
         serve: None,
@@ -170,8 +178,9 @@ fn parse_args() -> Result<Args, String> {
         chats_folder: None,
         export_to: None,
         script: testing::Script { after: std::time::Duration::from_secs(2), ..Default::default() },
+        help: false,
     };
-    let mut it = std::env::args().skip(1).peekable();
+    let mut it = argv.peekable();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--serve" | "--headless" => {
@@ -310,11 +319,10 @@ fn parse_args() -> Result<Args, String> {
                 let secs: f64 = v.parse().map_err(|e| format!("bad seconds {v:?}: {e}"))?;
                 args.script.after = std::time::Duration::try_from_secs_f64(secs).map_err(|e| format!("bad seconds {v:?}: {e}"))?;
             }
+            // Asked for: printed to stdout, and not a failure.
             "-h" | "--help" => {
-                return Err(
-                    "usage: byob [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--storage sqlite|folder] [--chats-folder DIR] [--export-chats-to sqlite|folder] [--plugin DIR]... [--auto-approve | --yolo] [--dev-tools] [--theme system|dark|light|THEME]"
-                        .into(),
-                );
+                args.help = true;
+                return Ok(args);
             }
             other => return Err(format!("unknown argument {other:?} (try --help)")),
         }
@@ -503,6 +511,10 @@ fn export_chats(to: StorageKind, paths: Option<&Paths>, settings: &Settings) -> 
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
+    if args.help {
+        println!("{USAGE}");
+        return Ok(());
+    }
     tokens::install();
     if std::env::var_os(byob_store::HOME_ENV).is_none() {
         byob_store::Paths::migrate_from_yah();
@@ -751,6 +763,19 @@ fn window_state_in(byob_home: Option<std::ffi::OsString>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: `--help` came back as an error, so it went to stderr and byob exited 1.
+    #[test]
+    fn help_is_an_answer_not_an_error() {
+        let argv = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>().into_iter();
+        assert!(parse_args_from(argv(&["--help"])).is_ok_and(|a| a.help));
+        assert!(parse_args_from(argv(&["--dev-tools", "-h"])).is_ok_and(|a| a.help));
+        assert!(parse_args_from(argv(&["--dev-tools"])).is_ok_and(|a| !a.help && a.dev_tools));
+        assert!(parse_args_from(argv(&["--nope"])).is_err());
+        for flag in ["--backdrop", "--arrangement", "--look", "--theme", "--yolo"] {
+            assert!(USAGE.contains(flag), "{flag} is in the usage");
+        }
+    }
 
     #[test]
     fn a_byob_home_profile_keeps_its_own_window_state() {
