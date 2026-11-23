@@ -13,7 +13,33 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
+
+// Reading is forgiving: a value this build can't read (a newer build's, a hand edit) is
+// dropped alone, so the rest of the layout (Spaces, sections, pins) survives.
+
+/// A field of the wrong shape is its default.
+fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(d: D) -> Result<T, D::Error> {
+    Ok(serde_json::from_value(Value::deserialize(d)?).unwrap_or_default())
+}
+
+/// A list whose entries are read one by one: those that can't be are dropped.
+fn lenient_list<'de, D: Deserializer<'de>, T: DeserializeOwned>(d: D) -> Result<Vec<T>, D::Error> {
+    match Value::deserialize(d)? {
+        Value::Array(items) => Ok(items.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect()),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// A map whose entries are read one by one: those that can't be are dropped.
+fn lenient_map<'de, D: Deserializer<'de>, T: DeserializeOwned>(d: D) -> Result<BTreeMap<String, T>, D::Error> {
+    match Value::deserialize(d)? {
+        Value::Object(map) => Ok(map.into_iter().filter_map(|(k, v)| serde_json::from_value(v).ok().map(|v| (k, v))).collect()),
+        _ => Ok(BTreeMap::new()),
+    }
+}
 
 /// How an element is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -228,8 +254,11 @@ const MAX_SECTION_NAME: usize = 80;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ListSection {
+    #[serde(deserialize_with = "lenient")]
     pub id: String,
+    #[serde(deserialize_with = "lenient")]
     pub name: String,
+    #[serde(deserialize_with = "lenient_list")]
     pub items: Vec<String>,
 }
 
@@ -260,30 +289,36 @@ pub enum ListSort {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChatList {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(deserialize_with = "lenient_list", skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<ListSection>,
+    #[serde(deserialize_with = "lenient")]
     pub group: ListGroup,
+    #[serde(deserialize_with = "lenient")]
     pub sort: ListSort,
     /// Projects pinned to the top of the list, by id, in order.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(deserialize_with = "lenient_list", skip_serializing_if = "Vec::is_empty")]
     pub pinned_projects: Vec<String>,
     /// Artifacts pinned to the top of the list, in order.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(deserialize_with = "lenient_list", skip_serializing_if = "Vec::is_empty")]
     pub pinned_artifacts: Vec<ListPin>,
     /// Spaces (Work, Personal, a client): each shows only its own projects and chats. With
     /// fewer than two there are none to switch between. What no Space claims is the first's.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(deserialize_with = "lenient_list", skip_serializing_if = "Vec::is_empty")]
     pub spaces: Vec<ListSpace>,
 }
 
-/// A Space: its name, its colour (`#rrggbb`), and the projects and chats it holds
+/// A Space: its name, its color (`#rrggbb`), and the projects and chats it holds
 /// (`ws:<id>`, `chat:<id>`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ListSpace {
+    #[serde(deserialize_with = "lenient")]
     pub id: String,
+    #[serde(deserialize_with = "lenient")]
     pub name: String,
+    #[serde(deserialize_with = "lenient")]
     pub color: String,
+    #[serde(deserialize_with = "lenient_list")]
     pub items: Vec<String>,
 }
 
@@ -291,8 +326,11 @@ pub struct ListSpace {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ListPin {
+    #[serde(deserialize_with = "lenient")]
     pub chat: String,
+    #[serde(deserialize_with = "lenient")]
     pub id: String,
+    #[serde(deserialize_with = "lenient")]
     pub title: String,
 }
 
@@ -349,14 +387,14 @@ impl ChatList {
 #[serde(default)]
 pub struct Layout {
     /// Element id → how it is shown.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(deserialize_with = "lenient_map", skip_serializing_if = "BTreeMap::is_empty")]
     pub show: BTreeMap<String, Show>,
     /// Region id → element ids in the order wanted. Ids a region doesn't have are skipped;
     /// those it has but the list doesn't name follow, in their default order.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(deserialize_with = "lenient_map", skip_serializing_if = "BTreeMap::is_empty")]
     pub order: BTreeMap<String, Vec<String>>,
     /// The chat list's sections and view.
-    #[serde(skip_serializing_if = "ChatList::is_default")]
+    #[serde(deserialize_with = "lenient", skip_serializing_if = "ChatList::is_default")]
     pub chat_list: ChatList,
 }
 
@@ -494,6 +532,29 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: one value this build can't read (a newer build's show mode or grouping, a
+    /// hand edit) made the whole layout unreadable, and settings.json falls back to the
+    /// default layout: every Space, section and pin was gone, and the next save made it so.
+    #[test]
+    fn one_unreadable_value_loses_only_itself() {
+        let json = r#"{
+            "show": {"reply.tokens": "hidden", "header.usage": "sometimes"},
+            "order": {"composer": ["a", 5]},
+            "chat_list": {"group": "by_mood", "sort": "name", "pinned_projects": "w1",
+                "sections": [{"id": "s", "name": "Later", "items": ["chat:1"]}],
+                "spaces": [{"id": "space-1", "name": "Work", "items": ["ws:w1"]}, {"id": "space-2", "name": "Home", "items": [7]}]}
+        }"#;
+        let l: Layout = serde_json::from_str(json).unwrap();
+        assert_eq!(l.show.get("reply.tokens"), Some(&Show::Hidden));
+        assert!(!l.show.contains_key("header.usage"));
+        assert_eq!((l.chat_list.group, l.chat_list.sort), (ListGroup::Project, ListSort::Name));
+        assert!(l.chat_list.pinned_projects.is_empty());
+        assert_eq!(l.chat_list.sections.len(), 1);
+        let spaces: Vec<&str> = l.chat_list.spaces.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(spaces, ["Work", "Home"]);
+        assert_eq!(l.chat_list.spaces[0].items, ["ws:w1"]);
+    }
 
     #[test]
     fn the_chat_list_rides_in_the_layout_and_stays_within_limits() {
