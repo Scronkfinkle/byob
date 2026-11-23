@@ -35,9 +35,12 @@ struct Viewport {
     mobile: bool,
 }
 
+/// The phone at scale 1: with an emulated scale of 2, Chromium's ResizeObserver still
+/// reports the canvas' device-pixel size at scale 1, so eframe laid byob out at half the
+/// width (195 points, everything twice as big), which no real phone shows.
 const VIEWPORTS: &[Viewport] = &[
     Viewport { name: "desktop", width: 1280, height: 800, scale: 1.0, mobile: false },
-    Viewport { name: "phone", width: 390, height: 844, scale: 2.0, mobile: true },
+    Viewport { name: "phone", width: 390, height: 844, scale: 1.0, mobile: true },
 ];
 
 pub fn run() -> Result<(), String> {
