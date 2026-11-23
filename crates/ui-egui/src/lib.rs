@@ -2101,6 +2101,30 @@ mod app_tests {
         p
     }
 
+    /// On a phone the "⋯" menu has the plugins' panes (no room in the header) and no
+    /// "Arrange panels…" (free arrangements need a wider window: it did nothing there).
+    #[test]
+    fn a_phones_more_menu_has_the_panes_and_no_arranging() {
+        for (width, phone) in [(390.0, true), (1000.0, false)] {
+            let ctx = egui::Context::default();
+            let mut app = crowded_app();
+            frame(&ctx, &mut app, width);
+            app.header_rects.open_menu = true;
+            let mut texts = Vec::new();
+            for _ in 0..3 {
+                let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0))), ..Default::default() };
+                let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+                out.textures_delta.clear();
+                texts = plugins::tests::texts_of(&out);
+            }
+            let more = app.header_rects.more;
+            let below = |want: &str| texts.iter().any(|t| t.0 == want && t.1.top() > more.bottom());
+            assert!(below("App settings"), "{width}: the menu is open: {texts:?}");
+            assert_eq!(below("Memory"), phone, "{width}: Memory in the menu: {texts:?}");
+            assert_eq!(below("Arrange panels…"), !phone, "{width}: Arrange panels: {texts:?}");
+        }
+    }
+
     #[test]
     fn header_buttons_stay_on_screen_and_apart_at_every_width() {
         let ctx = egui::Context::default();

@@ -38,6 +38,9 @@ pub struct Layout {
     /// The plugins' pane toggles in the header (else in the "⋯" menu: on a phone their
     /// names ran over the window controls).
     pub pane_toggles: bool,
+    /// "Arrange panels…" in the "⋯" menu (free arrangements need a wider window: on a
+    /// phone it did nothing you could see).
+    pub arrange: bool,
 }
 
 impl Layout {
@@ -65,6 +68,7 @@ impl Layout {
             },
             plugin_count: !phone,
             pane_toggles: !phone,
+            arrange: !phone,
         }
     }
 }
@@ -422,7 +426,9 @@ impl ByobApp {
             self.artifacts.menu_items(ui, t);
         }
         menu::separator(ui, t);
-        if self.prefs.cockpit.arrangement.free {
+        if !layout.arrange {
+            // A phone: always docked.
+        } else if self.prefs.cockpit.arrangement.free {
             if ui.button("Arrange panels…").on_hover_text("Move, resize and hide the window's parts").clicked() {
                 self.arranging.on = true;
                 ui.close();
@@ -721,13 +727,13 @@ mod tests {
     #[test]
     fn details_drop_as_the_window_narrows() {
         let full = Layout::for_width(1600.0);
-        assert_eq!(full, Layout { workspace_name: true, chip: ChipDetail::Full, plugin_count: true, pane_toggles: true });
+        assert_eq!(full, Layout { workspace_name: true, chip: ChipDetail::Full, plugin_count: true, pane_toggles: true, arrange: true });
         let laptop = Layout::for_width(1100.0);
-        assert_eq!(laptop, Layout { workspace_name: true, chip: ChipDetail::Model, plugin_count: true, pane_toggles: true });
+        assert_eq!(laptop, Layout { workspace_name: true, chip: ChipDetail::Model, plugin_count: true, pane_toggles: true, arrange: true });
         let small = Layout::for_width(800.0);
-        assert_eq!(small, Layout { workspace_name: true, chip: ChipDetail::Model, plugin_count: true, pane_toggles: true });
+        assert_eq!(small, Layout { workspace_name: true, chip: ChipDetail::Model, plugin_count: true, pane_toggles: true, arrange: true });
         let phone = Layout::for_width(390.0);
-        assert_eq!(phone, Layout { workspace_name: false, chip: ChipDetail::Dot, plugin_count: false, pane_toggles: false });
+        assert_eq!(phone, Layout { workspace_name: false, chip: ChipDetail::Dot, plugin_count: false, pane_toggles: false, arrange: false });
         // Narrowing never brings something back.
         let mut last = full;
         for w in (320..=1600).rev().step_by(10) {
