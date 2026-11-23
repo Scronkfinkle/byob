@@ -12,9 +12,9 @@ documents and small apps beside the chat.
 byob is **desktop software, not a web page in a window**: one program for Linux, macOS and Windows
 that draws its own interface on the GPU, with no Electron.
 
-![byob building a two-sheet budget workbook: the spreadsheet fills in beside the chat as the model writes it](docs/media/hero.gif)
+![byob with a chat about an allotment's harvest and a stacked bar chart of the harvest by month beside it](docs/media/beside.png)
 
-<sub>Recorded live against a local model (llama.cpp); the waits for the model are cut.</sub>
+<sub>“Chart our allotment harvest by month from harvest.csv.” byob reads the file, draws the chart beside the chat and answers the question.</sub>
 
 ## What it does
 
@@ -51,7 +51,7 @@ that draws its own interface on the GPU, with no Electron.
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/media/self-plugin.gif" alt="Asking byob for a counter plugin: it writes the plugin and the pane appears beside the chat"><br><sub>“Make me a plugin with a counter pane”: byob writes it, reads its own load errors, fixes them, and the pane appears.</sub></td>
+    <td width="50%"><img src="docs/media/self-plugin.png" alt="Asking byob for a counter plugin: it writes the plugin, fixes its own load error, and the counter pane is open beside the chat"><br><sub>“Make me a plugin with a counter pane”: byob writes it, reads its own load errors, fixes them, and the pane appears.</sub></td>
     <td width="50%"><img src="docs/media/html-app.png" alt="A sowing calendar HTML app running beside the chat"><br><sub>HTML apps run inline, on the desktop (a separate Servo renderer process ships with byob) and in the browser UI.</sub></td>
   </tr>
   <tr>

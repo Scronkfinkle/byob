@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Regenerate the README's screenshots and clips in docs/media, headlessly (Xvfb, see
+# Regenerate the README's and byob.chat's screenshots in docs/media, headlessly (Xvfb, see
 # scripts/headless.sh), against a real model.
 #
 #   scripts/readme-media.sh [shot...]     (default: all; names below)
 #
 # Every shot uses a throwaway profile and workspace under /tmp/byob-media/<shot>, wiped first.
 # Servo helper (HTML panes/apps inline): as in demos/run.sh; BYOB_ARTIFACT_HOST wins.
-# Endpoint: BYOB_DEMO_URL (default http://silicon:9931/v1) / BYOB_DEMO_MODEL (default local).
-# Clips: the run is recorded, idle stretches (the model thinking) are cut, and the result is
-# written as a GIF.
+# Endpoint: BYOB_DEMO_URL (default cli://claude, Claude Code) / BYOB_DEMO_MODEL (default sonnet).
+# Stills only: a GIF of an older interface outlives it, so there are none.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 if ! command -v Xvfb >/dev/null || ! command -v cargo >/dev/null; then exec nix develop -c "$0" "$@"; fi
@@ -17,11 +16,10 @@ out="$PWD/docs/media"
 root=/tmp/byob-media
 mkdir -p "$out" "$root"
 export HEADLESS_TIMEOUT="${HEADLESS_TIMEOUT:-900}" BYOB_SETTLE_SECS="${BYOB_SETTLE_SECS:-600}"
-url="${BYOB_DEMO_URL:-http://silicon:9931/v1}" model="${BYOB_DEMO_MODEL:-local}"
-ffbin="$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#ffmpeg-full.bin)/bin"
-ff() { env -u LD_LIBRARY_PATH "$ffbin/ffmpeg" -loglevel error -y "$@"; }
+url="${BYOB_DEMO_URL:-cli://claude}" model="${BYOB_DEMO_MODEL:-sonnet}"
+pngquant="$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#pngquant)/bin/pngquant"
 
-ALL="hero self-plugin html-app sheets connect phone"
+ALL="beside self-plugin html-app sheets connect phone"
 W=1440 H=810
 
 # fresh NAME: a clean profile + workspace for one shot; sets HOME_DIR / WS.
@@ -42,56 +40,30 @@ run() {
     "$@" --screenshot "$out/$name.png" >"$root/$name.log" 2>&1 || echo "   $name: byob exited with an error (log: $root/$name.log)" >&2
 }
 
-# clip NAME ARGS...: like run, recorded; writes docs/media/NAME.gif.
-clip() {
-  local name="$1"; shift
-  local mp4="$root/$name.mp4"
-  HEADLESS_RECORD="$mp4" run "$name" "$@"
-  # Skip the black before the window maps, and stop at the black when it closes (it can be
-  # shorter than a frame, so any length counts; black in between is left alone).
-  local black from=0 dur to
-  dur="$(env -u LD_LIBRARY_PATH "$ffbin/ffprobe" -v error -show_entries format=duration -of csv=p=0 "$mp4")"
-  to="$dur"
-  black="$(env -u LD_LIBRARY_PATH "$ffbin/ffmpeg" -i "$mp4" -vf blackdetect=d=0:pix_th=0.05 -f null - 2>&1 | grep -o 'black_start:[0-9.]* black_end:[0-9.]*' || true)"
-  while read -r start end; do
-    [[ -z "$start" ]] && continue
-    if [[ "$start" == 0 ]]; then from="$end"
-    elif awk -v e="$end" -v d="$dur" 'BEGIN { exit !(e >= d - 0.3) }'; then to="$start"; fi
-  done < <(sed -E 's/black_start:([0-9.]*) black_end:([0-9.]*)/\1 \2/' <<<"$black")
-  # Crop to the window; keep the frames where something happened (a scene change above 0.0005:
-  # a tool step, the sheet filling in, the reply) and one frame in 30 (2 s) of the rest, so the
-  # model thinking (only its counter and spinner moving, ~0.0003) passes in a moment; play them
-  # at 7 fps, then end on the app's own final screenshot for 3 s (the recording's last frames
-  # can be mid-close). A GIF that only stores what changed between frames is smaller
-  # than an animated WebP of the same thing here.
-  ff -ss "$from" -to "$to" -i "$mp4" -loop 1 -framerate 7 -t 3 -i "$out/$name.png" -filter_complex \
-    "[0:v]crop=$W:$H:0:0,select='gt(scene,0.0005)+not(mod(n,30))',setpts=N/7/TB,fps=7,scale=1100:-2:flags=lanczos,setsar=1,format=rgb24[v];[1:v]scale=1100:-2:flags=lanczos,setsar=1,format=rgb24[s];[v][s]concat=n=2:v=1:a=0,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" \
-    -loop 0 "$out/$name.gif"
-  rm -f "$out/$name.png"
-}
-
-shrink() { command -v magick >/dev/null && [[ -f "$1" ]] && magick "$1" -colors 256 "PNG8:$1" || true; }
+shrink() { [[ -f "$1" ]] && "$pngquant" --quality 70-90 --speed 1 --force --output "$1" "$1" || true; }
 
 shot() {
   local name="$1" t0=$SECONDS
   echo "== $name ==" >&2
   case "$name" in
-    hero)
-      fresh hero
-      clip hero --auto-approve --send "Build a monthly budget spreadsheet with categories, amounts and a summary by category."
+    beside)
+      # A chart beside the chat (byob.chat's demo; the README's first picture).
+      fresh beside
+      cp demos/seed/allotment/harvest.csv "$WS/"
+      run beside --auto-approve --theme light --send "Chart our allotment harvest by month from harvest.csv (stacked by crop) and tell me in two or three sentences which months were best per hour worked."
       ;;
     self-plugin)
       fresh self-plugin
-      clip self-plugin --auto-approve --send "Make me a plugin with a counter pane: a big number with + and - buttons and a Reset button." --open-panel plugin-pane
+      run self-plugin --auto-approve --theme light --send "Make me a plugin with a counter pane: a big number with + and − buttons and a Reset button." --open-panel plugin-pane
       ;;
     html-app)
       fresh html-app
-      run html-app --auto-approve --send "Make me a tip calculator app with a dark theme."
+      run html-app --auto-approve --theme light --send "Make a small HTML app: a sowing calendar. Pick a vegetable from a few buttons and it shows a 12-month strip with when to sow indoors, sow outdoors and harvest. Calm, friendly design."
       ;;
     sheets)
       fresh sheets
-      cp demos/seed/sheets/sales.csv "$WS/"
-      run sheets --auto-approve --send "Open sales.csv as a spreadsheet and add a column with the month-over-month growth % of revenue for each region."
+      cp demos/seed/allotment/harvest.csv "$WS/"
+      run sheets --auto-approve --theme light --send "Open harvest.csv as a spreadsheet, add a kg_per_hour column (all crops over hours worked) and bold the best month."
       ;;
     connect)
       # First run: nothing configured, so the Connect a model screen.
