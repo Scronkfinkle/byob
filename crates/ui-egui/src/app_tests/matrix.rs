@@ -252,14 +252,15 @@ fn edit_mode_still_lists_what_is_under_the_inspector() {
 
 /// A free arrangement with a label stamped on every bezel: each one shown is drawn, in the
 /// window, not clipped away and not painted over (a tall metal header covered the chat
-/// list's and the chat's).
+/// list's and the chat's; a bare bezel's wasn't drawn at all), and the header and message
+/// box under theirs aren't cut off (a labeled message box lost its bottom row).
 #[test]
 fn every_bezel_label_set_is_drawn() {
     // Module, its label, the region it's drawn as.
     let labels = [("header", "DSV-9", "header"), ("chats", "LOGBOOK", "sidebar"), ("chat", "COMMS", "chat"), ("composer", "HELM", "composer")];
     let mut bad = Vec::new();
     for arrangement in ["floating", "focus"] {
-        for bezel in [Bezel::Glass, Bezel::Metal] {
+        for bezel in Bezel::ALL {
             for size in SIZES {
                 let case = Case { arrangement, theme: theme::ThemeKind::Dark, size, extra: Extra::None };
                 let d = render(case, |a| {
@@ -284,6 +285,16 @@ fn every_bezel_label_set_is_drawn() {
                             if let Some(over) = covered(&d.shapes, p) {
                                 bad.push(format!("{at} at {:?} is painted over by {over:?}", p.rect));
                             }
+                        }
+                    }
+                }
+                // What the header and the message box hold isn't cut off to make room for a
+                // label (they don't scroll: what's clipped can't be reached).
+                for region in ["header", "composer"] {
+                    let Some(r) = d.els.iter().find(|e| e.path == region).map(|e| e.rect) else { continue };
+                    for p in text.iter().filter(|p| r.contains(p.rect.center()) && labels.iter().all(|l| l.1 != p.text)) {
+                        if !p.clip.expand(1.0).contains_rect(p.rect) {
+                            bad.push(format!("{case} {bezel:?}: {region}'s {:?} is cut off: {:?} in {:?}", p.text, p.rect, p.clip));
                         }
                     }
                 }

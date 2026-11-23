@@ -71,7 +71,7 @@ impl Module {
     pub fn min_size(self) -> Vec2 {
         match self {
             Self::Header => vec2(360.0, 40.0),
-            Self::Composer => vec2(260.0, 64.0),
+            Self::Composer => vec2(260.0, 92.0),
             Self::Chats => vec2(180.0, 160.0),
             _ => vec2(220.0, 140.0),
         }
