@@ -902,8 +902,7 @@ pub struct NewWorkspaceForm {
     error: Option<String>,
     /// Put the keyboard in the name field on the next frame.
     focus_name: bool,
-    /// Open the system's folder picker on the next frame (started from "From a folder").
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    /// Start adding a folder on the next frame (started from "From a folder").
     pick_now: bool,
     /// Enter was pressed in the name (the buttons, drawn after, act on it).
     enter: bool,
@@ -1068,9 +1067,8 @@ impl NewWorkspaceForm {
                 self.browser = None;
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if std::mem::take(&mut self.pick_now) && crate::export::dialog_unavailable_reason().is_none() {
-            pick_folder(ui.ctx(), self.picked.0.clone());
+        if std::mem::take(&mut self.pick_now) {
+            self.begin_add(ui.ctx(), native_dialog(), &mut out);
         }
         let field_w = ui.available_width().min(520.0);
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -1172,10 +1170,6 @@ impl NewWorkspaceForm {
         if let Some(i) = remove {
             self.folders.remove(i);
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = crate::export::dialog_unavailable_reason().is_none();
-        #[cfg(target_arch = "wasm32")]
-        let native = false;
         let mut add = false;
         if self.folders.is_empty() {
             // None yet: one quiet box that says what to do, with its button.
@@ -1187,14 +1181,7 @@ impl NewWorkspaceForm {
                 add = small_button(ui, t, crate::icons::folder_plus, "Add another").on_hover_text("Its files stay where they are").clicked();
             }
             if add {
-                #[cfg(not(target_arch = "wasm32"))]
-                if native {
-                    pick_folder(ui.ctx(), self.picked.0.clone());
-                }
-                if !native {
-                    self.browsing = true;
-                    out.msgs.push(ClientMsg::ListFolders { path: self.folders.last().cloned() });
-                }
+                self.begin_add(ui.ctx(), native_dialog(), out);
             }
             if self.browsing {
                 theme::spinner(ui, t, None);
@@ -1216,6 +1203,19 @@ impl NewWorkspaceForm {
                 }
             }
         }
+    }
+
+    /// Add a folder: the system's dialog where there is one (`native`), else the engine's
+    /// folder list (the browser, a machine without a dialog).
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+    fn begin_add(&mut self, ctx: &egui::Context, native: bool, out: &mut FormOutput) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if native {
+            pick_folder(ctx, self.picked.0.clone());
+            return;
+        }
+        self.browsing = true;
+        out.msgs.push(ClientMsg::ListFolders { path: self.folders.last().cloned() });
     }
 
     /// Where commands run: one aligned row per choice (radio, icon, name), what it means,
@@ -1519,6 +1519,14 @@ fn browser(ui: &mut egui::Ui, t: &Tokens, list: &FolderList, width: f32) -> Opti
     go
 }
 
+/// Whether the system has a folder dialog to show (never in the browser).
+fn native_dialog() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    return crate::export::dialog_unavailable_reason().is_none();
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 /// The desktop's folder dialog, on a thread (rfd talks to the desktop portal).
 #[cfg(not(target_arch = "wasm32"))]
 fn pick_folder(ctx: &egui::Context, tx: std::sync::mpsc::Sender<Option<String>>) {
@@ -1586,6 +1594,9 @@ pub struct WorkspaceWindow {
     pub id: String,
     pub tab: ProjectTab,
     name: String,
+    /// The name field was filled from the project (once: after that it's what's typed,
+    /// empty too).
+    named: bool,
     editor: LayerEditor,
     env: EnvPanel,
     removing: bool,
@@ -1606,6 +1617,7 @@ impl WorkspaceWindow {
             id: id.to_owned(),
             tab: ProjectTab::General,
             name: String::new(),
+            named: false,
             editor,
             env: EnvPanel::default(),
             removing: remove,
@@ -1690,7 +1702,7 @@ impl WorkspaceWindow {
             out.close = crate::form::button(ui, t, "Close", true).clicked();
             return out;
         };
-        if self.name.is_empty() {
+        if !std::mem::replace(&mut self.named, true) {
             self.name.clone_from(&ws.name);
         }
         // A narrow nav: its items fill it, a short gap to the hairline, then the part.
@@ -2507,5 +2519,31 @@ pub(crate) mod tests {
         assert!(w.chat.is_some());
         w.toggle_chat();
         assert!(w.chat.is_none());
+    }
+
+    /// The project's name can be emptied to type another: it used to come back the moment
+    /// the field was empty, so deleting it all and typing put the new text after the old.
+    #[test]
+    fn a_projects_name_field_can_be_emptied() {
+        let ws = WorkspaceSummary { id: "w".into(), name: "Old".into(), folder: "/w".into(), ..Default::default() };
+        let mut w = WorkspaceWindow::new("w", false);
+        let mut plugins = crate::plugins::PluginsUi::default();
+        render(|ui| drop(w.show(ui, &Tokens::dark(), Some(&ws), &mut plugins, 400.0)));
+        assert_eq!(w.name, "Old");
+        w.name.clear();
+        render(|ui| drop(w.show(ui, &Tokens::dark(), Some(&ws), &mut plugins, 400.0)));
+        assert_eq!(w.name, "", "an emptied field stays empty");
+    }
+
+    /// "From a folder" where there's no folder dialog (the browser) lists the engine's
+    /// folders straight away; it used to open the form as if New project was chosen.
+    #[test]
+    fn from_a_folder_without_a_dialog_lists_the_folders() {
+        let mut f = NewWorkspaceForm::with_start(crate::projects::Start::Link);
+        assert!(f.pick_now);
+        let mut out = FormOutput::default();
+        render(|ui| f.begin_add(ui.ctx(), false, &mut out));
+        assert_eq!(out.msgs, [ClientMsg::ListFolders { path: None }]);
+        assert!(f.browsing);
     }
 }
