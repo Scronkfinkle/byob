@@ -431,6 +431,20 @@ impl Fluid {
             });
         }
         let same = |a: Rect, b: Rect| a.expand(2.0).contains_rect(b) && b.expand(2.0).contains_rect(a);
+        // The inspector's own text, to tell its controls from byob's under it.
+        let mut own_texts: Vec<Rect> = Vec::new();
+        if self.editing {
+            let layer = LayerId::new(egui::Order::Tooltip, inspector_id());
+            let mut found = Vec::new();
+            ctx.graphics(|g| {
+                if let Some(list) = g.get(layer) {
+                    for cs in list.all_entries() {
+                        collect_text(&cs.shape, layer, &mut found);
+                    }
+                }
+            });
+            own_texts = found.into_iter().map(|t| t.1).collect();
+        }
         // Clickable things AccessKit didn't name: custom-drawn rows, icons, chips.
         // Fluid's own: the inspector, and the overlay over the whole window while editing.
         let inspector = ctx.memory(|m| m.area_rect(inspector_id()));
@@ -438,7 +452,6 @@ impl Fluid {
         for rect in ctx.interactive_rects_last_pass() {
             if !rect.is_positive()
                 || widgets.iter().any(|(w, _)| same(*w, rect))
-                || inspector.is_some_and(|m| m.expand(1.0).contains_rect(rect))
                 || overlay.is_some_and(|m| same(m, rect))
                 // An area as big as a region in it (an inserted element's own): that region.
                 || raw.iter().any(|x| x.role == "region" && same(x.rect, rect))
@@ -446,6 +459,14 @@ impl Fluid {
                 continue;
             }
             let inside: Vec<&(String, Rect, LayerId)> = texts.iter().filter(|(_, r, _)| rect.expand(1.0).contains_rect(*r)).collect();
+            // Where the inspector is, its own controls are left out (egui doesn't say which
+            // layer a clickable rect is on): one with the inspector's text in it, or none.
+            // byob's own under it (with byob's text) is still listed.
+            if inspector.is_some_and(|m| m.expand(1.0).contains_rect(rect))
+                && (inside.is_empty() || own_texts.iter().any(|r| rect.expand(1.0).contains_rect(*r)))
+            {
+                continue;
+            }
             let layer = inside.first().map(|t| t.2).or_else(|| {
                 raw.iter().filter(|x| x.role == "region" && x.rect.contains_rect(rect)).min_by(|a, b| a.rect.area().total_cmp(&b.rect.area())).map(|x| x.layer)
             });
@@ -1164,6 +1185,41 @@ mod tests {
         frame(&ctx);
         assert_eq!(listed(&ctx), 0);
         assert!(with(&ctx, |f| f.mapped.is_empty()).unwrap_or(false));
+    }
+
+    /// A custom-drawn clickable thing (no AccessKit name) with `text` painted in it.
+    fn chip(ui: &mut Ui, text: &str) {
+        let r = ui.allocate_response(Vec2::new(90.0, 24.0), egui::Sense::click());
+        ui.painter().text(r.rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), Color32::WHITE);
+    }
+
+    #[test]
+    fn edit_mode_lists_what_is_under_the_inspector_but_not_the_inspector() {
+        let ctx = Context::default();
+        install(&ctx);
+        with(&ctx, |f| f.editing = true);
+        for _ in 0..4 {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                region(ui, "composer", |ui| {
+                    ui.add_space(300.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(620.0);
+                        chip(ui, "model");
+                    });
+                });
+                // The inspector, over the right of the window, with a control of its own.
+                egui::Area::new(inspector_id()).order(egui::Order::Tooltip).fixed_pos(Pos2::new(560.0, 0.0)).show(ui.ctx(), |ui| {
+                    ui.set_min_size(Vec2::new(240.0, 600.0));
+                    ui.add_space(100.0);
+                    chip(ui, "Reset all");
+                });
+            });
+            out.textures_delta.clear();
+        }
+        let paths: Vec<String> = with(&ctx, |f| f.elements.iter().map(|e| e.path.clone()).collect()).unwrap_or_default();
+        assert!(paths.iter().any(|p| p == "composer/button:model"), "{paths:?}");
+        assert!(!paths.iter().any(|p| p.contains("Reset all")), "{paths:?}");
     }
 
     #[test]
