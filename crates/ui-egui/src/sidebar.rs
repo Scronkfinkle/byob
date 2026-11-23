@@ -2941,7 +2941,7 @@ impl Sidebar {
             let listed = if self.spaces.is_empty() { vec![default_space()] } else { self.spaces.clone() };
             for (n, sp) in listed.iter().enumerate() {
                 let on = current == sp.id;
-                let keys = (n < 9 && listed.len() > 1).then(|| format!("⌃{}", n + 1));
+                let keys = space_keys(&row.ctx, n).filter(|_| listed.len() > 1);
                 let trail = if on { Some("✓") } else { keys.as_deref() };
                 if space_item(ui, t, &sp.name, space_color(&sp.color, t.accent), trail).clicked() {
                     self.space = Some(sp.id.clone());
@@ -3009,6 +3009,13 @@ pub fn window_button(ui: &mut Ui, t: &Tokens, rect: Rect, id: Id, paint: icons::
         paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(s, s)), color);
     }
     resp
+}
+
+/// The keys that switch to Space `n` (from 0), as this platform writes them (Ctrl+1), up to
+/// the ninth.
+fn space_keys(ctx: &egui::Context, n: usize) -> Option<String> {
+    const DIGITS: [Key; 9] = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+    DIGITS.get(n).map(|k| ctx.format_shortcut(&KeyboardShortcut::new(Modifiers::CTRL, *k)))
 }
 
 /// The date headings ([`when_heading`]), newest first.
@@ -3329,6 +3336,17 @@ mod tests {
         assert_eq!(when_heading(0, 30 * 60 * 60 * 1000), "Yesterday");
         assert_eq!(when_heading(0, 3 * 24 * 60 * 60 * 1000), "This week");
         assert_eq!(when_heading(0, 30 * 24 * 60 * 60 * 1000), "Earlier");
+    }
+
+    /// The footer menu's Space keys read as the platform writes them (not a Mac's ⌃ on Linux).
+    #[test]
+    fn space_keys_are_written_for_the_platform() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear(); // its fonts
+        ctx.set_os(egui::os::OperatingSystem::Nix);
+        assert_eq!(space_keys(&ctx, 0).as_deref(), Some("Ctrl+1"));
+        assert_eq!(space_keys(&ctx, 8).as_deref(), Some("Ctrl+9"));
+        assert_eq!(space_keys(&ctx, 9), None, "only nine have keys");
     }
 
     /// By date, sorted by name: A to Z within each date, the dates still newest first (each
