@@ -446,17 +446,22 @@ mod tests {
 
     /// A project links other folders: kept across a restart, its own folder and repeats
     /// dropped, relative paths and too many refused (nothing silently lost).
+    /// A full path on every platform (`/srv/app` isn't one on Windows).
+    fn abs(p: &str) -> PathBuf {
+        std::env::temp_dir().join(p)
+    }
+
     #[test]
     fn a_project_keeps_the_other_folders_it_links() {
         let d = tempfile::tempdir().unwrap();
         let p = paths(d.path());
         let mut w = Workspaces::open(Some(&p)).value;
-        let a = w.create("App", Path::new("/srv/app"), Layer::default()).unwrap();
+        let a = w.create("App", &abs("srv/app"), Layer::default()).unwrap();
         assert!(a.folders.is_empty());
-        let linked = [PathBuf::from("/srv/api"), PathBuf::from("/srv/app"), PathBuf::from("/srv/api"), PathBuf::from("/srv/docs")];
+        let linked = [abs("srv/api"), abs("srv/app"), abs("srv/api"), abs("srv/docs")];
         w.set_folders(&a.id, &linked).unwrap();
         let back = Workspaces::open(Some(&p)).value;
-        assert_eq!(back.get(&a.id).unwrap().folders, [PathBuf::from("/srv/api"), PathBuf::from("/srv/docs")]);
+        assert_eq!(back.get(&a.id).unwrap().folders, [abs("srv/api"), abs("srv/docs")]);
         assert!(w.set_folders(&a.id, &[PathBuf::from("relative")]).is_err());
         let many: Vec<PathBuf> = (0..=MAX_LINKED_FOLDERS).map(|i| PathBuf::from(format!("/srv/f{i}"))).collect();
         assert!(w.set_folders(&a.id, &many).is_err());
@@ -548,10 +553,10 @@ mod tests {
         assert!(row.folders.is_empty());
         assert_eq!((row.name.as_str(), row.created_at, row.config.model.as_deref()), ("App", 7, Some("m")));
         assert_eq!(row.plugin_trust.get("calc"), Some(&PluginTrust::Trusted));
-        w.set_folders("w1", &[PathBuf::from("/srv/api")]).unwrap();
+        w.set_folders("w1", &[abs("srv/api")]).unwrap();
         let back = Workspaces::open(Some(&p)).value;
         let row = back.get("w1").unwrap();
-        assert_eq!(row.folders, [PathBuf::from("/srv/api")]);
+        assert_eq!(row.folders, [abs("srv/api")]);
         assert_eq!(row.config.instructions.as_deref(), Some("Be brief."));
         assert_eq!(row.plugin_trust.get("calc"), Some(&PluginTrust::Trusted));
     }
