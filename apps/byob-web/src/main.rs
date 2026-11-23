@@ -50,7 +50,7 @@ fn main() {
                     {
                         ui.set_sidebar_prefs(&list);
                     }
-                    Ok(Box::new(App { ui, link, panel: panel_from_hash(), redraws: 0, compositor }))
+                    Ok(Box::new(App { ui, link, panel: panel_from_hash(), redraws: 0, compositor, marked_ready: false }))
                 }),
             )
             .await;
@@ -107,6 +107,8 @@ struct App {
     redraws: u32,
     /// byob in a context of its own, composited onto the canvas (with a backdrop).
     compositor: Option<byob_ui_egui::cockpit::compositor::Compositor>,
+    /// `<html data-byob="ready">` is set: a frame was drawn with the engine's state.
+    marked_ready: bool,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -133,6 +135,12 @@ impl App {
     /// byob's frame, and the page's own bits (the link banner, `#panel=`).
     fn frame(&mut self, ui: &mut egui::Ui) {
         self.ui.ui(ui);
+        if !self.marked_ready && self.ui.connected() {
+            mark_ready();
+            self.marked_ready = true;
+            // One more frame, so the page shows what this one drew with the state.
+            ui.ctx().request_repaint();
+        }
         if let Some(p) = &self.panel {
             // Once connected (the workspace views need the engine's lists).
             if self.ui.connected() && self.ui.open_panel(p) {
@@ -158,6 +166,15 @@ impl App {
                     });
                 });
         }
+    }
+}
+
+/// `<html data-byob="ready">`: the app is running, connected and has drawn a frame with the
+/// engine's state. `cargo xtask browser-smoke` waits for it.
+#[cfg(target_arch = "wasm32")]
+fn mark_ready() {
+    if let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) {
+        let _ = root.set_attribute("data-byob", "ready");
     }
 }
 

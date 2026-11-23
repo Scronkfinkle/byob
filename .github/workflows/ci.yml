@@ -1,5 +1,7 @@
 # The full local gate (`cargo xtask ci`: fmt, clippy, tests, layers, wasm) in the Nix dev
-# shell on Linux, plus build + test on macOS and Windows, which nothing else exercises.
+# shell on Linux, plus build + test on macOS and Windows, which nothing else exercises, and the
+# browser UI really running in headless Chromium (`cargo xtask browser-smoke`; the gate only
+# compiles the wasm, so a UI that panics on start would pass it).
 name: CI
 
 on:
@@ -31,6 +33,25 @@ jobs:
         run: nix develop --command cargo xtask ci
       - name: Crates package cleanly
         run: nix develop --command cargo package --workspace --exclude byob-web --exclude xtask --no-verify --locked
+
+  browser:
+    name: Browser UI smoke test (Linux, Nix)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Chromium from the flake's pinned nixpkgs, only for this job (not in the dev shell).
+      - name: cargo xtask browser-smoke
+        run: nix develop --command nix shell --inputs-from . nixpkgs#chromium --command cargo xtask browser-smoke
+      - name: Screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-smoke
+          path: target/browser-smoke/
+          if-no-files-found: ignore
 
   platforms:
     name: Test (${{ matrix.os }})

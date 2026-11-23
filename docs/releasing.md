@@ -11,7 +11,11 @@ Checklist:
    `crates/artifact-wire/Cargo.toml`, `host/artifact-host/Cargo.toml` and `flake.nix`; update
    both lockfiles; bump `v=` in the README's macOS `curl` line and every version number
    in `site/index.html` (the byob.chat download links; `cargo xtask ci` fails until it matches).
-2. `cargo xtask ci`, commit, push, and wait for CI.
+2. `cargo xtask ci`, commit, push, and wait for CI. CI also runs `cargo xtask browser-smoke`
+   as a job of its own: it builds the browser UI, opens it in headless Chromium against
+   `byob --headless` and fails unless the app starts, connects and draws (`ci` only compiles
+   the wasm). It isn't part of `cargo xtask ci`, which would then need Chromium and a release
+   wasm build before every commit; run it by hand after changing code the browser runs.
 3. Tag and push the tag; when the release is up, set its notes (`gh release edit vX.Y.Z
    --notes-file …`; say the macOS builds are unsigned while they are).
 4. Publish to crates.io by hand: a release made by the workflow doesn't trigger

@@ -3,10 +3,13 @@
 //!   web     — build the browser UI into apps/byob-web/dist (wasm-bindgen + wasm-opt)
 //!   wasm    — check that the browser-side crates build for wasm32
 //!   help-docs — copy byob's user docs into crates/help/docs (`--check`: fail if that copy is stale)
+//!   browser-smoke — build the browser UI, open it in headless Chromium against `byob --headless`,
+//!             fail unless it really draws (see browser_smoke.rs; not part of `ci`)
 //!   ci      — help-docs --check, the site's version, fmt, clippy, tests, doc tests, layers, wasm (the full local gate)
 
 use std::process::{Command, ExitCode};
 
+mod browser_smoke;
 mod help_docs;
 mod site;
 
@@ -68,8 +71,9 @@ fn main() -> ExitCode {
         "wasm" => wasm(),
         "web" => web(),
         "help-docs" => help_docs(std::env::args().nth(2).as_deref() == Some("--check")),
+        "browser-smoke" => browser_smoke::run(),
         "ci" => ci(),
-        _ => Err(format!("unknown command {cmd:?}; expected one of: layers, wasm, web, help-docs, ci")),
+        _ => Err(format!("unknown command {cmd:?}; expected one of: layers, wasm, web, browser-smoke, help-docs, ci")),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

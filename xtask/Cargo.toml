@@ -6,6 +6,10 @@ publish = false
 
 [dependencies]
 serde_json.workspace = true
+# browser-smoke: Chromium's DevTools protocol, and its screenshots.
+tungstenite.workspace = true
+base64.workspace = true
+png.workspace = true
 
 [lints]
 workspace = true

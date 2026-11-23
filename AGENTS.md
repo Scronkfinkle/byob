@@ -44,6 +44,8 @@ Conventions are adapted from filmcraft. When this file and other docs disagree, 
   or set `BYOB_LIVE_URL`. Machine-specific details (e.g. a local test server) belong in the
   gitignored `CLAUDE.local.md`. Unit tests use in-process fake servers instead.
 - Quality gate before every commit: `cargo xtask ci` (fmt, clippy `-D warnings`, tests, doc tests, layers).
+  After changing code the browser runs, also `cargo xtask browser-smoke` (the UI in headless
+  Chromium; CI runs it separately). Use `web_time`, not `std::time::Instant`, there: it panics on wasm.
 - New crates: put them under `crates/` as `byob-<dir>`, add `[lints] workspace = true`, the
   crate-root deny attribute, and a layer entry in `xtask/src/main.rs`.
 - Keep fixes narrow; add a test that fails without the fix. Report only what actually ran.
