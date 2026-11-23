@@ -6,6 +6,7 @@ use byob_protocol::look::{LookChanges, LookField, LookReport, ThemeChoice};
 use serde_json::{Value, json};
 
 use crate::cockpit;
+use crate::count::SizeUnit;
 use crate::theme::file::{self, ThemeDef};
 use crate::theme::{self, Accent, Align, BubbleStyle, ChartPalette, Density, Knobs, MonoFont, Prefs, ROLES, ThemeKind, Tokens, UiFont};
 
@@ -24,6 +25,11 @@ fn accent_name(a: &Accent) -> String {
         Accent::Custom(c) => c.clone(),
         other => lower(&other.label()),
     }
+}
+
+/// The accent names of the theme `prefs` draws with now (`dark`: in dark mode).
+fn theme_accents(prefs: &Prefs, dark: bool, user_themes: &[ThemeDef]) -> Vec<String> {
+    file::resolve(prefs.theme_id(dark), dark, user_themes).base.accents.iter().map(|(n, _)| lower(n)).collect()
 }
 
 fn bubble(s: BubbleStyle) -> String {
@@ -83,7 +89,10 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef], backdrop
         field(
             "accent",
             json!(accent_name(&prefs.accent)),
-            "the highlight color: theme (the theme's own), blue, violet, green, orange, pink, teal, or any #rrggbb",
+            &format!(
+                "the highlight color: theme (the theme's own), blue, violet, green, orange, pink, teal, one of this theme's colors ({}), or any #rrggbb",
+                theme_accents(prefs, tokens.dark, user_themes).join(", ")
+            ),
         ),
         field("corners", round2(k.radius), "how round corners are, 0 (square) to 16"),
         field("text_size", round2(k.font_scale), "text size, 0.75 to 2 (1 is normal)"),
@@ -105,6 +114,11 @@ pub fn report(prefs: &Prefs, tokens: &Tokens, user_themes: &[ThemeDef], backdrop
             "how buttons and other controls look: standard, hud (a heads-up display: square, outlined in the accent, lit when hovered), plate (raised metal plates that press in) or pill (fully rounded)",
         ),
         field("reduce_motion", json!(k.reduce_motion), "no animations: true or false"),
+        field(
+            "thinking_size",
+            json!(if prefs.thinking_size == SizeUnit::Characters { "characters" } else { "tokens" }),
+            "what a reply's thinking is measured in: tokens (about) or characters",
+        ),
         field("chart_colors", json!(if k.chart == ChartPalette::Accessible { "accessible" } else { "theme" }), "theme, or accessible (color-blind safe)"),
     ];
     let mut notes = std::collections::BTreeMap::new();
@@ -309,7 +323,9 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
             "accent" => {
                 let s = text(v);
                 let fixed = Accent::FIXED.into_iter().find(|a| lower(&a.label()) == s);
-                match (s.as_str(), fixed, v.as_str().and_then(theme::parse_color)) {
+                // One of the theme's own (the Appearance menu offers them; the report says them).
+                let named = || theme_accents(prefs, dark, user_themes).into_iter().find(|n| lower(n) == s);
+                match (s.as_str(), fixed.or_else(|| named().map(Accent::Named)), v.as_str().and_then(theme::parse_color)) {
                     ("theme" | "default", _, _) => {
                         prefs.accent = Accent::Theme;
                         Ok(())
@@ -322,7 +338,7 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
                         prefs.accent = Accent::Custom(theme::hex(c));
                         Ok(())
                     }
-                    _ => Err(format!("accent: theme, blue, violet, green, orange, pink, teal or #rrggbb, not {v}")),
+                    _ => Err(format!("accent: theme, blue, violet, green, orange, pink, teal, one of this theme's colors or #rrggbb, not {v}")),
                 }
             }
             "corners" => number(v, Knobs::RADIUS_RANGE, key).map(|n| k.radius = n.round()),
@@ -410,6 +426,17 @@ pub fn apply(prefs: &mut Prefs, changes: &LookChanges, dark: bool, user_themes: 
             "frost" => number(v, 0.0..=1.0, key).map(|n| prefs.cockpit.frost = n),
             "panel_gap" => number(v, cockpit::Cockpit::GAP_RANGE, key).map(|n| prefs.cockpit.gap = n.round()),
             "reduce_motion" => boolean(v, key).map(|b| k.reduce_motion = b),
+            "thinking_size" => match text(v).as_str() {
+                "tokens" => {
+                    prefs.thinking_size = SizeUnit::Tokens;
+                    Ok(())
+                }
+                "characters" | "chars" => {
+                    prefs.thinking_size = SizeUnit::Characters;
+                    Ok(())
+                }
+                _ => Err(format!("thinking_size: tokens or characters, not {v}")),
+            },
             "chart_colors" | "chart_colours" => match text(v).as_str() {
                 "theme" => {
                     k.chart = ChartPalette::Theme;
@@ -473,6 +500,25 @@ mod tests {
         let mut p = prefs.clone();
         assert_eq!(apply(&mut p, &all, true, &[], true), Vec::<String>::new());
         assert_eq!(p, prefs, "setting each to what it is changes nothing");
+    }
+
+    /// What Appearance offers the model can set too: Thinking size, and the theme's own
+    /// accents (byob's ink, Catppuccin's mauve), which the report names when they're picked.
+    #[test]
+    fn thinking_size_and_the_themes_own_accents_can_be_set() {
+        let mut p = Prefs::default();
+        assert!(apply(&mut p, &changes(json!({"thinking_size": "characters", "accent": "ink"})), true, &[], true).is_empty());
+        assert_eq!((p.thinking_size, &p.accent), (SizeUnit::Characters, &Accent::Named("ink".into())));
+        let r = report(&p, &Tokens::dark(), &[], true);
+        assert_eq!((r.get("thinking_size"), r.get("accent")), (Some(&json!("characters")), Some(&json!("ink"))));
+        assert!(r.fields.iter().any(|f| f.key == "accent" && f.describe.contains("ink")), "the theme's accents are listed");
+        // Another theme's: Catppuccin's mauve; still the fixed blue for "blue".
+        p.dark_theme = "catppuccin-mocha".into();
+        assert!(apply(&mut p, &changes(json!({"accent": "Mauve"})), true, &[], true).is_empty());
+        assert_eq!(p.accent, Accent::Named("mauve".into()));
+        assert!(apply(&mut p, &changes(json!({"accent": "blue"})), true, &[], true).is_empty());
+        assert_eq!(p.accent, Accent::Blue);
+        assert_eq!(apply(&mut p, &changes(json!({"accent": "plaid", "thinking_size": "words"})), true, &[], true).len(), 2);
     }
 
     #[test]
