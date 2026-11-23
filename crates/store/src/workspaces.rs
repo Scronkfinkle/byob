@@ -39,18 +39,63 @@ pub struct WorkspaceRow {
     /// change them too. Its own `folder` is never one of them.
     #[serde(default, deserialize_with = "lenient_folders", skip_serializing_if = "Vec::is_empty")]
     pub folders: Vec<PathBuf>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub created_at: Millis,
     /// Its own settings (see [`byob_types::config`]).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub config: Layer,
     /// What byob knows about the plugins in the folder's `.byob/plugins`, by id. A plugin
     /// with no record arrived with the folder (a clone or pull): its code waits for the
     /// user's OK.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, deserialize_with = "lenient_trust", skip_serializing_if = "BTreeMap::is_empty")]
     pub plugin_trust: BTreeMap<String, PluginTrust>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// A field of the wrong shape (a hand edit) is its default, not an unreadable file.
+fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned + Default>(d: D) -> std::result::Result<T, D::Error> {
+    let v = Value::deserialize(d)?;
+    Ok(serde_json::from_value(v.clone()).unwrap_or_else(|e| {
+        log::warn!("byob-store: ignoring a project's value {v}: {e}");
+        T::default()
+    }))
+}
+
+/// `plugin_trust`: an entry this build doesn't know (a newer byob's) is no record, so that
+/// plugin asks again; the others stay.
+fn lenient_trust<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<BTreeMap<String, PluginTrust>, D::Error> {
+    let Value::Object(map) = Value::deserialize(d)? else { return Ok(BTreeMap::new()) };
+    Ok(map
+        .into_iter()
+        .filter_map(|(id, v)| match serde_json::from_value(v.clone()) {
+            Ok(t) => Some((id, t)),
+            Err(_) => {
+                log::warn!("byob-store: ignoring plugin {id}'s trust {v}");
+                None
+            }
+        })
+        .collect())
+}
+
+/// A list or map of entries read one by one: an entry that can't be read is dropped (and
+/// logged), not the whole file.
+fn each<T: serde::de::DeserializeOwned>(what: &str, v: Value) -> Option<T> {
+    serde_json::from_value(v.clone()).map_err(|e| log::warn!("byob-store: ignoring {what} {v}: {e}")).ok()
+}
+
+fn lenient_rows<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<WorkspaceRow>, D::Error> {
+    match Value::deserialize(d)? {
+        Value::Array(items) => Ok(items.into_iter().filter_map(|v| each("a project", v)).collect()),
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn lenient_chats<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<BTreeMap<String, Layer>, D::Error> {
+    match Value::deserialize(d)? {
+        Value::Object(map) => Ok(map.into_iter().filter_map(|(id, v)| each("a chat's settings", v).map(|l| (id, l))).collect()),
+        _ => Ok(BTreeMap::new()),
+    }
 }
 
 /// `folders` as hand edits may leave it: a value of the wrong shape is no folders, an entry
@@ -96,7 +141,7 @@ impl PluginTrust {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WorkspacesFile {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_rows")]
     workspaces: Vec<WorkspaceRow>,
     #[serde(flatten)]
     extra: Map<String, Value>,
@@ -104,7 +149,7 @@ struct WorkspacesFile {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ChatsFile {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_chats")]
     chats: BTreeMap<String, Layer>,
     #[serde(flatten)]
     extra: Map<String, Value>,
@@ -532,6 +577,38 @@ mod tests {
         assert_eq!(w.list().len(), 3);
         assert!(w.get("w1").unwrap().folders.is_empty() && w.get("w2").unwrap().folders.is_empty());
         assert_eq!(w.get("w3").unwrap().folders, [PathBuf::from("/srv/api"), PathBuf::from("/srv/docs")]);
+    }
+
+    /// Regression: one project's plugin trust a newer byob wrote (a value this build doesn't
+    /// know), a `config` or `created_at` of the wrong shape, or a row missing its folder made
+    /// the whole file unreadable, so every project was set aside. Now each loses only itself,
+    /// and a chat's settings that aren't an object lose only that chat's.
+    #[test]
+    fn one_bad_project_or_chat_loses_only_itself() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(d.path());
+        std::fs::write(
+            p.workspaces(),
+            r#"{"workspaces":[
+                {"id":"w1","name":"A","folder":"/a","plugin_trust":{"calc":"trusted","new":"pending"}},
+                {"id":"w2","name":"B","folder":"/b","config":"oops","created_at":"yesterday"},
+                {"id":"w3","name":"C"},
+                {"id":"w4","name":"D","folder":"/d","config":{"model":"m"}}
+            ]}"#,
+        )
+        .unwrap();
+        std::fs::write(p.chat_settings(), r#"{"chats":{"c1":{"model":"small"},"c2":"oops"}}"#).unwrap();
+        let w = Workspaces::open(Some(&p)).value;
+        let ids: Vec<&str> = w.list().iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["w1", "w2", "w4"]);
+        let w1 = w.get("w1").unwrap();
+        assert_eq!(w1.plugin_trust.get("calc"), Some(&PluginTrust::Trusted));
+        assert!(!w1.plugin_trust.contains_key("new"), "an unknown trust is no record: the plugin asks again");
+        assert_eq!(w.get("w2").unwrap().config, Layer::default());
+        assert_eq!(w.get("w4").unwrap().config.model.as_deref(), Some("m"));
+        assert_eq!(w.chat_config("c1").and_then(|l| l.model.as_deref()), Some("small"));
+        assert!(w.chat_config("c2").is_none());
+        assert!(!d.path().join("workspaces.json.corrupt").exists());
     }
 
     #[test]
