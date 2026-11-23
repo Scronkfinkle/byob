@@ -55,7 +55,7 @@ that draws its own interface on the GPU, with no Electron.
     <td width="50%"><img src="docs/media/html-app.png" alt="A sowing calendar HTML app running beside the chat"><br><sub>HTML apps run inline, on the desktop (a separate Servo renderer process ships with byob) and in the browser UI.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/media/sheets.png" alt="sales.csv open as a spreadsheet with a new growth column"><br><sub>Open a CSV as a spreadsheet; every write recalculates and reports errors back to the model.</sub></td>
+    <td width="50%"><img src="docs/media/sheets.png" alt="harvest.csv open as a spreadsheet with a new kg_per_hour column"><br><sub>Open a CSV as a spreadsheet; every write recalculates and reports errors back to the model.</sub></td>
     <td width="50%"><img src="docs/media/connect.png" alt="The Connect a model screen with presets and servers found on this computer"><br><sub>First run: pick a server it found, or a preset.</sub></td>
   </tr>
 </table>
