@@ -23,7 +23,9 @@ enum Grip {
 
 /// The chat and message box make room for open panes over them, as the docked layout
 /// does: they end where a pane on their right begins (or begin where one on their left
-/// ends), unless that would leave them too narrow.
+/// ends), unless that would leave them too narrow. And nothing starts under the header,
+/// nor the chat under the message box: a part grown to fit its bezel and label (a metal
+/// header is taller than its place) would cover the top of what's below it, label and all.
 fn make_room(mut open: Vec<(Module, Rect)>) -> Vec<(Module, Rect)> {
     const GAP: f32 = 10.0;
     let panes: Vec<Rect> = open.iter().filter(|(m, _)| matches!(m, Module::Pane | Module::Plugins)).map(|(_, r)| *r).collect();
@@ -44,6 +46,28 @@ fn make_room(mut open: Vec<(Module, Rect)>) -> Vec<(Module, Rect)> {
             if room.width() >= m.min_size().x {
                 *r = room;
             }
+        }
+    }
+    let find = |open: &[(Module, Rect)], want: Module| open.iter().find(|(m, _)| *m == want).map(|(_, r)| *r);
+    let (header, composer) = (find(&open, Module::Header), find(&open, Module::Composer));
+    for (m, r) in &mut open {
+        let mut room = *r;
+        if let Some(h) = header
+            && *m != Module::Header
+            && r.intersect(h).is_positive()
+            && r.top() > h.top()
+        {
+            room.min.y = room.min.y.max(h.bottom() + GAP);
+        }
+        if let Some(c) = composer
+            && *m == Module::Chat
+            && r.intersect(c).is_positive()
+            && c.top() > r.top()
+        {
+            room.max.y = room.max.y.min(c.top() - GAP);
+        }
+        if room.height() >= m.min_size().y {
+            *r = room;
         }
     }
     open
@@ -289,5 +313,26 @@ mod tests {
         assert_eq!(out[0].1, r(0.0, 0.0, 200.0, 800.0));
         let squeezed = make_room(vec![(Module::Chat, r(220.0, 0.0, 1000.0, 700.0)), (Module::Plugins, r(300.0, 0.0, 1000.0, 800.0))]);
         assert_eq!(squeezed[0].1, r(220.0, 0.0, 1000.0, 700.0), "too narrow to make room: overlapped instead");
+    }
+    /// Regression: a metal, labeled header (taller than its place) covered the top of the
+    /// chat list and the chat, and with it their labels.
+    #[test]
+    fn nothing_starts_under_the_header_or_the_message_box() {
+        let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1));
+        let out = make_room(vec![
+            (Module::Header, r(14.0, 8.0, 1426.0, 96.0)),
+            (Module::Chats, r(14.0, 69.0, 302.0, 802.0)),
+            (Module::Chat, r(317.0, 69.0, 1426.0, 720.0)),
+            (Module::Composer, r(317.0, 700.0, 1426.0, 802.0)),
+        ]);
+        let get = |m: Module| out.iter().find(|(o, _)| *o == m).map(|(_, r)| *r).unwrap_or(Rect::NOTHING);
+        assert_eq!(get(Module::Chats).top(), 106.0);
+        assert_eq!(get(Module::Chat).top(), 106.0);
+        assert_eq!(get(Module::Chat).bottom(), 690.0);
+        for (i, (_, a)) in out.iter().enumerate() {
+            for (_, b) in out.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "{a:?} and {b:?} overlap");
+            }
+        }
     }
 }
