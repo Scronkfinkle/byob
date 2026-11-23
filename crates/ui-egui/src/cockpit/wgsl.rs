@@ -145,7 +145,11 @@ fn byob_overlay_fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> 
 
 /// Whether the scene draws over the interface too (`fn overlay`).
 pub fn has_overlay(source: &str) -> bool {
-    source.contains("fn overlay")
+    // Not a helper named overlay_something, nor one in a comment.
+    source
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or_default())
+        .any(|l| l.match_indices("fn overlay").any(|(i, m)| l.get(i + m.len()..).is_some_and(|rest| rest.trim_start().starts_with('('))))
 }
 
 /// For the model: what a backdrop is and what it can use (sent with the window's look).
@@ -344,6 +348,17 @@ mod tests {
         assert!(module(&ok, false).contains("byob_overlay_fs") && !module(scene, false).contains("byob_overlay_fs"));
         let bad = format!("{scene}fn overlay(p: vec2<f32>) -> vec4<f32> {{\n    return 1.0;\n}}\n");
         assert!(check(&bad).is_err());
+    }
+
+    /// Regression: a helper whose name starts with overlay (or `fn overlay` in a comment)
+    /// made byob add the overlay's entry point, which then called a function that wasn't
+    /// there, and the scene was refused "in its use of byob's helpers".
+    #[test]
+    fn only_an_overlay_function_is_an_overlay() {
+        let scene = "// no fn overlay(p) yet\nfn overlay_tint(c: vec3<f32>) -> vec3<f32> { return c * 0.5; }\nfn scene(p: vec2<f32>) -> vec4<f32> { return vec4<f32>(overlay_tint(u.accent.rgb), 1.0); }\n";
+        assert!(!has_overlay(scene));
+        assert_eq!(check(scene), Ok(()));
+        assert!(has_overlay("fn overlay (p: vec2<f32>) -> vec4<f32> { return vec4<f32>(0.0); }"));
     }
 
     #[test]
