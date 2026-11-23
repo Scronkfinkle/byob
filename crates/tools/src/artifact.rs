@@ -375,7 +375,15 @@ fn clip(s: &str, max: usize) -> String {
 fn clean_filename(types: &ArtifactTypes, raw: &str, title: &str) -> Result<(String, String), String> {
     let last = raw.trim().rsplit(['/', '\\']).next().unwrap_or_default();
     let name: String = last.chars().filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ')).take(100).collect();
-    let name = name.trim().trim_start_matches('.').to_owned();
+    let name = name.trim();
+    // A stem the filter emptied ("🍅.md") is named after the title, not read as a name
+    // without an extension; a space it left before the dot ("ü 🍅.md") goes.
+    let name = if name.starts_with('.') && name.len() > 1 { format!("{}{name}", new_id(title)) } else { name.to_owned() };
+    let name = match name.rsplit_once('.') {
+        Some((stem, ext)) if stem.ends_with(' ') => format!("{}.{ext}", stem.trim_end()),
+        _ => name,
+    };
+    let name = name.trim_start_matches('.').to_owned();
     let lower = name.to_ascii_lowercase();
     let ext = if let Some(ext) = types.compound_extension(&lower) {
         ext
@@ -1193,6 +1201,14 @@ mod tests {
         let big = "x".repeat(MAX_CONTENT_BYTES + 1);
         assert!(c(json!({"title": "T", "filename": "a.md", "content": big})).text.contains("too big"));
         assert!(c(json!({"title": "T", "filename": "a.chart.json", "content": "{nope"})).failed);
+        // Emoji in a name: dropped, without losing the extension or leaving a space.
+        let emoji = c(json!({"title": "Tomato", "filename": "🍅.md", "content": "x"}));
+        assert!(!emoji.failed && emoji.text.contains(".md)") && emoji.text.contains("tomato-"), "{}", emoji.text);
+        let mixed = c(json!({"title": "T", "filename": "ü 🍅.md", "content": "x"}));
+        assert!(mixed.text.contains("ü.md)"), "{}", mixed.text);
+        for a in list(ws, "c") {
+            remove(ws, "c", &a.id).unwrap();
+        }
         // nothing half-made is left behind
         assert!(list(ws, "c").is_empty());
         let root = ws.join(ARTIFACT_DIR);
