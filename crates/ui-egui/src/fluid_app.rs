@@ -101,7 +101,8 @@ impl ByobApp {
     /// saved into the prefs.
     pub(crate) fn fluid_end(&mut self, ctx: &egui::Context) {
         let Some((doc, base, els, edited, dragging)) =
-            fluid::with(ctx, |f| (Arc::clone(&f.doc), Arc::clone(&f.base), f.elements.clone(), f.edited, f.dragging.clone()))
+            // Plugins' inserts are left out with their rules (edit mode's Plugins' changes switch).
+            fluid::with(ctx, |f| (Arc::clone(&f.doc), if f.ignore_base { Arc::default() } else { Arc::clone(&f.base) }, f.elements.clone(), f.edited, f.dragging.clone()))
         else {
             return;
         };
@@ -115,7 +116,7 @@ impl ByobApp {
         let t = self.tokens;
         let sites = &mut self.plugins.sites;
         let mut views = |ui: &mut egui::Ui, spec: &str| sites.draw_spec(ui, &t, spec);
-        let inserts: Vec<fluid::Insert> = base.inserts.iter().chain(&doc.inserts).cloned().collect();
+        let inserts = fluid::doc::drawn_inserts(&base, &doc);
         let rules = |path: &str| fluid::doc::merged(&base, &doc, path);
         let events = fluid::inserts::show(
             ctx,
@@ -159,7 +160,7 @@ impl ByobApp {
     /// `send:TEXT` sends a message, `draft:TEXT` puts it in the composer, `toggle:PATH`
     /// hides or shows an element, `remove` takes this element away, `fluid:{ops}` applies
     /// changes, `look:KEY=VALUE` changes the look; `{field}` in them is that input's text.
-    fn fluid_action(&mut self, ctx: &egui::Context, id: &str, e: &Event) {
+    pub(crate) fn fluid_action(&mut self, ctx: &egui::Context, id: &str, e: &Event) {
         // `{now}`: this moment, in seconds since 1970 (`set:start={now}` starts a stopwatch;
         // `set:end={now+1500}` a 25-minute timer).
         let now = chrono::Utc::now().timestamp();
@@ -182,7 +183,8 @@ impl ByobApp {
         if ["set", "add", "drop", "flip", "inc"].contains(&verb.trim()) {
             fluid::with(ctx, |f| {
                 let mut doc = (*f.doc).clone();
-                if let Some(ins) = doc.inserts.iter_mut().find(|i| i.id == id) {
+                let base = Arc::clone(&f.base);
+                if let Some(ins) = doc.state_of_base(&base, id) {
                     for part in action.split(';') {
                         let (v, r) = part.split_once(':').unwrap_or((part, ""));
                         ins.act(v.trim(), r);

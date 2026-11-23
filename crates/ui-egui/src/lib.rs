@@ -1973,6 +1973,9 @@ mod app_tests {
     mod look;
     mod rewind;
 
+    /// Fluid in the window: inserts (the plugins' too) and their actions.
+    mod inserts;
+
     /// The Projects page and the project dialogs over it.
     mod projects_page;
 

@@ -478,7 +478,7 @@ impl Editor {
                                 return;
                             }
                             self.push(doc, now, true);
-                            let id = format!("note{}", doc.inserts.len() + 1);
+                            let id = doc.fresh_id("note");
                             let tree = serde_json::json!({"type": "text", "text": self.add.trim()});
                             let ins = serde_json::json!({"id": id, "anchor": path, "at": at, "card": true, "tree": tree, "by": "you"});
                             if let Ok(i) = serde_json::from_value::<Insert>(ins) {
@@ -545,8 +545,7 @@ impl Editor {
             for (name, tree, state) in kinds {
                 if ui.small_button(name).clicked() {
                     self.push(doc, now, true);
-                    let n = doc.inserts.len() + 1;
-                    let id = format!("{}{n}", name.to_lowercase());
+                    let id = doc.fresh_id(&name.to_lowercase());
                     let ins = serde_json::json!({"id": id, "at": "free", "x": 40, "y": 35, "tree": tree, "state": state, "by": "you"});
                     if let Ok(i) = serde_json::from_value::<Insert>(ins) {
                         doc.inserts.push(i);

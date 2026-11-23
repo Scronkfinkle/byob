@@ -271,6 +271,38 @@ impl Insert {
     }
 }
 
+/// The inserts to draw: the plugins' (`base`), each with the state the user's changes keep
+/// for it (see [`FluidDoc::state_of_base`]), then the user's own.
+pub fn drawn_inserts(base: &FluidDoc, doc: &FluidDoc) -> Vec<Insert> {
+    let held = |id: &str| doc.inserts.iter().find(|i| i.id == id && i.holds_state_only());
+    let plugins = base.inserts.iter().map(|b| match held(&b.id) {
+        Some(h) => Insert { state: h.state.clone(), ..b.clone() },
+        None => b.clone(),
+    });
+    plugins.chain(doc.inserts.iter().filter(|i| !i.holds_state_only()).cloned()).collect()
+}
+
+impl Insert {
+    /// Only the state of a plugin's insert of the same id (no tree, no view of its own).
+    pub fn holds_state_only(&self) -> bool {
+        self.tree.is_null() && self.view.is_empty()
+    }
+}
+
+impl FluidDoc {
+    /// The insert `id` whose state its actions change: the user's own, or for a plugin's
+    /// (in `base`, drawn from the plugin's manifest every time) one kept here holding only
+    /// its state, made from the plugin's when first needed.
+    pub fn state_of_base(&mut self, base: &FluidDoc, id: &str) -> Option<&mut Insert> {
+        if !self.inserts.iter().any(|i| i.id == id)
+            && let Some(b) = base.inserts.iter().find(|i| i.id == id)
+        {
+            self.inserts.push(Insert { tree: Value::Null, view: String::new(), ..b.clone() });
+        }
+        self.inserts.iter_mut().find(|i| i.id == id)
+    }
+}
+
 fn yes() -> bool {
     true
 }
@@ -298,6 +330,12 @@ pub struct FluidDoc {
 impl FluidDoc {
     pub fn is_empty(&self) -> bool {
         self.rules.is_empty() && self.inserts.is_empty()
+    }
+
+    /// An insert id starting with `prefix` that no insert has yet (`note3`): counting from
+    /// how many there are, past any taken (one removed earlier leaves a gap).
+    pub fn fresh_id(&self, prefix: &str) -> String {
+        (self.inserts.len() + 1..).map(|n| format!("{prefix}{n}")).find(|id| !self.inserts.iter().any(|i| &i.id == id)).unwrap_or_else(|| prefix.to_owned())
     }
 
     /// Keep what's on screen as scene `name` (false: there are too many already).
@@ -720,7 +758,7 @@ fn insert(doc: &mut FluidDoc, i: &Value, by: &str, a: &mut Applied) {
     match serde_json::from_value::<Insert>(v) {
         Ok(mut ins) => {
             if ins.id.trim().is_empty() {
-                ins.id = format!("new{}", doc.inserts.len() + 1);
+                ins.id = doc.fresh_id("new");
             }
             // `"{now}"` / `"{now+1500}"` in its starting state: this moment (+ seconds).
             let now = chrono::Utc::now().timestamp();
@@ -846,6 +884,41 @@ mod tests {
             "model",
         );
         assert!(a.problems.is_empty(), "{:?}", a.problems);
+    }
+
+    /// Regression: an id made up from the count of inserts could be one still in use (after
+    /// one was removed), so a new insert replaced, or in edit mode doubled, another.
+    #[test]
+    fn new_inserts_get_ids_no_insert_has() {
+        let mut d = FluidDoc::default();
+        let add = |d: &mut FluidDoc| apply(d, &json!({"insert": {"id": "", "at": "free", "tree": {"type": "text", "text": "hi"}}}), "model");
+        add(&mut d);
+        add(&mut d);
+        apply(&mut d, &json!({"remove": ["new1"]}), "model");
+        add(&mut d);
+        let ids: Vec<&str> = d.inserts.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["new2", "new3"]);
+        assert_eq!(d.fresh_id("note"), "note3");
+    }
+
+    /// Regression: a plugin's insert (a counter in its manifest's `fluid`) ignored its own
+    /// state actions: they looked for it among the user's inserts only.
+    #[test]
+    fn a_plugins_insert_keeps_its_state_in_the_users_changes() {
+        let mut base = FluidDoc::default();
+        let tree = json!({"type": "text", "text": "{state.n}"});
+        apply(&mut base, &json!({"insert": {"id": "p.count", "at": "free", "tree": tree, "state": {"n": 1}}}), "p");
+        let mut d = FluidDoc::default();
+        d.state_of_base(&base, "p.count").map(|i| i.act("inc", "n=2"));
+        d.state_of_base(&base, "p.count").map(|i| i.act("inc", "n=2"));
+        assert_eq!(d.inserts.len(), 1, "one holder");
+        let drawn = drawn_inserts(&base, &d);
+        assert_eq!(drawn.len(), 1, "the plugin's, not drawn twice");
+        assert_eq!((drawn[0].state.get("n"), &drawn[0].tree), (Some(&json!(5.0)), &tree));
+        assert!(d.state_of_base(&base, "nobody").is_none());
+        // Kept across a save.
+        let back: FluidDoc = serde_json::from_value(serde_json::to_value(&d).unwrap()).unwrap();
+        assert_eq!(drawn_inserts(&base, &back.sanitized())[0].state.get("n"), Some(&json!(5.0)));
     }
 
     #[test]
