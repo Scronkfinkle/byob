@@ -33,6 +33,7 @@ mod recovery;
 mod sheets;
 mod stopping;
 mod streams;
+mod undo;
 
 use std::collections::VecDeque;
 use std::io::Write;

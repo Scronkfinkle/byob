@@ -155,6 +155,11 @@ pub fn history(entries: &[Entry], latest: Option<(u64, &str)>, new_user: Option<
     for e in entries.iter().filter(|e| e.id > through && e.done && e.error.is_none() && (!e.content.is_empty() || !e.attachments.is_empty())) {
         match e.role {
             EntryRole::User => user(&mut out, &mut ids, ChatMessage::user(crate::attachments::with_names(&e.content, &e.attachments)), e.id),
+            // A reply whose file changes the user undid says so: the files aren't as it says.
+            EntryRole::Assistant if e.undone => {
+                out.push(ChatMessage::assistant(format!("{}\n\n{UNDONE_NOTE}", e.content.trim_end())));
+                ids.push(e.id);
+            }
             EntryRole::Assistant => {
                 out.push(ChatMessage::assistant(e.content.clone()));
                 ids.push(e.id);
@@ -166,6 +171,9 @@ pub fn history(entries: &[Entry], latest: Option<(u64, &str)>, new_user: Option<
     }
     (out, ids)
 }
+
+/// After a reply the user undid (see [`history`]).
+pub const UNDONE_NOTE: &str = "(The user undid this reply's file changes: the files are back as they were before it.)";
 
 /// The stand-in for a reply that was stopped or failed (see [`history`]).
 pub const NO_REPLY: &str = "(No reply: it was stopped or failed.)";

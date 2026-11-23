@@ -115,7 +115,7 @@ pub fn entry(m: StoredMessage, step_ids: &AtomicU64) -> Option<Entry> {
         stats,
         steps,
         undoable: false,
-        undone: false,
+        undone: m.undone,
         // Attachments and step media aren't stored yet (ROADMAP).
         attachments: Vec::new(),
     })

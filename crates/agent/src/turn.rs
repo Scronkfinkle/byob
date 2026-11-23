@@ -520,6 +520,10 @@ impl Turn {
                 // Servers with a tool parser may turn call text into structured calls anyway.
                 parsed.calls.extend(out.tool_calls);
                 (parsed.text, parsed.calls, unfinished)
+            } else if prompt && !self.tools.is_empty() {
+                // Tools are off (the limit): a call it writes anyway is ignored, and its
+                // markup isn't the answer.
+                (toolprompt::parse_tool_calls(&out.content, &crate::turn::specs(&self.tools)).text, Vec::new(), false)
             } else {
                 (out.content, out.tool_calls, false)
             };
@@ -753,7 +757,8 @@ impl Turn {
         shown.tail_newlines = self.tail_newlines;
         shown.think_separate = self.reasoned;
         shown.reasoning_len = self.reasoning_len;
-        let mut filter = (prompt && !specs.is_empty()).then(ToolCallFilter::default);
+        // Call markup is hidden even with tools off (the model may write a call anyway).
+        let mut filter = (prompt && !(specs.is_empty() && self.tools.is_empty())).then(ToolCallFilter::default);
         let child = self.s.child;
         let streamed = &mut self.content;
         let slot = self.s.slot.as_ref().map(SlotLease::id);

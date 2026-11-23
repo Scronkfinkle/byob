@@ -9,7 +9,7 @@ use byob_tools::preview::clip_line;
 use byob_tools::undo::Fingerprint;
 use byob_tools::{FileChange, UndoOp};
 
-use crate::{ClientId, Engine};
+use crate::{ClientId, Engine, chats};
 
 /// Most characters of a preview's code block.
 const MAX_CODE_CHARS: usize = 4000;
@@ -180,6 +180,11 @@ impl Engine {
                     j.undone = true;
                 }
                 self.set_undo_flags(entry, false, true);
+                // Kept, so the reply shows as undone and the model is told (compact::history)
+                // after a restart too.
+                if let Err(e) = self.store.set_message_undone(chats::message_id(entry), true) {
+                    log::error!("saving that a reply was undone: {e}");
+                }
                 self.artifacts_undone(&chat, &workspace);
                 let n = report.done.len();
                 let text = format!("Undid {n} change{}: {}.", if n == 1 { "" } else { "s" }, report.done.join("; "));

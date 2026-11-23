@@ -145,3 +145,30 @@ fn a_model_that_makes_up_its_tool_results_is_stopped_there() {
     assert!(!turn.text().contains("eggs"), "{}", turn.text());
     assert!(turn.text().ends_with("You need milk."), "{}", turn.text());
 }
+
+/// Regression: a model without native tools that reached the turn's tool-call limit (tools
+/// off, and no tool prompt) wrote one more call anyway, and its markup was the answer the
+/// user read and the chat kept. The call is still ignored, and its markup hidden.
+#[test]
+fn a_call_past_the_limit_is_ignored_and_not_shown() {
+    let mut w = World::with(|c| {
+        c.adapt = crate::AdaptOptions { tool_mode: ToolMode::Prompt, probe: false };
+        c.defaults.max_tool_calls = Some(2);
+    });
+    w.file("a.md", "one");
+    w.file("b.md", "two");
+    w.file("c.md", "three");
+    for f in ["a.md", "b.md"] {
+        w.model.answers(move |_| Answer::text(format!("<function_call>\n{{\"name\": \"read_file\", \"arguments\": {{\"path\": \"{f}\"}}}}\n</function_call>")));
+    }
+    w.model.answers(|r| {
+        assert!(r.tools().is_empty() && !r.system().contains("<function_call>"), "tools are off");
+        Answer::text("They say one and two. Let me read the last one.\n<function_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"c.md\"}}\n</function_call>")
+    });
+    let turn = w.send("read my notes");
+    assert_eq!(turn.steps("read_file").len(), 2);
+    assert_eq!(turn.text().trim_end(), "They say one and two. Let me read the last one.");
+    w.restart();
+    let saved = w.seen.entries.iter().find(|e| e.id == turn.reply.id).unwrap();
+    assert!(!saved.content.contains("function_call"), "{}", saved.content);
+}
