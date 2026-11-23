@@ -4,7 +4,9 @@
 //! `<function_call>{json}</function_call>` format; [`parse_tool_calls`] pulls calls back out of
 //! the reply text. The parser is deliberately forgiving: it also accepts Hermes/Qwen
 //! `<tool_call>` tags, ```json fences, bare JSON, OpenAI-shaped objects, arrays of calls and
-//! Qwen3-Coder's XML-ish `<function=name><parameter=k>v</parameter></function>` form. Model
+//! Qwen3-Coder's XML-ish `<function=name><parameter=k>v</parameter></function>` form, and the
+//! `<invoke name="…"><parameter name="k">v</parameter></invoke>` form Claude models write by
+//! habit (with or without a `<function_calls>` wrapper). Model
 //! output is hostile input: sizes and counts are capped and nothing here panics.
 //!
 //! Why not ask for `<tool_call>`: servers with a tool-call parser (llama-server `--jinja`, and
@@ -27,8 +29,10 @@ const MAX_BARE_SPAN: usize = 64 * 1024;
 /// The tags we ask for.
 const OPEN: &str = "<function_call>";
 const CLOSE: &str = "</function_call>";
-/// Every recognized (open, close) tag pair; the second is what Hermes/Qwen models are trained on.
-const TAGS: [(&str, &str); 2] = [(OPEN, CLOSE), ("<tool_call>", "</tool_call>")];
+/// Every recognized (open, close) tag pair: ours, what Hermes/Qwen models are trained on, and
+/// Claude's own (`<function_calls>` around `<invoke …>` blocks, or an `<invoke …>` alone).
+const TAGS: [(&str, &str); 4] = [(OPEN, CLOSE), ("<tool_call>", "</tool_call>"), ("<function_calls>", "</function_calls>"), (INVOKE, "</invoke>")];
+const INVOKE: &str = "<invoke ";
 
 /// System-prompt section describing `tools` and the `<function_call>` reply format.
 /// Returns an empty string when there are no tools.
@@ -158,9 +162,16 @@ fn extract_tagged(content: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>) 
         };
         let inner = strip_fence(inner.trim());
         let before = calls.len();
-        calls_from_json_text(inner, None, calls);
-        if calls.len() == before {
-            calls_from_qwen_xml(inner, tools, calls);
+        if open == INVOKE {
+            calls_from_invoke_xml(&format!("{INVOKE}{inner}</invoke>"), tools, calls);
+        } else {
+            calls_from_json_text(inner, None, calls);
+            if calls.len() == before {
+                calls_from_qwen_xml(inner, tools, calls);
+            }
+            if calls.len() == before {
+                calls_from_invoke_xml(inner, tools, calls);
+            }
         }
         rest = next;
     }
@@ -343,17 +354,51 @@ fn calls_from_qwen_xml(text: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>
     }
 }
 
+/// Claude's `<invoke name="tool"><parameter name="k">v</parameter></invoke>` calls in `text`.
+fn calls_from_invoke_xml(text: &str, tools: &[ToolSpec], calls: &mut Vec<ToolCall>) {
+    let mut rest = text;
+    while let Some(start) = rest.find(INVOKE) {
+        if calls.len() >= MAX_CALLS {
+            return;
+        }
+        let after = rest.get(start + INVOKE.len()..).unwrap_or_default();
+        let Some(gt) = after.find('>') else { return };
+        let name = attr_name(after.get(..gt).unwrap_or_default());
+        let body_all = after.get(gt + 1..).unwrap_or_default();
+        let (body, next) = match body_all.find("</invoke>") {
+            Some(end) => (body_all.get(..end).unwrap_or_default(), body_all.get(end + "</invoke>".len()..).unwrap_or_default()),
+            None => (body_all, ""),
+        };
+        if !name.is_empty() {
+            let schema = tools.iter().find(|t| t.name == name).map(|t| &t.parameters);
+            let args = qwen_params(body, schema);
+            calls.push(ToolCall { id: String::new(), name, arguments: Value::Object(args).to_string() });
+        }
+        rest = next;
+    }
+}
+
+/// The name in a tag's attributes: `name="x"` (or Qwen's `=x`).
+fn attr_name(attrs: &str) -> String {
+    let a = attrs.trim();
+    let a = a.strip_prefix('=').map_or_else(|| a.strip_prefix("name").map_or(a, |r| r.trim_start().trim_start_matches('=')), |r| r);
+    a.trim().trim_matches(['"', '\'']).to_owned()
+}
+
+/// Parameters as `<parameter=k>v</parameter>` (Qwen) or `<parameter name="k">v</parameter>`
+/// (Claude), typed by the tool's schema.
 fn qwen_params(body: &str, schema: Option<&Value>) -> serde_json::Map<String, Value> {
+    const PARAM: &str = "<parameter";
     let mut args = serde_json::Map::new();
     let mut rest = body;
-    while let Some(start) = rest.find("<parameter=") {
-        let after = rest.get(start + "<parameter=".len()..).unwrap_or_default();
+    while let Some(start) = rest.find(PARAM) {
+        let after = rest.get(start + PARAM.len()..).unwrap_or_default();
         let Some(gt) = after.find('>') else { break };
-        let key = after.get(..gt).unwrap_or_default().trim().trim_matches(['"', '\'']).to_owned();
+        let key = attr_name(after.get(..gt).unwrap_or_default());
         let val_all = after.get(gt + 1..).unwrap_or_default();
         let (raw, next) = match val_all.find("</parameter>") {
             Some(end) => (val_all.get(..end).unwrap_or_default(), val_all.get(end + "</parameter>".len()..).unwrap_or_default()),
-            None => (val_all.split("<parameter=").next().unwrap_or_default(), val_all.find("<parameter=").and_then(|p| val_all.get(p..)).unwrap_or("")),
+            None => (val_all.split(PARAM).next().unwrap_or_default(), val_all.find(PARAM).and_then(|p| val_all.get(p..)).unwrap_or("")),
         };
         let raw = raw.strip_prefix('\n').unwrap_or(raw);
         let raw = raw.strip_suffix('\n').unwrap_or(raw);
@@ -437,6 +482,30 @@ mod tests {
             description: "d".into(),
             parameters: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"n":{"type":"integer"}}}),
         }
+    }
+    /// Regression: Claude models (here through Claude Code) write `<invoke>` calls by habit;
+    /// they were shown in the reply as text instead of being run.
+    #[test]
+    fn claude_invoke_calls_are_parsed_and_hidden() {
+        let reply =
+            "Charting it.\n<invoke name=\"read\">\n<parameter name=\"path\">uploads/harvest.csv</parameter>\n<parameter name=\"n\">3</parameter>\n</invoke>";
+        let p = parse_tool_calls(reply, &[tool("read")]);
+        assert_eq!(p.text, "Charting it.");
+        assert_eq!(p.calls.len(), 1);
+        assert_eq!(p.calls[0].name, "read");
+        assert_eq!(p.calls[0].arguments, r#"{"n":3,"path":"uploads/harvest.csv"}"#);
+        let wrapped = "<function_calls>\n<invoke name=\"read\"><parameter name=\"path\">a</parameter></invoke>\n<invoke name=\"read\"><parameter name=\"path\">b</parameter></invoke>\n</function_calls>";
+        let p = parse_tool_calls(wrapped, &[tool("read")]);
+        assert_eq!(p.text, "");
+        assert_eq!(p.calls.iter().map(|c| c.arguments.as_str()).collect::<Vec<_>>(), [r#"{"path":"a"}"#, r#"{"path":"b"}"#]);
+        // Streamed: never shown, however it's split.
+        let mut f = ToolCallFilter::default();
+        let mut shown = String::new();
+        for chunk in reply.as_bytes().chunks(5) {
+            shown.push_str(&f.push(std::str::from_utf8(chunk).unwrap_or_default()));
+        }
+        shown.push_str(&f.finish());
+        assert_eq!(shown.trim(), "Charting it.");
     }
 
     fn names(p: &ParsedToolCalls) -> Vec<&str> {
