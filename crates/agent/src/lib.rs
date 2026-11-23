@@ -830,14 +830,28 @@ impl Engine {
         self.clients.get(&id).and_then(|c| c.chat.clone())
     }
 
+    /// The chat a client starts on: the most recently active one that isn't archived
+    /// (archived chats are out of the way). Looks at a bounded number of pages.
     fn most_recent_chat(&self) -> Option<String> {
-        match self.store.list_chats(1, None) {
-            Ok(page) => page.chats.into_iter().next().map(|c| c.id),
-            Err(e) => {
-                log::error!("listing chats: {e}");
-                None
+        const MAX_PAGES: usize = 20;
+        let mut after = None;
+        for _ in 0..MAX_PAGES {
+            let page = match self.store.list_chats(byob_store::MAX_PAGE, after.as_ref()) {
+                Ok(page) => page,
+                Err(e) => {
+                    log::error!("listing chats: {e}");
+                    return None;
+                }
+            };
+            if let Some(c) = page.chats.iter().find(|c| c.archived_at.is_none()) {
+                return Some(c.id.clone());
+            }
+            match page.next {
+                Some(n) if !page.chats.is_empty() => after = Some(n),
+                _ => return None,
             }
         }
+        None
     }
 
     /// The chat's transcript, loading it from the store if needed.
