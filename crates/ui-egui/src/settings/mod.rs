@@ -735,7 +735,9 @@ impl ByobApp {
                         let what = format!("{} theme · {}", if def.dark { "Dark" } else { "Light" }, def.credit());
                         (Id::unique(("hit-theme", &def.id)), def.name.clone(), what, "Use")
                     }
-                    Hit::Colors(count, names) => (Id::unique("hit-colors"), format!("{count} color roles"), format!("{names}."), "Show"),
+                    Hit::Colors(count, names) => {
+                        (Id::unique("hit-colors"), format!("{count} color role{}", if *count == 1 { "" } else { "s" }), format!("{names}."), "Show")
+                    }
                     Hit::Setting(_) => continue,
                 };
                 let out = form::setting_row(ui, t, id, &name, &desc, style, |ui| ui.button(button).clicked());

@@ -265,6 +265,11 @@ fn search_finds_settings_by_name_description_and_keyword() {
         let text = drawn_text(&ctx, &mut app, 1200.0);
         assert!(text.contains(shown), "{query:?}: {shown:?} not in {text}");
     }
+    // Regression: one color role found read "1 color roles".
+    app.set_settings_search("keywords");
+    settle(&ctx, &mut app, 1200.0);
+    let text = drawn_text(&ctx, &mut app, 1200.0);
+    assert!(text.contains("1 color role\n") && !text.contains("1 color roles"), "{text}");
     // Nothing found.
     app.set_settings_search("xyzzy");
     let text = drawn_text(&ctx, &mut app, 1200.0);
