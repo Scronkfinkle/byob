@@ -212,12 +212,20 @@ pub fn change(prefs: &mut Prefs, history: &mut Vec<Prefs>, changes: &LookChanges
     let rest: LookChanges = changes.iter().filter(|(k, _)| *k != "reset" && *k != "undo").map(|(k, v)| (k.clone(), v.clone())).collect();
     problems.extend(apply(prefs, &rest, dark, user_themes, backdrops));
     if *prefs != before {
-        history.push(before);
-        if history.len() > HISTORY {
-            history.remove(0);
-        }
+        remember(history, before);
     }
     problems
+}
+
+/// Keep `before` to undo to (the last [`HISTORY`] of them), once: a change made in two
+/// steps (its look, then its fluid ops) is one step back.
+pub fn remember(history: &mut Vec<Prefs>, before: Prefs) {
+    if history.last() != Some(&before) {
+        history.push(before);
+    }
+    if history.len() > HISTORY {
+        history.drain(..history.len() - HISTORY);
+    }
 }
 
 /// A new backdrop: off, or WGSL that has to compile.

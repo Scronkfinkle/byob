@@ -67,3 +67,30 @@ fn a_hidden_window_answers_every_look_change() {
     frames(&ctx, &mut app, 2);
     assert_eq!(reports(&fake).len(), before + 2);
 }
+
+/// Regression: a change with both look settings and fluid ops was kept as two undo steps
+/// (the look, then the fluid), so "undo that" took back only the fluid half; and fluid
+/// changes grew the undo history without bound.
+#[test]
+fn one_undo_takes_back_a_look_and_fluid_change() {
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    let ctx = egui::Context::default();
+    fake.inbox.lock().unwrap().push(ServerMsg::Welcome(Welcome::current()));
+    frames(&ctx, &mut app, 3);
+    let start = app.prefs().clone();
+    let change = serde_json::json!({"corners": 3, "fluid": {"set": [{"path": "header", "hidden": true}]}});
+    fake.inbox.lock().unwrap().push(ServerMsg::SetLook { request: 1, changes: serde_json::from_value(change).unwrap() });
+    frames(&ctx, &mut app, 2);
+    assert_eq!(app.prefs().knobs.radius, 3.0);
+    assert_ne!(app.prefs().fluid, start.fluid, "the fluid op applied");
+    fake.inbox.lock().unwrap().push(ServerMsg::SetLook { request: 2, changes: serde_json::from_value(serde_json::json!({"undo": true})).unwrap() });
+    frames(&ctx, &mut app, 2);
+    assert_eq!(app.prefs(), &start, "one undo, the whole change");
+    for n in 0..(crate::look::HISTORY + 10) {
+        let ops = serde_json::json!({"fluid": {"set": [{"path": "header", "dx": n}]}});
+        fake.inbox.lock().unwrap().push(ServerMsg::SetLook { request: 10 + n as u64, changes: serde_json::from_value(ops).unwrap() });
+    }
+    app.logic(&ctx);
+    assert!(app.look_history.len() <= crate::look::HISTORY, "{}", app.look_history.len());
+}

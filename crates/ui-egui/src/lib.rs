@@ -695,10 +695,11 @@ impl ByobApp {
                     let fluid_ops = changes.remove("fluid");
                     let mut problems = look::change(&mut prefs, &mut self.look_history, &changes, self.tokens.dark, &self.user_themes, self.stage.available());
                     if let Some(ops) = fluid_ops {
-                        let before = prefs.clone();
+                        let looked = prefs.clone();
                         problems.extend(self.fluid_from_model(&mut prefs, &ops));
-                        if prefs != before {
-                            self.look_history.push(before);
+                        // One undo takes back the whole change, look and fluid together.
+                        if prefs != looked && !changes.contains_key("undo") {
+                            look::remember(&mut self.look_history, self.prefs.clone());
                         }
                     }
                     self.set_prefs(prefs);
