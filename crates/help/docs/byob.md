@@ -145,7 +145,8 @@ picker in the header"): every element on screen, down to a single button or line
 be moved, scaled, recolored, retitled, faded, hidden, shown only on hover or set gently moving,
 and new elements (a clock, a timer, a to-do list, buttons that send a prompt) can be put beside
 any of them. In edit mode, point at anything to see what it is, click to select it, drag to move
-it (with Alt, drop it on another element to keep it beside that one), drag a corner to scale it,
+it (with Alt, drop it on another element's edge to keep it beside that one, or on its middle to
+swap the two), drag a corner to scale it,
 and change the rest in the inspector; arrows nudge, H hides, R resets, Ctrl+Z undoes, Esc
 leaves. Arrangements can be saved as scenes to switch back to. byob changes the same things with
 the Appearance plugin's `ui_fluid` tool, and plugins can bring changes of their own (Edit mode's

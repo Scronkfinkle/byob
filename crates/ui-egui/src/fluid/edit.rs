@@ -182,7 +182,8 @@ impl Editor {
                     }
                 }
             }
-            // With Alt, dropped on another element it goes by that one (wherever it goes).
+            // With Alt, dropped on another element it goes by that one (wherever it goes), or
+            // in its middle, the two trade places.
             let alt = ctx.input(|i| i.modifiers.alt);
             let target = match (&drag, alt, pointer) {
                 (Drag::Move { path, .. }, true, Some(p)) => els
@@ -194,21 +195,25 @@ impl Editor {
             };
             if let Some((_, side, r)) = &target {
                 let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, overlay_id()));
-                painter.rect_stroke(r.expand(2.0), 3.0, Stroke::new(2.0, Color32::from_rgb(250, 200, 80)), StrokeKind::Outside);
-                let edge = match *side {
-                    "after" => [r.right_top(), r.right_bottom()],
-                    "before" => [r.left_top(), r.left_bottom()],
-                    "above" => [r.left_top(), r.right_top()],
-                    _ => [r.left_bottom(), r.right_bottom()],
-                };
-                painter.line_segment(edge, Stroke::new(4.0, Color32::from_rgb(250, 200, 80)));
+                let gold = Color32::from_rgb(250, 200, 80);
+                if *side == "swap" {
+                    // Dropped in its middle: the two trade places.
+                    painter.rect_stroke(r.expand(2.0), 3.0, Stroke::new(3.0, gold), StrokeKind::Outside);
+                    painter.rect_filled(r.expand(2.0), 3.0, gold.gamma_multiply(0.18));
+                } else {
+                    painter.rect_stroke(r.expand(2.0), 3.0, Stroke::new(2.0, gold), StrokeKind::Outside);
+                    let edge = match *side {
+                        "after" => [r.right_top(), r.right_bottom()],
+                        "before" => [r.left_top(), r.left_bottom()],
+                        "above" => [r.left_top(), r.right_top()],
+                        _ => [r.left_bottom(), r.right_bottom()],
+                    };
+                    painter.line_segment(edge, Stroke::new(4.0, gold));
+                }
             }
             if resp.drag_stopped() || !ctx.input(|i| i.pointer.any_down()) {
                 if let (Drag::Move { path, .. }, Some((to, side, _))) = (&drag, target) {
-                    let r = next.rule_mut(path);
-                    r.place = Some(format!("{side}:{to}"));
-                    r.dx = None;
-                    r.dy = None;
+                    drop_on(&mut next, path, &to, side);
                 }
                 self.drag = None;
                 with(ctx, |f| f.dragging = None);
@@ -332,7 +337,7 @@ impl Editor {
                     });
                     ui.label(
                         RichText::new(
-                            "Click anything to select it, drag to move it (with Alt, drop it on another to keep it beside that one). Arrows nudge (Shift: 10), H hides, R resets, +/− scale, [ selects its parent.",
+                            "Click anything to select it, drag to move it (with Alt, drop it on another's edge to keep it beside that one, or on its middle to swap them). Arrows nudge (Shift: 10), H hides, R resets, +/− scale, [ selects its parent.",
                         )
                         .small()
                         .color(t.text_faint),
@@ -620,8 +625,39 @@ fn pick<'a>(els: &'a [Element], p: Pos2, rank: &std::collections::HashMap<egui::
     els.iter().filter(|e| e.shown.contains(p)).max_by(|a, b| over(a, b, rank))
 }
 
-/// Which side of `r` the point `p` is nearest: after, before, above or below.
+/// `path` dropped (with Alt) on `to`'s `side`: kept beside it, or (`swap`) the two trade
+/// places, each drawn where the other is laid out.
+fn drop_on(doc: &mut FluidDoc, path: &str, to: &str, side: &str) {
+    // What either was swapped with before goes back (a swap is between two).
+    for p in [path, to] {
+        if let Some(old) = doc.rules.get(p).and_then(|r| r.place.as_deref()).and_then(|pl| pl.strip_prefix("swap:")).map(str::to_owned)
+            && old != path
+            && old != to
+            && let Some(r) = doc.rules.get_mut(&old)
+            && r.place.as_deref() == Some(&format!("swap:{p}"))
+        {
+            r.place = None;
+        }
+    }
+    let r = doc.rule_mut(path);
+    r.place = Some(format!("{side}:{to}"));
+    r.dx = None;
+    r.dy = None;
+    if side == "swap" {
+        let o = doc.rule_mut(to);
+        o.place = Some(format!("swap:{path}"));
+        o.dx = None;
+        o.dy = None;
+    }
+}
+
+/// Where on `r` the point `p` is: in its middle (`swap`), or nearest its after, before,
+/// above or below edge.
 fn side_of(r: Rect, p: Pos2) -> &'static str {
+    let inner = Rect::from_center_size(r.center(), r.size() * egui::vec2(0.6, 0.5));
+    if inner.contains(p) {
+        return "swap";
+    }
     let d = [(p.x - r.right()).abs(), (p.x - r.left()).abs(), (p.y - r.top()).abs(), (p.y - r.bottom()).abs()];
     let i = (0..4).min_by(|&a, &b| d[a].total_cmp(&d[b])).unwrap_or(0);
     ["after", "before", "above", "below"][i]
@@ -650,6 +686,26 @@ pub fn generalize(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn alt_dropping_on_the_middle_swaps_and_on_an_edge_places_beside() {
+        let row = Rect::from_min_size(Pos2::new(8.0, 48.0), Vec2::new(224.0, 30.0));
+        assert_eq!(side_of(row, row.center()), "swap");
+        assert_eq!(side_of(row, Pos2::new(120.0, 49.0)), "above");
+        assert_eq!(side_of(row, Pos2::new(230.0, 63.0)), "after");
+        let mut doc = FluidDoc::default();
+        drop_on(&mut doc, "sidebar/button:Plugins", "sidebar/button:New chat", "swap");
+        let place = |d: &FluidDoc, p: &str| d.rules.get(p).and_then(|r| r.place.clone());
+        assert_eq!(place(&doc, "sidebar/button:Plugins").as_deref(), Some("swap:sidebar/button:New chat"));
+        assert_eq!(place(&doc, "sidebar/button:New chat").as_deref(), Some("swap:sidebar/button:Plugins"));
+        // Swapped again with a third: the first partner goes back.
+        drop_on(&mut doc, "sidebar/button:Apps", "sidebar/button:Plugins", "swap");
+        assert_eq!(place(&doc, "sidebar/button:New chat"), None);
+        assert_eq!(place(&doc, "sidebar/button:Apps").as_deref(), Some("swap:sidebar/button:Plugins"));
+        drop_on(&mut doc, "sidebar/button:Library", "sidebar/button:Search", "below");
+        assert_eq!(place(&doc, "sidebar/button:Library").as_deref(), Some("below:sidebar/button:Search"));
+        assert_eq!(place(&doc, "sidebar/button:Search"), None);
+    }
+
     use super::*;
 
     #[test]
