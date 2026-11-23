@@ -191,15 +191,22 @@ fn probe(p: &Path) -> Slot {
 }
 
 /// Paths in a journal may come from storage: accept only plain absolute paths inside the
-/// workspace (no `..`), and show them relative to it.
+/// workspace or a folder it links (no `..`), and show them relative to the workspace (in
+/// full in a linked folder).
 fn check_path(ws: &Path, p: &Path) -> Result<String, String> {
-    let rel = p.strip_prefix(ws).map_err(|_| format!("{} is outside the workspace", p.display()))?;
+    let (root, rel) = match p.strip_prefix(ws) {
+        Ok(rel) => (ws.to_path_buf(), rel),
+        Err(_) => sandbox::linked(ws)
+            .into_iter()
+            .find_map(|other| p.strip_prefix(&other).ok().map(|rel| (other, rel)))
+            .ok_or_else(|| format!("{} is outside the workspace", p.display()))?,
+    };
     if rel.as_os_str().is_empty() || rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return Err(format!("{} is not a usable path", p.display()));
     }
-    // no links on the way that lead out of the workspace
-    sandbox::resolve(ws, &rel.to_string_lossy())?;
-    Ok(crate::sandbox::slash(rel))
+    // no links on the way that lead out of the workspace (or the linked folder)
+    sandbox::resolve(&root, &rel.to_string_lossy())?;
+    Ok(if root == ws { crate::sandbox::slash(rel) } else { p.display().to_string() })
 }
 
 struct Sim<'a> {
@@ -432,6 +439,42 @@ mod tests {
         assert_eq!(serde_json::to_value(&op).unwrap(), json!({"type": "created", "path": "/w/a"}));
         let back: UndoOp = serde_json::from_value(json!({"type": "replaced", "path": "/w/a", "backup": "/w/b"})).unwrap();
         assert_eq!(back, UndoOp::Replaced { path: "/w/a".into(), backup: "/w/b".into(), fingerprint: None });
+    }
+
+    /// Regression: changes in a folder the project links (written, edited, deleted there by
+    /// their full paths) were refused by undo as "outside the workspace", so the whole turn
+    /// couldn't be undone. They undo like the workspace's own.
+    #[test]
+    fn undo_covers_linked_folders() {
+        let (_d, root) = ws();
+        let (_o, other) = ws();
+        fs::write(other.join("old.txt"), "old").unwrap();
+        fs::write(other.join("gone.txt"), "keep").unwrap();
+        crate::sandbox::set_linked(&root, std::slice::from_ref(&other));
+        let at = |name: &str| other.join(name).display().to_string();
+        let j = Journal::new(&root, "t");
+        for args in
+            [json!({"path": at("new.txt"), "content": "made"}), json!({"path": at("old.txt"), "content": "new"}), json!({"path": "mine.txt", "content": "ws"})]
+        {
+            let out = run_journaled(&WriteFile, &root, &j, args);
+            assert!(!out.failed, "{}", out.text);
+        }
+        assert!(!run_journaled(&DeleteFile::default(), &root, &j, json!({"path": at("gone.txt")})).failed);
+        let ops = j.take();
+        check(&ops, &root).unwrap();
+        let report = undo(&ops, &root).unwrap();
+        assert_eq!(report.done.len(), 4, "{report:?}");
+        assert!(!other.join("new.txt").exists());
+        assert_eq!(fs::read_to_string(other.join("old.txt")).unwrap(), "old");
+        assert_eq!(fs::read_to_string(other.join("gone.txt")).unwrap(), "keep");
+        assert!(!root.join("mine.txt").exists());
+        // Unlinked since: its paths are outside again, and nothing is changed.
+        let j = Journal::new(&root, "t2");
+        assert!(!run_journaled(&WriteFile, &root, &j, json!({"path": at("again.txt"), "content": "x"})).failed);
+        let ops = j.take();
+        crate::sandbox::set_linked(&root, &[]);
+        assert!(undo(&ops, &root).unwrap_err().contains("outside"));
+        assert!(other.join("again.txt").exists());
     }
 
     #[test]
