@@ -226,7 +226,9 @@ impl Library {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let hint = if mode == Mode::Apps { "Search apps" } else { "Search the library" };
-                    ui.add(egui::TextEdit::singleline(&mut self.query).hint_text(hint).desired_width(220.0));
+                    // What the title left, up to 220 (on a phone it ran over the title).
+                    let width = (ui.available_width() - 16.0).clamp(60.0, 220.0);
+                    ui.add(egui::TextEdit::singleline(&mut self.query).hint_text(hint).desired_width(width));
                 });
             });
             ui.label(RichText::new(mode.subtitle()).color(t.text_dim));
@@ -247,7 +249,8 @@ impl Library {
                 });
             }
             ui.add_space(12.0);
-            ui.horizontal(|ui| {
+            // Wrapped: on a phone the Library's five ran off the screen.
+            ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for &(k, name) in mode.tabs() {
                     let on = self.tab == k;
@@ -597,6 +600,36 @@ mod tests {
         assert_eq!(run(&mut l, vec![press(false)]), Some(Action::Start("Make an app that ".into())));
         let esc = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
         assert_eq!(run(&mut l, vec![esc]), Some(Action::Close));
+    }
+
+    /// Regression: on a phone the Library's tabs ran off the screen ("Pinn…"), and a narrow
+    /// one drew the search over the title.
+    #[test]
+    fn a_phone_keeps_the_tabs_and_the_search_in_view() {
+        let pinned = BTreeSet::new();
+        for w in [390.0, 320.0] {
+            let ctx = egui::Context::default();
+            let mut l = Library::default();
+            l.ask(Mode::Library);
+            l.apply(&ServerMsg::Library { items: items() });
+            let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(w, 844.0));
+            let mut texts = Vec::new();
+            for _ in 0..3 {
+                let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+                let mut out = ctx.run_ui(input, |ui| {
+                    l.ui(ui, &Tokens::dark(), &pinned, 10);
+                });
+                out.textures_delta.clear();
+                texts = crate::plugins::tests::texts_of(&out);
+            }
+            for tab in ["All", "Images  1", "Documents  1", "Charts and data  1", "Pinned"] {
+                let r = texts.iter().find(|t| t.0 == tab).map(|t| t.1).unwrap_or_else(|| panic!("{w}: no {tab:?} in {texts:?}"));
+                assert!(screen.contains_rect(r), "{w}: {tab:?} at {r:?}");
+            }
+            let title = texts.iter().find(|t| t.0 == "Library").map(|t| t.1).unwrap();
+            let hint = texts.iter().find(|t| t.0.starts_with("Search")).map(|t| t.1).unwrap();
+            assert!(hint.left() > title.right() && screen.contains_rect(hint), "{w}: the search {hint:?}, the title {title:?}");
+        }
     }
 
     /// A thing whose chat was deleted stays: its card says so, a click saves a copy (asks
