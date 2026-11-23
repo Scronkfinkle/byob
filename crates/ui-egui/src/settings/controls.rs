@@ -196,10 +196,7 @@ impl ByobApp {
             Key::ExportTheme => self.export_controls(ui, t, d),
             Key::ResetLook => {
                 if form::button(ui, t, "Reset", true).on_hover_text("Accent, corners, bubbles and chart colours back to the theme's").clicked() {
-                    let dk = Knobs::default();
-                    d.prefs.accent = Accent::Theme;
-                    (k.radius, k.user_bubble, k.assistant_bubble, k.chart) = (dk.radius, dk.user_bubble, dk.assistant_bubble, dk.chart);
-                    (k.bubble_padding, k.line_spacing) = (dk.bubble_padding, dk.line_spacing);
+                    reset_advanced(&mut d.prefs, &d.current.id);
                 }
             }
             Key::ResetAppearance => {
@@ -586,6 +583,23 @@ fn accent_menu(ui: &mut egui::Ui, t: &Tokens, current: &ThemeDef, accent: &mut A
     }
 }
 
+/// Appearance's "Reset advanced": accent, corners, message style and chart colors back to
+/// the defaults, and Advanced's own colors (background, text) back to theme `theme`'s.
+fn reset_advanced(prefs: &mut Prefs, theme: &str) {
+    let (k, dk) = (&mut prefs.knobs, Knobs::default());
+    prefs.accent = Accent::Theme;
+    (k.radius, k.user_bubble, k.assistant_bubble, k.chart) = (dk.radius, dk.user_bubble, dk.assistant_bubble, dk.chart);
+    (k.bubble_padding, k.line_spacing) = (dk.bubble_padding, dk.line_spacing);
+    if let Some(o) = prefs.overrides.get_mut(theme) {
+        for role in ["app_bg", "text"] {
+            o.remove(role);
+        }
+        if o.is_empty() {
+            prefs.overrides.remove(theme);
+        }
+    }
+}
+
 /// A colour of the theme (its background, its text) as a chip: a dot and its hex, editable.
 /// A change is an override of this theme only (the Colours tab lists every one).
 fn colour_chip(ui: &mut egui::Ui, t: &Tokens, id: &str, current: &ThemeDef, prefs: &mut Prefs, role: &str, now: Color32) {
@@ -761,6 +775,30 @@ fn role_row(ui: &mut egui::Ui, t: &Tokens, role: &theme::Role, current: &ThemeDe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reset advanced puts Advanced's Background and Text color back to the theme's (other
+    /// themes' colors and other roles stay: the Colors page has its own reset).
+    #[test]
+    fn reset_advanced_clears_the_background_and_text_colors() {
+        let mut prefs = Prefs::default();
+        let set = |p: &mut Prefs, theme: &str, role: &str| {
+            p.overrides.entry(theme.to_owned()).or_default().insert(role.to_owned(), "#123456".to_owned());
+        };
+        set(&mut prefs, "byob-dark", "app_bg");
+        set(&mut prefs, "byob-dark", "text");
+        set(&mut prefs, "byob-dark", "accent");
+        set(&mut prefs, "nord", "app_bg");
+        prefs.knobs.radius = 2.0;
+        reset_advanced(&mut prefs, "byob-dark");
+        let dark = prefs.overrides.get("byob-dark");
+        assert!(dark.is_some_and(|o| !o.contains_key("app_bg") && !o.contains_key("text") && o.contains_key("accent")), "{:?}", prefs.overrides);
+        assert!(prefs.overrides.get("nord").is_some_and(|o| o.contains_key("app_bg")), "another theme's colors stay");
+        assert!((prefs.knobs.radius - Knobs::default().radius).abs() < f32::EPSILON);
+        prefs.overrides.clear();
+        set(&mut prefs, "byob-dark", "app_bg");
+        reset_advanced(&mut prefs, "byob-dark");
+        assert!(prefs.overrides.is_empty(), "no empty entry left: {:?}", prefs.overrides);
+    }
 
     /// Each picture is its mode: clicking Light then Dark picks them; System stays split.
     #[test]
