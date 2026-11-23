@@ -476,7 +476,7 @@ fn csv_workspace_file_becomes_a_new_artifact() {
     let d = b.tool("describe_sheet", json!({"sheet": "data/sales.csv"}));
     assert!(d.contains("C \"zip\": text"), "leading zeros stay text: {d}");
     let out = b.tool("write_cells", json!({"sheet": "data/sales.csv", "cells": {"D1": "double", "D2": "=B2*2"}}));
-    assert!(out.contains("Saved as a new spreadsheet artifact (sales.xlsx); data/sales.csv itself is unchanged"), "{out}");
+    assert!(out.contains("imported as a new spreadsheet artifact (sales.xlsx); data/sales.csv itself is unchanged"), "{out}");
     // the artifact's note names the file the same way on every platform (no `data\\sales.csv`)
     assert_eq!(b.meta(&b.last_id)["versions"][0]["note"], "From data/sales.csv");
     let aid = b.last_id.clone();
@@ -485,10 +485,83 @@ fn csv_workspace_file_becomes_a_new_artifact() {
     assert!(!std::fs::read_to_string(b.ws.path().join("data/sales.csv")).unwrap().contains("double"));
     // the path now leads to that artifact
     let out = b.tool("write_cells", json!({"sheet": "data/sales.csv", "cells": {"D3": "=B3*2"}}));
-    assert!(out.contains(&format!("was saved as artifact {aid} earlier")), "{out}");
+    assert!(out.contains(&format!("data/sales.csv is open in this chat as artifact {aid}")), "{out}");
     assert_eq!(b.last_id, aid);
     let r = b.tool("read_cells", json!({"sheet": aid, "range": "D1:D3"}));
     assert_eq!([row(&r, 1), row(&r, 2), row(&r, 3)], [strs(&["double"]), strs(&["20"]), strs(&["40"])]);
+}
+
+/// The artifact ids of this workspace's spreadsheets (charts aside).
+fn sheet_ids(b: &Byob) -> Vec<String> {
+    let mut ids: Vec<String> = std::fs::read_dir(b.ws.path().join(".byob/artifacts"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|id| b.meta(id)["filename"].as_str().is_some_and(|f| !f.ends_with(".chart.json")))
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn a_file_path_keeps_editing_the_sheet_made_from_it_within_one_request() {
+    // Regression: byob joins the notes of one request's saves of an artifact ("From
+    // harvest.csv; write_cells"), and a path was only matched to a first version noted
+    // exactly "From harvest.csv": after one edit by id, every later call naming the file
+    // imported it again as a new artifact, without the earlier edits.
+    let mut b = Byob::new();
+    b.turn = Some("t1".into());
+    b.file("harvest.csv", b"field,kg,hours\nNorth,120,4\nSouth,90,3\n");
+    let first = b.tool("write_cells", json!({"sheet": "harvest.csv", "cells": {"D1": "kg_per_hour"}}));
+    let aid = b.last_id.clone();
+    b.tool("fill", json!({"sheet": aid, "range": "D2:D3", "formula": "=B2/C2"}));
+    assert!(b.meta(&aid)["versions"][0]["note"].as_str().unwrap().starts_with("From harvest.csv; "));
+    let out = b.tool("format_cells", json!({"sheet": "harvest.csv", "range": "D1", "bold": true}));
+    assert_eq!(b.last_id, aid, "{out}");
+    let r = b.tool("read_cells", json!({"sheet": "harvest.csv", "range": "D1:D3"}));
+    assert_eq!([row(&r, 1), row(&r, 2), row(&r, 3)], [strs(&["kg_per_hour"]), strs(&["30"]), strs(&["30"])], "the earlier edits are there");
+    assert_eq!(sheet_ids(&b), std::slice::from_ref(&aid), "no stray copies");
+    // Which artifact each call edited is plain in its result.
+    assert!(first.contains("This chat had no spreadsheet from harvest.csv, so it was imported as a new spreadsheet artifact"), "{first}");
+    assert!(out.contains(&format!("harvest.csv is open in this chat as artifact {aid}")), "{out}");
+}
+
+#[test]
+fn a_file_path_edits_the_newest_sheet_made_from_it() {
+    let mut b = Byob::new();
+    b.file("harvest.csv", b"field,kg\nNorth,120\n");
+    b.tool("create_sheet", json!({"from": "harvest.csv", "filename": "aa-old.xlsx"}));
+    let old = b.last_id.clone();
+    b.tool("create_sheet", json!({"from": "harvest.csv", "filename": "zz-new.xlsx"}));
+    let new = b.last_id.clone();
+    assert!(old < new, "the oldest sorts first by id, so id order can't be what picks the newest");
+    let out = b.tool("write_cells", json!({"sheet": "harvest.csv", "cells": {"C1": "x"}}));
+    assert_eq!(b.last_id, new, "{out}");
+}
+
+#[test]
+fn sheet_tools_only_use_this_chats_artifacts() {
+    // Regression: reads found another chat's artifacts (by id, file name or the file they
+    // came from) but byob refuses to save a version of one, so writes failed with "no
+    // artifact in this chat". Like byob's own artifact tools, they're this chat's only.
+    let mut b = Byob::new();
+    b.file("harvest.csv", b"field,kg\nNorth,120\n");
+    b.tool("write_cells", json!({"sheet": "harvest.csv", "cells": {"C1": "x"}}));
+    let first = b.last_id.clone();
+    b.chat = "chat-2".into();
+    for t in ["read_cells", "describe_sheet", "write_cells"] {
+        let out = b.tool(t, json!({"sheet": first, "cells": {"E1": "z"}}));
+        assert!(out.starts_with("Error:") && out.contains("belongs to another chat") && out.contains("harvest.csv"), "{t}: {out}");
+    }
+    let out = b.tool("read_cells", json!({"sheet": "harvest.xlsx"}));
+    assert!(out.starts_with("Error: No spreadsheet"), "another chat's file name: {out}");
+    // The file it came from makes this chat's own copy, from the file.
+    let out = b.tool("write_cells", json!({"sheet": "harvest.csv", "cells": {"D1": "y"}}));
+    assert!(out.contains("imported as a new spreadsheet artifact"), "{out}");
+    let second = b.last_id.clone();
+    assert_ne!(second, first);
+    assert_eq!(b.meta(&second)["chat"], "chat-2");
+    let r = b.tool("read_cells", json!({"sheet": second, "range": "C1:D1"}));
+    assert_eq!(row(&r, 1), strs(&["", "y"]), "{r}");
 }
 
 #[test]

@@ -465,10 +465,10 @@ Wrote 2 cells.
 G1 = double
 G2 =C2*2 → 339.42
 No error cells.
-Saved as a new spreadsheet artifact (big.xlsx); data/big.csv itself is unchanged. Use the artifact id below as `sheet` from now on.
+This chat had no spreadsheet from data/big.csv, so it was imported as a new spreadsheet artifact (big.xlsx); data/big.csv itself is unchanged. Its id is in the "Saved: artifact …" line below: pass that id as `sheet` from now on.
 Saved: artifact big-0001, version 1.
 ### 9 fill {"formula":"=C2*2","range":"G2:G","sheet":"data/big.csv"}
-(data/big.csv was saved as artifact big-0001 earlier; using that. Pass big-0001 as `sheet` from now on.)
+(data/big.csv is open in this chat as artifact big-0001, so this uses that artifact, not the file. Pass big-0001 as `sheet` from now on.)
 Filled G2:G401 (400 cells) with =C2*2; G401 got =C401*2.
 G2:G401 now:
 	G

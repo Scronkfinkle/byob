@@ -646,8 +646,8 @@ fn write_op(store: &mut Store, cx: &Ctx<'_>, sheet: Option<&Value>, note: &str, 
         art.insert("note".into(), json!(format!("From {}", src.rel)));
         art.insert("file".into(), json!(store.save_tmp(&data, &filename)?));
         lines.push(format!(
-            "Saved as a new spreadsheet artifact ({filename}); {} itself is unchanged. Use the artifact id below as `sheet` from now on.",
-            src.rel
+            "This chat had no spreadsheet from {rel}, so it was imported as a new spreadsheet artifact ({filename}); {rel} itself is unchanged. Its id is in the \"Saved: artifact …\" line below: pass that id as `sheet` from now on.",
+            rel = src.rel
         ));
     }
     if redrawn.is_empty() {

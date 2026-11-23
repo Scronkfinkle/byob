@@ -33,6 +33,11 @@ pub struct Byob {
     next_id: u64,
     /// The artifact the last tool call saved a version of.
     pub last_id: String,
+    /// The request (turn) tool calls run in, if any: like byob, a save to an artifact whose
+    /// latest version that same request made overwrites it, notes joined with "; ".
+    pub turn: Option<String>,
+    /// byob's `created_at` of the next new version (ms, always increasing).
+    clock: u64,
 }
 
 impl Default for Byob {
@@ -56,6 +61,8 @@ impl Byob {
             ids: 0,
             next_id: 0,
             last_id: String::new(),
+            turn: None,
+            clock: 1_700_000_000_000,
         };
         b.send(json!({"type": "init", "v": 1, "plugin": "sheets", "name": "Spreadsheets", "version": "1.0.0", "byob": "test", "caps": [],
                       "events": [], "settings": {}, "dir": "", "scope": "global", "chat": null, "workspace": null, "restart": 0,
@@ -137,10 +144,20 @@ impl Byob {
         let dir = self.ws.path().join(".byob/artifacts").join(&aid);
         std::fs::create_dir_all(&dir).unwrap();
         let vs = meta["versions"].as_array_mut().unwrap();
+        let note = art["note"].as_str().unwrap_or_default();
+        let turn = if draft { None } else { self.turn.clone() };
         let reuse = draft && vs.last().is_some_and(|v| v["draft"] == true);
-        if !reuse {
+        let same_turn = turn.is_some() && art["id"].is_string() && vs.last().is_some_and(|v| v["turn"].as_str() == turn.as_deref());
+        if same_turn {
+            let v = vs.last_mut().unwrap();
+            let old = v["note"].as_str().unwrap_or_default().to_owned();
+            if !note.is_empty() && !old.ends_with(note) {
+                v["note"] = json!(if old.is_empty() { note.to_owned() } else { format!("{old}; {note}") });
+            }
+        } else if !reuse {
             let n = vs.len() + 1;
-            vs.push(json!({"n": n, "note": art["note"].as_str().unwrap_or_default(), "draft": draft}));
+            self.clock += 1;
+            vs.push(json!({"n": n, "note": note, "draft": draft, "created_at": self.clock, "turn": turn}));
         }
         let v = vs.last_mut().unwrap();
         let n = v["n"].as_u64().unwrap();

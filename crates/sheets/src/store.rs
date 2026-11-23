@@ -172,26 +172,44 @@ fn artifact_source(ws: &str, meta: &Value, note: String) -> Result<Source, Sheet
     Ok(Source { artifact: true, path, fmt, aid, meta: meta.clone(), version: n, rel: String::new(), note })
 }
 
-/// The artifact a write (or create_sheet from=) made from workspace file `rel`, if any.
+/// Whether artifact `m` is one of `chat`'s (any chat's when there's none, as byob's own
+/// artifact tools: an artifact belongs to the chat that made it, though it's kept in the
+/// folder every chat of a project shares).
+fn in_chat(m: &Value, chat: Option<&str>) -> bool {
+    chat.is_none() || s(m, "chat") == chat
+}
+
+/// The workspace file artifact `m` was made from: its first version's note "From rel", alone
+/// or with the notes of later saves in the same request that byob joins on ("From rel;
+/// write_cells; fill D2:D").
+fn made_from(m: &Value) -> Option<&str> {
+    let first = m.get("versions").and_then(Value::as_array).and_then(|v| v.first())?;
+    let rest = s(first, "note")?.strip_prefix("From ")?;
+    let rel = rest.split_once("; ").map_or(rest, |(rel, _)| rel);
+    (!rel.is_empty() && !rel.starts_with("artifact ")).then_some(rel)
+}
+
+/// Whether artifact `m` was made from workspace file `rel` (see [`made_from`]; exact, so a
+/// file name with "; " in it still matches).
+fn made_from_file(m: &Value, rel: &str) -> bool {
+    let first = m.get("versions").and_then(Value::as_array).and_then(|v| v.first());
+    let Some(rest) = first.and_then(|v| s(v, "note")).and_then(|n| n.strip_prefix("From ")).and_then(|n| n.strip_prefix(rel)) else { return false };
+    rest.is_empty() || rest.starts_with("; ")
+}
+
+/// When an artifact's first version was saved (byob's `created_at`, ms), for "newest".
+fn created(m: &Value) -> i64 {
+    m.get("versions").and_then(Value::as_array).and_then(|v| v.first()).and_then(|v| v.get("created_at")).and_then(Value::as_i64).unwrap_or(0)
+}
+
+/// The newest spreadsheet of `chat` a write (or create_sheet from=) made from workspace file
+/// `rel`, if any.
 fn derived(ws: &str, chat: Option<&str>, rel: &str) -> Option<Value> {
-    let want = format!("From {rel}");
-    let mut best = None;
-    for m in metas(ws) {
-        let first = m.get("versions").and_then(Value::as_array).and_then(|v| v.first()).filter(|v| v.is_object());
-        if first.is_some_and(|v| s(v, "note") == Some(&want)) && is_sheet_meta(&m) {
-            if s(&m, "chat") == chat {
-                return Some(m);
-            }
-            if best.is_none() {
-                best = Some(m);
-            }
-        }
-    }
-    best
+    metas(ws).into_iter().filter(|m| in_chat(m, chat) && is_sheet_meta(m) && made_from_file(m, rel)).max_by_key(created)
 }
 
 fn sheet_artifacts(ws: &str, chat: Option<&str>) -> Vec<Value> {
-    metas(ws).into_iter().filter(|m| is_sheet_meta(m) && (chat.is_none() || s(m, "chat") == chat)).collect()
+    metas(ws).into_iter().filter(|m| is_sheet_meta(m) && in_chat(m, chat)).collect()
 }
 
 /// A lexically normalized absolute path (Python's `os.path.abspath`).
@@ -246,6 +264,13 @@ pub fn resolve(ws: &str, chat: Option<&str>, arg: Option<&Value>, follow: bool) 
     if id_ok(s1)
         && let Some(mut meta) = read_meta(ws, s1)
     {
+        if !in_chat(&meta, chat) {
+            let copy = match made_from(&meta) {
+                Some(rel) => format!(" It was made from {rel}: pass {rel} as `sheet` to work on that file in this chat."),
+                None => String::new(),
+            };
+            return Err(SheetError::Msg(format!("Artifact {s1} belongs to another chat; sheet tools only use this chat's artifacts.{copy}")));
+        }
         if let Some(o) = meta.as_object_mut() {
             o.entry("id").or_insert(Value::String(s1.to_owned()));
         }
@@ -260,7 +285,11 @@ pub fn resolve(ws: &str, chat: Option<&str>, arg: Option<&Value>, follow: bool) 
         let rel = relpath(&path, Path::new(ws));
         if follow && let Some(d) = derived(ws, chat, &rel) {
             let id = or_text(&d, "id", "");
-            return artifact_source(ws, &d, format!("({rel} was saved as artifact {id} earlier; using that. Pass {id} as `sheet` from now on.)"));
+            return artifact_source(
+                ws,
+                &d,
+                format!("({rel} is open in this chat as artifact {id}, so this uses that artifact, not the file. Pass {id} as `sheet` from now on.)"),
+            );
         }
         let fmt = file_format(&path.to_string_lossy());
         return Ok(Source { artifact: false, path, fmt, aid: String::new(), meta: Value::Null, version: None, rel, note: String::new() });
@@ -270,12 +299,13 @@ pub fn resolve(ws: &str, chat: Option<&str>, arg: Option<&Value>, follow: bool) 
         .into_iter()
         .filter(|m| {
             let f = or_text(m, "filename", "");
-            is_sheet_meta(m) && [f.to_lowercase(), or_text(m, "title", "").to_lowercase(), splitext(&f).0.to_lowercase()].contains(&low)
+            in_chat(m, chat) && is_sheet_meta(m) && [f.to_lowercase(), or_text(m, "title", "").to_lowercase(), splitext(&f).0.to_lowercase()].contains(&low)
         })
         .collect();
-    found.sort_by_key(|m| s(m, "chat") != chat);
+    found.sort_by_key(|m| std::cmp::Reverse(created(m)));
     if let Some(m) = found.first() {
-        return artifact_source(ws, m, String::new());
+        let id = or_text(m, "id", "");
+        return artifact_source(ws, m, format!("({s1} is artifact {id} in this chat; using that. Pass {id} as `sheet` from now on.)"));
     }
     let have = sheet_artifacts(ws, chat);
     let mut hint = String::new();
