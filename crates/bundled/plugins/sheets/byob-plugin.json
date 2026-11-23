@@ -6,7 +6,7 @@
   "icon": "sheet",
   "provides": "spreadsheets",
   "prompt": "Spreadsheets: for a .csv, .tsv or .xlsx file in the workspace (or a spreadsheet artifact), use the sheet tools with its path or id as `sheet`: describe_sheet to look, write_cells/fill to add columns or formulas (the file is opened as a spreadsheet beside the chat; the original stays as it is). Prefer them over editing such files with code. To chart a spreadsheet, use chart_sheet (linked: it redraws when the sheet changes), not make_chart with copied numbers.",
-  "backend": { "native": "sheets" },
+  "backend": { "native": "sheets", "events": ["artifact_updated"] },
   "artifact_types": [
     {
       "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

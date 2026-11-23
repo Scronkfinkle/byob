@@ -152,6 +152,14 @@ impl NativeBackend for Sheets {
                 self.refresh(out);
             }
             "client" => self.refresh(out),
+            // byob undid versions of an artifact: its workbook in memory holds what was
+            // taken back, so the next use loads what is on disk now.
+            "artifact_updated" if ev.get("undone").and_then(Value::as_bool) == Some(true) => {
+                if let Some(aid) = ev.get("artifact").and_then(Value::as_str) {
+                    self.store.forget(aid);
+                }
+                self.refresh(out);
+            }
             "web" => {
                 out.fault(&format!("web view {}: nothing handles its messages", ev.get("view").map(text::repr).unwrap_or_default()));
                 self.refresh(out);

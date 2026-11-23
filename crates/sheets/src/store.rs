@@ -431,6 +431,13 @@ impl Store {
         self.entries.get_mut(aid).ok_or_else(|| SheetError::Msg(format!("Artifact {aid} isn't loaded.")))
     }
 
+    /// Drop artifact `aid`'s live workbook (byob undid versions of it): the next use loads
+    /// its latest version from disk. (Older versions' workbooks stay cached: version numbers
+    /// are never reused.)
+    pub fn forget(&mut self, aid: &str) {
+        self.entries.remove(aid);
+    }
+
     /// An older version's workbook (read-only views), cached (6).
     pub fn version_book(&mut self, path: &Path, fmt: &str) -> Result<&mut Book, SheetError> {
         let book = match self.old.iter().position(|(p, _)| p == path) {

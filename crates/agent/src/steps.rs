@@ -180,12 +180,35 @@ impl Engine {
                     j.undone = true;
                 }
                 self.set_undo_flags(entry, false, true);
+                self.artifacts_undone(&chat, &workspace);
                 let n = report.done.len();
                 let text = format!("Undid {n} change{}: {}.", if n == 1 { "" } else { "s" }, report.done.join("; "));
                 self.send_viewers(&chat, ServerMsg::Notice { level: NoticeLevel::Info, text });
             }
             Err(e) => self.send_to(client, refuse(format!("Can't undo: {e}."))),
         }
+    }
+
+    /// After an undo: it may have taken back artifact versions, or whole artifacts. What the
+    /// chat lists (to the model and its clients) is what's on disk now, and backends that
+    /// keep an artifact's state (the sheets' workbooks) hear which ones went back
+    /// (`artifact_updated` with `undone`; `version` is the latest left, `null` for none).
+    fn artifacts_undone(&mut self, chat: &str, workspace: &std::path::Path) {
+        let artifacts = byob_tools::artifact::list(workspace, chat);
+        let Some(live) = self.live.get_mut(chat) else { return };
+        if live.artifacts == artifacts {
+            return;
+        }
+        let before = std::mem::replace(&mut live.artifacts, artifacts.clone());
+        for old in &before {
+            let now = artifacts.iter().find(|a| a.id == old.id);
+            let version = now.and_then(|a| a.latest()).map(|v| v.n);
+            if version != old.latest().map(|v| v.n) {
+                let event = serde_json::json!({"artifact": old.id, "title": old.title, "content_type": old.content_type(), "version": version, "undone": true});
+                self.emit(chat, "artifact_updated", event);
+            }
+        }
+        self.send_viewers(chat, ServerMsg::Artifacts { chat: Some(chat.to_owned()), artifacts });
     }
 }
 

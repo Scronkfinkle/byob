@@ -70,6 +70,8 @@ mod queue;
 #[cfg(test)]
 mod queue_tests;
 mod rewind;
+#[cfg(test)]
+mod scenarios;
 mod slot_leases;
 mod steps;
 mod subagents;
