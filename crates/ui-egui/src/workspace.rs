@@ -2095,6 +2095,12 @@ impl WorkspaceUi {
         egui::Id::unique(("chat-settings", self.opens))
     }
 
+    /// The project settings dialog's id while it is open (tests find its rect by it).
+    #[cfg(test)]
+    pub(crate) fn settings_window_id(&self) -> egui::Id {
+        egui::Id::unique(("workspace-settings", self.opens))
+    }
+
     pub fn toggle_chat(&mut self) {
         self.chat = match self.chat.take() {
             Some(_) => None,
@@ -2189,7 +2195,8 @@ impl WorkspaceUi {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
                     let name = ws.map_or("Project", |x| x.name.as_str());
-                    ui.label(RichText::new(name).strong().size(t.text_size(20.0)).color(t.text_strong));
+                    // Close on the right first, so a long name is cut short before it rather
+                    // than pushing the dialog out of the window.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let size = crate::icons::button_height(ui);
                         let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
@@ -2197,6 +2204,10 @@ impl WorkspaceUi {
                         if x.on_hover_text("Close (Esc)").clicked() {
                             open = false;
                         }
+                        ui.add_space(8.0);
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(egui::Label::new(RichText::new(name).strong().size(t.text_size(20.0)).color(t.text_strong)).truncate());
+                        });
                     });
                 });
                 if let Some(x) = ws {

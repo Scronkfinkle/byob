@@ -54,3 +54,20 @@ fn the_palette_key_still_opens_the_palette_on_the_projects_page() {
     shortcut(&ctx, &mut app, egui::Key::K, egui::Modifiers::COMMAND);
     assert!(app.sidebar.palette.is_some());
 }
+
+/// A project with a long name: its settings dialog stays in the window, close button and
+/// all (the name used to push the dialog off the right edge).
+#[test]
+fn a_long_project_name_keeps_its_settings_dialog_in_the_window() {
+    let ctx = egui::Context::default();
+    let mut app = crowded_app();
+    for width in [800.0, 560.0] {
+        frame(&ctx, &mut app, width);
+        app.workspaces.open_settings("w", false);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, width);
+        }
+        let dialog = ctx.memory(|m| m.area_rect(app.workspaces.settings_window_id())).unwrap();
+        assert!(dialog.left() >= 0.0 && dialog.right() <= width, "width {width}: {dialog:?}");
+    }
+}
