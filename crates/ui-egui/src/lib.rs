@@ -1975,6 +1975,9 @@ mod app_tests {
     /// The Projects page and the project dialogs over it.
     mod projects_page;
 
+    /// The window across arrangements, themes and sizes, checked for layout invariants.
+    mod matrix;
+
     /// A connection that delivers queued messages and records what the app sends.
     #[derive(Clone, Default)]
     struct Fake {
