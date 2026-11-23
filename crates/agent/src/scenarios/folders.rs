@@ -10,7 +10,9 @@ use super::{Answer, StepCheck, World};
 ///
 /// Then the linked folder is moved away and a link to somewhere else put in its place.
 /// Regression (7e0c3ce): the sandbox kept trusting the path, so file tools reached through
-/// the link. Now that place is refused, and the refusal reaches the model.
+/// the link. Now that place is refused, and the refusal reaches the model. (Unix: the link
+/// is a symlink.)
+#[cfg(unix)]
 #[test]
 fn a_linked_folder_is_undone_with_the_turn_and_closed_once_swapped_for_a_link() {
     let mut w = World::new();
