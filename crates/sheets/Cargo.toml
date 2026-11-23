@@ -10,6 +10,7 @@ homepage.workspace = true
 
 [dependencies]
 byob-plugins.workspace = true
+byob-tools.workspace = true
 byob-types.workspace = true
 serde_json.workspace = true
 # The spreadsheet engine. MIT OR Apache-2.0.

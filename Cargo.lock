@@ -939,6 +939,7 @@ name = "byob-sheets"
 version = "0.3.10"
 dependencies = [
  "byob-plugins",
+ "byob-tools",
  "byob-types",
  "ironcalc",
  "serde_json",

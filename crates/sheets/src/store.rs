@@ -276,13 +276,17 @@ pub fn resolve(ws: &str, chat: Option<&str>, arg: Option<&Value>, follow: bool) 
         }
         return artifact_source(ws, &meta, String::new());
     }
-    let path = if Path::new(s1).is_absolute() { PathBuf::from(s1) } else { Path::new(ws).join(s1) };
-    if path.is_file() {
+    // Files only inside the workspace (or a folder it links), like read_file: the sheet
+    // tools run without asking. Not a path there may still be a title (below).
+    let inside = byob_tools::sandbox::resolve_follow(Path::new(ws), s1);
+    let path = inside.as_ref().map(|r| r.abs.clone()).unwrap_or_default();
+    if inside.is_ok() && path.is_file() {
         let low = path.to_string_lossy().to_lowercase();
         if !SHEET_SUFFIXES.iter().any(|x| low.ends_with(x)) {
             return Err(SheetError::Msg(format!("{s1} isn't a spreadsheet file; use an .xlsx, .csv or .tsv file.")));
         }
-        let rel = relpath(&path, Path::new(ws));
+        let root = Path::new(ws).canonicalize().unwrap_or_else(|_| PathBuf::from(ws));
+        let rel = relpath(&path, &root);
         if follow && let Some(d) = derived(ws, chat, &rel) {
             let id = or_text(&d, "id", "");
             return artifact_source(
@@ -306,6 +310,9 @@ pub fn resolve(ws: &str, chat: Option<&str>, arg: Option<&Value>, follow: bool) 
     if let Some(m) = found.first() {
         let id = or_text(m, "id", "");
         return artifact_source(ws, m, format!("({s1} is artifact {id} in this chat; using that. Pass {id} as `sheet` from now on.)"));
+    }
+    if let Err(e) = inside {
+        return Err(SheetError::Msg(format!("No spreadsheet {}: {e}.", repr_str(s1))));
     }
     let have = sheet_artifacts(ws, chat);
     let mut hint = String::new();
@@ -546,5 +553,27 @@ mod tests {
         assert_eq!(relpath(&ws.join("a").join("b").join("c.tsv"), &ws), "a/b/c.tsv");
         assert_eq!(relpath(&ws.join("x.csv"), &ws.join("sub").join("dir")), "../../x.csv");
         assert_eq!(relpath(&ws, &ws), ".");
+    }
+
+    /// Regression: `sheet` was any path on the computer (absolute, or climbing out with
+    /// `..`), so the sheet tools, which run without asking, read spreadsheets outside the
+    /// workspace that read_file refuses.
+    #[test]
+    fn only_files_inside_the_workspace_are_sheets() {
+        let outer = tempfile::tempdir().unwrap();
+        let ws = outer.path().join("ws");
+        std::fs::create_dir(&ws).unwrap();
+        std::fs::write(outer.path().join("secret.csv"), "a,b\n1,2\n").unwrap();
+        std::fs::write(ws.join("mine.csv"), "a,b\n1,2\n").unwrap();
+        let ws_s = ws.to_string_lossy().into_owned();
+        let abs = outer.path().join("secret.csv").to_string_lossy().into_owned();
+        for arg in [abs.as_str(), "../secret.csv"] {
+            let Err(SheetError::Msg(e)) = resolve(&ws_s, Some("c"), Some(&Value::String(arg.into())), true) else { panic!("{arg} was read") };
+            assert!(e.contains("outside the workspace"), "{e}");
+        }
+        let src = resolve(&ws_s, Some("c"), Some(&Value::String("mine.csv".into())), true).unwrap();
+        assert_eq!(src.rel, "mine.csv");
+        let inside = ws.join("mine.csv").to_string_lossy().into_owned();
+        assert_eq!(resolve(&ws_s, Some("c"), Some(&Value::String(inside)), true).unwrap().rel, "mine.csv");
     }
 }

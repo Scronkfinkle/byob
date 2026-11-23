@@ -176,3 +176,25 @@ fn undone_sheet_requests_leave_the_chat_listing_what_is_left() {
     assert!(w.seen.artifacts.is_empty(), "{:?}", versions(&w));
     assert_eq!(w.model.unused(), 0);
 }
+
+/// Under "Ask before changes", looking at a spreadsheet and working on the sheet artifact
+/// run without asking, like reading a file and `update_artifact` do. The sheet tools didn't
+/// declare their access, so each counted as running code: describing a CSV showed an
+/// approval card labeled "runs code" (here the turn would wait on it and time out).
+#[test]
+fn looking_at_and_editing_a_sheet_does_not_ask_before_changes() {
+    let mut w = World::with(|c| c.policy = Some(crate::Policy::for_approvals(byob_types::config::Approvals::Ask)));
+    w.file("harvest.csv", HARVEST);
+    w.model.calls("describe_sheet", json!({"sheet": "harvest.csv"}));
+    w.model.calls("read_cells", json!({"sheet": "harvest.csv", "range": "A1:C2"}));
+    w.model.calls("write_cells", json!({"sheet": "harvest.csv", "cells": {"D1": "notes"}}));
+    w.model.calls("chart_sheet", json!({"sheet": "harvest.csv", "type": "bar", "x": "A", "series": ["B"]}));
+    w.model.says("Done.");
+    let t = w.send("Look at harvest.csv, add a notes column and chart it");
+    assert_eq!(t.error, None);
+    for tool in ["describe_sheet", "read_cells", "write_cells", "chart_sheet"] {
+        t.step(tool).done();
+        assert_eq!(t.step(tool).access, byob_protocol::ToolAccess::Read, "{tool}");
+    }
+    assert_eq!(w.read("harvest.csv").as_deref(), Some(HARVEST), "the file itself is left alone");
+}

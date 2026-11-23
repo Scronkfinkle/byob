@@ -140,6 +140,29 @@ mod tests {
         assert_eq!(n.artifact_types["html_app"], byob_protocol::artifact::TYPE_HTML);
     }
 
+    /// Every bundled script or backend tool says what it does: left out, it counts as
+    /// `execute` and asks under "Ask before changes" with the label "runs code". The sheet
+    /// tools left it out, so merely describing a spreadsheet asked. They only read a sheet
+    /// or save new versions of a spreadsheet artifact (never the file it came from), which
+    /// is what `create_artifact`/`update_artifact` do, and those are `read`.
+    #[test]
+    fn bundled_plugin_tools_declare_their_access() {
+        use byob_plugins::manifest::{ParseOptions, ToolKind, parse_manifest_str};
+        use byob_tools::Access;
+        let mut seen = std::collections::BTreeMap::new();
+        for (id, files) in byob_bundled::plugins() {
+            let text = files.iter().find(|(p, _)| *p == byob_plugins::MANIFEST).map(|(_, t)| *t).unwrap();
+            let m = parse_manifest_str(text, ParseOptions { builtin: true, file: None }).unwrap();
+            for t in m.tools.iter().filter(|t| !matches!(t.kind, ToolKind::Native(_))) {
+                assert!(t.access.is_some(), "{id}: {} doesn't declare its access, so it would ask as \"runs code\"", t.name);
+                seen.insert(t.name.clone(), t.access);
+            }
+        }
+        for name in ["create_sheet", "describe_sheet", "read_cells", "write_cells", "fill", "edit_sheet", "format_cells", "chart_sheet"] {
+            assert_eq!(seen.get(name), Some(&Some(Access::Read)), "{name}");
+        }
+    }
+
     #[test]
     fn bundled_html_guidance_is_the_native_default() {
         let html = byob_bundled::file("html-apps", "guidance.md").unwrap_or_default();

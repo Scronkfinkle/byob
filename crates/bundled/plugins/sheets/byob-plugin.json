@@ -31,6 +31,7 @@
       "title": "Create spreadsheet",
       "description": "Make a new spreadsheet artifact (.xlsx), empty or imported from a workspace .csv/.tsv/.xlsx file (`from`). Then fill it with write_cells, using the id byob reports.",
       "run": "backend",
+      "access": "read",
       "params": {
         "type": "object",
         "properties": {
@@ -46,6 +47,7 @@
       "title": "Describe spreadsheet",
       "description": "Overview of a spreadsheet: sheets, used range, header row, each column's type, count, min/max/sum or distinct values, sample formulas, first rows and error cells. Use it before reading or writing a big sheet.",
       "run": "backend",
+      "access": "read",
       "params": {
         "type": "object",
         "properties": {
@@ -59,6 +61,7 @@
       "title": "Read cells",
       "description": "Read cells as a table: column letters on top, row numbers on the left. Up to 2000 cells per call; the reply says how to get the next page.",
       "run": "backend",
+      "access": "read",
       "params": {
         "type": "object",
         "properties": {
@@ -75,6 +78,7 @@
       "title": "Write cells",
       "description": "Write values and formulas, then recalculate. Give `rows` (a 2D list written from `start`) or `cells` ({\"B2\": \"=SUM(B3:B9)\", \"C1\": 5}). Text starting with = is a formula. Returns the new values, every error cell and warnings. For a formula repeated down a column use fill instead.",
       "run": "backend",
+      "access": "read",
       "params": {
         "type": "object",
         "properties": {
@@ -92,6 +96,7 @@
       "title": "Fill formula",
       "description": "Fill a range with one formula, written for the range's first cell; the other cells get it with relative references moved like Excel's fill-down ($ parts stay). E.g. range D2:D13, formula =B2*C2 gives D13 =B13*C13. Use D2:D to fill down to the last used row.",
       "run": "backend",
+      "access": "read",
       "params": {
         "type": "object",
         "properties": {
@@ -108,6 +113,7 @@
       "title": "Edit sheet structure",
       "description": "Change structure: add_sheet(name), rename_sheet(name, new_name), delete_sheet(name), insert_rows(at, count), delete_rows(at, count), insert_cols(at letter, count), delete_cols(at letter, count), sort(range, by column letter, descending, header), freeze(rows, cols). Formulas are adjusted.",
       "run": "backend",
+      "access": "read",
       "params": {
         "type": "object",
         "properties": {
@@ -133,6 +139,7 @@
       "title": "Format cells",
       "description": "Format a range: number format (\"#,##0.00\", \"0%\", \"$#,##0\", \"yyyy-mm-dd\"), bold, fill color, alignment, column width.",
       "run": "backend",
+      "access": "read",
       "params": {
         "type": "object",
         "properties": {
@@ -153,6 +160,7 @@
       "title": "Chart a sheet",
       "description": "Draw a chart from a spreadsheet artifact's columns (computed values, formulas included): give sheet, type, x and series. The chart stays linked: whenever the sheet changes it is drawn again, so never copy a sheet's numbers into make_chart. x and series are column headers (or letters); rows run from under the header down to the first row with an empty x (so leave totals a blank row below). To change a linked chart, give `chart` (its id) and only what changes.",
       "run": "backend",
+      "access": "read",
       "params": {
         "type": "object",
         "properties": {
