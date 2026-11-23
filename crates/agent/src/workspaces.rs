@@ -87,6 +87,18 @@ pub(crate) fn linked_folder(path: &str) -> Result<PathBuf, String> {
     Ok(real)
 }
 
+/// The folders `linked` (checked by [`linked_folder`]) a project whose own folder is `own`
+/// keeps: its own folder is dropped (nothing to link); one that holds it is refused, as the
+/// sandbox wouldn't use it.
+fn linked_beside(own: &Path, mut linked: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    let own = own.canonicalize().unwrap_or_else(|_| own.to_path_buf());
+    linked.retain(|f| *f != own);
+    match linked.iter().find(|f| own.starts_with(f)) {
+        Some(f) => Err(format!("{} holds the project's own folder; link folders beside it or in it", f.display())),
+        None => Ok(linked),
+    }
+}
+
 /// Create a fresh folder for workspace `name` in `root`: its slug, or slug-2, slug-3, …
 pub(crate) fn fresh_folder(root: &Path, name: &str) -> Result<PathBuf, String> {
     let slug = byob_store::folder_slug(name);
@@ -520,6 +532,7 @@ impl Engine {
                     fresh_folder(&root, &name)?
                 }
             };
+            let linked = linked_beside(&folder, linked)?;
             let row = self.workspaces.create(&name, &folder, layer).map_err(|e| match e {
                 byob_store::StoreError::Exists(what) => format!("{what} pick it in the chat list"),
                 other => format!("couldn't save the project: {other}"),
@@ -549,7 +562,7 @@ impl Engine {
             self.notice(client, "that project no longer exists".into());
             return;
         };
-        let linked = match folders.iter().map(|f| linked_folder(f)).collect::<Result<Vec<_>, _>>() {
+        let linked = match folders.iter().map(|f| linked_folder(f)).collect::<Result<Vec<_>, _>>().and_then(|l| linked_beside(&own, l)) {
             Ok(l) => l,
             Err(e) => {
                 self.notice(client, format!("couldn't link that folder: {e}"));

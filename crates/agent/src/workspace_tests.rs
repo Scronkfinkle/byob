@@ -450,3 +450,87 @@ fn a_project_has_a_goal_and_more_than_one_folder() {
     wait(&mut c, |m| if let ServerMsg::Workspaces { items, .. } = m { (!items.iter().any(|w| w.id == id)).then_some(()) } else { None });
     assert!(byob_tools::sandbox::linked(&own).is_empty());
 }
+
+/// Regression: a folder that holds the project's own one (its parent, the home folder) was
+/// saved and listed as linked, but the sandbox leaves such a folder out, so it silently
+/// did nothing. It's refused with a notice, at creation and later.
+#[test]
+fn a_folder_holding_the_projects_own_one_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let parent = parent.path().canonicalize().unwrap();
+    let own = parent.join("app");
+    std::fs::create_dir(&own).unwrap();
+    let (url, _) = fake_llm(vec![], "x");
+    let engine = engine(url, Some(Paths::at(home.path())), Registry::default(), home.path());
+    let (mut c, _) = hello(&engine);
+    c.send(ClientMsg::CreateWorkspace {
+        name: "App".into(),
+        folder: NewFolder::Existing { path: own.display().to_string() },
+        config: Layer::default(),
+        folders: vec![parent.display().to_string()],
+    });
+    let err = wait(&mut c, |m| if let ServerMsg::WorkspaceCreated { id: None, error } = m { error } else { None });
+    assert!(err.contains("holds"), "{err}");
+    let id = create(&mut c, "App", &own, Layer::default());
+    c.send(ClientMsg::SetWorkspaceFolders { id: id.clone(), folders: vec![parent.display().to_string()] });
+    let text = wait(&mut c, |m| if let ServerMsg::Notice { text, .. } = m { Some(text) } else { None });
+    assert!(text.contains("holds"), "{text}");
+    // Its own folder by another path is just dropped (nothing to link).
+    let other = tempfile::tempdir().unwrap();
+    let other = other.path().canonicalize().unwrap();
+    c.send(ClientMsg::SetWorkspaceFolders { id: id.clone(), folders: vec![own.display().to_string(), other.display().to_string()] });
+    let items = wait(&mut c, |m| if let ServerMsg::Workspaces { items, .. } = m { Some(items) } else { None });
+    assert_eq!(items.iter().find(|w| w.id == id).unwrap().folders, [other.display().to_string()]);
+}
+
+/// Linked folders come back after a restart (the sandbox is told again), and one that
+/// is gone by then is still listed (nothing lost) but not reachable.
+#[test]
+fn linked_folders_come_back_after_a_restart() {
+    let home = tempfile::tempdir().unwrap();
+    let own = tempfile::tempdir().unwrap();
+    let api = tempfile::tempdir().unwrap();
+    let docs = tempfile::tempdir().unwrap();
+    let (own, api, docs) = (own.path().canonicalize().unwrap(), api.path().canonicalize().unwrap(), docs.path().canonicalize().unwrap());
+    let id = {
+        let (url, _) = fake_llm(vec![], "x");
+        let engine = engine(url, Some(Paths::at(home.path())), Registry::default(), home.path());
+        let (mut c, _) = hello(&engine);
+        let id = create(&mut c, "App", &own, Layer::default());
+        c.send(ClientMsg::SetWorkspaceFolders { id: id.clone(), folders: vec![api.display().to_string(), docs.display().to_string()] });
+        wait(&mut c, |m| if let ServerMsg::Workspaces { items, .. } = m { items.iter().any(|w| w.folders.len() == 2).then_some(()) } else { None });
+        id
+    };
+    byob_tools::sandbox::set_linked(&own, &[]);
+    let gone = docs.with_file_name(format!("{}-renamed", docs.file_name().unwrap().to_string_lossy()));
+    std::fs::rename(&docs, &gone).unwrap();
+    let (url, _) = fake_llm(vec![], "x");
+    let engine = engine(url, Some(Paths::at(home.path())), Registry::default(), home.path());
+    let (_c, items) = hello(&engine);
+    assert_eq!(items.iter().find(|w| w.id == id).unwrap().folders, [api.display().to_string(), docs.display().to_string()]);
+    assert_eq!(byob_tools::sandbox::linked(&own), std::slice::from_ref(&api));
+    let _ = std::fs::rename(&gone, &docs);
+}
+
+/// Regression: on connecting, byob opened the most recently active chat even when it was
+/// archived ("out of the way"); it opens the most recent one that isn't.
+#[test]
+fn an_archived_chat_isnt_the_one_opened_on_connecting() {
+    let home = tempfile::tempdir().unwrap();
+    let (url, _) = fake_llm(vec![Reply::Text("ok"); 2], "x");
+    let engine = engine(url, Some(Paths::at(home.path())), Registry::default(), home.path());
+    let (mut c, _) = hello(&engine);
+    turn(&mut c, "first");
+    let first = wait(&mut c, |m| if let ServerMsg::ChatUpdated(s) = m { Some(s.id) } else { None });
+    c.send(ClientMsg::NewChat { workspace: None });
+    wait(&mut c, |m| matches!(m, ServerMsg::Artifacts { .. }).then_some(()));
+    turn(&mut c, "second");
+    let second = wait(&mut c, |m| if let ServerMsg::ChatUpdated(s) = m { (s.id != first).then_some(s.id) } else { None });
+    c.send(ClientMsg::ArchiveChat { id: second.clone(), archived: true });
+    wait(&mut c, |m| if let ServerMsg::ChatUpdated(s) = m { (s.id == second && s.archived_at.is_some()).then_some(()) } else { None });
+    let mut d = engine.connect(Arc::new(|| {}));
+    d.send(ClientMsg::hello("test"));
+    let opened = wait(&mut d, |m| if let ServerMsg::ChatOpened { chat, .. } = m { Some(chat.map(|c| c.id)) } else { None });
+    assert_eq!(opened, Some(first));
+}
