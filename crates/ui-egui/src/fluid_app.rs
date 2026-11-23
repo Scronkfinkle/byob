@@ -137,6 +137,8 @@ impl ByobApp {
         }
         // For checking it headless: the elements, written out now and then.
         if let Some(file) = &self.fluid_env.dump {
+            // Listed even with nothing changed.
+            fluid::with(ctx, fluid::Fluid::wake);
             if ctx.cumulative_pass_nr().is_multiple_of(3) {
                 let editing = fluid::with(ctx, |f| f.editing).unwrap_or(false);
                 let head = format!("editing: {editing} selected: {}\n", self.fluid_editor.selected.as_deref().unwrap_or("-"));
