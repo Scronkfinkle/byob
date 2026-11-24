@@ -875,7 +875,7 @@ impl Step {
 }
 
 /// The special part of an approval card (see [`Step::ask`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ask {
     /// What saying yes means.
     #[serde(default)]
@@ -891,6 +891,24 @@ pub struct Ask {
     /// doesn't know it shows Allow/Deny (Allow then means "no answer").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub choice: Option<Choice>,
+    /// The tool's own words for its card (13.22): its preview says everything in plain words
+    /// (no raw arguments follow it), and these replace the access chip and button labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<CardWords>,
+}
+
+/// A tool's plain words for its must-confirm card (see [`Ask::card`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardWords {
+    /// What the call does, in place of the access chip ("Sets up a routine").
+    #[serde(default)]
+    pub access: String,
+    /// Allow's label ("Create routine"); `None`: Allow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<String>,
+    /// Deny's label ("Not now"); `None`: Deny.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny: Option<String>,
 }
 
 /// Most options on a question card.
@@ -1580,6 +1598,7 @@ mod tests {
             warning: None,
             always: true,
             choice: Some(Choice { options: vec!["Metric".into(), "Imperial".into()], free_text: true, answer: None }),
+            card: None,
         };
         let json = serde_json::to_string(&ask).unwrap();
         assert_eq!(serde_json::from_str::<Ask>(&json).unwrap(), ask);

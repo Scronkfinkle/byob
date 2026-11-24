@@ -1053,7 +1053,7 @@ impl Turn {
             Decision::Ask(message) => {
                 let text = if message.is_empty() { "A plugin asks you to confirm this call.".to_owned() } else { prefix(&message, MAX_ASK_TEXT).to_owned() };
                 let warning = step.ask.take().and_then(|a| a.warning);
-                step.ask = Some(Box::new(Ask { text, warning, always: true, choice: None }));
+                step.ask = Some(Box::new(Ask { text, warning, always: true, choice: None, card: None }));
                 self.confirm_gate(&mut step, &args)
             }
             Decision::Allow | Decision::Continue if step.ask.as_ref().is_some_and(|a| a.always) => self.confirm_gate(&mut step, &args),
@@ -1199,9 +1199,22 @@ impl Turn {
         let access = catch_unwind(AssertUnwindSafe(|| tool.access(args))).map_or(ToolAccess::Execute, to_protocol);
         let preview = catch_unwind(AssertUnwindSafe(|| tool.preview(args, self.s.workspace.as_path()))).ok().flatten().map(crate::steps::bound_preview);
         // A call a person must confirm every time (installing system-wide).
-        let ask = catch_unwind(AssertUnwindSafe(|| tool.always_ask(args)))
+        let mut ask = catch_unwind(AssertUnwindSafe(|| tool.always_ask(args)))
             .unwrap_or_else(|_| Some("this tool must be confirmed".into()))
-            .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true, choice: None }));
+            .map(|w| Box::new(Ask { text: String::new(), warning: Some(prefix(&w, MAX_ASK_TEXT).to_owned()), always: true, choice: None, card: None }));
+        let mut preview = preview;
+        // A must-confirm card in the tool's own words: its fields are the whole preview.
+        if let Some(a) = &mut ask
+            && let Some(card) = catch_unwind(AssertUnwindSafe(|| tool.card(args))).ok().flatten()
+        {
+            preview = Some(byob_protocol::Preview::Args { fields: card_fields(card.fields), code: None, more: 0 });
+            let words = card.words;
+            a.card = Some(byob_protocol::CardWords {
+                access: one_line(&words.access, DETAIL_CHARS),
+                allow: words.allow.map(|l| one_line(&l, 40)),
+                deny: words.deny.map(|l| one_line(&l, 40)),
+            });
+        }
         (one_line(&title, DETAIL_CHARS), access, preview, ask)
     }
 
@@ -1211,6 +1224,10 @@ impl Turn {
     /// own account in words (an args preview that isn't the default one, like a routine's
     /// "When: Every day at 8:00 AM") comes first, above the arguments in full.
     fn confirm_gate(&self, step: &mut Step, args: &Value) -> Verdict {
+        // The tool's own card says it all, in words a person reads (see `Tool::card`).
+        if step.ask.as_ref().is_some_and(|a| a.card.is_some()) {
+            return self.gate(step);
+        }
         if matches!(step.preview, None | Some(byob_protocol::Preview::Args { .. })) {
             let default = Some(crate::steps::bound_preview(byob_tools::preview::args(args)));
             let words = match step.preview.take() {
@@ -1364,6 +1381,7 @@ impl Asker for TurnAsker {
             warning: q.warning.as_deref().map(|w| prefix(w, MAX_ASK_TEXT).to_owned()),
             always: q.always_ask,
             choice: None,
+            card: None,
         }));
         let mut step = match &self.host {
             Some(h) => Step {
@@ -1438,6 +1456,7 @@ impl Asker for TurnAsker {
                 warning: None,
                 always: true,
                 choice: Some(Choice { options, free_text: q.free_text, answer: None }),
+                card: None,
             })),
             views: vec![],
         };
@@ -1608,6 +1627,16 @@ fn display_change(c: &byob_tools::FileChange, workspace: &Path) -> FileChange {
         byob_tools::FileChange::Deleted(p) => FileChange::Deleted { path: d(p) },
         byob_tools::FileChange::Moved { from, to } => FileChange::Moved { from: d(from), to: d(to) },
     }
+}
+
+/// Most fields on a tool's own card, and most characters of one (a routine's whole
+/// instructions fit).
+const CARD_FIELDS: usize = 16;
+const CARD_FIELD_CHARS: usize = 8 * 1024;
+
+/// A tool's card fields, capped (tool code is untrusted too).
+fn card_fields(fields: Vec<(String, String)>) -> Vec<(String, String)> {
+    fields.into_iter().take(CARD_FIELDS).map(|(k, v)| (one_line(&k, 60), v.chars().take(CARD_FIELD_CHARS).collect())).collect()
 }
 
 #[cfg(test)]

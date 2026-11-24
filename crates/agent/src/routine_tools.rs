@@ -19,7 +19,7 @@ use byob_when::Schedule;
 use serde_json::{Value, json};
 
 use crate::Input;
-use crate::routines::{Op, allowed_words, tell_words};
+use crate::routines::Op;
 
 /// How long a tool waits for the engine.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -135,8 +135,35 @@ pub(crate) fn apply(mut r: Routine, args: &Value) -> Result<Routine, String> {
     Ok(r)
 }
 
-/// The routine's card, in plain words (`fields` of an args preview).
-fn card(r: &Routine) -> Vec<(String, String)> {
+/// What a routine may do on its own, and what waits for you, in words (the card's "Can" and
+/// "Can't").
+fn can_and_cant(a: Approvals) -> (&'static str, &'static str) {
+    match a {
+        Approvals::ReadOnly | Approvals::Ask => {
+            ("Search and read the web, and read files", "Change files, run commands, send anything or spend money. It asks you first.")
+        }
+        Approvals::AllowEdits => {
+            ("Search and read the web, and read and change files in its folder", "Run commands, send anything or spend money. It asks you first.")
+        }
+        Approvals::AllowAll => ("Anything it needs without asking", "Send email and the like: those always ask you first."),
+        Approvals::Yolo => ("Anything, without ever asking", "Nothing: it never asks, not even before sending things."),
+    }
+}
+
+/// When it tells you, in words.
+fn tells(r: &Routine) -> String {
+    let how = if r.channels.iter().any(|c| c == byob_types::routine::CHANNEL_DESKTOP) { ": a notification" } else { "" };
+    match r.tell {
+        Tell::Found => format!("Only when it finds something new{how}"),
+        Tell::Always => format!("After every run{how}"),
+        Tell::Never => "Never: its reports wait on its page".to_owned(),
+    }
+}
+
+/// The routine's card, in plain words: what it's called, when it runs, what it does (in
+/// full), what it may and may not do on its own, when it tells you, what happens when byob
+/// was closed, and where it works and with which model if that's set.
+fn card(r: &Routine, here: bool) -> Vec<(String, String)> {
     let when: Vec<String> = r
         .schedules()
         .map(|(rule, at, zone, start)| match Schedule::parse(rule, at, zone, start) {
@@ -147,25 +174,34 @@ fn card(r: &Routine) -> Vec<(String, String)> {
             Err(e) => format!("can't be read: {e}"),
         })
         .collect();
+    let (can, cant) = can_and_cant(r.allowed);
     let mut fields = vec![
         ("Routine".to_owned(), r.name.clone()),
         ("When".to_owned(), if when.is_empty() { "Only when you run it".to_owned() } else { when.join("; ") }),
-        ("Does".to_owned(), byob_tools::preview::clip_line(&r.instructions)),
-        ("Can".to_owned(), allowed_words(r.allowed).to_owned()),
-        ("Tells you".to_owned(), tell_words(r.tell).to_owned()),
+        ("Does".to_owned(), r.instructions.trim().to_owned()),
+        ("It can".to_owned(), can.to_owned()),
+        ("It can't".to_owned(), cant.to_owned()),
+        ("Tells you".to_owned(), tells(r)),
+        (
+            "If byob is closed".to_owned(),
+            match r.missed {
+                Missed::Once => "It runs once when byob is back".to_owned(),
+                Missed::Skip => "It skips that run".to_owned(),
+            },
+        ),
     ];
-    if r.missed == Missed::Skip {
-        fields.push(("Missed runs".to_owned(), "skipped".to_owned()));
+    if here {
+        fields.push(("Works in".to_owned(), "This chat's project".to_owned()));
+    } else if let Some(p) = &r.project {
+        fields.push(("Works in".to_owned(), format!("The project {p}")));
+    }
+    if let Some(m) = &r.model {
+        fields.push(("Model".to_owned(), m.clone()));
     }
     if !r.enabled {
-        fields.push(("State".to_owned(), "off".to_owned()));
+        fields.push(("State".to_owned(), "Off until you turn it on".to_owned()));
     }
     fields
-}
-
-/// The whole instructions, when the card's line can't hold them.
-fn long_instructions(r: &Routine) -> Option<String> {
-    (byob_tools::preview::clip_line(&r.instructions) != r.instructions).then(|| r.instructions.clone())
 }
 
 const WARNING: &str = "A routine runs later by itself, without asking you first. Check when it runs and what it may do.";
@@ -226,7 +262,13 @@ impl Tool for CreateRoutine {
 
     fn preview(&self, args: &Value, _workspace: &Path) -> Option<Preview> {
         let r = apply(Routine::default(), args).ok()?;
-        Some(Preview::Args { code: long_instructions(&r), fields: card(&r), more: 0 })
+        Some(Preview::Args { code: None, fields: card(&r, in_this_project(args)), more: 0 })
+    }
+
+    fn card(&self, args: &Value) -> Option<byob_tools::Card> {
+        let r = apply(Routine::default(), args).ok()?;
+        let words = byob_protocol::CardWords { access: "Sets up a routine".into(), allow: Some("Create routine".into()), deny: Some("Not now".into()) };
+        Some(byob_tools::Card { fields: card(&r, in_this_project(args)), words })
     }
 
     fn access(&self, _args: &Value) -> Access {
@@ -242,9 +284,40 @@ impl Tool for CreateRoutine {
             Ok(r) => r,
             Err(e) => return ToolOutput::err(e),
         };
-        let here = args.get("in_this_project").and_then(Value::as_bool).unwrap_or(false);
+        let here = in_this_project(args);
         output(request(&self.inbox, ctx.chat(), Op::Create { routine: Box::new(r), here }, ctx.cancel_flag()))
     }
+}
+
+/// An update's card: only what changes (the card can't see the rest without the engine).
+fn update_fields(args: &Value) -> Option<Vec<(String, String)>> {
+    let base = Routine { name: text(args, "id").unwrap_or("?").to_owned(), when: vec![Trigger::Unknown], ..Routine::default() };
+    let after = apply(base, args).ok()?;
+    let has = |k: &str| args.get(k).is_some();
+    let mut fields: Vec<(String, String)> = card(&after, false)
+        .into_iter()
+        .filter(|(k, _)| match k.as_str() {
+            "Routine" => true,
+            "When" => has("schedule"),
+            "Does" => has("instructions"),
+            "It can" | "It can't" => has("allowed"),
+            "Tells you" => has("tell"),
+            "If byob is closed" => has("missed"),
+            "Model" => has("model"),
+            _ => false,
+        })
+        .collect();
+    if let Some(n) = text(args, "name") {
+        fields.push(("New name".into(), n.to_owned()));
+    }
+    if let Some(on) = args.get("enabled").and_then(Value::as_bool) {
+        fields.push(("Schedule".into(), if on { "On" } else { "Off" }.into()));
+    }
+    Some(fields)
+}
+
+fn in_this_project(args: &Value) -> bool {
+    args.get("in_this_project").and_then(Value::as_bool).unwrap_or(false)
 }
 
 fn id_arg(args: &Value) -> Result<String, String> {
@@ -275,28 +348,12 @@ impl Tool for UpdateRoutine {
     }
 
     fn preview(&self, args: &Value, _workspace: &Path) -> Option<Preview> {
-        // Only what changes: the card can't see the rest without the engine.
-        let base = Routine { name: text(args, "id").unwrap_or("?").to_owned(), when: vec![Trigger::Unknown], ..Routine::default() };
-        let after = apply(base.clone(), args).ok()?;
-        let fields: Vec<(String, String)> = card(&after)
-            .into_iter()
-            .filter(|(k, _)| match k.as_str() {
-                "Routine" => true,
-                "When" => args.get("schedule").is_some(),
-                "Does" => args.get("instructions").is_some(),
-                "Can" => args.get("allowed").is_some(),
-                "Tells you" => args.get("tell").is_some(),
-                _ => true,
-            })
-            .collect();
-        let mut fields = fields;
-        if let Some(n) = text(args, "name") {
-            fields.push(("New name".into(), n.to_owned()));
-        }
-        if let Some(on) = args.get("enabled").and_then(Value::as_bool) {
-            fields.push(("Schedule".into(), if on { "on" } else { "off" }.into()));
-        }
-        Some(Preview::Args { fields, code: None, more: 0 })
+        Some(Preview::Args { fields: update_fields(args)?, code: None, more: 0 })
+    }
+
+    fn card(&self, args: &Value) -> Option<byob_tools::Card> {
+        let words = byob_protocol::CardWords { access: "Changes a routine".into(), allow: Some("Save changes".into()), deny: Some("Not now".into()) };
+        Some(byob_tools::Card { fields: update_fields(args)?, words })
     }
 
     fn access(&self, _args: &Value) -> Access {
@@ -434,12 +491,12 @@ impl Tool for ReportTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: crate::routines::REPORT_TOOL.into(),
-            description: "Tell the user what this routine run found: they get a notification with the title, and the body is kept with the run. Only for something worth interrupting them for (new, relevant); with nothing new, don't call it. Call it once, at the end; a later call replaces the earlier one.".into(),
+            description: "Tell the user what this routine run found: they get a notification with the title, and the body is shown with the run. Only for something worth interrupting them for (new, relevant); with nothing new, don't call it. Call it once, at the end; a later call replaces the earlier one. Keep it short: the full details belong in your reply in the run's chat.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "One line, the news itself: \"Schacht Wolf Pup 8S, 20% off at The Woolery ($1,040, until Sunday)\"."},
-                    "body": {"type": "string", "description": "The details: what, where, prices, links, why it matters, what you compared it with."}
+                    "title": {"type": "string", "description": "A notification headline: one short line, at most 80 characters, the news itself (\"Schacht Wolf Pup 8S, 20% off at The Woolery\"). Not a list of everything found."},
+                    "body": {"type": "string", "description": "A few lines of Markdown with the key facts and links (price, where, until when; at most 2,000 characters). Longer details go in your reply, not here."}
                 },
                 "required": ["title"]
             }),
@@ -467,8 +524,13 @@ impl Tool for ReportTool {
         let Some(title) = text(args, "title") else { return ToolOutput::err("a report needs a title") };
         let Some(chat) = ctx.chat() else { return ToolOutput::err("report only works in a routine's run") };
         let report = Report::clean(title, text(args, "body").unwrap_or_default());
+        let note = if report.title == title.split_whitespace().collect::<Vec<_>>().join(" ") {
+            String::new()
+        } else {
+            format!(" The title was too long; it was shortened to {:?}.", report.title)
+        };
         match self.inbox.send(Input::Reported { chat: chat.to_owned(), report }) {
-            Ok(()) => ToolOutput::ok("Reported: the user gets a notification with the title. End the run now with a one-line summary."),
+            Ok(()) => ToolOutput::ok(format!("Reported: the user gets a notification with the title.{note} End the run now with a one-line summary.")),
             Err(_) => ToolOutput::err("byob is shutting down"),
         }
     }

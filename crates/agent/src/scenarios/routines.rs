@@ -109,14 +109,14 @@ impl World {
 /// The loom story: asked in a chat, confirmed on a card that says it in plain words, run by
 /// the scheduler at 8:00 in a chat filed under the routine, and the report reaches the client.
 /// The next day's run finds nothing new and stays quiet, knowing what was reported before.
+/// Instructions longer than a card line.
+const LOOM: &str = "Search the web for deals on a new floor loom (new, not used). Compare with what earlier runs found and only report a lower price or a model we haven't seen before; skip kits without the loom itself, and shops that don't ship here.";
+
 #[test]
 fn the_model_makes_a_routine_the_scheduler_runs_it_and_its_report_arrives() {
     let time = Time::new("2026-11-24 07:00");
     let mut w = time.world();
-    w.model.calls(
-        "create_routine",
-        json!({"name": "Loom deals", "instructions": "Search the web for deals on a new floor loom (new, not used).", "schedule": {"rule": "FREQ=DAILY", "at": "08:00", "zone": "UTC"}}),
-    );
+    w.model.calls("create_routine", json!({"name": "Loom deals", "instructions": LOOM, "schedule": {"rule": "FREQ=DAILY", "at": "08:00", "zone": "UTC"}}));
     w.model.answers(|r| {
         assert!(r.last_result().contains("Created the routine \"Loom deals\""), "{}", r.last_result());
         Answer::text("Done: every day at 8:00.")
@@ -132,10 +132,17 @@ fn the_model_makes_a_routine_the_scheduler_runs_it_and_its_report_arrives() {
     assert_eq!(card.title, "Create the routine Loom deals");
     let Some(Preview::Args { fields, .. }) = &card.preview else { panic!("no card fields: {:?}", card.preview) };
     let field = |k: &str| fields.iter().find(|(f, _)| f == k).map(|(_, v)| v.as_str()).unwrap_or_else(|| panic!("no {k} in {fields:?}"));
+    // Plain words only, in order; the instructions whole; no raw arguments after them.
+    let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(keys, ["Routine", "When", "Does", "It can", "It can't", "Tells you", "If byob is closed"], "{fields:?}");
     assert_eq!(field("When"), "Every day at 8:00 AM (UTC)");
-    assert!(field("Does").starts_with("Search the web for deals"));
-    assert!(field("Can").starts_with("read files and search and read the web"), "{}", field("Can"));
-    assert_eq!(field("Tells you"), "only when a run finds something to report");
+    assert_eq!(field("Does"), LOOM);
+    assert_eq!(field("It can"), "Search and read the web, and read files");
+    assert!(field("It can't").starts_with("Change files"), "{}", field("It can't"));
+    assert_eq!(field("Tells you"), "Only when it finds something new: a notification");
+    assert_eq!(field("If byob is closed"), "It runs once when byob is back");
+    let words = ask.card.as_ref().expect("the tool's own card words");
+    assert_eq!((words.access.as_str(), words.allow.as_deref(), words.deny.as_deref()), ("Sets up a routine", Some("Create routine"), Some("Not now")));
     w.tell(ClientMsg::Approve { step: card.id, answer: ApprovalAnswer::Allow });
     let items = w.routines_where(|items| items.len() == 1);
     let r = items[0].routine.clone();

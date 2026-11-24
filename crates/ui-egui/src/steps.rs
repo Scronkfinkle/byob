@@ -555,19 +555,26 @@ fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step, agent: Option<&str>
             ui.label(RichText::new(card_question(step)).family(bold_family()).size(t.text_size(15.0)).color(t.text_strong));
         });
         ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let color = access_color(t, step.access);
-            egui::Frame::new().fill(mix(t.assistant_bubble, color, 0.14)).corner_radius(t.round(8.0)).inner_margin(egui::Margin::symmetric(6, 1)).show(
-                ui,
-                |ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    icon(ui, t, Icon::Access(step.access), 12.0);
-                    ui.label(RichText::new(access_text(step.access)).small().color(color));
-                },
-            );
-            ui.label(RichText::new(&step.tool).small().monospace().color(t.text_faint));
-        });
+        // The tool's own words: a plain line for what it does, its fields as the whole card.
+        let words = step.ask.as_ref().and_then(|a| a.card.as_ref());
+        if let Some(w) = words.filter(|w| !w.access.is_empty()) {
+            ui.label(RichText::new(&w.access).small().color(t.text_dim));
+        }
+        if words.is_none() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let color = access_color(t, step.access);
+                egui::Frame::new().fill(mix(t.assistant_bubble, color, 0.14)).corner_radius(t.round(8.0)).inner_margin(egui::Margin::symmetric(6, 1)).show(
+                    ui,
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        icon(ui, t, Icon::Access(step.access), 12.0);
+                        ui.label(RichText::new(access_text(step.access)).small().color(color));
+                    },
+                );
+                ui.label(RichText::new(&step.tool).small().monospace().color(t.text_faint));
+            });
+        }
         ui.add_space(4.0);
         if let Some(ask) = &step.ask {
             if let Some(w) = &ask.warning {
@@ -587,6 +594,7 @@ fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step, agent: Option<&str>
             }
         }
         match &step.preview {
+            Some(Preview::Args { fields, .. }) if words.is_some() => plain_fields(ui, t, fields),
             Some(p) => preview(ui, t, p),
             None if step.ask.is_some() => {}
             None if !step.detail.is_empty() => {
@@ -599,7 +607,9 @@ fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step, agent: Option<&str>
         ui.add_space(6.0);
         // Wrapped: on a phone Deny ran off the screen.
         ui.horizontal_wrapped(|ui| {
-            let allow = egui::Button::new(RichText::new("Allow").color(t.on_accent).family(bold_family())).fill(t.accent);
+            let allow_label = words.and_then(|w| w.allow.as_deref()).unwrap_or("Allow");
+            let deny_label = words.and_then(|w| w.deny.as_deref()).unwrap_or("Deny");
+            let allow = egui::Button::new(RichText::new(allow_label).color(t.on_accent).family(bold_family())).fill(t.accent);
             if ui.add(allow).clicked() {
                 answer = Some(ApprovalAnswer::Allow);
             }
@@ -612,12 +622,45 @@ fn approval_card(ui: &mut egui::Ui, t: &Tokens, step: &Step, agent: Option<&str>
                     answer = Some(ApprovalAnswer::AlwaysEverywhere);
                 }
             }
-            if ui.button(RichText::new("Deny").color(t.danger)).clicked() {
+            // A tool's own "Not now" isn't alarming; plain Deny is red.
+            let deny =
+                if words.is_some_and(|w| w.deny.is_some()) { RichText::new(deny_label).color(t.text) } else { RichText::new(deny_label).color(t.danger) };
+            if ui.button(deny).clicked() {
                 answer = Some(ApprovalAnswer::Deny);
             }
         });
     });
     answer.map(|answer| ClientMsg::Approve { step: step.id, answer })
+}
+
+/// A card's fields in the tool's own words (`Ask::card`): name and value at reading size,
+/// the value wrapped in full (a routine's whole instructions), in a box that scrolls.
+fn plain_fields(ui: &mut egui::Ui, t: &Tokens, fields: &[(String, String)]) {
+    let id = ui.next_auto_id();
+    egui::ScrollArea::vertical().id_salt(id).max_height(ARGS_MAX_HEIGHT * 1.5).auto_shrink([false, true]).show(ui, |ui| {
+        let w = ui.available_width();
+        // Names in a column beside their values; under them where that leaves too little room.
+        let key_w = if w < 420.0 { 0.0 } else { 130.0 };
+        for (k, v) in fields {
+            if key_w == 0.0 {
+                ui.label(RichText::new(k).small().color(t.text_dim));
+                ui.add(egui::Label::new(RichText::new(v).color(t.text)).selectable(true).wrap());
+                ui.add_space(4.0);
+                continue;
+            }
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(egui::vec2(key_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_width(key_w);
+                    ui.label(RichText::new(k).color(t.text_dim));
+                });
+                ui.allocate_ui_with_layout(egui::vec2(w - key_w - 8.0, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_width(w - key_w - 8.0);
+                    ui.add(egui::Label::new(RichText::new(v).color(t.text)).selectable(true).wrap());
+                });
+            });
+            ui.add_space(3.0);
+        }
+    });
 }
 
 /// A question the model asks (`ask_user`): its options as buttons, a field for the user's
@@ -990,6 +1033,7 @@ mod tests {
             warning: None,
             always: true,
             choice: Some(byob_protocol::Choice { options: vec!["Metric".into(), "Imperial".into()], free_text: true, answer: None }),
+            card: None,
         }));
         let e = entry(vec![q]);
         let mut cache = markdown::Cache::default();

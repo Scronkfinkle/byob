@@ -24,6 +24,15 @@ pub use chart::MakeChart;
 pub use fs::{DEFAULT_TRASH_DIR, DeleteFile, EditFile, ListFiles, LookAtImage, MoveFile, MoveFiles, ReadFile, SearchFiles, WriteFile};
 pub use plan::{AskUser, UpdatePlan};
 pub use preview::Preview;
+
+/// A must-confirm call's card in the tool's own plain words: these fields are the whole
+/// preview (the raw arguments don't follow), and `words` replace the access chip and the
+/// buttons' labels ([`Tool::card`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Card {
+    pub fields: Vec<(String, String)>,
+    pub words: byob_protocol::CardWords,
+}
 pub use undo::{Journal, UndoOp};
 
 use std::collections::BTreeMap;
@@ -407,6 +416,12 @@ pub trait Tool: Send + Sync {
     /// "always allow" grant or `--auto-approve` lets it run (e.g. installing system-wide).
     /// The warning is shown on the approval card.
     fn always_ask(&self, _args: &Value) -> Option<String> {
+        None
+    }
+
+    /// The card a person confirms this call on, in plain words ([`Card`]); `None`: the
+    /// preview, then the arguments in full. Only used for calls that must be confirmed.
+    fn card(&self, _args: &Value) -> Option<Card> {
         None
     }
 
