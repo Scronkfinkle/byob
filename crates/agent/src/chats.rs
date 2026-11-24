@@ -39,6 +39,7 @@ pub fn summary(chat: &Chat, busy: bool, workspace: Option<String>) -> ChatSummar
         busy,
         workspace,
         archived_at: chat.archived_at,
+        origin: chat.origin.clone(),
     }
 }
 

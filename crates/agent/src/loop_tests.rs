@@ -213,6 +213,7 @@ fn harness_defaults(
         plugins: None,
         channels: Default::default(),
         artifact_types: Default::default(),
+        clock: crate::system_clock(),
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests, runs }
 }
@@ -779,6 +780,7 @@ fn approval_card_then_undo_the_turn() {
         plugins: None,
         channels: Default::default(),
         artifact_types: Default::default(),
+        clock: crate::system_clock(),
     };
     let h = Harness { engine: EngineHandle::spawn_with(config).unwrap(), requests: Arc::default(), runs: Arc::default() };
     let (mut c, _) = client(&h);
@@ -896,6 +898,7 @@ fn artifact_engine(script: Vec<Reply>, workspace: &std::path::Path, paths: byob_
         plugins: None,
         channels: Default::default(),
         artifact_types: Default::default(),
+        clock: crate::system_clock(),
     };
     (EngineHandle::spawn_with(config).unwrap(), requests)
 }

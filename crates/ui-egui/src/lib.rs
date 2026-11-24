@@ -620,6 +620,8 @@ impl ByobApp {
                 // No client-side plugin handlers yet.
                 ServerMsg::Plugin { plugin, .. } => self.skip(format!("messages from plugin {plugin:?}")),
                 ServerMsg::Unknown => self.skip("messages of a type this client doesn't know".into()),
+                // No Routines page yet (the app turns routine events into notifications).
+                ServerMsg::Routines { .. } | ServerMsg::RoutineRuns { .. } | ServerMsg::RoutineEvent { .. } => {}
                 // Handled by the plugins' sites above.
                 ServerMsg::LiveView(_) => {}
                 // Handled by the web surfaces (in the artifacts) above.
@@ -2068,7 +2070,16 @@ mod app_tests {
             ServerMsg::State(s),
             ServerMsg::Workspaces { items: vec![ws], current: None, root: String::new(), support: Default::default() },
             ServerMsg::ChatOpened {
-                chat: Some(ChatSummary { id: "c".into(), title, updated_at: 1, pinned_at: None, busy: false, workspace: Some("w".into()), archived_at: None }),
+                chat: Some(ChatSummary {
+                    id: "c".into(),
+                    title,
+                    updated_at: 1,
+                    pinned_at: None,
+                    busy: false,
+                    workspace: Some("w".into()),
+                    archived_at: None,
+                    origin: None,
+                }),
                 workspace: Some("w".into()),
             },
             ServerMsg::Usage(byob_protocol::usage::ChatUsage {
@@ -2465,7 +2476,16 @@ mod app_tests {
         assert!(fake.sent.lock().unwrap().contains(&ClientMsg::OpenChat { id: "other".into() }));
         assert_eq!(app.pending_artifact, Some(("other".into(), "calc".into())));
         // The chat opens first; the artifact waits for that chat's list, then shows.
-        let other = ChatSummary { id: "other".into(), title: "Other".into(), updated_at: 2, pinned_at: None, busy: false, workspace: None, archived_at: None };
+        let other = ChatSummary {
+            id: "other".into(),
+            title: "Other".into(),
+            updated_at: 2,
+            pinned_at: None,
+            busy: false,
+            workspace: None,
+            archived_at: None,
+            origin: None,
+        };
         fake.inbox.lock().unwrap().push(ServerMsg::ChatOpened { chat: Some(other), workspace: None });
         frame(&ctx, &mut app, 1000.0);
         assert!(app.pending_artifact.is_some(), "its list hasn't come yet");
@@ -2705,7 +2725,16 @@ mod app_tests {
     }
 
     fn chat_in(id: &str, ws: &str) -> ChatSummary {
-        ChatSummary { id: id.into(), title: id.to_uppercase(), updated_at: 1, pinned_at: None, busy: false, workspace: Some(ws.into()), archived_at: None }
+        ChatSummary {
+            id: id.into(),
+            title: id.to_uppercase(),
+            updated_at: 1,
+            pinned_at: None,
+            busy: false,
+            workspace: Some(ws.into()),
+            archived_at: None,
+            origin: None,
+        }
     }
 
     /// Workspaces w1 and w2, chat "a" (in w1) in view.

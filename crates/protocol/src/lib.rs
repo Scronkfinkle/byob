@@ -15,6 +15,7 @@ pub mod media;
 pub mod plugins;
 pub mod profiles;
 pub mod queue;
+pub mod routines;
 pub mod sites;
 pub mod tree;
 pub mod usage;
@@ -36,6 +37,7 @@ pub use plugins::{
 };
 pub use profiles::{CAP_PROFILES, Profile, ProfileList, ProfileTest, ProfileView};
 pub use queue::{ChatQueue, QueuePause, QueuedMessage};
+pub use routines::{CAP_ROUTINES, RoutineEventKind, RoutineView};
 pub use sites::{LiveView, Site, ViewDecl, ViewRef};
 pub use usage::{ChatUsage, Compaction};
 pub use version::{PROTOCOL_MAJOR, PROTOCOL_MINOR, Welcome};
@@ -464,6 +466,28 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Save a routine (13.19+, cap [`routines::CAP_ROUTINES`]): an empty `id` makes a new
+    /// one. Every client gets the new [`ServerMsg::Routines`]; a refusal is an error notice.
+    SaveRoutine {
+        routine: routines::Routine,
+    },
+    /// Delete a routine (its run chats stay).
+    DeleteRoutine {
+        id: String,
+    },
+    /// Run a routine now.
+    RunRoutine {
+        id: String,
+    },
+    /// Turn a routine's triggers on or off (Run now works either way).
+    SetRoutineEnabled {
+        id: String,
+        enabled: bool,
+    },
+    /// A routine's runs; answered with [`ServerMsg::RoutineRuns`].
+    ListRoutineRuns {
+        id: String,
+    },
     /// A message from a newer client this engine doesn't know (answered with a notice).
     #[serde(other)]
     Unknown,
@@ -589,6 +613,26 @@ pub enum ServerMsg {
     /// Take a screenshot of this window for the model (13.15+, cap [`look::CAP_CAPTURE`]; to
     /// a window showing the chat where it asked). Answered with [`ClientMsg::Captured`].
     Capture { request: u64 },
+    /// Every routine (13.19+, only to clients that list [`routines::CAP_ROUTINES`]); after
+    /// the Welcome and whenever one or its state changes.
+    Routines { items: Vec<RoutineView> },
+    /// Answer to [`ClientMsg::ListRoutineRuns`]: its runs, newest first.
+    RoutineRuns { routine: String, runs: Vec<routines::RunRecord> },
+    /// A routine run reported, waits for a person, or failed (to every client with the cap;
+    /// the desktop shows a notification).
+    RoutineEvent {
+        routine: String,
+        /// The routine's name.
+        #[serde(default)]
+        name: String,
+        /// The run's chat.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chat: Option<String>,
+        kind: RoutineEventKind,
+        title: String,
+        #[serde(default)]
+        body: String,
+    },
     /// A message from a newer engine this client doesn't know: skip it.
     #[serde(other)]
     Unknown,
@@ -612,6 +656,9 @@ pub struct ChatSummary {
     /// When it was archived (ms since the epoch), if it is: listed apart (17+).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<i64>,
+    /// The routine whose run it is (19+): filed under the routine, kept out of Recent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 impl ChatSummary {
@@ -974,6 +1021,9 @@ pub struct EngineState {
     /// own); `None`: it uses the global one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_endpoint: Option<ChatEndpoint>,
+    /// Some routine is on and scheduled (19+): closing the window should keep byob running.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub routines_active: bool,
 }
 
 /// How turns pass tools to the model.
@@ -1301,8 +1351,16 @@ mod tests {
 
     #[test]
     fn chat_messages_round_trip() {
-        let summary =
-            ChatSummary { id: "c1".into(), title: "Plans".into(), updated_at: 5, pinned_at: None, busy: true, workspace: Some("w1".into()), archived_at: None };
+        let summary = ChatSummary {
+            id: "c1".into(),
+            title: "Plans".into(),
+            updated_at: 5,
+            pinned_at: None,
+            busy: true,
+            workspace: Some("w1".into()),
+            archived_at: None,
+            origin: None,
+        };
         for m in [
             ServerMsg::Chats { pinned: vec![], recent: vec![summary.clone()], after: None, next: Some(summary.cursor()) },
             ServerMsg::ChatUpdated(summary.clone()),

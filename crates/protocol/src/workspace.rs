@@ -186,6 +186,9 @@ impl ClientMsg {
                     Ok(())
                 }
             }
+            Self::SaveRoutine { .. } | Self::DeleteRoutine { .. } | Self::RunRoutine { .. } | Self::SetRoutineEnabled { .. } | Self::ListRoutineRuns { .. } => {
+                crate::routines::check_sizes(self)
+            }
             _ => crate::queue::check_sizes(self),
         }
     }

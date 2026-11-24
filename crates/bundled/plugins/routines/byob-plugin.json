@@ -1,0 +1,25 @@
+{
+  "id": "routines",
+  "name": "Routines",
+  "version": "1.0.0",
+  "description": "Routines: instructions byob carries out by itself on a schedule (\"every morning, look for a deal on a new loom\"), each run a chat of its own. A run that finds something calls report and you get a notification; one that finds nothing stays quiet. The tools: create_routine, update_routine and delete_routine (you confirm each on a card that says when it runs and what it may do), list_routines and run_routine.",
+  "icon": "alarm-clock",
+  "prompt": "When the user asks for something to happen regularly or later on its own (\"every morning\", \"each Friday\", \"keep an eye on\", \"let me know when\"), make it a routine with create_routine rather than promising to remember. Write the instructions as a request a later run can follow without this chat: what to look for, where, and what counts as new or worth telling them. Pick a time for vague words (\"every morning\" is 08:00) and say it; the card shows it in words. Keep allowed at read_only unless the user asked for more. After creating one, offer to run it once now with run_routine.",
+  "tools": [
+    {
+      "native": "create_routine"
+    },
+    {
+      "native": "update_routine"
+    },
+    {
+      "native": "delete_routine"
+    },
+    {
+      "native": "list_routines"
+    },
+    {
+      "native": "run_routine"
+    }
+  ]
+}

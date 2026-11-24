@@ -3184,7 +3184,7 @@ mod tests {
     use byob_protocol::workspace::EnvKind;
 
     fn chat(id: &str, updated_at: i64, pinned_at: Option<i64>) -> ChatSummary {
-        ChatSummary { id: id.into(), title: id.to_uppercase(), updated_at, pinned_at, busy: false, workspace: None, archived_at: None }
+        ChatSummary { id: id.into(), title: id.to_uppercase(), updated_at, pinned_at, busy: false, workspace: None, archived_at: None, origin: None }
     }
 
     fn in_ws(id: &str, updated_at: i64, ws: &str) -> ChatSummary {

@@ -1207,10 +1207,24 @@ impl Turn {
 
     /// The gate for a card only a person may answer: its arguments are shown in full (the
     /// ordinary preview is cut), and a call with more than a person can be shown is refused
-    /// rather than approved unread. Tools with their own preview (a diff) keep it.
+    /// rather than approved unread. Tools with their own preview (a diff) keep it; a tool's
+    /// own account in words (an args preview that isn't the default one, like a routine's
+    /// "When: Every day at 8:00 AM") comes first, above the arguments in full.
     fn confirm_gate(&self, step: &mut Step, args: &Value) -> Verdict {
         if matches!(step.preview, None | Some(byob_protocol::Preview::Args { .. })) {
+            let default = Some(crate::steps::bound_preview(byob_tools::preview::args(args)));
+            let words = match step.preview.take() {
+                Some(byob_protocol::Preview::Args { fields, .. })
+                    if Some(byob_protocol::Preview::Args { fields: fields.clone(), code: None, more: 0 }) != default =>
+                {
+                    fields
+                }
+                _ => Vec::new(),
+            };
             match byob_tools::preview::full_args(args) {
+                Ok(byob_protocol::Preview::Args { fields, code, more }) if !words.is_empty() => {
+                    step.preview = Some(byob_protocol::Preview::Args { fields: words.into_iter().chain(fields).collect(), code, more });
+                }
                 Ok(p) => step.preview = Some(p),
                 Err(bytes) => {
                     return Verdict::Deny(format!(

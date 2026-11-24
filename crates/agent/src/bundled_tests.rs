@@ -34,11 +34,11 @@ fn natives() -> Natives {
 }
 
 /// The bundled plugins byob had before spreadsheets (P5): with them the prompt and tools must
-/// be what they were. `sheets`, `web`, `memory`, `plan`, `ask-user`, `help`, `appearance` and `math` add their own (tested in
+/// be what they were. `sheets`, `web`, `memory`, `plan`, `ask-user`, `help`, `appearance`, `math` and `routines` add their own (tested in
 /// `bundled_plugins_load_with_no_files_on_disk`, `native_backend_tests` and below).
 fn config(home: &Path, bundled: bool) -> PluginsConfig {
     let mut c = config_all(home, bundled);
-    c.bundled.retain(|e| !matches!(e.id.as_str(), "sheets" | "web" | "memory" | "plan" | "ask-user" | "help" | "appearance" | "math" | "bench"));
+    c.bundled.retain(|e| !matches!(e.id.as_str(), "sheets" | "web" | "memory" | "plan" | "ask-user" | "help" | "appearance" | "math" | "bench" | "routines"));
     c
 }
 
@@ -69,6 +69,11 @@ fn compose(ext: &mut Ext, ws: &Path, switches: &[(&str, bool)]) -> Composed {
     base.register(std::sync::Arc::new(crate::look::UiLook { inbox: std::sync::mpsc::channel().0 }));
     base.register(std::sync::Arc::new(crate::fluid::UiFluid { inbox: std::sync::mpsc::channel().0 }));
     base.register(std::sync::Arc::new(crate::capture::UiScreenshot { inbox: std::sync::mpsc::channel().0 }));
+    base.register(std::sync::Arc::new(crate::routine_tools::CreateRoutine { inbox: std::sync::mpsc::channel().0 }));
+    base.register(std::sync::Arc::new(crate::routine_tools::UpdateRoutine { inbox: std::sync::mpsc::channel().0 }));
+    base.register(std::sync::Arc::new(crate::routine_tools::DeleteRoutine { inbox: std::sync::mpsc::channel().0 }));
+    base.register(std::sync::Arc::new(crate::routine_tools::ListRoutines { inbox: std::sync::mpsc::channel().0 }));
+    base.register(std::sync::Arc::new(crate::routine_tools::RunRoutine { inbox: std::sync::mpsc::channel().0 }));
     let trust = BTreeMap::new();
     let values = BTreeMap::new();
     let eff = effective(switches);
@@ -104,6 +109,7 @@ fn bundled_plugins_load_with_no_files_on_disk() {
             "memory",
             "plan",
             "prompt",
+            "routines",
             "sheets",
             "subagents",
             "web",
@@ -134,12 +140,20 @@ fn bundled_plugins_load_with_no_files_on_disk() {
     assert_eq!(charts.tools, ["make_chart"]);
     // Every tool of the base is offered (run_command & co. are optional: not in this base).
     let mut have: Vec<String> = c.tools.specs().into_iter().map(|s| s.name).collect();
-    have.retain(|n| !matches!(n.as_str(), "use_skill" | "remember" | "forget" | "byob_help" | "ui_layout" | "ui_look" | "ui_fluid" | "ui_screenshot"));
+    have.retain(|n| {
+        !matches!(n.as_str(), "use_skill" | "remember" | "forget" | "byob_help" | "ui_layout" | "ui_look" | "ui_fluid" | "ui_screenshot")
+            && !n.ends_with("_routine")
+            && n != "list_routines"
+    });
     let memory = c.infos.iter().find(|p| p.id == "memory").unwrap();
     assert_eq!(memory.views.len(), 1, "its pane");
     assert_eq!(c.infos.iter().find(|p| p.id == "plan").unwrap().tools, ["update_plan"]);
     assert_eq!(c.infos.iter().find(|p| p.id == "ask-user").unwrap().tools, ["ask_user"]);
     assert_eq!(c.infos.iter().find(|p| p.id == "appearance").unwrap().tools, ["ui_layout", "ui_look", "ui_fluid", "ui_screenshot"]);
+    assert_eq!(
+        c.infos.iter().find(|p| p.id == "routines").unwrap().tools,
+        ["create_routine", "update_routine", "delete_routine", "list_routines", "run_routine"]
+    );
     let base: Vec<String> = byob_tools::builtin().specs().into_iter().map(|s| s.name).collect();
     assert_eq!(have, base);
 }

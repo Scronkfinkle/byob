@@ -66,6 +66,7 @@ mod tests {
                 "memory",
                 "plan",
                 "prompt",
+                "routines",
                 "sheets",
                 "subagents",
                 "web",

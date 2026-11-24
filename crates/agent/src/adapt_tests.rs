@@ -201,6 +201,7 @@ fn harness(server: Server, adapt: AdaptOptions, big: usize) -> Harness {
         plugins: None,
         channels: Default::default(),
         artifact_types: Default::default(),
+        clock: crate::system_clock(),
     };
     Harness { engine: EngineHandle::spawn_with(config).unwrap(), seen, runs }
 }

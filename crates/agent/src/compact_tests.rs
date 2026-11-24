@@ -150,6 +150,7 @@ fn engine(url: String, compaction: CompactOptions, tools: bool, paths: Option<Pa
         plugins: None,
         channels: Default::default(),
         artifact_types: Default::default(),
+        clock: crate::system_clock(),
     };
     EngineHandle::spawn_with(config).unwrap()
 }

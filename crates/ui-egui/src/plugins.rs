@@ -995,6 +995,7 @@ pub fn plain_line(p: &PluginInfo) -> &str {
         "math" => "Write math the way it looks in a book",
         "memory" => "Remember what you tell it, across chats",
         "ask-user" => "Ask you a question when it needs to",
+        "routines" => "Do things on a schedule and tell you what it finds",
         "help" => "Answer questions about byob itself",
         "plan" => "Keep a short plan for longer tasks",
         "subagents" => "Hand a task to a helper with fresh context",

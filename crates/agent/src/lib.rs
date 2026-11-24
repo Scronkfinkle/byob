@@ -70,6 +70,8 @@ mod queue;
 #[cfg(test)]
 mod queue_tests;
 mod rewind;
+mod routine_tools;
+pub mod routines;
 #[cfg(test)]
 mod scenarios;
 mod slot_leases;
@@ -115,6 +117,7 @@ pub use delegate::SubagentOptions;
 pub use extensions::PluginsConfig;
 pub use natives::Natives;
 pub use permissions::{Policy, Rule};
+pub use routines::{Clock, system_clock};
 
 /// How often streamed text is written to the database while a reply runs.
 pub const FLUSH_EVERY: Duration = Duration::from_millis(250);
@@ -189,6 +192,8 @@ pub struct EngineConfig {
     /// Artifact types (content type, file names, prompt guidance, checks, serving). Shared:
     /// hand the same registry to the artifact tools (`byob_tools::register_builtins_with`).
     pub artifact_types: byob_tools::ArtifactTypes,
+    /// What time it is (routines' schedules and approval timeouts); tests move it.
+    pub clock: Clock,
 }
 
 impl EngineConfig {
@@ -223,6 +228,7 @@ impl EngineConfig {
             plugins: None,
             channels: PluginChannels::default(),
             artifact_types: byob_tools::ArtifactTypes::builtin(),
+            clock: system_clock(),
         }
     }
 }
@@ -311,6 +317,17 @@ enum Input {
         /// The backend's start count when it answered.
         starts: u32,
         result: Result<serde_json::Value, String>,
+    },
+    /// A routine tool asks the engine (from the turn in `chat`).
+    Routine {
+        chat: Option<String>,
+        op: routines::Op,
+        reply: Sender<Result<String, String>>,
+    },
+    /// The routine run in `chat` called `report`.
+    Reported {
+        chat: String,
+        report: byob_types::routine::Report,
     },
     /// The backend of the plugin in `dir` said something, started or exited.
     Backend {
@@ -479,6 +496,8 @@ struct Pending {
     reply: Sender<turn::Verdict>,
     /// The card is a subagent's: the `delegate` step it belongs to.
     child: Option<u64>,
+    /// When it was asked ([`Engine::now_ms`]): unattended runs give up after a while.
+    asked_at: i64,
 }
 
 /// A subagent run of a running turn (keyed by its `delegate` step id).
@@ -532,6 +551,19 @@ struct Running {
     owners: BTreeMap<String, extensions::Owner>,
     /// Tools made for this turn (`delegate`), kept when plugins change its tools.
     turn_tools: Vec<Arc<dyn byob_tools::Tool>>,
+    /// The routine whose unattended run this turn is.
+    routine: Option<String>,
+}
+
+/// What makes a turn a routine's run (see [`routines`]).
+pub(crate) struct RunSetup {
+    pub(crate) routine: String,
+    /// Said to the model before the message (the transcript shows only the message).
+    pub(crate) note: String,
+    /// The routine's rules instead of the chat's.
+    pub(crate) policy: Policy,
+    /// Tools only runs get (`report`).
+    pub(crate) tools: Vec<Arc<dyn byob_tools::Tool>>,
 }
 
 /// What a chat's last turn built its system prompt from (for the usage and compaction
@@ -657,6 +689,8 @@ struct Engine {
     chat_prompts: BTreeMap<String, ChatPrompt>,
     /// byob's native hooks in their default places (chats without plugins).
     default_hooks: hooks::Hooks,
+    /// Routines, their runs and the scheduler ([`routines`]).
+    routines: routines::Routines,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -672,6 +706,7 @@ fn run(mut engine: Engine, rx: Receiver<Input>) {
                 engine.handle(input);
             }
             engine.flush_due();
+            engine.routines_tick();
         }));
         if handled.is_err() {
             log::error!("engine panicked while handling a message; continuing");
@@ -715,9 +750,16 @@ impl Engine {
             tools.register(Arc::new(look::UiLook { inbox: inbox.clone() }));
             tools.register(Arc::new(fluid::UiFluid { inbox: inbox.clone() }));
             tools.register(Arc::new(capture::UiScreenshot { inbox: inbox.clone() }));
+            // Offered while the bundled `routines` plugin (which names them) is on.
+            tools.register(Arc::new(routine_tools::CreateRoutine { inbox: inbox.clone() }));
+            tools.register(Arc::new(routine_tools::UpdateRoutine { inbox: inbox.clone() }));
+            tools.register(Arc::new(routine_tools::DeleteRoutine { inbox: inbox.clone() }));
+            tools.register(Arc::new(routine_tools::ListRoutines { inbox: inbox.clone() }));
+            tools.register(Arc::new(routine_tools::RunRoutine { inbox: inbox.clone() }));
         }
         let plugin_values = Self::load_plugin_values(config.paths.as_ref());
         let layout = Self::load_layout(config.paths.as_ref());
+        let routines = routines::Routines::open(config.paths.as_ref(), config.clock);
         let sink_inbox = inbox.clone();
         let sink: backends::SinkFor = Arc::new(move |dir, plugin, generation| {
             let (inbox, dir, plugin) = (sink_inbox.clone(), dir.to_path_buf(), plugin.to_owned());
@@ -793,6 +835,7 @@ impl Engine {
             leases: Arc::default(),
             profile_slots: std::sync::Mutex::default(),
             envs: config.envs,
+            routines,
         };
         engine.rebuild_models();
         engine.check_link();
@@ -845,7 +888,8 @@ impl Engine {
                     return None;
                 }
             };
-            if let Some(c) = page.chats.iter().find(|c| c.archived_at.is_none()) {
+            // Nor routines' runs (filed under their routine).
+            if let Some(c) = page.chats.iter().find(|c| c.archived_at.is_none() && c.origin.is_none()) {
                 return Some(c.id.clone());
             }
             match page.next {
@@ -1286,6 +1330,7 @@ impl Engine {
             detecting: self.detecting,
             yolo,
             chat_endpoint,
+            routines_active: self.routines.any_scheduled(),
         }
     }
 
@@ -1339,6 +1384,10 @@ impl Engine {
             Input::Connected { key, result } => self.server_connected(&key, result),
             Input::Backend { dir, plugin, generation, out } => self.backend_out(&dir, &plugin, generation, out),
             Input::ViewReply { dir, view, key, starts, result } => self.view_reply(&dir, &view, &key, starts, result),
+            Input::Routine { chat, op, reply } => {
+                let _ = reply.send(self.routine_op(chat.as_deref(), op));
+            }
+            Input::Reported { chat, report } => self.routine_reported(&chat, report),
         }
     }
 
@@ -1376,6 +1425,7 @@ impl Engine {
                 self.send_to(id, self.workspaces_msg());
                 self.send_profiles(id);
                 self.send_layout(id);
+                self.send_routines(id);
                 self.send_chats(id, None, FIRST_PAGE);
                 self.show_chat_with(id, chat, false);
             }
@@ -1396,6 +1446,11 @@ impl Engine {
                 }
             }
             ClientMsg::Approve { step, answer } => self.answer(step, answer),
+            msg @ (ClientMsg::SaveRoutine { .. }
+            | ClientMsg::DeleteRoutine { .. }
+            | ClientMsg::RunRoutine { .. }
+            | ClientMsg::SetRoutineEnabled { .. }
+            | ClientMsg::ListRoutineRuns { .. }) => self.routine_client_msg(id, msg),
             ClientMsg::AnswerQuestion { step, text } => self.answer_question(step, &text),
             ClientMsg::Undo { entry } => self.undo(id, entry),
             ClientMsg::ListChats { after, limit } => self.send_chats(id, after, usize::try_from(limit).unwrap_or(FIRST_PAGE)),
@@ -1679,9 +1734,17 @@ impl Engine {
 
     /// A client answered an approval card. The first answer wins; late or unknown ids are ignored.
     fn answer(&mut self, step_id: u64, answer: ApprovalAnswer) {
-        let Some(Pending { entry, mut step, reply, child }) = self.pending.remove(&step_id) else { return };
+        let Some(Pending { entry, mut step, reply, child, .. }) = self.pending.remove(&step_id) else { return };
         let chat = self.turns.get(&entry).map(|t| t.chat.clone());
+        // In a routine's run, "always" is for the routine: its later runs are new chats.
+        if let Some(routine) = self.run_of(entry) {
+            if step.ask.is_none() && matches!(answer, ApprovalAnswer::Always | ApprovalAnswer::AlwaysEverywhere) {
+                self.grant_routine(&routine, &step.tool);
+            }
+            self.routine_answered(entry);
+        }
         let scope = match answer {
+            _ if self.run_of(entry).is_some() => None,
             // Questions and must-confirm calls are never granted for good.
             _ if step.ask.is_some() => None,
             ApprovalAnswer::Always => chat.map(GrantScope::Chat),
@@ -1713,7 +1776,8 @@ impl Engine {
         if text.is_empty() || !self.pending.get(&step_id).is_some_and(|p| p.step.ask.as_ref().is_some_and(|a| a.choice.is_some())) {
             return;
         }
-        let Some(Pending { entry, mut step, reply, child }) = self.pending.remove(&step_id) else { return };
+        let Some(Pending { entry, mut step, reply, child, .. }) = self.pending.remove(&step_id) else { return };
+        self.routine_answered(entry);
         let text = limits::prefix(text, byob_protocol::MAX_ANSWER_CHARS).to_owned();
         if let Some(c) = step.ask.as_mut().and_then(|a| a.choice.as_mut()) {
             c.answer = Some(text.clone());
@@ -1735,7 +1799,7 @@ impl Engine {
     fn deny_pending(&mut self, which: impl Fn(&Pending, Option<&Running>) -> bool, reason: &str) {
         let ids: Vec<u64> = self.pending.iter().filter(|(_, p)| which(p, self.turns.get(&p.entry))).map(|(id, _)| *id).collect();
         for id in ids {
-            let Some(Pending { entry, mut step, reply, child }) = self.pending.remove(&id) else { continue };
+            let Some(Pending { entry, mut step, reply, child, .. }) = self.pending.remove(&id) else { continue };
             let _ = reply.send(turn::Verdict::Deny(reason.to_owned()));
             step.status = StepStatus::Denied;
             reason.clone_into(&mut step.detail);
@@ -1752,7 +1816,7 @@ impl Engine {
         let granted = self.store.is_allowed(&run.chat, &step.tool).unwrap_or_else(|e| {
             log::error!("reading grants: {e}");
             false
-        });
+        }) || run.routine.as_deref().is_some_and(|r| self.routine_grants(r, &step.tool));
         let always = step.ask.as_ref().map(|a| a.always);
         match permissions::decide_ask(&run.policy, granted, step.access, always) {
             permissions::Gate::Allow => {
@@ -1764,7 +1828,10 @@ impl Engine {
             permissions::Gate::Ask => {
                 step.status = StepStatus::Waiting;
                 self.settle_step(entry, child, step.clone());
-                self.pending.insert(step.id, Pending { entry, step, reply, child });
+                let title = step.title.clone();
+                let asked_at = self.now_ms();
+                self.pending.insert(step.id, Pending { entry, step, reply, child, asked_at });
+                self.routine_waiting(entry, &title);
             }
         }
     }
@@ -1913,6 +1980,12 @@ impl Engine {
     /// Add the user's message (and a reply entry) to `chat`, which isn't busy, and start the
     /// turn. Nothing is added if it can't start.
     pub(crate) fn begin_turn_in(&mut self, chat: &str, text: String, attached: Vec<MediaRef>) -> Result<(), String> {
+        self.begin_turn_with(chat, text, attached, None).map(|_| ())
+    }
+
+    /// [`Self::begin_turn_in`], as a routine's unattended run with `run`. Returns the reply's
+    /// entry id.
+    pub(crate) fn begin_turn_with(&mut self, chat: &str, text: String, attached: Vec<MediaRef>, run: Option<RunSetup>) -> Result<u64, String> {
         let chat = chat.to_owned();
         // A turn freezes the user's drafts: the model sees them as they are.
         self.drafts.retain(|(c, _), _| *c != chat);
@@ -1927,6 +2000,10 @@ impl Engine {
         let composed = self.compose_for(Some(&chat), None, true);
         // `/name args`: what the model gets instead (the transcript keeps what was typed).
         let model_text = composed.as_ref().and_then(|c| extensions::expand_slash(&text, c)).unwrap_or_else(|| text.clone());
+        let model_text = match &run {
+            Some(r) => format!("{}\n\n{model_text}", r.note),
+            None => model_text,
+        };
         let plugin_agents = composed.as_ref().map(|c| c.agents.clone()).unwrap_or_default();
         let plugin_guidance = composed.as_ref().map(|c| c.tool_prompts.clone()).unwrap_or_default();
         // `delegate` is offered while a plugin that names it (bundled `subagents`) is on.
@@ -1946,7 +2023,7 @@ impl Engine {
         };
         self.chat_prompts.insert(chat.clone(), chat_prompt.clone());
         let compaction = self.compact_options(eff);
-        let policy = self.policy_for(eff);
+        let policy = run.as_ref().map_or_else(|| self.policy_for(eff), |r| r.policy);
         let trust_ask = composed.as_ref().and_then(|c| self.trust_question(c, &policy));
         let mut env_plan = settings.env.clone();
         if let Some(c) = &composed {
@@ -1965,6 +2042,10 @@ impl Engine {
             let endpoint = bench::Endpoint { slots: info.slots, context: info.context_tokens, server: info.server, model: settings.inference.model.clone() };
             extra.push(Arc::new(bench::BenchTool { llm: llm.clone(), endpoint }));
         }
+        let routine = run.map(|r| {
+            extra.extend(r.tools);
+            r.routine
+        });
         // `/bench`: the call runs without the model.
         let scripted = bench::command(&text).filter(|_| bench_on).map(|args| byob_llm::ToolCall {
             id: "call_bench".into(),
@@ -2013,6 +2094,7 @@ impl Engine {
                 tools: Arc::clone(&tool_set),
                 owners,
                 turn_tools: extra,
+                routine,
             },
         );
         self.chat_changed(&chat);
@@ -2048,7 +2130,7 @@ impl Engine {
         if let Err(e) = turn::spawn(setup) {
             self.handle_turn(turn::TurnEvent::Finished { id: reply, error: Some(format!("could not start turn: {e}")), stats: None });
         }
-        Ok(())
+        Ok(reply)
     }
 
     fn handle_turn(&mut self, event: turn::TurnEvent) {
@@ -2362,6 +2444,10 @@ impl Engine {
             error.as_ref().map(|_| byob_protocol::QueuePause::Failed)
         };
         self.queue_turn_ended(&run.chat, pause);
+        if let Some(routine) = &run.routine {
+            let tokens = stats.map_or(0, |s| s.prompt_tokens.saturating_add(s.completion_tokens));
+            self.routine_turn_finished(&run.chat, routine, error.as_deref(), run.cancel.load(Ordering::Relaxed), tokens);
+        }
         self.gc();
     }
 

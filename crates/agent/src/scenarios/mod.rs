@@ -30,6 +30,7 @@ mod chats;
 mod folders;
 mod images;
 mod recovery;
+mod routines;
 mod sheets;
 mod stopping;
 mod streams;
