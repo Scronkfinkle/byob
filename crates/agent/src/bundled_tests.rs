@@ -107,6 +107,7 @@ fn bundled_plugins_load_with_no_files_on_disk() {
             "markdown",
             "math",
             "memory",
+            "ntfy",
             "plan",
             "prompt",
             "routines",
@@ -126,7 +127,9 @@ fn bundled_plugins_load_with_no_files_on_disk() {
     let telegram = c.infos.iter().find(|p| p.id == "telegram").unwrap();
     assert!(!telegram.enabled && telegram.backend.is_none(), "{telegram:?}");
     assert_eq!(telegram.problems, ["needs settings: Bot token"]);
-    for p in c.infos.iter().filter(|p| p.id != "mail" && p.id != "telegram") {
+    let ntfy = c.infos.iter().find(|p| p.id == "ntfy").unwrap();
+    assert_eq!((ntfy.enabled, ntfy.problems.as_slice()), (false, ["needs settings: Topic".to_owned()].as_slice()));
+    for p in c.infos.iter().filter(|p| !matches!(p.id.as_str(), "mail" | "telegram" | "ntfy")) {
         // the calendar ships off too (it needs an account)
         assert_eq!((p.scope, p.origin, p.enabled), (PluginScope::Bundled, PluginOrigin::Bundled, p.id != "calendar"), "{}", p.id);
         assert!(p.problems.is_empty(), "{}: {:?}", p.id, p.problems);

@@ -39,6 +39,7 @@ byob-memory = { path = "crates/memory", version = "0.3.11" }
 byob-calendar = { path = "crates/calendar", version = "0.3.11" }
 byob-mail = { path = "crates/mail", version = "0.3.11" }
 byob-telegram = { path = "crates/telegram", version = "0.3.11" }
+byob-ntfy = { path = "crates/ntfy", version = "0.3.11" }
 byob-help = { path = "crates/help", version = "0.3.11" }
 byob-when = { path = "crates/when", version = "0.3.11" }
 

@@ -292,8 +292,9 @@ backend sends:
 | `pair_claim` | `channel`, `peer`, `peer_name`?, `code` | someone sent a code (Telegram: `/start CODE` or the code itself). Only a waiting code pairs; that person becomes My phone |
 | `channel_status` | `channel`, `ok`, `text` | how it's doing ("Connected as @my_byob_bot", "Telegram refused the bot token"), shown in Settings → My phone |
 
-A one-way channel (a push service) declares `"two_way": false`: it gets `deliver` without
-buttons, and an approval says to open byob instead.
+A one-way channel (a push service; the bundled `ntfy` plugin) declares `"two_way": false`:
+nothing to pair (choosing it makes it My phone, its peer `me`: its settings say where messages
+go), `deliver` without buttons, and an approval says to open byob instead.
 
 ## The Python helper (`byob_plugin`)
 

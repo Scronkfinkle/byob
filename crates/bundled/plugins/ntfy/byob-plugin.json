@@ -1,0 +1,27 @@
+{
+  "id": "ntfy",
+  "name": "ntfy",
+  "version": "1.0.0",
+  "description": "Push notifications on your phone through ntfy (ntfy.sh or your own server): routines tell you what they found. One way: you answer in byob. Free, no account. Off until you pick a topic.",
+  "icon": "bell",
+  "enabled": false,
+  "permissions": { "network": true },
+  "backend": { "native": "ntfy" },
+  "channels": [
+    { "id": "ntfy", "title": "ntfy push notifications", "two_way": false, "max_len": 4000 }
+  ],
+  "settings": [
+    {
+      "key": "TOPIC",
+      "label": "Topic",
+      "secret": true,
+      "required": true,
+      "help": "Install the ntfy app on your phone (Android or iPhone), tap + and subscribe to a topic: a name only you know, like byob-7f3k2q9x (on ntfy.sh anyone who knows it can read your messages). Type the same name here."
+    },
+    {
+      "key": "SERVER",
+      "label": "Server",
+      "help": "Leave empty for ntfy.sh; or your own ntfy server's https:// address."
+    }
+  ]
+}

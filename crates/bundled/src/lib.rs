@@ -64,6 +64,7 @@ mod tests {
                 "markdown",
                 "math",
                 "memory",
+                "ntfy",
                 "plan",
                 "prompt",
                 "routines",

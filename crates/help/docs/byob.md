@@ -128,7 +128,8 @@ link and a one-time code to send from the phone. Then a routine's Tell me offers
 (anything that must always be confirmed, like sending mail, says to open byob), and a reply to a
 text continues that chat, with the answer texted back. A phone can't start new work yet. byob
 only asks Telegram for the bot's messages (no open port); people who aren't paired get nothing.
-At most 10 texts a day per routine; the rest arrive together, later.
+At most 10 texts a day per routine; the rest arrive together, later. Or, one way and with no
+account, push notifications through the ntfy app (pick a topic name; you answer in byob).
 
 **What's shown** (Settings → Appearance, shared by every window and browser tab): each detail
 of the interface (who wrote a message, the thinking and its length, tool steps, Undo, a reply's

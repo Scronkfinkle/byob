@@ -732,6 +732,7 @@ dependencies = [
  "byob-help",
  "byob-mail",
  "byob-memory",
+ "byob-ntfy",
  "byob-plugins",
  "byob-protocol",
  "byob-sandbox",
@@ -893,6 +894,16 @@ dependencies = [
  "byob-protocol",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "byob-ntfy"
+version = "0.3.11"
+dependencies = [
+ "byob-plugins",
+ "serde_json",
+ "ureq",
+ "url",
 ]
 
 [[package]]

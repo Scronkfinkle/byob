@@ -439,3 +439,47 @@ fn telegram_end_to_end_against_a_fake_bot_api() {
     let all = api.state.lock().unwrap().calls.iter().map(|(m, b)| format!("{m} {b}")).collect::<Vec<_>>().join("\n");
     assert!(!all.contains(fake::TOKEN), "the token goes only in the URL");
 }
+
+/// A one-way channel (a push service: ntfy): nothing to pair, so choosing it makes it My
+/// phone at once; reports arrive without "reply"; an approval says to open byob, no buttons.
+#[test]
+fn a_one_way_channel_gets_texts_and_no_buttons() {
+    let time = Time::new("2026-11-24 07:00");
+    let phone = Phone::default();
+    let (t, p) = (time.clone(), phone.clone());
+    let mut w = World::with(move |c| {
+        c.clock = t.clock();
+        if let Some(plugins) = c.plugins.as_mut() {
+            let manifest =
+                json!({"id": "fakepush", "name": "Fake push", "backend": {"native": "fakepush"}, "channels": [{"id": "push", "title": "Fake push"}]});
+            plugins.bundled.push(Embedded { id: "fakepush".into(), files: [("byob-plugin.json".to_owned(), manifest.to_string())].into_iter().collect() });
+            plugins.natives = std::mem::take(&mut plugins.natives).backend("fakepush", p.factory());
+        }
+    });
+    w.phone_where(|s| s.channels.iter().any(|c| c.key == "fakepush:push" && !c.two_way));
+    w.tell(ClientMsg::PairPhone { channel: "fakepush:push".into() });
+    let state = w.phone_where(|s| s.phone.is_some());
+    assert_eq!(state.phone.unwrap().channel, "fakepush:push");
+    assert!(phone.codes.lock().unwrap().is_empty(), "nothing to pair");
+    let mut seen = 0;
+    assert!(phone.next(&mut seen)["text"].as_str().unwrap().starts_with("byob will send you messages here"));
+    let r = w.save(Routine { when: vec![], channels: vec![CHANNEL_PHONE.into()], ..daily("Notes", "08:00") });
+    w.model.calls("report", json!({"title": "A loom", "body": "Cheap."}));
+    w.model.calls("write_file", json!({"path": "found.md", "content": "a loom"}));
+    w.model.says("Saved.");
+    w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
+    let ask = phone.next(&mut seen);
+    assert!(ask["text"].as_str().unwrap().contains("Open byob to answer") && ask.get("buttons").is_none(), "{ask}");
+    // Answered in byob, the run reports.
+    let chat = w.runs(&r.id)[0].chat.clone().unwrap();
+    w.open_chat(&chat);
+    let card = w.seen.entries.iter().flat_map(|e| &e.steps).find(|s| s.tool == "write_file" && s.status == StepStatus::Waiting).map(|s| s.id).unwrap();
+    w.tell(ClientMsg::Approve { step: card, answer: byob_protocol::ApprovalAnswer::Allow });
+    assert_eq!(w.finished(&r.id)[0].status, RunStatus::Reported);
+    let report = phone.next(&mut seen);
+    assert_eq!(report["text"], "A loom\n\nCheap.\n\n— Notes (the details are in byob)");
+    // Inbound on a one-way channel is ignored.
+    phone.text("me", "hello", None);
+    w.settle();
+    assert_eq!(phone.count(), seen);
+}

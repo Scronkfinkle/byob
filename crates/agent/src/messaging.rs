@@ -51,6 +51,8 @@ const FLUSH_MS: i64 = 30_000;
 /// limit) for answers: the rest is in byob.
 const MAX_ANSWER_CHARS: usize = 3000;
 
+/// The peer of a channel with nothing to pair (its settings say where messages go).
+const UNPAIRED_PEER: &str = "me";
 /// What paired phones can do in v1, said to anything that isn't a reply or a button.
 pub(crate) const HELP: &str = "This is byob. From here you can:\n• reply to one of my messages to keep talking about it (your reply goes into that chat)\n• tap a button to answer a question I asked\nStarting something new from your phone isn't possible yet: open byob for that.";
 /// Said when a pairing code didn't work.
@@ -138,8 +140,8 @@ pub(crate) struct ChannelPlugin {
     pub(crate) dir: PathBuf,
     pub(crate) decl: ManifestChannel,
     pub(crate) info: byob_protocol::PluginInfo,
-    /// Its first required setting (what setup asks for), with its help.
-    setting: Option<(String, Option<String>)>,
+    /// Its first required setting (what setup asks for): key, label, help.
+    setting: Option<(String, String, Option<String>)>,
 }
 
 /// The channels' state in the engine.
@@ -283,7 +285,7 @@ impl Engine {
         let mut out = Vec::new();
         for info in c.infos.iter().filter(|i| i.in_use() && matches!(i.scope, PluginScope::Global | PluginScope::Bundled)) {
             let Some(p) = plugins.iter().find(|p| p.dir.display().to_string() == info.dir) else { continue };
-            let setting = p.manifest.settings.iter().find(|s| s.required).map(|s| (s.key.clone(), s.help.clone()));
+            let setting = p.manifest.settings.iter().find(|s| s.required).map(|s| (s.key.clone(), s.label.clone(), s.help.clone()));
             for decl in &p.manifest.channels {
                 out.push(ChannelPlugin {
                     key: ch::key(&info.id, &decl.id),
@@ -364,8 +366,9 @@ impl Engine {
                     configured,
                     ok: backend_error.is_none() && said.is_some_and(|(ok, _)| ok),
                     status,
-                    setting: c.setting.as_ref().map(|(k, _)| k.clone()),
-                    setting_help: c.setting.as_ref().and_then(|(_, h)| h.clone()),
+                    setting: c.setting.as_ref().map(|(k, _, _)| k.clone()),
+                    setting_label: c.setting.as_ref().map(|(_, l, _)| l.clone()),
+                    setting_help: c.setting.as_ref().and_then(|(_, _, h)| h.clone()),
                 }
             })
             .collect();
@@ -435,10 +438,11 @@ impl Engine {
     /// `PairPhone`: a new code, and the channel's link for it.
     fn pair_start(&mut self, client: ClientId, key: &str) -> Result<(), String> {
         let c = self.channel(key).ok_or_else(|| format!("there's no channel {key:?}"))?;
-        if c.decl.pair != ChannelPairing::Code {
-            return Err(format!("{} has nothing to pair", c.decl.title));
-        }
         let backend = self.channel_backend(&c)?;
+        if c.decl.pair == ChannelPairing::None {
+            // Nothing to pair (the plugin's settings say where messages go): it's My phone now.
+            return self.use_unpaired(&c);
+        }
         let now = self.now_ms();
         self.prune_codes(now);
         if self.messaging.codes.iter().filter(|x| x.channel == key).count() >= MAX_PENDING_CODES {
@@ -457,6 +461,20 @@ impl Engine {
             after: After::PairStarted { channel: key.to_owned(), code, expires_at, client },
         };
         self.courier(job);
+        Ok(())
+    }
+
+    /// A channel with nothing to pair becomes My phone at once (its one peer is its settings'
+    /// address; nothing comes back from it, so there's nobody to let in).
+    fn use_unpaired(&mut self, c: &ChannelPlugin) -> Result<(), String> {
+        let now = self.now_ms();
+        self.messaging.file.peers.retain(|p| p.channel != c.key);
+        self.messaging.file.peers.push(Peer { channel: c.key.clone(), peer: UNPAIRED_PEER.into(), name: String::new(), paired_at: now });
+        self.messaging.file.phone = Some(PhoneTarget { channel: c.key.clone(), peer: UNPAIRED_PEER.into() });
+        self.messaging.save();
+        log::info!("channel {}: it's My phone now", c.key);
+        self.deliver_to(&c.key, UNPAIRED_PEER, format!("byob will send you messages here ({}).", c.decl.title), Vec::new(), None, Link::note());
+        self.broadcast_phone();
         Ok(())
     }
 
@@ -811,7 +829,12 @@ impl Engine {
             text.push_str("\n\n");
             text.push_str(body.trim());
         }
-        text.push_str(&format!("\n\n— {name} (reply to this message to talk to byob about it)"));
+        let two_way = self.messaging.file.phone.clone().and_then(|t| self.channel(&t.channel)).is_some_and(|c| c.decl.two_way);
+        if two_way {
+            text.push_str(&format!("\n\n— {name} (reply to this message to talk to byob about it)"));
+        } else {
+            text.push_str(&format!("\n\n— {name} (the details are in byob)"));
+        }
         if let Err(e) = self.deliver_capped(routine, text, title.to_owned(), Link::chat(chat, Some(routine), Sent::Report)) {
             log::info!("routine {routine}: not texted: {e}");
         }

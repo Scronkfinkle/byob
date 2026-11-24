@@ -37,6 +37,7 @@ fn telegram(configured: bool) -> ChannelOption {
         ok: configured,
         status: configured.then(|| "Connected as @my_byob_bot".into()),
         setting: Some("BOT_TOKEN".into()),
+        setting_label: Some("Bot token".into()),
         setting_help: None,
     }
 }

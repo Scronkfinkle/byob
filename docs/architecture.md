@@ -635,6 +635,11 @@ plain-text `sendMessage` with inline keyboards, `answerCallbackQuery`; private c
 backoff on 401/409/429 and network errors with a plain status; the token never in logs.
 `BYOB_TELEGRAM_API` points it at another Bot API (a fake, for headless runs).
 
+`crates/bundled/plugins/ntfy` (shipped off) is the one-way proof: native backend `ntfy`
+(`crates/ntfy`, `byob-ntfy`, L4) publishes plain text to a topic (a secret setting; https, or
+http only to localhost). Nothing to pair (`"pair": "none"`): choosing it makes it My phone, and
+approvals say to open byob.
+
 ### Help (bundled `help` plugin)
 
 `crates/bundled/plugins/help` (on by default; read-only and local) serves `byob_help` from

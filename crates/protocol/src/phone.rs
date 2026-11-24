@@ -46,6 +46,9 @@ pub struct ChannelOption {
     /// The setting the user fills in to set it up (Telegram: `BOT_TOKEN`), if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setting: Option<String>,
+    /// That setting's label ("Bot token").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setting_label: Option<String>,
     /// That setting's help (the setup steps).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setting_help: Option<String>,

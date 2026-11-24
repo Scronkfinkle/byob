@@ -119,14 +119,21 @@ impl Phone {
 
         // Paired: who, status, test, unpair.
         if let Some(p) = &state.phone {
-            let who = if p.name.is_empty() { format!("Paired on {}", p.title) } else { format!("Paired with {} on {}", p.name, p.title) };
+            let who = if !c.two_way {
+                format!("Texts go to {}", p.title)
+            } else if p.name.is_empty() {
+                format!("Paired on {}", p.title)
+            } else {
+                format!("Paired with {} on {}", p.name, p.title)
+            };
             ui.label(RichText::new(format!("✓ {who}")).color(t.text_strong));
             status_line(ui, t, &c);
             ui.horizontal(|ui| {
                 if form::button(ui, t, "Send a test message", true).clicked() {
                     out.push(ClientMsg::TestPhone);
                 }
-                if form::danger_button(ui, t, "Unpair").on_hover_text("Forget this phone: it can't reach byob any more").clicked() {
+                let (unpair, tip) = if c.two_way { ("Unpair", "Forget this phone: it can't reach byob any more") } else { ("Stop", "byob stops sending here") };
+                if form::danger_button(ui, t, unpair).on_hover_text(tip).clicked() {
                     out.push(ClientMsg::UnpairPhone);
                 }
             });
@@ -153,7 +160,7 @@ impl Phone {
                     form::field(&mut self.token, t)
                         .password(true)
                         .desired_width(w)
-                        .hint_text("Paste the token here")
+                        .hint_text(format!("Paste the {} here", c.setting_label.as_deref().unwrap_or("token").to_lowercase()))
                         .char_limit(byob_protocol::plugins::MAX_SETTING_VALUE_CHARS),
                 );
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -161,9 +168,10 @@ impl Phone {
                     out.extend(self.save_token());
                 }
             });
+            let what = c.setting_label.as_deref().unwrap_or("token").to_lowercase();
             ui.add(
                 egui::Label::new(
-                    RichText::new("The token stays on this computer, in byob's secrets file; it's never shown again.").small().color(t.text_faint),
+                    RichText::new(format!("The {what} stays on this computer, in byob's secrets file; it's never shown again.")).small().color(t.text_faint),
                 )
                 .wrap(),
             );
@@ -204,13 +212,19 @@ impl Phone {
                     }
                 });
             }
+            _ if !c.two_way => {
+                if form::button(ui, t, "Use for My phone", true).on_hover_text("byob sends a first message there").clicked() {
+                    out.extend(self.pair());
+                }
+            }
             _ => {
                 if form::button(ui, t, "Pair my phone", true).on_hover_text("Shows a link and a code to send from your phone").clicked() {
                     out.extend(self.pair());
                 }
             }
         }
-        if c.setting.is_some() && ui.link(RichText::new("Change the bot token").small()).clicked() {
+        let change = format!("Change the {}", c.setting_label.as_deref().unwrap_or("setting").to_lowercase());
+        if c.setting.is_some() && ui.link(RichText::new(change).small()).clicked() {
             self.changing = true;
         }
         out
@@ -248,6 +262,7 @@ mod tests {
             ok: configured,
             status: configured.then(|| "Connected as @my_byob_bot".into()),
             setting: Some("BOT_TOKEN".into()),
+            setting_label: Some("Bot token".into()),
             setting_help: None,
         }
     }
