@@ -264,8 +264,9 @@ gallery; accent and shape: accent, corner radius, chart colors; messages: layout
 messages, replies; theme files; reset), **Text & layout** (size: zoom, text, code; fonts;
 layout: density, conversation width, chat list width, artifact pane; accessibility: high
 contrast, reduce motion; reset), **Colors** (every color role, in two columns) and **System**
-(keep running in the background, start at login: the desktop app's own, through the
-`desktop::Desktop` the app plugs in; without one, in a browser, the tab isn't listed).
+(keep running in the background, kept by the engine: `ClientMsg::SetKeepRunning`,
+`EngineState::keep_running`; start at login, through the `desktop::Desktop` the app plugs in;
+without one, in a browser, the tab isn't listed).
 
 **Registry.** `settings/registry.rs` declares every setting once: a `Key`, an id, its
 `Section` (tab, title, blurb), name, one-line description, search keywords and `Kind` (`Row`:
@@ -301,11 +302,12 @@ workspace and chat settings keep `form::grid` and the same `LayerEditor` fields.
 ## Running in the background
 
 `apps/byob/src/background/` (the desktop app only; the UI crate gets a `desktop::Desktop` for
-its two settings and nothing else):
+start at login and nothing else):
 
 - **Closing.** `App::logic` runs every frame and, while the window is hidden, whenever
   something calls `request_repaint` (the engine's messages, the `Bus`). On a close request
-  it decides with `KeepRunning::hides_on_close(routines_on)` (`settings.json` `keep_running`:
+  it decides with `KeepRunning::hides_on_close(routines_on)` (the engine's `keep_running`,
+  saved in settings.json and sent in `EngineState`; until the state arrives, closing quits:
   `when-routines-are-on` (default), `always`, `never`; `routines_on` is a stub returning false
   until routines exist): hide (`CancelClose` + `Visible(false)`) or let the close through.
   Quit byob (tray) or Ctrl/Cmd+Q sets `quitting` and sends `Close`, which goes through.
@@ -331,7 +333,8 @@ its two settings and nothing else):
   action; `ActionInvoked` → `Event::Clicked(action id)`. macOS/Windows: notify-rust (shown;
   clicks don't come back).
 - **Start at login.** `autostart.rs`: an XDG autostart entry, a LaunchAgent, or the HKCU Run
-  key (`reg.exe`), each starting `byob --background`; the entry's presence is the setting.
+  key (`reg.exe`), each starting `byob --background`; the entry's presence is the setting. A Nix install
+  starts the `byob` its profile puts on PATH (the link, not the store path it points at).
 
 ## Themes
 

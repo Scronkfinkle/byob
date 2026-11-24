@@ -252,3 +252,21 @@ fn a_failed_reply_breaks_the_link_and_retry_runs_it_again() {
         }
     }
 }
+
+#[test]
+fn keep_running_goes_through_the_engine_to_every_client_and_survives_a_restart() {
+    use byob_types::desktop::KeepRunning;
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::at(dir.path());
+    let e = engine("http://127.0.0.1:9/v1", false, Some(paths.clone()));
+    let (mut a, mut b) = (connect(&e), connect(&e));
+    assert_eq!(state_where(&mut a, |_| true).keep_running, Some(KeepRunning::WhenRoutines));
+    state_where(&mut b, |_| true);
+    a.send(ClientMsg::SetKeepRunning { value: KeepRunning::Always });
+    state_where(&mut b, |s| s.keep_running == Some(KeepRunning::Always));
+    assert_eq!(Settings::load(&paths.settings()).value.keep_running, KeepRunning::Always);
+    drop((a, b, e));
+    let again = engine("http://127.0.0.1:9/v1", false, Some(paths));
+    let mut c = connect(&again);
+    assert_eq!(state_where(&mut c, |_| true).keep_running, Some(KeepRunning::Always), "read back from settings.json");
+}

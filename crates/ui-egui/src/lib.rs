@@ -319,6 +319,20 @@ impl ByobApp {
         self.desktop.as_deref()
     }
 
+    /// Whether closing the desktop window keeps byob running, as the engine says (`None`:
+    /// not yet known, or an engine without the setting).
+    pub fn keep_running(&self) -> Option<desktop::KeepRunning> {
+        self.state.as_ref().and_then(|s| s.keep_running)
+    }
+
+    /// Change it (the engine saves it and tells every window).
+    pub(crate) fn set_keep_running(&mut self, value: desktop::KeepRunning) {
+        if let Some(state) = &mut self.state {
+            state.keep_running = Some(value);
+        }
+        self.conn.send(ClientMsg::SetKeepRunning { value });
+    }
+
     /// Register renderers for more view kinds.
     pub fn views_mut(&mut self) -> &mut views::ViewRegistry {
         &mut self.views

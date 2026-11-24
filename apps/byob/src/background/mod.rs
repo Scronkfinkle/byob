@@ -14,11 +14,10 @@ pub mod instance;
 pub mod notify;
 pub mod tray;
 
-use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use byob_store::{KeepRunning, Settings};
+use byob_store::KeepRunning;
 use byob_ui_egui::ByobApp;
 
 /// Something for the window to do.
@@ -192,10 +191,11 @@ impl Background {
         if !self.enabled {
             return;
         }
-        let keep = ui.desktop().map_or(KeepRunning::Never, |d| d.keep_running());
-        let hides = hides_on_close(keep, routines_on(ui));
+        // The engine's setting (until its state arrives, closing quits).
+        let keep = ui.keep_running();
+        let hides = keep.is_some_and(|k| hides_on_close(k, routines_on(ui)));
         self.keep_tray(hides);
-        if std::mem::take(&mut self.start_hidden) && hides {
+        if keep.is_some() && std::mem::take(&mut self.start_hidden) && hides {
             self.hide(ctx);
         }
         while let Ok(event) = self.rx.try_recv() {
@@ -335,33 +335,19 @@ impl Background {
     }
 }
 
-/// The desktop's own settings for the settings screen: `keep_running` in settings.json, and
-/// the login entry (its presence is the setting).
+/// What the settings screen asks of this computer: the login entry (its presence is the
+/// setting). Keep running in the background is the engine's (`ClientMsg::SetKeepRunning`).
 pub struct DesktopHost {
-    settings: Option<PathBuf>,
-    keep: KeepRunning,
     login: Option<bool>,
 }
 
 impl DesktopHost {
-    /// As `settings` (settings.json) says now, and the login entry.
-    pub fn load(settings: Option<PathBuf>) -> Self {
-        let keep = settings.as_deref().map(|p| Settings::load(p).value.keep_running).unwrap_or_default();
-        Self { settings, keep, login: autostart::enabled() }
+    pub fn new() -> Self {
+        Self { login: autostart::enabled() }
     }
 }
 
 impl byob_ui_egui::desktop::Desktop for DesktopHost {
-    fn keep_running(&self) -> KeepRunning {
-        self.keep
-    }
-
-    fn set_keep_running(&mut self, value: KeepRunning) -> Result<(), String> {
-        self.keep = value;
-        let path = self.settings.as_ref().ok_or("there's no settings file this run")?;
-        Settings::update(path, |s| s.keep_running = value).map(drop).map_err(|e| e.to_string())
-    }
-
     fn start_at_login(&self) -> Option<bool> {
         self.login
     }
@@ -386,16 +372,20 @@ mod tests {
         assert!(!hides_on_close(KeepRunning::Never, true));
     }
 
+    /// A window whose engine says `keep`.
     fn app(keep: KeepRunning) -> ByobApp {
-        struct Null;
-        impl byob_protocol::Connection for Null {
+        struct Engine(Vec<byob_protocol::ServerMsg>);
+        impl byob_protocol::Connection for Engine {
             fn send(&mut self, _: byob_protocol::ClientMsg) {}
             fn try_recv(&mut self) -> Option<byob_protocol::ServerMsg> {
-                None
+                self.0.pop()
             }
         }
-        let mut ui = ByobApp::new(Box::new(Null), "test");
-        ui.set_desktop(Box::new(DesktopHost { settings: None, keep, login: None }));
+        let state = byob_protocol::EngineState { keep_running: Some(keep), onboarded: true, ..Default::default() };
+        let mut ui = ByobApp::new(Box::new(Engine(vec![byob_protocol::ServerMsg::State(state)])), "test");
+        ui.set_desktop(Box::new(DesktopHost { login: None }));
+        ui.logic(&egui::Context::default());
+        assert_eq!(ui.keep_running(), Some(keep));
         ui
     }
 

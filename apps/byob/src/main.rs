@@ -544,7 +544,6 @@ fn run() -> Result<(), String> {
         Started::Alone(instance) => instance,
         Started::HandedOver => return Ok(()),
     };
-    let settings_file = saved.paths.as_ref().map(Paths::settings);
     let mut config = EngineConfig::new(inference_config(&args, &saved.settings, &saved.secrets));
     // Returning users (an endpoint worked before) and explicit `--inference-url` runs go
     // straight to the chat; everyone else gets the welcome screen until something answers.
@@ -601,7 +600,7 @@ fn run() -> Result<(), String> {
     }
     log::info!("{} tools available; new chats work in {}", config.tools.len(), config.workspace.display());
     let engine = EngineHandle::spawn_with(config).map_err(|e| format!("starting engine: {e}"))?;
-    run_ui(args, engine, saved_theme, themes_dir, Outside { bus, events, settings_file })
+    run_ui(args, engine, saved_theme, themes_dir, Outside { bus, events })
 }
 
 enum Started {
@@ -652,8 +651,6 @@ fn claim_instance(paths: Option<&Paths>, args: &Args, bus: &background::Bus) -> 
 struct Outside {
     bus: background::Bus,
     events: std::sync::mpsc::Receiver<background::Event>,
-    /// settings.json, where `keep_running` is.
-    settings_file: Option<PathBuf>,
 }
 
 /// Where "Open in browser" finds artifacts: the `--serve` server if there is one, else a
@@ -728,7 +725,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
     let in_background = args.script.screenshot.is_none();
     let start_hidden = args.background;
     let mut script = Some(testing::Runner::new(args.script));
-    let Outside { bus, events, settings_file } = outside;
+    let Outside { bus, events } = outside;
     // Outlives each window: where a window can't hide (Wayland), closing it closes it and byob
     // waits for a Show to open another.
     let background = std::rc::Rc::new(std::cell::RefCell::new(background::Background::new(bus, events, in_background, start_hidden)));
@@ -745,7 +742,7 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
                 let ctx = cc.egui_ctx.clone();
                 let conn = engine.connect(Arc::new(move || ctx.request_repaint()));
                 let mut ui = byob_ui_egui::ByobApp::new(Box::new(conn), "desktop");
-                ui.set_desktop(Box::new(background::DesktopHost::load(settings_file.clone())));
+                ui.set_desktop(Box::new(background::DesktopHost::new()));
                 let told = cc.storage.and_then(|s| eframe::get_value(s, background::Told::STORAGE_KEY)).unwrap_or_default();
                 // winit can't hide a window on Wayland.
                 let can_hide = {

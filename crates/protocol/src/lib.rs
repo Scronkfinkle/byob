@@ -446,6 +446,12 @@ pub enum ClientMsg {
         scope: ConfigScope,
         profile: Option<String>,
     },
+    /// Whether closing the desktop window keeps byob running (13.19+, to an engine whose
+    /// [`EngineState::keep_running`] is set): saved in settings.json, every client gets the
+    /// new [`ServerMsg::State`].
+    SetKeepRunning {
+        value: byob_types::desktop::KeepRunning,
+    },
     /// Replace the layout (13.11+, cap [`layout::CAP_LAYOUT`]); every client gets the new
     /// [`ServerMsg::Layout`].
     SetLayout {
@@ -974,6 +980,10 @@ pub struct EngineState {
     /// own); `None`: it uses the global one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_endpoint: Option<ChatEndpoint>,
+    /// Whether closing the desktop window keeps byob running (settings.json `keep_running`;
+    /// 13.19+, `None` from older engines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_running: Option<byob_types::desktop::KeepRunning>,
 }
 
 /// How turns pass tools to the model.
