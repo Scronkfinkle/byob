@@ -219,6 +219,8 @@ pub(crate) struct Routines {
     pub(crate) active: BTreeMap<String, Active>,
     /// The earliest time something is due (ms); `None`: nothing scheduled.
     wake_at: Option<i64>,
+    /// Schedules are paused (settings.json `routines_paused`): due slots pass without a run.
+    pub(crate) paused: bool,
 }
 
 impl Routines {
@@ -242,7 +244,8 @@ impl Routines {
                 }
             }
         }
-        let mut r = Self { list, logs, clock, queue: VecDeque::new(), active: BTreeMap::new(), wake_at: None };
+        let paused = paths.is_some_and(|p| byob_store::Settings::load(&p.settings()).value.routines_paused);
+        let mut r = Self { list, logs, clock, queue: VecDeque::new(), active: BTreeMap::new(), wake_at: None, paused };
         r.refresh_wake();
         r
     }
@@ -431,6 +434,22 @@ impl Engine {
         Ok(format!("Deleted the routine {:?} (its run chats stay).", r.name))
     }
 
+    /// `ClientMsg::PauseRoutines`: saved; every client's state says so. Slots that pass
+    /// while paused are skipped (the tick notes them as handled).
+    pub(crate) fn set_routines_paused(&mut self, client: ClientId, paused: bool) {
+        if self.routines.paused == paused {
+            return;
+        }
+        self.routines.paused = paused;
+        if let Some(paths) = &self.paths
+            && let Err(e) = byob_store::Settings::update(&paths.settings(), |s| s.routines_paused = paused)
+        {
+            self.notice(client, format!("couldn't save Pause routines: {e}"));
+        }
+        log::info!("routines {}", if paused { "paused" } else { "resumed" });
+        self.routines_changed();
+    }
+
     pub(crate) fn set_routine_enabled(&mut self, id: &str, enabled: bool) -> Result<(), String> {
         let Some(mut r) = self.routines.list.get(id).cloned() else { return Err(format!("there's no routine {id:?}")) };
         if r.enabled == enabled {
@@ -479,6 +498,8 @@ impl Engine {
                 continue;
             }
             match due(&r, self.routines.last_slot(&r.id), now) {
+                // Paused: the slot passes, so resuming doesn't make it up.
+                Some(Due::Run(slot)) if self.routines.paused => self.set_last_slot(&r.id, slot),
                 Some(Due::Run(slot)) => self.start_run(&r.id, RunCause::Schedule, Some(slot)),
                 Some(Due::Pass(slot)) => {
                     log::info!("routine {}: missed runs skipped", r.id);

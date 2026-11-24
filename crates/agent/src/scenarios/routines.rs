@@ -376,3 +376,41 @@ fn always_on_a_runs_card_lets_the_routines_later_runs_go_on() {
     assert_eq!(w.model.unused(), 0);
     assert!(!w.home.path().join("routine-runs").join(format!("{}.json", r.id)).exists());
 }
+
+/// Pause routines (the tray): nothing runs on schedule while paused, even across a restart;
+/// resumed, the slots that passed aren't made up, and the next one runs. Run now still works.
+#[test]
+fn paused_routines_skip_their_slots_and_resume_without_making_them_up() {
+    let time = Time::new("2026-11-20 07:00");
+    let mut w = time.world();
+    let r = w.save(daily("Deals", "08:00"));
+    w.tell(ClientMsg::PauseRoutines { paused: true });
+    w.wait(|m| match m {
+        ServerMsg::State(s) => (s.routines_paused == Some(true)).then_some(()),
+        _ => None,
+    });
+    time.set("2026-11-20 09:00");
+    w.settle();
+    assert!(w.runs(&r.id).is_empty(), "paused: the 8:00 slot passes");
+    let settings = Paths::at(w.home.path()).settings();
+    assert!(byob_store::Settings::load(&settings).value.routines_paused, "saved in settings.json");
+    w.restart();
+    time.set("2026-11-21 09:00");
+    w.settle();
+    assert!(w.runs(&r.id).is_empty());
+    w.model.says("Ran by hand.");
+    w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
+    assert_eq!(w.finished(&r.id).len(), 1, "Run now works while paused");
+    w.tell(ClientMsg::PauseRoutines { paused: false });
+    w.wait(|m| match m {
+        ServerMsg::State(s) => (s.routines_paused == Some(false)).then_some(()),
+        _ => None,
+    });
+    w.settle();
+    assert_eq!(w.runs(&r.id).len(), 1, "resuming doesn't make up the paused mornings");
+    w.model.says("Nothing new.");
+    time.set("2026-11-22 08:01");
+    let runs = w.finished(&r.id);
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].slot, Some(ms("2026-11-22 08:00")));
+}

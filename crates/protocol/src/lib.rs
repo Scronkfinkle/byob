@@ -494,6 +494,13 @@ pub enum ClientMsg {
     ListRoutineRuns {
         id: String,
     },
+    /// Pause or resume every routine's schedule (13.21+, to an engine whose
+    /// [`EngineState::routines_paused`] is set): saved in settings.json; slots that pass while
+    /// paused are skipped, not made up. Run now still works. Every client gets the new
+    /// [`ServerMsg::State`].
+    PauseRoutines {
+        paused: bool,
+    },
     /// A message from a newer client this engine doesn't know (answered with a notice).
     #[serde(other)]
     Unknown,
@@ -1034,6 +1041,10 @@ pub struct EngineState {
     /// 13.20+, `None` from older engines).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_running: Option<byob_types::desktop::KeepRunning>,
+    /// Whether routines' schedules are paused (settings.json `routines_paused`; 13.21+,
+    /// `None` from older engines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routines_paused: Option<bool>,
 }
 
 /// How turns pass tools to the model.

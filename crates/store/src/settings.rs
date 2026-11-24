@@ -254,6 +254,9 @@ pub struct Settings {
     /// Whether closing the desktop window keeps byob running in the background.
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "is_default_keep_running")]
     pub keep_running: KeepRunning,
+    /// Routines' schedules are paused (the tray's Pause routines): due runs are skipped.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "std::ops::Not::not")]
+    pub routines_paused: bool,
     /// Fields this build doesn't know; preserved across load/save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

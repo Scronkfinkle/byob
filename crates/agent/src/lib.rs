@@ -1336,6 +1336,7 @@ impl Engine {
             chat_endpoint,
             routines_active: self.routines.any_scheduled(),
             keep_running: Some(self.keep_running),
+            routines_paused: Some(self.routines.paused),
         }
     }
 
@@ -1521,6 +1522,7 @@ impl Engine {
             ClientMsg::SetLevelProfile { scope, profile } => self.set_level_profile(id, scope, profile),
             ClientMsg::SetLayout { layout } => self.client_set_layout(id, layout),
             ClientMsg::SetKeepRunning { value } => self.set_keep_running(id, value),
+            ClientMsg::PauseRoutines { paused } => self.set_routines_paused(id, paused),
             ClientMsg::ReportLook(report) => self.report_look(id, report),
             ClientMsg::Captured { request, image, error } => self.captured(id, request, image, error),
             ClientMsg::SetConfig { scope, layer, api_key } => self.set_config(id, scope, layer, api_key),
