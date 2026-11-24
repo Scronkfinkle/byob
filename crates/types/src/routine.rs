@@ -33,8 +33,10 @@ pub const MAX_KEEP: u32 = 200;
 pub const DEFAULT_KEEP: u32 = 30;
 /// Most run records kept per routine (older runs beyond `keep` keep only their report).
 pub const MAX_RUN_RECORDS: usize = 200;
-/// Longest report title (characters).
-pub const MAX_REPORT_TITLE_CHARS: usize = 200;
+/// Longest report title as kept (characters): a notification's headline.
+pub const MAX_REPORT_TITLE_CHARS: usize = 80;
+/// Longest report body as kept (characters): a few lines; details stay in the run's chat.
+pub const MAX_REPORT_BODY_CHARS: usize = 2000;
 /// Longest report body (bytes).
 pub const MAX_REPORT_BODY_BYTES: usize = 8 * 1024;
 /// Longest text field of a trigger (a rule, a time, a zone, a plugin or trigger id).
@@ -372,18 +374,25 @@ pub struct Report {
 }
 
 impl Report {
-    /// Trimmed and cut to size (a model wrote it).
+    /// Trimmed and cut to size (a model wrote it): the title to one line of at most
+    /// [`MAX_REPORT_TITLE_CHARS`], cut at a word with "…"; the body to
+    /// [`MAX_REPORT_BODY_CHARS`].
     pub fn clean(title: &str, body: &str) -> Self {
-        let title: String = title.trim().chars().take(MAX_REPORT_TITLE_CHARS).collect();
-        let mut body = body.trim().to_owned();
-        if body.len() > MAX_REPORT_BODY_BYTES {
-            let mut cut = MAX_REPORT_BODY_BYTES;
-            while !body.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            body.truncate(cut);
-            body.push('…');
-        }
+        let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+        let title = if title.chars().count() <= MAX_REPORT_TITLE_CHARS {
+            title
+        } else {
+            let cut: String = title.chars().take(MAX_REPORT_TITLE_CHARS - 1).collect();
+            // At the last space, unless that leaves too little.
+            let at = cut.rfind(' ').filter(|i| *i >= MAX_REPORT_TITLE_CHARS / 2).unwrap_or(cut.len());
+            format!("{}…", cut[..at].trim_end_matches([' ', ',', ';', ':', '.', '-']))
+        };
+        let body = body.trim();
+        let body = if body.chars().count() <= MAX_REPORT_BODY_CHARS {
+            body.to_owned()
+        } else {
+            format!("{}…", body.chars().take(MAX_REPORT_BODY_CHARS - 1).collect::<String>().trim_end())
+        };
         Self { title, body }
     }
 }
@@ -468,6 +477,11 @@ mod tests {
         assert!(id_ok("loom-deals-2") && !id_ok("") && !id_ok("Loom"));
         let r = Report::clean(&"t".repeat(500), &"é".repeat(MAX_REPORT_BODY_BYTES));
         assert_eq!(r.title.chars().count(), MAX_REPORT_TITLE_CHARS);
-        assert!(r.body.len() <= MAX_REPORT_BODY_BYTES + 3 && r.body.ends_with('…'));
+        assert!(r.body.chars().count() == MAX_REPORT_BODY_CHARS && r.body.ends_with('…'));
+        // A long title is cut at a word.
+        let r = Report::clean("Schacht Cricket bundle $487 (reg. $569.99); Flip bundles from $629 (reg. $711.99) at Schacht", "");
+        assert_eq!(r.title, "Schacht Cricket bundle $487 (reg. $569.99); Flip bundles from $629 (reg…");
+        assert!(r.title.chars().count() <= MAX_REPORT_TITLE_CHARS);
+        assert_eq!(Report::clean(" Short\n title ", " b ").title, "Short title");
     }
 }

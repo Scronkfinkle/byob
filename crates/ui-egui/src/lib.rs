@@ -117,6 +117,8 @@ pub struct ByobApp {
     routines: routines::Routines,
     /// The run chat in view's routine runs were asked for (its header says when it ran).
     run_runs_asked: Option<String>,
+    /// The run chat whose report was last scrolled into view.
+    run_scrolled: Option<String>,
     /// What fills the space beside the list: the chat, or one of the pages.
     pub(crate) page: Page,
     /// The Plugins page's search.
@@ -274,6 +276,7 @@ impl ByobApp {
             projects: projects::Projects::default(),
             routines: routines::Routines::default(),
             run_runs_asked: None,
+            run_scrolled: None,
             page: Page::Chat,
             plugins_query: String::new(),
             pending_draft: None,
@@ -485,9 +488,16 @@ impl ByobApp {
     fn run_strip(&mut self, ui: &mut egui::Ui, t: &theme::Tokens) {
         let Some((chat, routine)) = self.sidebar.current().and_then(|c| Some((c.id.clone(), c.origin.clone()?))) else {
             routines::share_report(ui.ctx(), None);
+            self.run_scrolled = None;
             return;
         };
-        routines::share_report(ui.ctx(), self.routines.run_of_chat(&routine, &chat).and_then(|r| r.report.clone()));
+        let report = self.routines.run_of_chat(&routine, &chat).and_then(|r| r.report.clone());
+        // Opened: its report comes into view once it's there (asked once per opening).
+        if report.is_some() && self.run_scrolled.as_deref() != Some(chat.as_str()) {
+            self.run_scrolled = Some(chat.clone());
+            routines::scroll_to_report(ui.ctx(), true);
+        }
+        routines::share_report(ui.ctx(), report);
         if self.run_runs_asked.as_deref() != Some(chat.as_str()) && self.routines.get(&routine).is_some() {
             // Its runs say when it ran (and the chat counts as seen).
             self.run_runs_asked = Some(chat.clone());
@@ -2006,7 +2016,7 @@ fn entry_view(
                             views.show_step_with(ui, t, step, latest, plugins, artifacts.web_mut());
                         });
                         routines::created_lines(ui, t, entry);
-                        routines::report_card(ui, t, entry);
+                        routines::report_card(ui, t, entry, markdown);
                     }
                     EntryRole::User if editing.open.as_ref().is_some_and(|(id, _)| *id == entry.id) => {
                         answer = edit_box(ui, t, entry, editing);

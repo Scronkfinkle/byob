@@ -310,9 +310,12 @@ impl ByobApp {
             ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
                 // What the box is for, with its keys where the layout shows them (they're
                 // also in the buttons' tooltips); shorter where the long one would wrap.
+                let run_chat = self.sidebar.current().is_some_and(|c| c.origin.is_some());
                 let (long, short, tiny) = match (editing.is_some(), busy) {
                     (true, _) => ("Edit the queued message…  (Enter to save, Esc to cancel)", "Edit the queued message…", "Edit…"),
                     (false, true) => ("Queue a follow-up…  (Enter to queue, Shift+Enter for a new line)", "Queue a follow-up…", "Queue…"),
+                    // A routine's run: you're here to ask about it.
+                    (false, false) if run_chat => ("Ask about this run…  (Enter to send, Shift+Enter for a new line)", "Ask about this run…", "Ask…"),
                     (false, false) => ("Message byob…  (Enter to send, Shift+Enter for a new line)", "Message byob…", "Message…"),
                 };
                 let keys = crate::layout::visible(ui.ctx(), "composer.keys", false);

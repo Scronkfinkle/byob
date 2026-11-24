@@ -469,7 +469,7 @@ fn run_item(ui: &mut Ui, t: &Tokens, run: &RunRecord, now: i64, (w, i): (f32, us
         (None, RunStatus::Failed) => (format!("{lead} {rest}"), false),
         _ => (rest, false),
     };
-    let body = run.report.as_ref().map(|r| short(&r.body, 150)).filter(|b| !b.is_empty());
+    let body = run.report.as_ref().map(|r| short(&r.body, 400)).filter(|b| !b.is_empty());
     let mut meta = when_ms(run.started, now);
     if made_up(run) {
         meta.push_str(" · made up after byob was closed or asleep");
@@ -488,9 +488,13 @@ fn run_item(ui: &mut Ui, t: &Tokens, run: &RunRecord, now: i64, (w, i): (f32, us
             if strong {
                 text = text.strong();
             }
-            ui.add(egui::Label::new(text).wrap().selectable(false));
+            // The title on one line (in full on hover); two lines of the report under it.
+            ui.add(egui::Label::new(text).truncate().selectable(false));
             if let Some(b) = body {
-                ui.add(egui::Label::new(RichText::new(b).small().color(t.text_dim)).wrap().selectable(false));
+                let font = egui::TextStyle::Small.resolve(ui.style());
+                let mut job = egui::text::LayoutJob::simple(b, font, t.text_dim, ui.available_width());
+                job.wrap.max_rows = 2;
+                ui.add(egui::Label::new(job).selectable(false));
             }
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;

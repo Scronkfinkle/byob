@@ -228,6 +228,7 @@ fn run_chats_are_filed_under_their_routine() {
     fake.inbox.lock().unwrap().push(ServerMsg::Transcript { entries: vec![reply(vec![done_step("report", "Reported.")])] });
     let shown = texts(&ctx, &mut app, 1100.0, vec![]);
     assert!(plugins::tests::has(&shown, "At The Woolery until Sunday."), "the report's body: {shown:?}");
+    assert!(plugins::tests::has(&shown, "Ask about this run…"), "the composer: {shown:?}");
     click_text(&ctx, &mut app, 1100.0, "Open routine");
     assert_eq!((app.page, app.routines.view.clone()), (Page::Routines, View::Routine("loom".into())));
 }
@@ -319,4 +320,42 @@ fn reply(steps: Vec<byob_protocol::Step>) -> Entry {
         undone: false,
         attachments: vec![],
     }
+}
+
+/// A routine's approval card in its own words: what it does instead of the access chip and
+/// the tool's name, its fields only (the instructions whole), and its own button labels.
+#[test]
+fn the_routine_card_reads_plainly() {
+    let ctx = egui::Context::default();
+    let (fake, mut app) = with_routines(vec![]);
+    let does = "Search the web for deals on a new floor loom. Compare with what earlier runs found and only report a lower price or a model we haven't seen before; skip kits without the loom.";
+    let mut step = done_step("create_routine", "");
+    step.status = StepStatus::Waiting;
+    step.title = "Create the routine Loom deals".into();
+    step.preview = Some(byob_protocol::Preview::Args {
+        fields: vec![("Routine".into(), "Loom deals".into()), ("When".into(), "Every day at 8:00 AM".into()), ("Does".into(), does.into())],
+        code: None,
+        more: 0,
+    });
+    step.ask = Some(Box::new(byob_protocol::Ask {
+        warning: Some("A routine runs later by itself.".into()),
+        always: true,
+        card: Some(byob_protocol::CardWords { access: "Sets up a routine".into(), allow: Some("Create routine".into()), deny: Some("Not now".into()) }),
+        ..Default::default()
+    }));
+    let mut entry = reply(vec![step]);
+    entry.done = false;
+    fake.inbox.lock().unwrap().push(ServerMsg::Transcript { entries: vec![entry] });
+    let shown = texts(&ctx, &mut app, 1100.0, vec![]);
+    let all: Vec<&str> = shown.iter().map(|t| t.0.as_str()).collect();
+    for want in ["Sets up a routine", "Create routine", "Not now", "Every day at 8:00 AM", "A routine runs later by itself."] {
+        assert!(plugins::tests::has(&shown, want), "{want}: {all:?}");
+    }
+    assert!(all.iter().any(|t| t.replace('\n', " ").contains("skip kits without the loom.")), "the instructions whole: {all:?}");
+    for not in ["changes files", "create_routine", "Allow", "Deny"] {
+        assert!(!all.contains(&not), "{not}: {all:?}");
+    }
+    sent(&fake);
+    click_text(&ctx, &mut app, 1100.0, "Create routine");
+    assert!(sent(&fake).iter().any(|m| matches!(m, ClientMsg::Approve { step: 7, answer: byob_protocol::ApprovalAnswer::Allow })));
 }

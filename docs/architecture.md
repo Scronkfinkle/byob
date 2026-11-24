@@ -306,8 +306,13 @@ Nothing new, Waiting for you, Failed:), the next run, a switch (`SetRoutineEnabl
 when you run it, or a rule kept as it is), saved with Save (Create routine for a new one,
 which opens once the engine lists it), and its runs (`ListRoutineRuns`; each opens its chat).
 Run chats (`ChatSummary::origin`) stay out of Recent and search (`Sidebar::runs`); viewing
-one shows a strip naming its routine. A finished `create_routine` call gets "Created … Run it
-now" under its reply. Scripted: `--open-panel routines|new-routine|routine:<id>|chat:<id>`
+one shows a strip naming its routine and its report as a card (Markdown body; the chat opens
+scrolled to it); the composer asks about the run. A finished `create_routine` call gets
+"Created … Run it now" under its reply. The routine tools' must-confirm cards are in their own
+words (`Tool::card`: the fields are the whole preview, no raw arguments follow; `Ask::card`
+gives a plain line instead of the access chip and the buttons' labels, "Create routine" /
+"Not now"); any tool may use it. Reports are cut to an 80-character title (at a word) and a
+2,000-character body. Scripted: `--open-panel routines|new-routine|routine:<id>|chat:<id>`
 (`#panel=` in the browser). Spacing comes from `form.rs`
 (page padding, rows, one control height, section gaps, all through `Tokens::pad`); the
 workspace and chat settings keep `form::grid` and the same `LayerEditor` fields.

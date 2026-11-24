@@ -906,9 +906,19 @@ pub fn share_report(ctx: &egui::Context, report: Option<byob_protocol::routines:
     });
 }
 
+fn scroll_id() -> egui::Id {
+    egui::Id::unique("routines-scroll-to-report")
+}
+
+/// A run's chat just opened: its report card scrolls into view once it's drawn (the chat
+/// otherwise opens at its end, below the report).
+pub fn scroll_to_report(ctx: &egui::Context, on: bool) {
+    ctx.data_mut(|d| d.insert_temp(scroll_id(), on));
+}
+
 /// In a run's chat, under the reply that reported: the report as a card (what the
-/// notification said), title and all.
-pub fn report_card(ui: &mut Ui, t: &Tokens, entry: &byob_protocol::Entry) {
+/// notification said), its body in Markdown.
+pub fn report_card(ui: &mut Ui, t: &Tokens, entry: &byob_protocol::Entry, cache: &mut crate::markdown::Cache) {
     let reported = entry.steps.iter().any(|s| s.tool == "report" && s.status == byob_protocol::StepStatus::Done);
     if !reported {
         return;
@@ -917,7 +927,7 @@ pub fn report_card(ui: &mut Ui, t: &Tokens, entry: &byob_protocol::Entry) {
     ui.add_space(6.0);
     let fill = crate::theme::mix(t.assistant_bubble, t.success, if t.dark { 0.1 } else { 0.07 });
     let edge = crate::theme::mix(t.border, t.success, 0.35);
-    egui::Frame::new()
+    let shown = egui::Frame::new()
         .fill(fill)
         .stroke(Stroke::new(1.0, edge))
         .corner_radius(t.round(crate::form::CARD_R - 2.0))
@@ -932,9 +942,16 @@ pub fn report_card(ui: &mut Ui, t: &Tokens, entry: &byob_protocol::Entry) {
             });
             if !report.body.is_empty() {
                 ui.add_space(4.0);
-                ui.add(egui::Label::new(RichText::new(&report.body).color(t.text)).wrap().selectable(true));
+                // Its own key in the cache: the entry's parts, marked apart (both top bits).
+                let key = entry.id | (3 << 62);
+                let doc = cache.part(key, 0, &report.body, true);
+                crate::markdown::show(ui, t, doc, egui::Id::unique(("report-md", entry.id)));
             }
         });
+    if ui.ctx().data_mut(|d| d.remove_temp::<bool>(scroll_id())).unwrap_or(false) {
+        // Its title at the top of the view.
+        ui.scroll_to_rect(shown.response.rect.expand(8.0), Some(egui::Align::Min));
+    }
 }
 
 /// The note under the list: byob keeps running (or doesn't) when its window closes.
