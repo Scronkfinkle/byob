@@ -1,0 +1,19 @@
+[package]
+name = "byob-when"
+description = "Times, zones, recurrence rules and schedules: next occurrence and plain-words descriptions (L1, no I/O)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+chrono.workspace = true
+# The IANA database (MIT OR Apache-2.0).
+chrono-tz.workspace = true
+# The user's zone (MIT OR Apache-2.0).
+iana-time-zone.workspace = true
+
+[lints]
+workspace = true

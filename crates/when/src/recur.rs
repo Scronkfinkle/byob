@@ -12,7 +12,7 @@
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
 
-use crate::time::{UserZone, When, month_len, month_start, weekday};
+use crate::time::{UserZone, When, Zone, month_len, month_start, weekday};
 
 /// Most periods (days, weeks, months, years) walked for one rule.
 const MAX_PERIODS: u32 = 40_000;
@@ -73,7 +73,7 @@ pub fn parse_rule(v: &str) -> Result<Rule, Unsupported> {
             }
             "INTERVAL" => rule.interval = val.trim().parse::<u32>().unwrap_or(1).clamp(1, 1000),
             "COUNT" => rule.count = val.trim().parse().ok(),
-            "UNTIL" => rule.until = crate::time::parse_value(val, None, None, &[]),
+            "UNTIL" => rule.until = crate::time::parse_value(val, None, Zone::Floating),
             "BYDAY" => {
                 for d in list() {
                     let split = d.len().saturating_sub(2);
@@ -322,7 +322,6 @@ pub fn describe(rule: &Rule) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::Zone;
     use chrono::{NaiveDateTime, TimeZone};
 
     fn user() -> UserZone {

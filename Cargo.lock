@@ -786,9 +786,9 @@ version = "0.3.11"
 dependencies = [
  "base64 0.22.1",
  "byob-plugins",
+ "byob-when",
  "chrono",
  "chrono-tz",
- "iana-time-zone",
  "quick-xml 0.42.0",
  "serde_json",
  "ureq",
@@ -1050,6 +1050,15 @@ dependencies = [
  "serde_json",
  "ureq",
  "url",
+]
+
+[[package]]
+name = "byob-when"
+version = "0.3.11"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "iana-time-zone",
 ]
 
 [[package]]

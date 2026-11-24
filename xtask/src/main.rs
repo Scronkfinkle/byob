@@ -24,6 +24,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("byob-store", 1),
     // document text and PDF page images (pure Rust; used by read_file and look_at_image)
     ("byob-docs", 1),
+    // times, zones, recurrence and schedules (pure; used by calendar and the engine's routines)
+    ("byob-when", 1),
     ("byob-tools", 2),
     ("byob-mcp", 2),
     ("byob-sandbox", 2),

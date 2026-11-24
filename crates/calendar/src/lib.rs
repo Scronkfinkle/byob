@@ -15,7 +15,7 @@
 pub mod dav;
 pub mod event;
 pub mod ical;
-pub mod recur;
+pub use byob_when::recur;
 pub mod time;
 pub mod xml;
 

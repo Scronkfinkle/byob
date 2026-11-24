@@ -178,7 +178,7 @@ L5  server (HTTP + WebSocket) · ui-egui (wasm-safe)
 L4  agent: engine, turns, tool loop, permissions, approvals · sheets (native spreadsheets backend) · web-tools (web_search/web_fetch backend) · mail (IMAP/SMTP backend) · help (byob_help over the user docs)
 L3  plugins: manifests, skills, connectors → adapted into Tools · exec (run_command, run_python, install_packages, workspace environments)
 L2  tools (Tool trait, Registry, built-in tools) · mcp (blocking MCP client) · sandbox
-L1  protocol (wasm-safe) · llm (OpenAI-compatible and Anthropic Messages client) · store (SQLite or folder) · artifact-wire (helper protocol)
+L1  protocol (wasm-safe) · llm (OpenAI-compatible and Anthropic Messages client) · store (SQLite or folder) · artifact-wire (helper protocol) · when (times, zones, RRULEs, schedules)
 L0  types · bundled (the bundled plugins' files, embedded)
 ```
 
@@ -532,9 +532,9 @@ Calls run one at a time on the backend's thread (a slow page delays the next cal
 `crates/bundled/plugins/calendar` (shipped off; it needs an account) declares six
 `calendar_*` tools served by native backend `calendar` (`crates/calendar`, `byob-calendar`,
 L4): a blocking CalDAV client on `ureq` (discovery, calendar-query REPORTs, GET/PUT/DELETE
-with ETags; https, or http only to localhost), a small iCalendar reader/writer, and its own
-RRULE expansion, with times shown in the user's zone with the offset. The password is a
-secret setting. Creating or updating with attendees and every delete are must-confirm
+with ETags; https, or http only to localhost), a small iCalendar reader/writer, and RRULE
+expansion from `byob-when` (L1, shared with routines), with times shown in the user's zone
+with the offset. The password is a secret setting. Creating or updating with attendees and every delete are must-confirm
 (`"confirm"` in the manifest); the plugin's `before_tool_call` hook also asks before changing
 an event that already has attendees. Details: `docs/calendar.md`.
 

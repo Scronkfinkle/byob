@@ -18,9 +18,11 @@ base64.workspace = true
 chrono.workspace = true
 # WebDAV multistatus XML (MIT).
 quick-xml.workspace = true
-# TZIDs and the user's zone: the IANA database (MIT OR Apache-2.0).
-chrono-tz = "0.10"
-iana-time-zone = "0.1"
+# Times, zones and RRULE expansion.
+byob-when.workspace = true
+
+[dev-dependencies]
+chrono-tz.workspace = true
 
 [features]
 # `byob_calendar::fake`, a scripted CalDAV server, for other crates' tests.

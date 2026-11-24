@@ -39,6 +39,7 @@ byob-memory = { path = "crates/memory", version = "0.3.11" }
 byob-calendar = { path = "crates/calendar", version = "0.3.11" }
 byob-mail = { path = "crates/mail", version = "0.3.11" }
 byob-help = { path = "crates/help", version = "0.3.11" }
+byob-when = { path = "crates/when", version = "0.3.11" }
 
 # Spreadsheets (byob-sheets): pinned so a bump (and its formula results) is deliberate.
 # MIT OR Apache-2.0.
@@ -58,6 +59,9 @@ serde_json = "1"
 log = "0.4"
 env_logger = "0.11"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+# Time zones: the IANA database and the system's zone name (MIT OR Apache-2.0).
+chrono-tz = "0.10"
+iana-time-zone = "0.1"
 url = { version = "2", features = ["serde"] }
 directories = "6"
 
