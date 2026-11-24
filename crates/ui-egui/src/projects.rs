@@ -725,7 +725,7 @@ fn context_menu(resp: &egui::Response, t: &Tokens, w: &WorkspaceSummary, pinned:
 }
 
 /// A row's tool: a square that lights on hover, its icon dim until then.
-fn tool(ui: &mut Ui, t: &Tokens, r: Rect, id: egui::Id, icon: icons::Paint, color: Option<egui::Color32>, tip: &str) -> egui::Response {
+pub(crate) fn tool(ui: &mut Ui, t: &Tokens, r: Rect, id: egui::Id, icon: icons::Paint, color: Option<egui::Color32>, tip: &str) -> egui::Response {
     let resp = ui.interact(r, id, Sense::click());
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
     if resp.hovered() || open {

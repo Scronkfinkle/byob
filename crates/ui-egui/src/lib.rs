@@ -37,6 +37,7 @@ pub mod plugins;
 mod projects;
 pub mod queue;
 pub mod renderers;
+pub mod routines;
 mod settings;
 pub mod sidebar;
 pub mod sites;
@@ -65,6 +66,7 @@ pub(crate) enum Page {
     Apps,
     Library,
     Plugins,
+    Routines,
 }
 
 /// What "Hide details" hides in a chat's replies.
@@ -111,6 +113,10 @@ pub struct ByobApp {
     /// The Apps and Library pages (one list of every chat's artifacts, shown two ways).
     library: library::Library,
     projects: projects::Projects,
+    /// Routines: what the engine said, the Routines page and a routine's page.
+    routines: routines::Routines,
+    /// The run chat in view's routine runs were asked for (its header says when it ran).
+    run_runs_asked: Option<String>,
     /// What fills the space beside the list: the chat, or one of the pages.
     pub(crate) page: Page,
     /// The Plugins page's search.
@@ -266,6 +272,8 @@ impl ByobApp {
             pending_artifact: None,
             library: library::Library::default(),
             projects: projects::Projects::default(),
+            routines: routines::Routines::default(),
+            run_runs_asked: None,
             page: Page::Chat,
             plugins_query: String::new(),
             pending_draft: None,
@@ -323,6 +331,33 @@ impl ByobApp {
     /// not yet known, or an engine without the setting).
     pub fn keep_running(&self) -> Option<desktop::KeepRunning> {
         self.state.as_ref().and_then(|s| s.keep_running)
+    }
+
+    /// Some routine is on and scheduled (closing the window should keep byob running).
+    pub fn routines_active(&self) -> bool {
+        self.state.as_ref().is_some_and(|s| s.routines_active)
+    }
+
+    /// The routines, as the engine last listed them.
+    pub fn routines(&self) -> &[byob_protocol::RoutineView] {
+        &self.routines.items
+    }
+
+    /// Open chat `id` in place of whatever is shown (a notification about a run was clicked).
+    pub fn open_chat(&mut self, id: &str) {
+        self.page = Page::Chat;
+        self.close_settings();
+        self.conn.send(ClientMsg::OpenChat { id: id.to_owned() });
+    }
+
+    /// The Routines page (the list, or routine `id`'s page).
+    pub fn open_routines(&mut self, id: Option<&str>) {
+        match id {
+            Some(id) => self.routines.open(id),
+            None => self.routines.show_list(),
+        }
+        self.page = Page::Routines;
+        self.close_settings();
     }
 
     /// Change it (the engine saves it and tells every window).
@@ -410,6 +445,59 @@ impl ByobApp {
             Some(projects::Action::New(start)) => self.workspaces.open_start(start),
             Some(projects::Action::Close) => self.page = Page::Chat,
             None => {}
+        }
+    }
+
+    /// The Routines page (or a routine's) in place of the chat.
+    fn routines_page(&mut self, ui: &mut egui::Ui, t: &theme::Tokens) {
+        let frame = egui::Frame::central_panel(ui.style()).fill(t.app_bg).inner_margin(0);
+        let state = self.state.as_ref();
+        let ctx = routines::ListCtx {
+            now_ms: sidebar::now_ms(),
+            paused: state.and_then(|s| s.routines_paused).unwrap_or(false),
+            keeps_running: self.keep_running().map(|k| k.hides_on_close(self.routines_active() || self.routines.items.iter().any(|v| v.routine.enabled))),
+            desktop: self.desktop.is_some(),
+        };
+        let more = self.routine_page_ctx();
+        let action = egui::CentralPanel::default().frame(frame).show(ui, |ui| self.routines.ui(ui, t, &ctx, &more)).inner;
+        let msgs = self.routines.take();
+        self.send_all(msgs);
+        match action {
+            Some(routines::Action::OpenChat(chat)) => self.open_chat(&chat),
+            Some(routines::Action::Close) => self.page = Page::Chat,
+            Some(routines::Action::SystemSettings) => self.open_settings_at(settings::Tab::System),
+            None => {}
+        }
+    }
+
+    /// Projects and models a routine can use.
+    fn routine_page_ctx(&self) -> routines::page::PageCtx {
+        let projects = self.sidebar.workspaces().iter().map(|w| (w.id.clone(), w.name.clone())).collect();
+        let (models, default_model) = match self.workspaces.profiles() {
+            Some(list) => {
+                let main = list.roles.get(byob_protocol::profiles::ROLE_MAIN).and_then(|id| list.get(id)).map(|p| p.profile.label().to_owned());
+                (list.items.iter().map(|p| (p.profile.id.clone(), p.profile.label().to_owned())).collect(), main.unwrap_or_default())
+            }
+            None => (Vec::new(), self.state.as_ref().map(|s| s.inference_model.clone()).unwrap_or_default()),
+        };
+        routines::page::PageCtx { projects, models, default_model }
+    }
+
+    /// Above a run's chat: whose run it is and when, and the way to its routine.
+    fn run_strip(&mut self, ui: &mut egui::Ui, t: &theme::Tokens) {
+        let Some((chat, routine)) = self.sidebar.current().and_then(|c| Some((c.id.clone(), c.origin.clone()?))) else { return };
+        if self.run_runs_asked.as_deref() != Some(chat.as_str()) && self.routines.get(&routine).is_some() {
+            // Its runs say when it ran (and the chat counts as seen).
+            self.run_runs_asked = Some(chat.clone());
+            self.conn.send(ClientMsg::ListRoutineRuns { id: routine.clone() });
+        }
+        if self.routines.get(&routine).and_then(|v| v.last_run.as_ref()).is_some_and(|r| r.chat.as_deref() == Some(chat.as_str())) {
+            self.routines.mark_seen(&routine);
+        }
+        let name = self.routines.get(&routine).map(|v| v.routine.name.clone());
+        let when = self.routines.run_of_chat(&routine, &chat).map(|r| routines::when_in_sentence(r.started, sidebar::now_ms()));
+        if routines::run_strip(ui, t, name.as_deref(), when.as_deref()) {
+            self.open_routines(Some(&routine));
         }
     }
 
@@ -520,6 +608,7 @@ impl ByobApp {
         p.projects_view = self.projects.view;
         p.projects_sort = self.projects.sort;
         p.projects_reverse = self.projects.reverse;
+        p.routines_seen = self.routines.seen.clone();
         let current = (!self.draft_key.is_empty() && !self.input.trim().is_empty()).then(|| (self.draft_key.clone(), self.input.clone()));
         p.drafts = self.drafts.iter().map(|(k, v)| (k.clone(), v.clone())).chain(current).take(MAX_DRAFTS).collect();
         p
@@ -529,6 +618,7 @@ impl ByobApp {
     pub fn set_sidebar_prefs(&mut self, prefs: &sidebar::SidebarPrefs) {
         self.sidebar.set_prefs(prefs);
         self.projects.set_prefs(prefs.projects_view, prefs.projects_sort, prefs.projects_reverse);
+        self.routines.seen.clone_from(&prefs.routines_seen);
         self.drafts = prefs.drafts.iter().filter(|(_, v)| !v.trim().is_empty()).take(MAX_DRAFTS).map(|(k, v)| (k.clone(), v.clone())).collect();
     }
 
@@ -628,6 +718,11 @@ impl ByobApp {
             if let ServerMsg::Library { items } = &msg {
                 self.sidebar.library.clone_from(items);
             }
+            if self.routines.apply(&msg) {
+                let msgs = self.routines.take();
+                self.send_all(msgs);
+                continue;
+            }
             if self.library.apply(&msg) || self.plugins.apply_logo(&msg) {
                 continue;
             }
@@ -647,8 +742,16 @@ impl ByobApp {
                 // No client-side plugin handlers yet.
                 ServerMsg::Plugin { plugin, .. } => self.skip(format!("messages from plugin {plugin:?}")),
                 ServerMsg::Unknown => self.skip("messages of a type this client doesn't know".into()),
-                // No Routines page yet (the app turns routine events into notifications).
-                ServerMsg::Routines { .. } | ServerMsg::RoutineRuns { .. } | ServerMsg::RoutineEvent { .. } => {}
+                // Handled by the routines above.
+                ServerMsg::Routines { .. } | ServerMsg::RoutineRuns { .. } => {}
+                ServerMsg::RoutineEvent { routine, name, chat, kind, title, body } => {
+                    // The desktop app shows these as notifications; a browser tab says them here.
+                    if self.desktop.is_none() {
+                        let e = routines::Event { routine, name, chat, kind, title, body };
+                        let (level, text) = routines::Routines::notice_for(&e);
+                        self.notice(level, text);
+                    }
+                }
                 // Handled by the plugins' sites above.
                 ServerMsg::LiveView(_) => {}
                 // Handled by the web surfaces (in the artifacts) above.
@@ -949,6 +1052,18 @@ impl ByobApp {
             "palette" => self.sidebar.open_palette(""),
             "footer-menu" => self.sidebar.open_footer_menu(),
             "projects" => self.page = Page::Projects,
+            "routines" => self.open_routines(None),
+            "new-routine" => {
+                self.routines.new_routine(None);
+                self.page = Page::Routines;
+            }
+            _ if name.starts_with("routine:") => {
+                let id = name.trim_start_matches("routine:");
+                if self.routines.get(id).is_none() {
+                    return false;
+                }
+                self.open_routines(Some(id));
+            }
             "projects-grid" => {
                 self.projects.view = projects::View::Grid;
                 self.page = Page::Projects;
@@ -1236,7 +1351,11 @@ impl ByobApp {
             Page::Apps => sidebar::NavPage::Apps,
             Page::Library => sidebar::NavPage::Library,
             Page::Plugins => sidebar::NavPage::Plugins,
+            Page::Routines => sidebar::NavPage::Routines,
         };
+        self.routines.begin(sidebar::now_ms());
+        self.sidebar.routines = self.engine_has(byob_protocol::routines::CAP_ROUTINES);
+        self.sidebar.routines_dot = self.routines.any_unseen();
         self.sidebar.plugins_attention = self.plugins.needs_attention();
         self.artifacts.pinned = self.sidebar.pins.iter().map(|p| p.id.clone()).collect();
         // A pinned artifact asked for from another chat: open it once its chat has loaded.
@@ -1326,6 +1445,11 @@ impl ByobApp {
                 self.end_frame(ui.ctx());
                 return;
             }
+            Page::Routines => {
+                self.routines_page(ui, &t);
+                self.end_frame(ui.ctx());
+                return;
+            }
             Page::Chat => {}
         }
         if !narrow {
@@ -1346,10 +1470,17 @@ impl ByobApp {
             let composer = egui::Panel::bottom("composer").show_separator_line(false).frame(composer_frame).show(ui, |ui| self.composer(ui));
             cockpit::mark(ui.ctx(), composer.response.rect);
         }
+        self.routines.share(ui.ctx());
         let chat = egui::CentralPanel::default().frame(chat_frame).show(ui, |ui| {
+            self.run_strip(ui, &t);
             self.plugins.trust_card(ui, &t, &self.entries);
             self.transcript(ui);
         });
+        match routines::take_ask(ui.ctx()) {
+            Some(routines::Ask::Run(id)) => self.conn.send(ClientMsg::RunRoutine { id }),
+            Some(routines::Ask::Open(id)) => self.open_routines(Some(&id)),
+            Some(routines::Ask::None) | None => {}
+        }
         cockpit::mark(ui.ctx(), chat.response.rect);
         if narrow {
             self.artifacts.floating_button(ui.ctx(), &t, chat.response.rect);
@@ -1453,6 +1584,7 @@ impl ByobApp {
                     self.page = Page::Projects;
                     self.close_settings();
                 }
+                sidebar::Request::Routines => self.open_routines(None),
                 sidebar::Request::LeavePage => self.page = Page::Chat,
                 sidebar::Request::Help => self.begin_chat_with("How do I ".to_owned()),
                 sidebar::Request::Feedback => ctx.open_url(egui::OpenUrl::new_tab("https://github.com/Scronkfinkle/byob/issues")),
@@ -1868,6 +2000,7 @@ fn entry_view(
                             artifacts.step_cards(ui, t, step.id, &step.artifacts, &newest);
                             views.show_step_with(ui, t, step, latest, plugins, artifacts.web_mut());
                         });
+                        routines::created_lines(ui, t, entry);
                     }
                     EntryRole::User if editing.open.as_ref().is_some_and(|(id, _)| *id == entry.id) => {
                         answer = edit_box(ui, t, entry, editing);
@@ -2015,6 +2148,9 @@ mod app_tests {
 
     /// The Projects page and the project dialogs over it.
     mod projects_page;
+
+    /// The Routines page, a routine's page, run chats and the sidebar's dot.
+    mod routines_page;
 
     /// The window across arrangements, themes and sizes, checked for layout invariants.
     mod matrix;

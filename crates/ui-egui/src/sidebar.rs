@@ -213,6 +213,8 @@ pub enum Request {
     Apps,
     /// Projects: every project in one place.
     Projects,
+    /// Routines: what byob does by itself.
+    Routines,
     /// Back from a page (Projects, Apps, Library, Plugins) to the chat.
     LeavePage,
     /// Ask byob for help: a new chat ready to ask.
@@ -233,6 +235,7 @@ pub enum NavPage {
     #[default]
     None,
     Projects,
+    Routines,
     Apps,
     Library,
     Plugins,
@@ -308,7 +311,7 @@ const PALETTE_TABS: [(PaletteTab, &str); 4] =
     [(PaletteTab::All, "All"), (PaletteTab::Chats, "Chats"), (PaletteTab::Projects, "Projects"), (PaletteTab::Artifacts, "Apps & documents")];
 
 /// What the palette can do besides finding things.
-const PALETTE_ACTIONS: [&str; 6] = ["New chat", "New project", "Projects", "Library", "Models and connection", "Settings"];
+const PALETTE_ACTIONS: [&str; 7] = ["New chat", "New project", "Projects", "Routines", "Library", "Models and connection", "Settings"];
 
 /// The most a section lists on its own tab.
 const PALETTE_MAX: usize = 60;
@@ -339,6 +342,8 @@ pub struct SidebarPrefs {
     pub projects_sort: crate::projects::Sort,
     /// The order turned around (its column's header clicked again).
     pub projects_reverse: bool,
+    /// When each routine's latest notable run was seen (for the Routines dot), on this device.
+    pub routines_seen: BTreeMap<String, i64>,
 }
 
 /// The person's own sections and the list's view: shared through the engine's layout, so
@@ -405,6 +410,9 @@ impl Default for Rects {
 pub struct Sidebar {
     pinned: Vec<ChatSummary>,
     recent: Vec<ChatSummary>,
+    /// Routine runs' chats (not pinned): kept out of Recent and search, reached from their
+    /// routine's page.
+    runs: Vec<ChatSummary>,
     /// Where the next page starts; `None` when everything is loaded.
     next: Option<ChatCursor>,
     loading: bool,
@@ -444,6 +452,10 @@ pub struct Sidebar {
     space_edit: Option<(String, String)>,
     /// Something in Plugins needs you (a dot on its row).
     pub plugins_attention: bool,
+    /// The engine has routines (cap `routines`): the Routines row shows (the app says, every frame).
+    pub routines: bool,
+    /// A routine's run found something you haven't seen (a dot on its row).
+    pub routines_dot: bool,
     /// Shown? `None` until the first frame decides from the width.
     open: Option<bool>,
     was_narrow: bool,
@@ -820,9 +832,15 @@ impl Sidebar {
                 if after.is_none() {
                     self.pinned.clone_from(pinned);
                     self.recent.clear();
+                    self.runs.clear();
                 }
                 for c in recent {
-                    if !self.recent.iter().any(|r| r.id == c.id) {
+                    if c.origin.is_some() {
+                        // A routine's run: under its routine, not in Recent.
+                        if !self.runs.iter().any(|r| r.id == c.id) {
+                            self.runs.push(c.clone());
+                        }
+                    } else if !self.recent.iter().any(|r| r.id == c.id) {
                         self.recent.push(c.clone());
                     }
                 }
@@ -834,6 +852,7 @@ impl Sidebar {
             ServerMsg::ChatDeleted { id } => {
                 self.pinned.retain(|c| &c.id != id);
                 self.recent.retain(|c| &c.id != id);
+                self.runs.retain(|c| &c.id != id);
                 self.history.forget(id);
                 self.pins.retain(|p| &p.chat != id);
                 let key = format!("chat:{id}");
@@ -864,6 +883,17 @@ impl Sidebar {
     }
 
     fn upsert(&mut self, chat: ChatSummary) {
+        self.runs.retain(|c| c.id != chat.id);
+        if chat.origin.is_some() && chat.pinned_at.is_none() {
+            // A routine's run stays out of Recent (pinned, it's yours to see).
+            self.pinned.retain(|c| c.id != chat.id);
+            self.recent.retain(|c| c.id != chat.id);
+            if let Some(cur) = self.current.as_mut().filter(|c| c.id == chat.id) {
+                cur.clone_from(&chat);
+            }
+            self.runs.push(chat);
+            return;
+        }
         self.pinned.retain(|c| c.id != chat.id);
         let before = self.recent.len();
         self.recent.retain(|c| c.id != chat.id);
@@ -1423,6 +1453,18 @@ impl Sidebar {
                 self.requests.push(Request::Projects);
                 self.after_pick(narrow);
             }
+            if self.routines {
+                let row = nav_row_on(ui, t, Id::unique("sidebar-routines"), icons::repeat, "Routines", Trail::None, 0.0, narrow, page == NavPage::Routines);
+                if self.routines_dot {
+                    // A run found something you haven't seen.
+                    ui.painter().circle_filled(pos2(row.rect.right() - PAD - 4.0, row.rect.center().y), 3.5, t.accent);
+                }
+                let tip = if self.routines_dot { "A run found something you haven't seen" } else { "What byob does by itself, on a schedule" };
+                if crate::tip::note(row, t, "Routines", tip).clicked() {
+                    self.requests.push(Request::Routines);
+                    self.after_pick(narrow);
+                }
+            }
             let apps = nav_row_on(ui, t, Id::unique("sidebar-apps"), icons::apps_grid, "Apps", Trail::None, 0.0, narrow, page == NavPage::Apps);
             if crate::tip::note(apps, t, "Apps", "What byob built for you: open and use them, or take them out").clicked() {
                 self.requests.push(Request::Apps);
@@ -1559,7 +1601,10 @@ impl Sidebar {
             }
         }
         if all {
-            push("Actions", PALETTE_ACTIONS.iter().filter(|a| rank(a, &[], &q).is_some()).map(|a| Hit::Action(a)).collect());
+            push(
+                "Actions",
+                PALETTE_ACTIONS.iter().filter(|a| **a != "Routines" || self.routines).filter(|a| rank(a, &[], &q).is_some()).map(|a| Hit::Action(a)).collect(),
+            );
         }
         // Elsewhere: only with a search, and only when there are Spaces to be elsewhere in.
         if searching && self.current_space().is_some() && tab != PaletteTab::Artifacts {
@@ -1600,6 +1645,7 @@ impl Sidebar {
             Hit::Action("New project") => self.requests.push(Request::NewWorkspace),
             Hit::Action("Projects") => self.requests.push(Request::Projects),
             Hit::Action("Library") => self.requests.push(Request::Library),
+            Hit::Action("Routines") => self.requests.push(Request::Routines),
             Hit::Action("Models and connection") => self.requests.push(Request::Connection),
             Hit::Action(_) => self.requests.push(Request::AppSettings),
         }
@@ -1856,6 +1902,7 @@ impl Sidebar {
                     "New project" => icons::folder_plus,
                     "Projects" => icons::folder,
                     "Library" => icons::pages,
+                    "Routines" => icons::repeat,
                     "Models and connection" => icons::plug,
                     _ => icons::gear,
                 },

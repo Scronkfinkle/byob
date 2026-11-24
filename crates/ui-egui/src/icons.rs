@@ -341,6 +341,26 @@ pub fn refresh(p: &egui::Painter, r: Rect, c: Color32) {
     outline(p, r, regular::ARROWS_CLOCKWISE, c);
 }
 
+/// Arrows going round and round: a routine (something byob does again and again).
+pub fn repeat(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::REPEAT, c);
+}
+
+/// Start something now (Run now).
+pub fn play(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::PLAY, c);
+}
+
+/// A clock (when something happens).
+pub fn clock(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::CLOCK, c);
+}
+
+/// A star (something a run found).
+pub fn star(p: &egui::Painter, r: Rect, c: Color32) {
+    outline(p, r, regular::STAR, c);
+}
+
 /// A chevron pointing up (move earlier).
 pub fn chevron_up(p: &egui::Painter, r: Rect, c: Color32) {
     outline(p, r, regular::CARET_UP, c);
@@ -534,6 +554,10 @@ pub fn name_of(paint: Paint) -> Option<&'static str> {
         (chevron_up, "collapse"),
         (download, "download"),
         (stop, "stop"),
+        (repeat, "routines"),
+        (play, "run"),
+        (clock, "time"),
+        (star, "found"),
     ];
     NAMES.iter().find(|(p, _)| std::ptr::fn_addr_eq(*p, paint)).map(|(_, n)| *n)
 }
@@ -603,6 +627,10 @@ pub fn glyph_name(text: &str) -> Option<&'static str> {
         (regular::ARROWS_CLOCKWISE, "refresh"),
         (regular::CARET_UP, "collapse"),
         (regular::DOWNLOAD_SIMPLE, "download"),
+        (regular::REPEAT, "routines"),
+        (regular::PLAY, "run"),
+        (regular::CLOCK, "time"),
+        (regular::STAR, "found"),
     ];
     let text = text.trim();
     GLYPHS.iter().find(|(g, _)| *g == text).map(|(_, n)| *n)

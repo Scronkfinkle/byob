@@ -548,13 +548,13 @@ impl ByobApp {
             icons::env(ui.painter(), rect, *env, icons::env_color(t, *env));
             resp.on_hover_text(format!("Project {name}\n{}", icons::env_tip(*env)));
         }
-        // Projects has its own big title on the page: nothing to repeat up here.
-        if self.page == crate::Page::Projects {
+        // Projects and Routines have their own big titles on the page: nothing to repeat up here.
+        if matches!(self.page, crate::Page::Projects | crate::Page::Routines) {
             self.header_rects.title = Rect::NOTHING;
             return;
         }
         let page = match self.page {
-            crate::Page::Projects => None,
+            crate::Page::Projects | crate::Page::Routines => None,
             crate::Page::Apps => Some("Apps"),
             crate::Page::Library => Some("Library"),
             crate::Page::Plugins => Some("Plugins"),
