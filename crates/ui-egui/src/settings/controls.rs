@@ -67,6 +67,9 @@ impl ByobApp {
             Key::VisionRole | Key::SubagentRole | Key::UtilityRole => self.models.list.as_ref().is_some_and(|l| !l.items.is_empty()),
             // The engine keeps the layout: only with one that does.
             Key::ShownPreset | Key::ShownList => self.engine_has(byob_protocol::layout::CAP_LAYOUT),
+            // The desktop app's own (a browser has none).
+            Key::KeepRunning => self.desktop.is_some(),
+            Key::StartAtLogin => self.desktop.as_ref().is_some_and(|d| d.start_at_login().is_some()),
             _ => true,
         }
     }
@@ -261,6 +264,30 @@ impl ByobApp {
                 }
             }
             Key::ColorRoles => advanced(ui, t, &d.current, &mut d.prefs, &mut self.appearance.filter),
+            Key::KeepRunning => self.keep_running_control(ui, t),
+            Key::StartAtLogin => self.start_at_login_control(ui, t),
+        }
+    }
+
+    fn keep_running_control(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        use crate::desktop::KeepRunning;
+        let Some(desktop) = self.desktop.as_mut() else { return };
+        let mut value = desktop.keep_running();
+        let choices: Vec<(KeepRunning, &str)> = KeepRunning::ALL.iter().map(|k| (*k, k.label())).collect();
+        if form::select(ui, t, &mut value, &choices, None)
+            && let Err(e) = desktop.set_keep_running(value)
+        {
+            self.notices.push(byob_protocol::NoticeLevel::Error, format!("Couldn't save Keep running in the background: {e}"));
+        }
+    }
+
+    fn start_at_login_control(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let Some(desktop) = self.desktop.as_mut() else { return };
+        let Some(mut on) = desktop.start_at_login() else { return };
+        if form::switch(ui, t, &mut on).changed()
+            && let Err(e) = desktop.set_start_at_login(on)
+        {
+            self.notices.push(byob_protocol::NoticeLevel::Error, format!("Couldn't change Start byob when you log in: {e}"));
         }
     }
 

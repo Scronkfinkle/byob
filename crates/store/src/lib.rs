@@ -64,8 +64,8 @@ pub use model::{
 pub use paths::{HOME_ENV, Paths, migrate_workspace};
 pub use schema::LATEST as SCHEMA_VERSION;
 pub use settings::{
-    ApiKind, Approvals, CompactionSettings, ContainerSettings, InferenceSettings, Layer, ModelRole, Params, Profile, SECRETS_MODE, Secrets, Settings,
-    StorageKind, SubagentSettings, Theme, ToolMode,
+    ApiKind, Approvals, CompactionSettings, ContainerSettings, InferenceSettings, KeepRunning, Layer, ModelRole, Params, Profile, SECRETS_MODE, Secrets,
+    Settings, StorageKind, SubagentSettings, Theme, ToolMode,
 };
 pub use steps::MAX_STEP_OUTPUT;
 pub use store::{BUSY_TIMEOUT, MAX_PAGE, Store};

@@ -28,6 +28,7 @@ keys! {
     Mode, ThemePair, Accent, Background, Foreground, Font, Radius, ChartColors, MessageLayout, UserBubble, ReplyBubble, BubblePadding, LineSpacing, ShownPreset, ShownList, ThinkingSize, Controls, Backdrop, Glass, Frost, PanelGap, Arrangement, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
     Zoom, TextSize, CodeSize, CodeFont, Density, ColumnWidth, ChatListWidth, ArtifactPane, HighContrast, ReduceMotion, ResetText,
     ColorRoles,
+    KeepRunning, StartAtLogin,
 }
 
 /// How a setting is laid out.
@@ -119,6 +120,8 @@ pub static LAYOUT: Section = sec(Tab::Text, "layout", "Layout", "How the window 
 pub static ACCESSIBILITY: Section = sec(Tab::Text, "accessibility", "Accessibility", "");
 pub static RESET_TEXT: Section = sec(Tab::Text, "reset", "Reset", "");
 pub static COLORS: Section = sec(Tab::Colors, "colors", "", "");
+// System: the desktop app on this computer (not in a browser).
+pub static BACKGROUND: Section = sec(Tab::System, "background", "In the background", "What byob does when you close its window, and when you log in.");
 
 /// Every section, in page order.
 pub static SECTIONS: &[&Section] = &[
@@ -145,6 +148,7 @@ pub static SECTIONS: &[&Section] = &[
     &ACCESSIBILITY,
     &RESET_TEXT,
     &COLORS,
+    &BACKGROUND,
 ];
 
 const fn s(key: Key, id: &'static str, section: &'static Section, name: &'static str, desc: &'static str, keywords: &'static str, kind: Kind) -> Setting {
@@ -420,6 +424,25 @@ pub static SETTINGS: &[Setting] = &[
         "Every color of the current theme, each with a picker.",
         "color colour override hex palette custom roles background text border syntax code",
         Block,
+    ),
+    // System: the desktop app only.
+    s(
+        Key::KeepRunning,
+        "keep-running",
+        &BACKGROUND,
+        "Keep running in the background",
+        "Closing the window hides it; byob goes on in the tray, so routines still run.",
+        "tray close quit hide minimize routines daemon system tray menu bar",
+        Row,
+    ),
+    s(
+        Key::StartAtLogin,
+        "start-at-login",
+        &BACKGROUND,
+        "Start byob when you log in",
+        "It starts hidden, in the tray.",
+        "login startup boot autostart launch background",
+        Row,
     ),
 ];
 

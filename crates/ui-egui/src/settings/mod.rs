@@ -42,10 +42,12 @@ pub enum Tab {
     Text,
     /// Every color role of the current theme.
     Colors,
+    /// The desktop app on this computer: keep running in the background, start at login.
+    System,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [Tab::Models, Tab::Defaults, Tab::Plugins, Tab::Appearance, Tab::Text, Tab::Colors];
+    pub const ALL: [Tab; 7] = [Tab::Models, Tab::Defaults, Tab::Plugins, Tab::Appearance, Tab::Text, Tab::Colors, Tab::System];
 
     /// The name scripts use (`--settings-section`).
     pub fn id(self) -> &'static str {
@@ -56,6 +58,7 @@ impl Tab {
             Tab::Appearance => "appearance",
             Tab::Text => "text",
             Tab::Colors => "colors",
+            Tab::System => "system",
         }
     }
 
@@ -67,6 +70,7 @@ impl Tab {
             Tab::Appearance => "Appearance",
             Tab::Text => "Text & layout",
             Tab::Colors => "Colors",
+            Tab::System => "System",
         }
     }
 
@@ -79,6 +83,7 @@ impl Tab {
             Tab::Appearance => "Theme, accent, messages",
             Tab::Text => "Zoom, fonts, density, accessibility",
             Tab::Colors => "All the theme's colors, one by one",
+            Tab::System => "In the background, at login",
         }
     }
 
@@ -90,6 +95,7 @@ impl Tab {
             Tab::Appearance => icons::contrast,
             Tab::Text => icons::text_size,
             Tab::Colors => icons::colors,
+            Tab::System => icons::app_window,
         }
     }
 
@@ -309,6 +315,9 @@ impl ByobApp {
         let words = registry::words(&self.appearance.search);
         let counts: Option<Vec<usize>> = (!words.is_empty()).then(|| self.search_hits(&words).iter().map(|(_, h)| h.len()).collect());
         for (i, tab) in Tab::ALL.into_iter().enumerate() {
+            if !self.tab_shown(tab) {
+                continue;
+            }
             let count = counts.as_ref().map(|c| c.get(i).copied().unwrap_or(0));
             let hint = count.filter(|n| *n > 0).map(|n| n.to_string());
             let look =
@@ -410,6 +419,9 @@ impl ByobApp {
             ui.add_space(t.pad(8.0));
             ui.spacing_mut().item_spacing.y = t.pad(2.0);
             for (i, tab) in Tab::ALL.into_iter().enumerate() {
+                if !self.tab_shown(tab) {
+                    continue;
+                }
                 let r = ui
                     .horizontal(|ui| {
                         ui.add_space(pad);
@@ -422,6 +434,11 @@ impl ByobApp {
                 }
             }
         });
+    }
+
+    /// The tab is listed: System only where there is a desktop app (not in a browser).
+    fn tab_shown(&self, tab: Tab) -> bool {
+        tab != Tab::System || self.desktop.is_some()
     }
 
     fn tab_label(&self, tab: Tab) -> &'static str {
@@ -440,6 +457,7 @@ impl ByobApp {
                 let current = file::resolve(self.prefs.theme_id(self.tokens.dark), self.tokens.dark, &self.user_themes);
                 format!("Every color of {}, changed on this device only. Export the theme under Appearance → Theme files to keep them.", current.name)
             }
+            Tab::System => "How byob runs on this computer.".into(),
         }
     }
 
@@ -642,7 +660,7 @@ impl ByobApp {
                             hits.push(Hit::Colors(roles.len(), names));
                         }
                     }
-                    Tab::Defaults | Tab::Text => {}
+                    Tab::Defaults | Tab::Text | Tab::System => {}
                 }
                 (tab, hits)
             })

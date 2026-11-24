@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 pub use byob_types::ApiKind;
 pub use byob_types::config::{Approvals, Layer, ToolMode};
+pub use byob_types::desktop::KeepRunning;
 use byob_types::layout::Layout;
 pub use byob_types::profile::{Params, Profile};
 use serde::de::DeserializeOwned;
@@ -250,9 +251,16 @@ pub struct Settings {
     /// What the interface shows and in what order (only what differs from the defaults).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Layout::is_default")]
     pub layout: Layout,
+    /// Whether closing the desktop window keeps byob running in the background.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "is_default_keep_running")]
+    pub keep_running: KeepRunning,
     /// Fields this build doesn't know; preserved across load/save.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+fn is_default_keep_running(k: &KeepRunning) -> bool {
+    *k == KeepRunning::default()
 }
 
 /// Keys that must never live in settings.json.

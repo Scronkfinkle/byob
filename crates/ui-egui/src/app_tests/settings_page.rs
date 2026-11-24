@@ -52,9 +52,51 @@ fn full_app() -> ByobApp {
     };
     let list = byob_protocol::profiles::ProfileList { items: vec![view("local"), view("cloud")], roles: [("main".to_owned(), "local".to_owned())].into() };
     let config = crate::workspace::tests::view(byob_protocol::ConfigScope::Global, byob_protocol::workspace::Layer::default(), None);
-    let app = crowded_with(fake.clone());
+    let mut app = crowded_with(fake.clone());
+    app.set_desktop(Box::new(FakeDesktop::default()));
     fake.inbox.lock().unwrap().extend([ServerMsg::Welcome(Welcome::current()), ServerMsg::Profiles(Box::new(list)), ServerMsg::Config(Box::new(config))]);
     app
+}
+
+/// The desktop app's side of its own settings, in memory.
+#[derive(Default)]
+struct FakeDesktop {
+    keep: crate::desktop::KeepRunning,
+    login: bool,
+}
+
+impl crate::desktop::Desktop for FakeDesktop {
+    fn keep_running(&self) -> crate::desktop::KeepRunning {
+        self.keep
+    }
+    fn set_keep_running(&mut self, value: crate::desktop::KeepRunning) -> Result<(), String> {
+        self.keep = value;
+        Ok(())
+    }
+    fn start_at_login(&self) -> Option<bool> {
+        Some(self.login)
+    }
+    fn set_start_at_login(&mut self, on: bool) -> Result<(), String> {
+        self.login = on;
+        Ok(())
+    }
+}
+
+#[test]
+fn the_system_tab_is_only_where_there_is_a_desktop_app() {
+    let ctx = egui::Context::default();
+    let mut browser = crowded_app();
+    browser.set_settings_open(true);
+    let text = drawn_text(&ctx, &mut browser, 1000.0);
+    assert!(text.contains("Appearance") && !text.contains("In the background, at login") && !text.contains("System"), "{text}");
+    browser.set_settings_search("tray");
+    settle(&ctx, &mut browser, 1000.0);
+    assert!(drawn(&browser, Key::KeepRunning).is_empty(), "a browser can't keep byob running");
+    let mut desktop = full_app();
+    desktop.set_settings_search("tray");
+    settle(&ctx, &mut desktop, 1000.0);
+    assert_eq!(drawn(&desktop, Key::KeepRunning).len(), 1);
+    assert!(desktop.reveal_settings("start-at-login"));
 }
 
 /// A few frames (the engine's answers arrive, rows settle their sizes).
