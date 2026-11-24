@@ -42,6 +42,7 @@ mod messages;
 pub mod model;
 mod paths;
 pub mod profiles;
+pub mod routines;
 mod schema;
 mod settings;
 mod steps;
@@ -62,6 +63,7 @@ pub use model::{
     StepAccess, StepChange, StepResult, StoredMessage, UndoOp, agent_run_id_ok,
 };
 pub use paths::{HOME_ENV, Paths, migrate_workspace};
+pub use routines::{Routines, RunLog, RunLogs};
 pub use schema::LATEST as SCHEMA_VERSION;
 pub use settings::{
     ApiKind, Approvals, CompactionSettings, ContainerSettings, InferenceSettings, Layer, ModelRole, Params, Profile, SECRETS_MODE, Secrets, Settings,

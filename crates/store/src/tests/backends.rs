@@ -24,6 +24,7 @@ macro_rules! for_each_backend {
 
 for_each_backend!(
     archiving,
+    origins,
     pinning_an_archived_chat_brings_it_back,
     chats_crud,
     pinning,
@@ -243,6 +244,7 @@ fn import_keeps_everything(s: &dyn ChatStore) {
             updated_at: 1_700_000_009_000,
             pinned_at: Some(1_700_000_005_000),
             archived_at: None,
+            origin: None,
         },
         messages: vec![msg("Q?", Role::User, 1_700_000_001_000), reply, streaming],
         grants: vec!["a_tool".into(), "b_tool".into()],
@@ -406,6 +408,18 @@ fn archiving(s: &dyn ChatStore) {
     s.archive_chat("a", false).unwrap();
     assert!(s.chat("a").unwrap().unwrap().archived_at.is_none());
     assert!(matches!(s.archive_chat("nope", true), Err(StoreError::NotFound(_))));
+}
+
+fn origins(s: &dyn ChatStore) {
+    let c = chat(s, "a");
+    assert_eq!(c.origin, None, "a person's chat has no origin");
+    s.set_chat_origin("a", Some("loom-deals")).unwrap();
+    assert_eq!(s.chat("a").unwrap().unwrap().origin.as_deref(), Some("loom-deals"));
+    assert!(s.list_chats(10, None).unwrap().chats.iter().any(|c| c.id == "a" && c.origin.as_deref() == Some("loom-deals")));
+    assert_eq!(s.export_chat("a").unwrap().unwrap().chat.origin.as_deref(), Some("loom-deals"));
+    s.set_chat_origin("a", None).unwrap();
+    assert_eq!(s.chat("a").unwrap().unwrap().origin, None);
+    assert!(matches!(s.set_chat_origin("nope", Some("x")), Err(StoreError::NotFound(_))));
 }
 
 fn list_is_recent_first_and_paginates(s: &dyn ChatStore) {
@@ -623,6 +637,22 @@ fn large_streamed_content(s: &dyn ChatStore) {
     let m = s.message(id).unwrap().unwrap();
     assert_eq!(m.content.len(), chunk.len() * 200);
     assert!(m.content.starts_with("lorem") && m.content.ends_with("🦀 "));
+}
+
+/// A routine run's origin is kept across a restart and through a move to the other kind of
+/// storage (so run chats stay filed under their routine).
+#[test]
+fn origins_survive_reopen_and_moving_between_storage_kinds() {
+    for (f, other) in [(sqlite(), folder()), (folder(), sqlite())] {
+        chat(&*f, "a");
+        f.append_message("a", &NewMessage::user("hi")).unwrap();
+        f.set_chat_origin("a", Some("r1")).unwrap();
+        let f = f.reopen();
+        assert_eq!(f.chat("a").unwrap().unwrap().origin.as_deref(), Some("r1"), "{:?}", f.kind());
+        other.import_chat(&f.export_chat("a").unwrap().unwrap()).unwrap();
+        let other = other.reopen();
+        assert_eq!(other.chat("a").unwrap().unwrap().origin.as_deref(), Some("r1"), "{:?}", other.kind());
+    }
 }
 
 /// Archived chats stay archived across a restart and through an export/import into the

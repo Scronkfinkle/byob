@@ -125,7 +125,12 @@ const V6: &str = "
 ALTER TABLE chats ADD COLUMN archived_at INTEGER;
 ";
 
-pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
+/// v7: a chat's origin (the routine whose run it is).
+const V7: &str = "
+ALTER TABLE chats ADD COLUMN origin TEXT;
+";
+
+pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
 
 /// Schema version this build reads and writes.
 pub const LATEST: i64 = MIGRATIONS.len() as i64;

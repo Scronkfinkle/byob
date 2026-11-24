@@ -254,6 +254,26 @@ fn a_deleted_chat_leaves_no_text_on_disk() {
     assert!(s.chat("keep").unwrap().is_some());
 }
 
+/// A database written by 0.3.11 (schema v6, no `origin`) opens with its chats unchanged and
+/// no origins, and origins can be set on them.
+#[test]
+fn migrates_v6_to_latest_with_no_origins() {
+    let dir = TempDir::new();
+    let path = dir.path().join("byob.db");
+    {
+        let c = Connection::open(&path).unwrap();
+        schema::migrate_to(&c, 6).unwrap();
+        c.execute_batch("INSERT INTO chats (id, title, workspace, created_at, updated_at, archived_at) VALUES ('a', 'Old', '/w', 1, 2, 3);").unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+    let a = s.chat("a").unwrap().unwrap();
+    assert_eq!((a.title.as_str(), a.archived_at, a.origin), ("Old", Some(3), None));
+    s.set_chat_origin("a", Some("r")).unwrap();
+    drop(s);
+    assert_eq!(Store::open(&path).unwrap().chat("a").unwrap().unwrap().origin.as_deref(), Some("r"));
+}
+
 /// A database written by 0.3.10 (schema v5, no `archived_at`) opens, keeps its chats as
 /// they were (a pinned one stays pinned, none archived), and archiving works on them.
 #[test]

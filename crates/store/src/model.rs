@@ -27,6 +27,8 @@ pub struct Chat {
     pub pinned_at: Option<Millis>,
     /// When it was archived, if it is: kept, but out of the way in the list.
     pub archived_at: Option<Millis>,
+    /// What made it, when not a person: a routine's id for that routine's runs.
+    pub origin: Option<String>,
 }
 
 impl Chat {

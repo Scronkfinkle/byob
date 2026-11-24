@@ -320,6 +320,7 @@ fn chat_md_snapshot() {
             updated_at: 1_762_684_320_000,
             pinned_at: Some(1_762_684_300_000),
             archived_at: None,
+            origin: None,
         },
         messages: vec![msg(Role::User, "What is the answer?", 1_762_684_200_000), reply, failed],
         grants: vec![],

@@ -38,6 +38,8 @@ pub trait ChatStore: Send {
     fn pin_chat(&self, id: &str, pinned: bool) -> Result<()>;
     /// Archive a chat or bring it back (archiving unpins it).
     fn archive_chat(&self, id: &str, archived: bool) -> Result<()>;
+    /// Set (or clear) what made a chat: a routine's id for its runs.
+    fn set_chat_origin(&self, id: &str, origin: Option<&str>) -> Result<()>;
     /// Delete a chat with everything in it; returns the task ids whose journals went with it.
     fn delete_chat(&self, id: &str) -> Result<Vec<String>>;
 
@@ -291,6 +293,9 @@ impl ChatStore for Store {
 
     fn archive_chat(&self, id: &str, archived: bool) -> Result<()> {
         Store::archive_chat(self, id, archived)
+    }
+    fn set_chat_origin(&self, id: &str, origin: Option<&str>) -> Result<()> {
+        Store::set_chat_origin(self, id, origin)
     }
     fn delete_chat(&self, id: &str) -> Result<Vec<String>> {
         Store::delete_chat(self, id)

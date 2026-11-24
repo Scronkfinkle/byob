@@ -5,6 +5,7 @@ pub mod chart;
 pub mod config;
 pub mod layout;
 pub mod profile;
+pub mod routine;
 
 use serde::{Deserialize, Serialize};
 

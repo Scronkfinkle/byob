@@ -87,6 +87,16 @@ impl Paths {
         self.config_dir.join("workspaces.json")
     }
 
+    /// Routines (synced to every client).
+    pub fn routines(&self) -> PathBuf {
+        self.config_dir.join("routines.json")
+    }
+
+    /// Each routine's runs, one file per routine.
+    pub fn routine_runs(&self) -> PathBuf {
+        self.data_dir.join("routine-runs")
+    }
+
     /// Each chat's own settings.
     pub fn chat_settings(&self) -> PathBuf {
         self.data_dir.join("chat-settings.json")

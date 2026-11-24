@@ -672,6 +672,9 @@ fn import_lines(e: &ChatExport) -> Result<Vec<Line>> {
     if c.archived_at.is_some() {
         lines.push(Line::new(c.updated_at, Event::Archived { archived_at: c.archived_at }));
     }
+    if c.origin.is_some() {
+        lines.push(Line::new(c.updated_at, Event::Origin { origin: c.origin.clone() }));
+    }
     lines.push(Line::new(c.updated_at, Event::Touched { updated_at: c.updated_at }));
     Ok(lines)
 }
@@ -779,6 +782,15 @@ impl ChatStore for FolderStore {
             return Ok(());
         }
         inner.write(id, events, true, true)
+    }
+
+    fn set_chat_origin(&self, id: &str, origin: Option<&str>) -> Result<()> {
+        let mut inner = self.lock();
+        let current = inner.state_or_404(id)?.chat.origin.clone();
+        if current.as_deref() == origin {
+            return Ok(());
+        }
+        inner.write(id, vec![Event::Origin { origin: origin.map(str::to_owned) }], true, true)
     }
 
     fn delete_chat(&self, id: &str) -> Result<Vec<String>> {

@@ -16,8 +16,8 @@ impl Store {
         let tx = self.write_tx()?;
         let c = &e.chat;
         tx.execute(
-            "INSERT INTO chats (id, title, workspace, created_at, updated_at, pinned_at, archived_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![c.id, c.title, path_text(&c.workspace), c.created_at, c.updated_at, c.pinned_at, c.archived_at],
+            "INSERT INTO chats (id, title, workspace, created_at, updated_at, pinned_at, archived_at, origin) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![c.id, c.title, path_text(&c.workspace), c.created_at, c.updated_at, c.pinned_at, c.archived_at, c.origin],
         )?;
         let mut ids = Vec::with_capacity(e.messages.len());
         for m in &e.messages {

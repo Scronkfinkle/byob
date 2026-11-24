@@ -44,6 +44,11 @@ pub(crate) enum Event {
     Archived {
         archived_at: Option<Millis>,
     },
+    /// What made the chat (a routine's id for its runs; `None` = a person).
+    Origin {
+        #[serde(default)]
+        origin: Option<String>,
+    },
     /// Sets the "last active" time exactly (written by imports).
     Touched {
         updated_at: Millis,

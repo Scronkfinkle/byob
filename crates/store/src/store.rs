@@ -127,6 +127,7 @@ impl Store {
             updated_at: now,
             pinned_at: None,
             archived_at: None,
+            origin: None,
         })
     }
 
@@ -195,6 +196,12 @@ impl Store {
         found(n, || format!("chat {id}"))
     }
 
+    /// Set (or clear) what made a chat (a routine's id for its runs).
+    pub fn set_chat_origin(&self, id: &str, origin: Option<&str>) -> Result<()> {
+        let n = self.conn.execute("UPDATE chats SET origin = ?2 WHERE id = ?1", params![id, origin])?;
+        found(n, || format!("chat {id}"))
+    }
+
     /// Delete a chat with its messages, steps, grants and undo journal entries. Returns the
     /// task ids whose journals were dropped, so the caller can remove their backup folders.
     pub fn delete_chat(&self, id: &str) -> Result<Vec<String>> {
@@ -225,7 +232,7 @@ impl Store {
     }
 }
 
-const CHAT_COLS: &str = "id, title, workspace, created_at, updated_at, pinned_at, archived_at";
+const CHAT_COLS: &str = "id, title, workspace, created_at, updated_at, pinned_at, archived_at, origin";
 
 fn chat_row(r: &Row<'_>) -> rusqlite::Result<Chat> {
     Ok(Chat {
@@ -236,6 +243,7 @@ fn chat_row(r: &Row<'_>) -> rusqlite::Result<Chat> {
         updated_at: r.get(4)?,
         pinned_at: r.get(5)?,
         archived_at: r.get(6)?,
+        origin: r.get(7)?,
     })
 }
 

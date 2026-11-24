@@ -111,6 +111,8 @@ pub(crate) struct Summary {
     pub pinned_at: Option<Millis>,
     #[serde(default)]
     pub archived_at: Option<Millis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     #[serde(default)]
     pub tasks: Vec<String>,
     /// Replies still marked streaming.
@@ -128,6 +130,7 @@ impl Summary {
             updated_at: self.updated_at,
             pinned_at: self.pinned_at,
             archived_at: self.archived_at,
+            origin: self.origin.clone(),
         }
     }
 }
@@ -157,6 +160,7 @@ impl ChatState {
                 updated_at: ts,
                 pinned_at: None,
                 archived_at: None,
+                origin: None,
             },
             deleted: false,
             messages: BTreeMap::new(),
@@ -211,6 +215,7 @@ impl ChatState {
             Event::WorkspaceSet { workspace } => self.chat.workspace.clone_from(workspace),
             Event::Pinned { pinned_at } => self.chat.pinned_at = *pinned_at,
             Event::Archived { archived_at } => self.chat.archived_at = *archived_at,
+            Event::Origin { origin } => self.chat.origin.clone_from(origin),
             Event::Touched { updated_at } => self.chat.updated_at = *updated_at,
             Event::MessageAdded { m, role, content, reasoning, done, task } => {
                 let msg = Msg {
@@ -344,6 +349,7 @@ impl ChatState {
             updated_at: c.updated_at,
             pinned_at: c.pinned_at,
             archived_at: c.archived_at,
+            origin: c.origin.clone(),
             tasks: self.tasks.iter().cloned().collect(),
             open: u32::try_from(self.messages.values().filter(|m| !m.done).count()).unwrap_or(u32::MAX),
         }
