@@ -11,13 +11,47 @@ use std::path::{Path, PathBuf};
 /// The flag login launches pass.
 pub const FLAG: &str = "--background";
 
+/// Where Nix keeps packages; a path in it changes with every update.
+const NIX_STORE: &str = "/nix/store";
+
 /// The program to start: the AppImage if byob runs from one (its own path is a temporary
-/// mount), else this executable.
+/// mount); a Nix install's stable profile path; else this executable.
 fn program() -> Result<PathBuf, String> {
-    if let Some(appimage) = std::env::var_os("APPIMAGE").filter(|p| !p.is_empty()) {
-        return Ok(PathBuf::from(appimage));
+    let exe = std::env::current_exe().map_err(|e| format!("couldn't tell where byob is: {e}"))?;
+    Ok(stable_program(&exe, std::env::var_os("APPIMAGE"), std::env::var_os("PATH"), Path::new(NIX_STORE)))
+}
+
+/// `exe` as login should start it. Under the Nix store (`store`) the path is gone after the
+/// next update and garbage collection, so it's the `byob` on `PATH` that a profile links into
+/// the store (e.g. `~/.nix-profile/bin/byob`, `/run/current-system/sw/bin/byob`), kept as
+/// that link rather than followed; `PATH` folders inside the store itself (`nix shell`) are
+/// skipped. Nothing like that: `exe`.
+fn stable_program(exe: &Path, appimage: Option<std::ffi::OsString>, path: Option<std::ffi::OsString>, store: &Path) -> PathBuf {
+    if let Some(appimage) = appimage.filter(|p| !p.is_empty()) {
+        return PathBuf::from(appimage);
     }
-    std::env::current_exe().map_err(|e| format!("couldn't tell where byob is: {e}"))
+    if !exe.starts_with(store) {
+        return exe.to_owned();
+    }
+    let name = exe.file_name().unwrap_or_else(|| "byob".as_ref());
+    let linked = path.iter().flat_map(std::env::split_paths).map(|dir| dir.join(name)).find(|candidate| {
+        candidate.is_absolute()
+            && !candidate.starts_with(store)
+            && executable(candidate)
+            && std::fs::canonicalize(candidate).is_ok_and(|real| real.starts_with(store))
+    });
+    linked.unwrap_or_else(|| exe.to_owned())
+}
+
+#[cfg(unix)]
+fn executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn executable(p: &Path) -> bool {
+    p.is_file()
 }
 
 /// Whether byob starts at login now; `None` where it can't.
@@ -276,6 +310,39 @@ mod tests {
         remove_entry(&path).unwrap();
         assert!(!path.exists());
         remove_entry(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_nix_install_starts_from_its_profile_link_not_the_store() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let store = root.join("nix/store");
+        let bin = |p: &Path| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let exe = store.join("aaa-byob-0.3.11/bin/byob");
+        bin(&exe);
+        // `nix shell` puts a store folder on PATH first; a profile links into the store.
+        let shell = store.join("bbb-byob-0.3.12/bin/byob");
+        bin(&shell);
+        let profile = root.join("home/.nix-profile/bin");
+        std::fs::create_dir_all(&profile).unwrap();
+        symlink(&exe, profile.join("byob")).unwrap();
+        let elsewhere = root.join("usr/bin/byob");
+        bin(&elsewhere);
+        let path = |dirs: &[&Path]| Some(std::env::join_paths(dirs).unwrap());
+        let found = stable_program(&exe, None, path(&[root.join("empty").as_path(), shell.parent().unwrap(), &profile]), &store);
+        assert_eq!(found, profile.join("byob"), "the link, not where it points");
+        // A byob on PATH that isn't Nix's own isn't taken for it.
+        assert_eq!(stable_program(&exe, None, path(&[elsewhere.parent().unwrap()]), &store), exe);
+        assert_eq!(stable_program(&exe, None, None, &store), exe);
+        // Outside the store, and from an AppImage, nothing changes.
+        assert_eq!(stable_program(&elsewhere, None, path(&[&profile]), &store), elsewhere);
+        assert_eq!(stable_program(&exe, Some("/apps/byob.AppImage".into()), path(&[&profile]), &store), PathBuf::from("/apps/byob.AppImage"));
     }
 
     #[test]
