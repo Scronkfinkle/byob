@@ -37,6 +37,8 @@ byob-memory.workspace = true
 byob-help.workspace = true
 byob-calendar.workspace = true
 byob-mail = { workspace = true, optional = true }
+# Telegram as a channel (My phone) behind the bundled `telegram` plugin.
+byob-telegram.workspace = true
 byob-store.workspace = true
 byob-server.workspace = true
 byob-ui-egui.workspace = true

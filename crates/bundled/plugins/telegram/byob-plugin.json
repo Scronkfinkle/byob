@@ -1,0 +1,22 @@
+{
+  "id": "telegram",
+  "name": "Telegram",
+  "version": "1.0.0",
+  "description": "Texts from byob on your phone through a Telegram bot of your own: routines tell you what they found, ask you to approve things with Yes/No buttons, and you can reply. Free; byob only reads the bot's messages by asking Telegram for them (no open port). Off until you add your bot's token.",
+  "icon": "message-circle",
+  "enabled": false,
+  "permissions": { "network": true },
+  "backend": { "native": "telegram" },
+  "channels": [
+    { "id": "telegram", "title": "Telegram", "two_way": true, "buttons": true, "max_len": 4096, "pair": "code" }
+  ],
+  "settings": [
+    {
+      "key": "BOT_TOKEN",
+      "label": "Bot token",
+      "secret": true,
+      "required": true,
+      "help": "Make a bot of your own (about 2 minutes): open Telegram, search for @BotFather and start a chat with it, send /newbot, pick a name (anything, like \"My byob\") and then a username that ends in \"bot\" (like my_byob_bot). BotFather answers with a token that looks like 123456789:AAE…; copy it and paste it here. Keep it secret: anyone with it can use your bot."
+    }
+  ]
+}

@@ -69,6 +69,8 @@ pub fn load(tools: &mut Registry, artifact_types: &byob_tools::ArtifactTypes, li
     // The bundled `mail` plugin's backend: one IMAP + SMTP account.
     #[cfg(feature = "native-mail")]
     let natives = natives.backend(byob_mail::ID, byob_mail::factory());
+    // The bundled `telegram` plugin's backend: a bot of the user's, by long polling (My phone).
+    let natives = natives.backend(byob_telegram::ID, byob_telegram::factory());
     // The bundled `help` plugin's backend: byob_help over byob's own user docs.
     let natives = natives.backend(byob_help::ID, byob_help::factory());
     let mut plugins = PluginsConfig {

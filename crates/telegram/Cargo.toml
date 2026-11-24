@@ -1,0 +1,19 @@
+[package]
+name = "byob-telegram"
+description = "Telegram as a native plugin backend: a bot reached by long polling, the bundled telegram plugin's channel (L4)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+byob-plugins.workspace = true
+serde_json.workspace = true
+log.workspace = true
+# Blocking HTTP (rustls), the same client as inference. MIT OR Apache-2.0.
+ureq.workspace = true
+
+[lints]
+workspace = true

@@ -738,6 +738,7 @@ dependencies = [
  "byob-server",
  "byob-sheets",
  "byob-store",
+ "byob-telegram",
  "byob-tools",
  "byob-types",
  "byob-ui-egui",
@@ -974,6 +975,16 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "byob-telegram"
+version = "0.3.11"
+dependencies = [
+ "byob-plugins",
+ "log",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

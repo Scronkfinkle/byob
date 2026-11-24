@@ -42,6 +42,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("byob-calendar", 4),
     // the native mail backend (IMAP/SMTP): engine-side, registered by the app
     ("byob-mail", 4),
+    // the native Telegram channel backend (Bot API long polling): engine-side, registered by the app
+    ("byob-telegram", 4),
     // the native help backend (byob_help over byob's own user docs): engine-side, registered by the app
     ("byob-help", 4),
     ("byob-server", 5),
