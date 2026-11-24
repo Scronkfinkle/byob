@@ -116,13 +116,8 @@ mod dbus {
             let mut hints: HashMap<&str, Value> = HashMap::new();
             hints.insert("desktop-entry", Value::from("byob"));
             let actions: Vec<&str> = vec!["default", "Open byob"];
-            let reply = conn.call_method(
-                Some(DEST),
-                PATH,
-                Some(DEST),
-                "Notify",
-                &("byob", 0u32, "byob", note.title.as_str(), note.body.as_str(), actions, hints, -1i32),
-            );
+            let reply =
+                conn.call_method(Some(DEST), PATH, Some(DEST), "Notify", &("byob", 0u32, "", note.title.as_str(), note.body.as_str(), actions, hints, -1i32));
             match reply.and_then(|m| m.body().deserialize::<u32>()) {
                 Ok(id) => {
                     let mut map = pending.lock().unwrap_or_else(PoisonError::into_inner);
