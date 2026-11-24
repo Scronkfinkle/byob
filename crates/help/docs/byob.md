@@ -112,7 +112,14 @@ gives way to Back, a search field (any setting by name, what it does, or a word 
 it; Ctrl/Cmd+F) and the categories: Models (saved models and their roles), Chats (what every
 chat starts with: instructions, approvals, limits, context), Plugins and, on this device only,
 Appearance (light or dark, themes, accent, messages, theme files), Text & layout (zoom, sizes,
-fonts, density, accessibility) and Colors. Back or Esc returns to the chat as you left it.
+fonts, density, accessibility), Colors and, in the desktop app, System (keep running in the
+background, start at login). Back or Esc returns to the chat as you left it.
+
+**In the background** (Settings → System): with Keep running in the background on Always (or
+When routines are on, once you have some), closing the window hides it and byob goes on; its
+tray icon opens it again or quits it. Without a tray, open byob again: a second launch brings
+the running one's window back (one byob runs per data folder). Start byob when you log in
+starts it hidden.
 
 **What's shown** (Settings → Appearance, shared by every window and browser tab): each detail
 of the interface (who wrote a message, the thinking and its length, tool steps, Undo, a reply's

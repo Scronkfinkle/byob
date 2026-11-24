@@ -3,6 +3,7 @@
 
 pub mod chart;
 pub mod config;
+pub mod desktop;
 pub mod layout;
 pub mod profile;
 pub mod routine;

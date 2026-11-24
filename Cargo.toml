@@ -127,6 +127,14 @@ png = "0.18"
 # Sandbox (byob-sandbox). Safe Landlock bindings; `nix` for unshare/killpg/setrlimit
 # (rustix's `unshare` is `unsafe`, and the workspace forbids unsafe code).
 landlock = "0.4"
+# Running in the background (apps/byob): the tray icon and notifications. Linux: a
+# StatusNotifierItem over D-Bus (ksni; Unlicense) and a direct call to
+# org.freedesktop.Notifications, both on zbus 5 (already here through accesskit; no tokio).
+# macOS and Windows: tray-icon and notify-rust (MIT/Apache) with the system's own APIs.
+ksni = { version = "0.3.7", default-features = false, features = ["async-io", "blocking"] }
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+tray-icon = { version = "0.26", default-features = false }
+notify-rust = { version = "4", default-features = false }
 nix = { version = "0.31", default-features = false, features = ["sched", "signal", "resource", "user", "process"] }
 
 # search_files: ripgrep's walker (.gitignore rules; Unlicense OR MIT) and the regex

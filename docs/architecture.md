@@ -263,7 +263,10 @@ requests: compaction, images to the model, tool calling; and the workspace in vi
 gallery; accent and shape: accent, corner radius, chart colors; messages: layout, your
 messages, replies; theme files; reset), **Text & layout** (size: zoom, text, code; fonts;
 layout: density, conversation width, chat list width, artifact pane; accessibility: high
-contrast, reduce motion; reset) and **Colors** (every color role, in two columns).
+contrast, reduce motion; reset), **Colors** (every color role, in two columns) and **System**
+(keep running in the background, kept by the engine: `ClientMsg::SetKeepRunning`,
+`EngineState::keep_running`; start at login, through the `desktop::Desktop` the app plugs in;
+without one, in a browser, the tab isn't listed).
 
 **Registry.** `settings/registry.rs` declares every setting once: a `Key`, an id, its
 `Section` (tab, title, blurb), name, one-line description, search keywords and `Kind` (`Row`:
@@ -295,6 +298,43 @@ id such as `accent`, `approvals`, `reduce-motion`); `--settings-search TEXT`; `-
 models|plugins|plugin:<id>|add-models:<url>|edit-model:<id>`. Spacing comes from `form.rs`
 (page padding, rows, one control height, section gaps, all through `Tokens::pad`); the
 workspace and chat settings keep `form::grid` and the same `LayerEditor` fields.
+
+## Running in the background
+
+`apps/byob/src/background/` (the desktop app only; the UI crate gets a `desktop::Desktop` for
+start at login and nothing else):
+
+- **Closing.** `App::logic` runs every frame and, while the window is hidden, whenever
+  something calls `request_repaint` (the engine's messages, the `Bus`). On a close request
+  it decides with `KeepRunning::hides_on_close(routines_on)` (the engine's `keep_running`,
+  saved in settings.json and sent in `EngineState`; until the state arrives, closing quits:
+  `when-routines-are-on` (default), `always`, `never`; `routines_on` is a stub returning false
+  until routines exist): hide (`CancelClose` + `Visible(false)`) or let the close through.
+  Quit byob (tray) or Ctrl/Cmd+Q sets `quitting` and sends `Close`, which goes through.
+  `--background` (login launches) hides the window at the first frame if closing would.
+  Wayland can't hide a window (winit), so there it's closed: `run_native` returns,
+  `Background::wait_to_reopen` blocks on the bus, and a Show runs `run_native` again (eframe
+  reuses its event loop) with a new `App`; `Background` (tray, told, paused) outlives windows.
+- **The bus.** The tray, the instance listener and notification clicks send `Event`s (Show,
+  Quit, TogglePause, Run, Clicked, TrayHost) on an mpsc channel and wake the window.
+- **One byob per data folder.** `<data>/instance.lock` is held with an OS file lock
+  (`File::try_lock`; released by the OS when the process ends, so a crash leaves nothing to
+  clean up); `<data>/instance.addr` (0600) has the pid, a loopback port and a token (apart
+  from the lock: on Windows a locked file can't be read). The listener takes one line,
+  `<token> show` or `<token> run <routine>`, and answers `ok` or `err <why>`. A second launch
+  sends `show` and exits 0; a second `--headless` refuses to start. `--screenshot` runs skip
+  all of it (and the tray and notifications).
+- **Tray.** Linux/BSD: ksni (StatusNotifierItem, zbus 5 with `async-io`, its own thread);
+  no watcher → `TrayHost(false)` and the first hide's notification says to open byob again.
+  macOS/Windows: tray-icon, made from `logic` on the main thread, its global menu/click
+  handlers feeding the bus. The menu comes from `tray::Menu` (routines for Run ▸, paused,
+  attention), redrawn when it changes. It's up while closing hides the window.
+- **Notifications.** Linux: `org.freedesktop.Notifications.Notify` over zbus with a `default`
+  action; `ActionInvoked` → `Event::Clicked(action id)`. macOS/Windows: notify-rust (shown;
+  clicks don't come back).
+- **Start at login.** `autostart.rs`: an XDG autostart entry, a LaunchAgent, or the HKCU Run
+  key (`reg.exe`), each starting `byob --background`; the entry's presence is the setting. A Nix install
+  starts the `byob` its profile puts on PATH (the link, not the store path it points at).
 
 ## Themes
 

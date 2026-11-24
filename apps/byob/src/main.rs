@@ -4,6 +4,8 @@
 //! byob                         desktop window
 //! byob --serve [ADDR]          desktop window + browser access (default 127.0.0.1:7470)
 //! byob --headless [ADDR]       browser access only, no window
+//! byob --background            start with the window hidden (at login), if closing it would
+//!                             hide it too (Settings → System → Keep running in the background)
 //!     --web-dir DIR           serve the browser UI from DIR (or $BYOB_WEB_DIR) instead of the built-in copy
 //!     --allow-user LOGIN      only admit this Tailscale login via `tailscale serve` (repeatable)
 //!     --inference-url URL     OpenAI-compatible base URL (default: settings.json)
@@ -66,12 +68,16 @@
 //!     --draft TEXT            type TEXT into the composer once the messages are done, unsent
 //! ```
 //!
+//! One byob runs per data folder: launching it again shows the running one's window
+//! (`<data>/instance.lock`, see `background::instance`). Scripted (`--screenshot`) runs don't take part.
+//!
 //! Chats live in `byob.db` (or, with `storage = "folder"`, in plain files); preferences in `settings.json` and the API key in `secrets.json`
 //! (all under `$BYOB_HOME` if set, else the platform config/data directories). Flags and
 //! `BYOB_API_KEY` override the files for this run; changing the endpoint in the UI saves it.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod apphost;
+mod background;
 mod extensions;
 mod gpu;
 mod launch_env;
@@ -91,6 +97,8 @@ use byob_types::InferenceConfig;
 struct Args {
     serve: Option<SocketAddr>,
     headless: bool,
+    /// `--background`: start with the window hidden (login launches).
+    background: bool,
     /// Explicit `--web-dir` / `$BYOB_WEB_DIR`; otherwise the embedded UI.
     web_dir: Option<PathBuf>,
     allowed_users: Vec<String>,
@@ -122,7 +130,7 @@ struct Args {
     help: bool,
 }
 
-const USAGE: &str = "usage: byob [--serve [ADDR] | --headless [ADDR]] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--storage sqlite|folder] [--chats-folder DIR] [--export-chats-to sqlite|folder] [--plugin DIR]... [--auto-approve | --yolo] [--dev-tools] [--theme system|dark|light|THEME] [--backdrop FILE|off] [--arrangement docked|floating|focus] [--look KEY=VALUE]...";
+const USAGE: &str = "usage: byob [--serve [ADDR] | --headless [ADDR]] [--background] [--web-dir DIR] [--allow-user LOGIN]... [--inference-url URL] [--model NAME] [--workspace DIR] [--storage sqlite|folder] [--chats-folder DIR] [--export-chats-to sqlite|folder] [--plugin DIR]... [--auto-approve | --yolo] [--dev-tools] [--theme system|dark|light|THEME] [--backdrop FILE|off] [--arrangement docked|floating|focus] [--look KEY=VALUE]...";
 
 fn storage_kind(flag: &str, v: Option<String>) -> Result<StorageKind, String> {
     match v.as_deref() {
@@ -153,6 +161,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut args = Args {
         serve: None,
         headless: false,
+        background: false,
         allowed_users: Vec::new(),
         web_dir: std::env::var_os("BYOB_WEB_DIR").map(PathBuf::from),
         inference_url: None,
@@ -194,6 +203,7 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                 };
                 args.serve = Some(addr);
             }
+            "--background" => args.background = true,
             "--web-dir" => args.web_dir = Some(it.next().ok_or("--web-dir needs a path")?.into()),
             "--allow-user" => args.allowed_users.push(it.next().ok_or("--allow-user needs a Tailscale login")?),
             "--inference-url" => args.inference_url = Some(it.next().ok_or("--inference-url needs a URL")?),
@@ -333,6 +343,8 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
 struct App {
     ui: byob_ui_egui::ByobApp,
     script: testing::Runner,
+    /// Closing hides the window, the tray, notifications (shared with `run_ui`: it outlives the window).
+    background: std::rc::Rc<std::cell::RefCell<background::Background>>,
     /// byob in a context of its own, composited onto the window (with a backdrop).
     compositor: Option<byob_ui_egui::cockpit::compositor::Compositor>,
 }
@@ -342,6 +354,7 @@ impl eframe::App for App {
     // the engine's messages are taken here so look changes don't wait for the window.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ui.logic(ctx);
+        self.background.borrow_mut().logic(ctx, &self.ui);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -361,6 +374,7 @@ impl eframe::App for App {
         eframe::set_value(storage, byob_ui_egui::theme::Prefs::STORAGE_KEY, &self.ui.prefs());
         eframe::set_value(storage, byob_ui_egui::pane::PanePrefs::STORAGE_KEY, &self.ui.pane_prefs());
         eframe::set_value(storage, byob_ui_egui::sidebar::SidebarPrefs::STORAGE_KEY, &self.ui.sidebar_prefs());
+        eframe::set_value(storage, background::Told::STORAGE_KEY, &self.background.borrow().told());
     }
 }
 
@@ -524,6 +538,12 @@ fn run() -> Result<(), String> {
     if let Some(to) = args.export_to {
         return export_chats(to, saved.paths.as_ref(), &storage);
     }
+    let (bus, events) = background::Bus::new();
+    // Held until byob exits: the data folder is this process's.
+    let _instance = match claim_instance(saved.paths.as_ref(), &args, &bus)? {
+        Started::Alone(instance) => instance,
+        Started::HandedOver => return Ok(()),
+    };
     let mut config = EngineConfig::new(inference_config(&args, &saved.settings, &saved.secrets));
     // Returning users (an endpoint worked before) and explicit `--inference-url` runs go
     // straight to the chat; everyone else gets the welcome screen until something answers.
@@ -580,7 +600,57 @@ fn run() -> Result<(), String> {
     }
     log::info!("{} tools available; new chats work in {}", config.tools.len(), config.workspace.display());
     let engine = EngineHandle::spawn_with(config).map_err(|e| format!("starting engine: {e}"))?;
-    run_ui(args, engine, saved_theme, themes_dir)
+    run_ui(args, engine, saved_theme, themes_dir, Outside { bus, events })
+}
+
+enum Started {
+    /// This process has the data folder (`None`: no single-instance check this run).
+    Alone(Option<background::instance::Instance>),
+    /// Another byob has it and was asked to show its window: nothing more to do.
+    HandedOver,
+}
+
+/// One byob per data folder: take it, or ask the byob that has it to show its window.
+/// Scripted runs (`--screenshot`) stay out, so they can run beside the real one.
+fn claim_instance(paths: Option<&Paths>, args: &Args, bus: &background::Bus) -> Result<Started, String> {
+    use background::instance::{Claim, Request, claim};
+    let Some(paths) = paths.filter(|_| args.script.screenshot.is_none()) else { return Ok(Started::Alone(None)) };
+    match claim(&paths.data_dir) {
+        Ok(Claim::First(instance)) => {
+            let (bus, headless) = (bus.clone(), args.headless);
+            let answer = move |req: Request| match req {
+                Request::Show if headless => Err("that byob runs without a window (--headless)".to_owned()),
+                Request::Show => {
+                    bus.send(background::Event::Show);
+                    Ok(())
+                }
+                Request::Run(_) => Err("that byob has no routines yet".to_owned()),
+            };
+            if let Err(e) = instance.listen(answer) {
+                log::warn!("{e}; launching byob again won't find this one");
+            }
+            Ok(Started::Alone(Some(instance)))
+        }
+        Ok(Claim::Taken(running)) if args.headless => {
+            Err(format!("byob is already running on {} (pid {}); quit it first, or give this one its own BYOB_HOME", paths.data_dir.display(), running.pid))
+        }
+        Ok(Claim::Taken(running)) => {
+            running.send(&Request::Show).map_err(|e| format!("byob is already running (pid {}), but: {e}", running.pid))?;
+            eprintln!("byob: already running (pid {}); showed its window", running.pid);
+            Ok(Started::HandedOver)
+        }
+        Err(e) => {
+            log::warn!("{e}; not checking for another byob on this data folder");
+            Ok(Started::Alone(None))
+        }
+    }
+}
+
+/// What the window gets from outside it: events (tray, other launches, notifications) and
+/// the desktop's own settings.
+struct Outside {
+    bus: background::Bus,
+    events: std::sync::mpsc::Receiver<background::Event>,
 }
 
 /// Where "Open in browser" finds artifacts: the `--serve` server if there is one, else a
@@ -607,7 +677,7 @@ fn link_base(engine: EngineHandle, serving: Option<SocketAddr>) -> byob_ui_egui:
     })
 }
 
-fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::ThemeKind, themes_dir: Option<PathBuf>) -> Result<(), String> {
+fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::ThemeKind, themes_dir: Option<PathBuf>, outside: Outside) -> Result<(), String> {
     use byob_ui_egui::theme;
     let mut serving = None;
     if let Some(addr) = args.serve {
@@ -651,92 +721,117 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
             return Err(format!("unknown theme {name:?} (system, dark, light, {}, or a file in the themes folder)", ids.join(", ")));
         }
     }
-    let script = testing::Runner::new(args.script);
+    // Scripted runs close when done and leave the tray and notifications alone.
+    let in_background = args.script.screenshot.is_none();
+    let start_hidden = args.background;
+    let mut script = Some(testing::Runner::new(args.script));
+    let Outside { bus, events } = outside;
+    // Outlives each window: where a window can't hide (Wayland), closing it closes it and byob
+    // waits for a Show to open another.
+    let background = std::rc::Rc::new(std::cell::RefCell::new(background::Background::new(bus, events, in_background, start_hidden)));
     let (theme_arg, open_settings, section, search) = (args.theme, args.open_settings, args.settings_section, args.settings_search);
     let backdrop_arg = args.backdrop;
     let (arrangement_arg, arranging, look_args) = (args.arrangement, args.arranging, args.look);
-    let result = eframe::run_native(
-        "byob",
-        options,
-        Box::new(move |cc| {
-            let ctx = cc.egui_ctx.clone();
-            let conn = engine.connect(Arc::new(move || ctx.request_repaint()));
-            let mut ui = byob_ui_egui::ByobApp::new(Box::new(conn), "desktop");
-            if cfg!(target_os = "macos") {
-                ui.set_titlebar(Some(byob_ui_egui::sidebar::Titlebar::MACOS));
-            }
-            ui.set_link_base(link_base(engine.clone(), serving));
-            if let Some(dir) = themes_dir {
-                ui.set_themes_dir(dir);
-            }
-            // This device's saved appearance, else the theme from settings.json.
-            let stored: Option<theme::Prefs> = cc.storage.and_then(|s| eframe::get_value(s, theme::Prefs::STORAGE_KEY));
-            let mut prefs = stored.unwrap_or(theme::Prefs { theme: saved_theme, ..Default::default() });
-            if let Some(name) = &theme_arg {
-                theme::file::select(&mut prefs, name, ui.user_themes());
-            }
-            if let Some(arg) = &backdrop_arg {
-                // Asked for by name: trusted, not on trial.
-                prefs.cockpit.backdrop.clone_from(arg);
-                prefs.cockpit.trial = false;
-            }
-            if let Some(name) = &arrangement_arg {
-                match byob_ui_egui::cockpit::arrange::Arrangement::preset(name) {
-                    Some(a) => prefs.cockpit.arrangement = a,
-                    None => prefs.cockpit.arrangement.free = false,
+    let result = loop {
+        // The script runs in the first window only.
+        let script = script.take().unwrap_or_else(|| testing::Runner::new(testing::Script::default()));
+        let window = eframe::run_native(
+            "byob",
+            options.clone(),
+            Box::new(|cc| {
+                let ctx = cc.egui_ctx.clone();
+                let conn = engine.connect(Arc::new(move || ctx.request_repaint()));
+                let mut ui = byob_ui_egui::ByobApp::new(Box::new(conn), "desktop");
+                ui.set_desktop(Box::new(background::DesktopHost::new()));
+                let told = cc.storage.and_then(|s| eframe::get_value(s, background::Told::STORAGE_KEY)).unwrap_or_default();
+                // winit can't hide a window on Wayland.
+                let can_hide = {
+                    use eframe::egui_wgpu::wgpu::rwh::{HasWindowHandle, RawWindowHandle};
+                    !matches!(cc.window_handle().map(|h| h.as_raw()), Ok(RawWindowHandle::Wayland(_)))
+                };
+                background.borrow_mut().attach(&cc.egui_ctx, can_hide, told);
+                if cfg!(target_os = "macos") {
+                    ui.set_titlebar(Some(byob_ui_egui::sidebar::Titlebar::MACOS));
                 }
-            }
-            if !look_args.is_empty() {
-                let changes: byob_protocol::look::LookChanges =
-                    look_args.iter().map(|(k, v)| (k.clone(), serde_json::from_str(v).unwrap_or_else(|_| serde_json::Value::String(v.clone())))).collect();
-                for problem in byob_ui_egui::look::apply(&mut prefs, &changes, true, ui.user_themes(), true) {
-                    log::warn!("--look {problem}");
+                ui.set_link_base(link_base(engine.clone(), serving));
+                if let Some(dir) = themes_dir.clone() {
+                    ui.set_themes_dir(dir);
                 }
-                prefs.cockpit.trial = false;
-            }
-            ui.restore_prefs(prefs);
-            if arranging {
-                ui.arrange_by_hand();
-            }
-            let mut compositor = None;
-            if let Some(rs) = &cc.wgpu_render_state
-                && std::env::var_os("BYOB_NO_BACKDROP").is_none()
-            {
-                ui.enable_backdrops(rs);
-                // With a backdrop, byob runs in a context of its own, composited onto the
-                // window (frosted glass).
-                if byob_ui_egui::cockpit::compositor::wanted(&ui.prefs().cockpit) {
-                    log::info!("compositing the window (frosted glass)");
-                    compositor = Some(byob_ui_egui::cockpit::compositor::Compositor::new(rs, &cc.egui_ctx));
+                // This device's saved appearance, else the theme from settings.json.
+                let stored: Option<theme::Prefs> = cc.storage.and_then(|s| eframe::get_value(s, theme::Prefs::STORAGE_KEY));
+                let mut prefs = stored.unwrap_or(theme::Prefs { theme: saved_theme, ..Default::default() });
+                if let Some(name) = &theme_arg {
+                    theme::file::select(&mut prefs, name, ui.user_themes());
                 }
-            }
-            // HTML apps inline, if the Servo helper is installed; else the summary + Open.
-            // Their pictures belong to the context byob draws in.
-            let byob_ctx = compositor.as_ref().map_or(&cc.egui_ctx, |c| c.context());
-            if let Some(view) = apphost::ServoView::new(byob_ctx) {
-                ui.set_app_view(Box::new(view));
-            }
-            if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::pane::PanePrefs>(s, byob_ui_egui::pane::PanePrefs::STORAGE_KEY)) {
-                ui.artifacts_mut().set_pane_prefs(pane);
-            }
-            if let Some(list) =
-                cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::sidebar::SidebarPrefs>(s, byob_ui_egui::sidebar::SidebarPrefs::STORAGE_KEY))
-            {
-                ui.set_sidebar_prefs(&list);
-            }
-            ui.set_settings_open(open_settings);
-            if let Some(section) = &section
-                && !ui.reveal_settings(section)
-            {
-                log::warn!("--settings-section {section}: no such settings tab or setting");
-            }
-            if let Some(text) = &search {
-                ui.set_settings_search(text);
-            }
-            Ok(Box::new(App { ui, script, compositor }))
-        }),
-    )
-    .map_err(|e| e.to_string());
+                if let Some(arg) = &backdrop_arg {
+                    // Asked for by name: trusted, not on trial.
+                    prefs.cockpit.backdrop.clone_from(arg);
+                    prefs.cockpit.trial = false;
+                }
+                if let Some(name) = &arrangement_arg {
+                    match byob_ui_egui::cockpit::arrange::Arrangement::preset(name) {
+                        Some(a) => prefs.cockpit.arrangement = a,
+                        None => prefs.cockpit.arrangement.free = false,
+                    }
+                }
+                if !look_args.is_empty() {
+                    let changes: byob_protocol::look::LookChanges =
+                        look_args.iter().map(|(k, v)| (k.clone(), serde_json::from_str(v).unwrap_or_else(|_| serde_json::Value::String(v.clone())))).collect();
+                    for problem in byob_ui_egui::look::apply(&mut prefs, &changes, true, ui.user_themes(), true) {
+                        log::warn!("--look {problem}");
+                    }
+                    prefs.cockpit.trial = false;
+                }
+                ui.restore_prefs(prefs);
+                if arranging {
+                    ui.arrange_by_hand();
+                }
+                let mut compositor = None;
+                if let Some(rs) = &cc.wgpu_render_state
+                    && std::env::var_os("BYOB_NO_BACKDROP").is_none()
+                {
+                    ui.enable_backdrops(rs);
+                    // With a backdrop, byob runs in a context of its own, composited onto the
+                    // window (frosted glass).
+                    if byob_ui_egui::cockpit::compositor::wanted(&ui.prefs().cockpit) {
+                        log::info!("compositing the window (frosted glass)");
+                        compositor = Some(byob_ui_egui::cockpit::compositor::Compositor::new(rs, &cc.egui_ctx));
+                    }
+                }
+                // HTML apps inline, if the Servo helper is installed; else the summary + Open.
+                // Their pictures belong to the context byob draws in.
+                let byob_ctx = compositor.as_ref().map_or(&cc.egui_ctx, |c| c.context());
+                if let Some(view) = apphost::ServoView::new(byob_ctx) {
+                    ui.set_app_view(Box::new(view));
+                }
+                if let Some(pane) = cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::pane::PanePrefs>(s, byob_ui_egui::pane::PanePrefs::STORAGE_KEY)) {
+                    ui.artifacts_mut().set_pane_prefs(pane);
+                }
+                if let Some(list) =
+                    cc.storage.and_then(|s| eframe::get_value::<byob_ui_egui::sidebar::SidebarPrefs>(s, byob_ui_egui::sidebar::SidebarPrefs::STORAGE_KEY))
+                {
+                    ui.set_sidebar_prefs(&list);
+                }
+                ui.set_settings_open(open_settings);
+                if let Some(section) = &section
+                    && !ui.reveal_settings(section)
+                {
+                    log::warn!("--settings-section {section}: no such settings tab or setting");
+                }
+                if let Some(text) = &search {
+                    ui.set_settings_search(text);
+                }
+                Ok(Box::new(App { ui, script, compositor, background: background.clone() }))
+            }),
+        );
+        if let Err(e) = window {
+            break Err(e.to_string());
+        }
+        // Closed to the background: wait until something asks for the window again.
+        if !background.borrow_mut().wait_to_reopen() {
+            break Ok(());
+        }
+    };
     if let Some(path) = scratch_state {
         let _ = std::fs::remove_file(path);
     }

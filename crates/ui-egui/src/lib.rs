@@ -12,6 +12,7 @@ pub mod compose_md;
 pub mod composer;
 pub mod connect;
 pub mod count;
+pub mod desktop;
 mod envpanel;
 pub mod export;
 mod fit;
@@ -207,6 +208,8 @@ pub struct ByobApp {
     stage: cockpit::Stage,
     /// Placing the free arrangement's modules by hand.
     arranging: cockpit::free::Arranging,
+    /// The desktop app's own settings (none in a browser).
+    desktop: Option<Box<dyn desktop::Desktop>>,
 }
 
 /// Changing one of your messages to start the chat over from it (`ClientMsg::Rewind`).
@@ -303,7 +306,31 @@ impl ByobApp {
             math: false,
             stage: cockpit::Stage::default(),
             arranging: cockpit::free::Arranging::default(),
+            desktop: None,
         }
+    }
+
+    /// The desktop app's own settings (keep running in the background, start at login).
+    pub fn set_desktop(&mut self, desktop: Box<dyn desktop::Desktop>) {
+        self.desktop = Some(desktop);
+    }
+
+    pub fn desktop(&self) -> Option<&dyn desktop::Desktop> {
+        self.desktop.as_deref()
+    }
+
+    /// Whether closing the desktop window keeps byob running, as the engine says (`None`:
+    /// not yet known, or an engine without the setting).
+    pub fn keep_running(&self) -> Option<desktop::KeepRunning> {
+        self.state.as_ref().and_then(|s| s.keep_running)
+    }
+
+    /// Change it (the engine saves it and tells every window).
+    pub(crate) fn set_keep_running(&mut self, value: desktop::KeepRunning) {
+        if let Some(state) = &mut self.state {
+            state.keep_running = Some(value);
+        }
+        self.conn.send(ClientMsg::SetKeepRunning { value });
     }
 
     /// Register renderers for more view kinds.

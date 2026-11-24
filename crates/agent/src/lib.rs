@@ -640,6 +640,8 @@ struct Engine {
     roles: BTreeMap<String, String>,
     /// What the interface shows ([`layout`]).
     layout: byob_protocol::layout::Layout,
+    /// Whether closing the desktop window keeps byob running (settings.json `keep_running`).
+    keep_running: byob_types::desktop::KeepRunning,
     /// Look reports and requests, numbered; requests waiting for a window's answer ([`look`]).
     look_seq: u64,
     look_waits: BTreeMap<u64, look::Waiting>,
@@ -760,6 +762,7 @@ impl Engine {
         let plugin_values = Self::load_plugin_values(config.paths.as_ref());
         let layout = Self::load_layout(config.paths.as_ref());
         let routines = routines::Routines::open(config.paths.as_ref(), config.clock);
+        let keep_running = config.paths.as_ref().map(|p| byob_store::Settings::load(&p.settings()).value.keep_running).unwrap_or_default();
         let sink_inbox = inbox.clone();
         let sink: backends::SinkFor = Arc::new(move |dir, plugin, generation| {
             let (inbox, dir, plugin) = (sink_inbox.clone(), dir.to_path_buf(), plugin.to_owned());
@@ -825,6 +828,7 @@ impl Engine {
             profile_keys: config.profile_keys,
             roles: config.roles,
             layout,
+            keep_running,
             look_seq: 0,
             look_waits: BTreeMap::new(),
             capture_waits: BTreeMap::new(),
@@ -1331,7 +1335,22 @@ impl Engine {
             yolo,
             chat_endpoint,
             routines_active: self.routines.any_scheduled(),
+            keep_running: Some(self.keep_running),
         }
+    }
+
+    /// `ClientMsg::SetKeepRunning`: saved, then every client's state says so.
+    fn set_keep_running(&mut self, client: ClientId, value: byob_types::desktop::KeepRunning) {
+        if value == self.keep_running {
+            return;
+        }
+        self.keep_running = value;
+        if let Some(paths) = &self.paths
+            && let Err(e) = byob_store::Settings::update(&paths.settings(), |s| s.keep_running = value)
+        {
+            self.notice(client, format!("couldn't save Keep running in the background: {e}"));
+        }
+        self.broadcast_state();
     }
 
     /// Send every client the state as it sees it (busy is per chat).
@@ -1501,6 +1520,7 @@ impl Engine {
             ClientMsg::TestProfile { id: p } => self.test_profile(id, p),
             ClientMsg::SetLevelProfile { scope, profile } => self.set_level_profile(id, scope, profile),
             ClientMsg::SetLayout { layout } => self.client_set_layout(id, layout),
+            ClientMsg::SetKeepRunning { value } => self.set_keep_running(id, value),
             ClientMsg::ReportLook(report) => self.report_look(id, report),
             ClientMsg::Captured { request, image, error } => self.captured(id, request, image, error),
             ClientMsg::SetConfig { scope, layer, api_key } => self.set_config(id, scope, layer, api_key),

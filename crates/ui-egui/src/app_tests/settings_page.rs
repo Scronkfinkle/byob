@@ -52,9 +52,74 @@ fn full_app() -> ByobApp {
     };
     let list = byob_protocol::profiles::ProfileList { items: vec![view("local"), view("cloud")], roles: [("main".to_owned(), "local".to_owned())].into() };
     let config = crate::workspace::tests::view(byob_protocol::ConfigScope::Global, byob_protocol::workspace::Layer::default(), None);
-    let app = crowded_with(fake.clone());
-    fake.inbox.lock().unwrap().extend([ServerMsg::Welcome(Welcome::current()), ServerMsg::Profiles(Box::new(list)), ServerMsg::Config(Box::new(config))]);
+    let mut app = crowded_with(fake.clone());
+    app.set_desktop(Box::new(FakeDesktop::default()));
+    fake.inbox.lock().unwrap().extend([
+        ServerMsg::Welcome(Welcome::current()),
+        ServerMsg::Profiles(Box::new(list)),
+        ServerMsg::Config(Box::new(config)),
+        keep_running_state(),
+    ]);
     app
+}
+
+/// An engine state that knows Keep running in the background (13.20+).
+fn keep_running_state() -> ServerMsg {
+    ServerMsg::State(byob_protocol::EngineState { keep_running: Some(crate::desktop::KeepRunning::WhenRoutines), onboarded: true, ..Default::default() })
+}
+
+/// The desktop app's side of its own settings, in memory.
+#[derive(Default)]
+struct FakeDesktop {
+    login: bool,
+}
+
+impl crate::desktop::Desktop for FakeDesktop {
+    fn start_at_login(&self) -> Option<bool> {
+        Some(self.login)
+    }
+    fn set_start_at_login(&mut self, on: bool) -> Result<(), String> {
+        self.login = on;
+        Ok(())
+    }
+}
+
+#[test]
+fn the_system_tab_is_only_where_there_is_a_desktop_app() {
+    let ctx = egui::Context::default();
+    // A browser: the engine knows the setting, but there's no window to keep.
+    let fake = Fake::default();
+    let mut browser = crowded_with(fake.clone());
+    fake.inbox.lock().unwrap().push(keep_running_state());
+    browser.set_settings_open(true);
+    let text = drawn_text(&ctx, &mut browser, 1000.0);
+    assert!(text.contains("Appearance") && !text.contains("In the background, at login") && !text.contains("System"), "{text}");
+    browser.set_settings_search("tray");
+    settle(&ctx, &mut browser, 1000.0);
+    assert!(drawn(&browser, Key::KeepRunning).is_empty(), "a browser can't keep byob running");
+    let mut desktop = full_app();
+    desktop.set_settings_search("tray");
+    settle(&ctx, &mut desktop, 1000.0);
+    assert_eq!(drawn(&desktop, Key::KeepRunning).len(), 1);
+    assert!(desktop.reveal_settings("start-at-login"));
+}
+
+#[test]
+fn keep_running_is_the_engines_setting() {
+    use crate::desktop::KeepRunning;
+    let fake = Fake::default();
+    let mut app = crowded_with(fake.clone());
+    app.set_desktop(Box::new(FakeDesktop::default()));
+    assert_eq!(app.keep_running(), None, "unknown until the engine says");
+    assert!(!app.setting_shown(Key::KeepRunning), "an engine without it: not offered");
+    fake.inbox.lock().unwrap().push(keep_running_state());
+    let ctx = egui::Context::default();
+    settle(&ctx, &mut app, 1000.0);
+    assert_eq!(app.keep_running(), Some(KeepRunning::WhenRoutines));
+    assert!(app.setting_shown(Key::KeepRunning));
+    app.set_keep_running(KeepRunning::Always);
+    assert_eq!(app.keep_running(), Some(KeepRunning::Always));
+    assert!(fake.sent.lock().unwrap().iter().any(|m| matches!(m, ClientMsg::SetKeepRunning { value: KeepRunning::Always })), "sent to the engine");
 }
 
 /// A few frames (the engine's answers arrive, rows settle their sizes).

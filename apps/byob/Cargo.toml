@@ -48,6 +48,7 @@ log.workspace = true
 env_logger.workspace = true
 # --look: appearance changes as the model's ui_look sends them.
 byob-protocol.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 png.workspace = true
 # Talking to the Servo helper process (host/artifact-host) that renders HTML apps inline.
@@ -55,6 +56,16 @@ byob-artifact-wire.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
+
+# The tray icon and notifications (background/): D-Bus on Linux and the BSDs, the system's
+# own APIs on macOS and Windows.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+ksni.workspace = true
+zbus.workspace = true
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tray-icon.workspace = true
+notify-rust.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
