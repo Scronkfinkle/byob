@@ -51,7 +51,7 @@ Conventions are adapted from filmcraft. When this file and other docs disagree, 
 - New crates: put them under `crates/` as `byob-<dir>`, add `[lints] workspace = true`, the
   crate-root deny attribute, and a layer entry in `xtask/src/main.rs`.
 - Keep fixes narrow; add a test that fails without the fix. Report only what actually ran.
-- Dependencies must be permissively licensed (MIT, Apache-2.0, BSD, ISC, Zlib, OFL, CC0).
+- Dependencies must be permissively licensed (MIT, Apache-2.0, BSD, ISC, Zlib, OFL, CC0, Unlicense).
 - `plan/` is a gitignored scratch notebook.
 - American spelling everywhere, user-visible or not: color, behavior, center, summarize,
   labeled, gray. Where models or old files may send a British key (`colour.*`), accept it
