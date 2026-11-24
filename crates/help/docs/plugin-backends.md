@@ -256,6 +256,46 @@ confirmed still ask), `{"action": "deny", "message"}` (not run; the model gets "
 `--auto-approve`). An `error` reply, a timeout or an unknown action is a fault in the
 plugin's status and fails open or closed as declared.
 
+## Channels
+
+A backend can be a way byob reaches the user outside the app ("text me") and they answer:
+
+```json
+"channels": [{"id": "telegram", "title": "Telegram", "two_way": true, "buttons": true, "max_len": 4096, "pair": "code"}]
+```
+
+`id` (`[a-z0-9_-]`, ≤ 32), `title`, `two_way` (the user can answer; default false), `buttons`
+(approvals answered with a tap; two-way only), `max_len` (characters, 100–65536, default 4096;
+byob cuts longer messages), `pair` (`code`, the default for two-way, or `none`). At most 4; they
+need a `backend`. Only global and bundled plugins can be channels (a project's or a chat's
+copy would read the user's messages). The channel's key is `<plugin>:<id>`. Its own settings
+(a bot token) are ordinary plugin settings. The bundled `telegram` plugin is one
+(`crates/telegram`, native).
+
+byob's engine owns everything that decides who may talk to it (`crates/agent/src/messaging.rs`,
+`byob_types::channel`): pairing codes (8 characters without 0/O/1/I, an hour, single use, at
+most 3 waiting per channel), the paired peers (by their immutable platform id) and My phone in
+`<config>/channels.json`, and routing. Requests byob sends:
+
+| method | params | result |
+|---|---|---|
+| `deliver` | `channel`, `to` (a paired peer), `text` (plain text, cut to `max_len`), `buttons`? (`[{id, label}]`, ids ≤ 64 bytes; only where `buttons`), `reply_to`?, `chat`?, `routine`? | `{"ref": "<the platform's message id>"}` (a reply to that message continues its chat) |
+| `pair_start` | `channel`, `code` (byob made it) | `{"link"?, "name"?, "instructions"?}` (a link that pairs with one tap) |
+| `unpair` | `channel`, `peer` | anything |
+
+It also sends the event `{"type": "event", "event": "channel_peers", "channel", "peers": [...]}`
+after the backend starts and when pairings change, so it can drop strangers early. What the
+backend sends:
+
+| type | fields | meaning |
+|---|---|---|
+| `inbound` | `channel`, `peer` (immutable id), `peer_name`?, `text`? or `button`? (a button's id), `reply_to`? (the message answered) | something a person sent. byob drops it unless the peer is paired; a button answers the approval it was sent for (never a must-confirm call: "open byob to confirm"); a reply continues that message's chat (the answer goes back); anything else gets a note of what works from a phone. Text is cut to 4000 characters; at most 10 a minute per peer |
+| `pair_claim` | `channel`, `peer`, `peer_name`?, `code` | someone sent a code (Telegram: `/start CODE` or the code itself). Only a waiting code pairs; that person becomes My phone |
+| `channel_status` | `channel`, `ok`, `text` | how it's doing ("Connected as @my_byob_bot", "Telegram refused the bot token"), shown in Settings → My phone |
+
+A one-way channel (a push service) declares `"two_way": false`: it gets `deliver` without
+buttons, and an approval says to open byob instead.
+
 ## The Python helper (`byob_plugin`)
 
 ```python

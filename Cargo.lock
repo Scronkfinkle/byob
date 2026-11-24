@@ -775,6 +775,7 @@ dependencies = [
  "byob-sandbox",
  "byob-sheets",
  "byob-store",
+ "byob-telegram",
  "byob-tools",
  "byob-types",
  "byob-web-tools",

@@ -20,8 +20,9 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod api;
-#[cfg(test)]
-mod fake;
+/// A scripted Telegram Bot API server for tests (also the engine's, with `fake-server`).
+#[cfg(any(test, feature = "fake-server"))]
+pub mod fake;
 #[cfg(test)]
 mod tests;
 

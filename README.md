@@ -149,6 +149,15 @@ tray icon opens it again or quits it. Without a tray, open byob again: a second 
 the running one's window back (one byob runs per data folder). Start byob when you log in
 starts it hidden.
 
+**My phone** (Settings → Plugins): byob can text you, on Telegram for now (free; a bot of your
+own: the section walks you through @BotFather's /newbot and the token). Pair my phone shows a
+link and a one-time code to send from the phone. Then a routine's Tell me offers Text me (or say
+"text me when it finds one"): its findings arrive as texts, its questions as Allow/Deny buttons
+(anything that must always be confirmed, like sending mail, says to open byob), and a reply to a
+text continues that chat, with the answer texted back. A phone can't start new work yet. byob
+only asks Telegram for the bot's messages (no open port); people who aren't paired get nothing.
+At most 10 texts a day per routine; the rest arrive together, later.
+
 **What's shown** (Settings → Appearance, shared by every window and browser tab): each detail
 of the interface (who wrote a message, the thinking and its length, tool steps, Undo, a reply's
 tokens, time and speed, artifact badges, code blocks' language and Copy, the paperclip,

@@ -15,5 +15,9 @@ log.workspace = true
 # Blocking HTTP (rustls), the same client as inference. MIT OR Apache-2.0.
 ureq.workspace = true
 
+[features]
+# `byob_telegram::fake`, a scripted Bot API server, for other crates' tests.
+fake-server = []
+
 [lints]
 workspace = true

@@ -613,6 +613,28 @@ the plugin's settings; the password is a secret setting. Blocking `imap` (over o
 stream) and lettre's sync SMTP transport; mail-parser for MIME. Details, limits and the live
 test: `docs/mail.md`.
 
+### Channels and My phone (bundled `telegram` plugin)
+
+A plugin can declare `channels` (see `docs/plugins-backend.md`, Channels): ways byob reaches
+the user outside the app. The engine (`crates/agent/src/messaging.rs`) owns pairing (one-time
+codes), the allowlist of paired peers and "My phone" (`<config>/channels.json`, global), and
+routes what comes back: a button answers its approval (never a must-confirm one), a reply
+continues the chat of the message it answers (a normal turn, the answer texted back; queued
+while the chat is busy), anything else gets a note of what a phone can do (it can't start new
+work in v1); strangers get nothing. Routines with Text me (`channels: ["phone"]`) text their
+reports and the approvals their runs wait on; runs get `text_me`. Caps: 10 texts a day per
+routine (then one batch), 30 an hour overall, 10 inbound a minute per peer. Deliveries go
+through one courier thread (backend requests block). Protocol: `ServerMsg::Phone`,
+`ClientMsg::{PairPhone, CancelPairing, UnpairPhone, TestPhone}` (cap `phone`); the UI is
+Settings → Plugins → My phone (`crates/ui-egui/src/phone.rs`).
+
+`crates/bundled/plugins/telegram` (shipped off; it needs a bot token, a secret setting) is
+served by native backend `telegram` (`crates/telegram`, `byob-telegram`, L4): Bot API over
+blocking `ureq`, `getUpdates` long polling on its own thread (no webhook, no open port),
+plain-text `sendMessage` with inline keyboards, `answerCallbackQuery`; private chats only;
+backoff on 401/409/429 and network errors with a plain status; the token never in logs.
+`BYOB_TELEGRAM_API` points it at another Bot API (a fake, for headless runs).
+
 ### Help (bundled `help` plugin)
 
 `crates/bundled/plugins/help` (on by default; read-only and local) serves `byob_help` from

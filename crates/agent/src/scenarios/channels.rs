@@ -370,3 +370,72 @@ fn text_me_only_in_runs_and_the_caps_hold() {
     assert_eq!(w.model.unused(), 0);
     w.model.check();
 }
+
+/// The real Telegram backend against a fake Bot API: the token set as the UI sets it, the
+/// phone paired with the deep link's `/start CODE`, a run's approval sent with an inline
+/// keyboard and answered with a button press, a stranger's message going nowhere.
+#[test]
+fn telegram_end_to_end_against_a_fake_bot_api() {
+    use byob_telegram::fake::{self, Next};
+    let api = fake::Server::start();
+    let time = Time::new("2026-11-24 07:00");
+    let (t, base) = (time.clone(), api.base.clone());
+    let mut w = World::with(move |c| {
+        c.clock = t.clock();
+        let base = base.clone();
+        let make: NativeFactory = Arc::new(move || Box::new(byob_telegram::Telegram::with_api(&base, 1)) as Box<dyn NativeBackend>);
+        if let Some(p) = c.plugins.as_mut() {
+            p.natives = std::mem::take(&mut p.natives).backend(byob_telegram::ID, make);
+        }
+    });
+    // Off and without a token, it says what to do; with one (as Settings → My phone sends it), it connects.
+    let state = w.phone_where(|s| s.channels.iter().any(|c| c.plugin == "telegram"));
+    let tg = state.channels.iter().find(|c| c.plugin == "telegram").unwrap();
+    assert!(!tg.enabled && !tg.configured && tg.setting.as_deref() == Some("BOT_TOKEN"), "{tg:?}");
+    w.tell(ClientMsg::SetPluginSetting { plugin: "telegram".into(), key: "BOT_TOKEN".into(), value: Some(fake::TOKEN.into()) });
+    w.tell(ClientMsg::SetPluginEnabled { scope: byob_protocol::ConfigScope::Global, plugin: "telegram".into(), enabled: Some(true) });
+    let key = "telegram:telegram";
+    w.phone_where(|s| s.channels.iter().any(|c| c.key == key && c.ok && c.status.as_deref() == Some(&format!("Connected as @{}", fake::BOT))));
+
+    w.tell(ClientMsg::PairPhone { channel: key.into() });
+    let pairing = w.phone_where(|s| s.pairing.is_some()).pairing.unwrap();
+    let code = pairing.code.replace('-', "");
+    assert_eq!(pairing.link.as_deref(), Some(format!("https://t.me/{}?start={code}", fake::BOT).as_str()));
+    api.push(Next::Updates(vec![fake::text(1, 555, &format!("/start {code}"))]));
+    let state = w.phone_where(|s| s.phone.is_some());
+    assert_eq!(state.phone.unwrap().name, "@ada");
+    let sent_to = |api: &fake::Server, who: i64| api.calls("sendMessage").into_iter().filter(|b| b["chat_id"] == json!(who.to_string())).collect::<Vec<_>>();
+    let wait_for = |api: &fake::Server, who: i64, n: usize| {
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            let got = sent_to(api, who);
+            if got.len() >= n {
+                return got;
+            }
+            assert!(Instant::now() < deadline, "only {} messages to {who}", got.len());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let hello = wait_for(&api, 555, 1);
+    assert!(hello[0]["text"].as_str().unwrap().starts_with("Paired with byob"));
+    assert!(hello[0].get("parse_mode").is_none(), "plain text");
+
+    // A stranger: nothing.
+    api.push(Next::Updates(vec![fake::text(2, 777, "hi bot")]));
+    // A run waiting on an approval: Allow / Deny on the phone; Allow is pressed.
+    let r = w.save(Routine { when: vec![], channels: vec![CHANNEL_PHONE.into()], ..daily("Notes", "08:00") });
+    w.model.calls("write_file", json!({"path": "found.md", "content": "a loom"}));
+    w.model.says("Saved.");
+    w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
+    let ask = wait_for(&api, 555, 2).pop().unwrap();
+    let keyboard = &ask["reply_markup"]["inline_keyboard"][0];
+    assert_eq!((keyboard[0]["text"].as_str(), keyboard[1]["text"].as_str()), (Some("Allow"), Some("Deny")), "{ask}");
+    let allow = keyboard[0]["callback_data"].as_str().unwrap().to_owned();
+    api.push(Next::Updates(vec![json!({"update_id": 3, "callback_query": {"id": "cb1", "from": {"id": 555, "is_bot": false, "username": "ada"},
+        "message": {"message_id": 101, "chat": {"id": 555, "type": "private"}}, "data": allow}})]));
+    assert_eq!(w.finished(&r.id)[0].status, RunStatus::Quiet);
+    assert!(!api.calls("answerCallbackQuery").is_empty(), "the button's spinner stops");
+    assert!(sent_to(&api, 777).is_empty(), "strangers get nothing");
+    let all = api.state.lock().unwrap().calls.iter().map(|(m, b)| format!("{m} {b}")).collect::<Vec<_>>().join("\n");
+    assert!(!all.contains(fake::TOKEN), "the token goes only in the URL");
+}
