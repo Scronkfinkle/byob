@@ -4,6 +4,7 @@
 //! as a routine acts later without you: you see the whole of it before it counts.
 
 use byob_protocol::routines::{Missed, Routine, RoutineView, RunRecord, RunStatus, Tell, Trigger};
+use byob_types::channel::{CHANNEL_PHONE, DAILY_CAP};
 use byob_types::config::Approvals;
 use byob_types::routine::CHANNEL_DESKTOP;
 use egui::{Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
@@ -64,6 +65,8 @@ pub struct PageCtx {
     pub models: Vec<(String, String)>,
     /// The default model's name.
     pub default_model: String,
+    /// My phone is set up: the channel's name ("Telegram"); routines can offer Text me.
+    pub phone: Option<String>,
 }
 
 /// The routine page's form.
@@ -80,6 +83,8 @@ pub struct Editor {
     pub tell: Tell,
     /// Tell me with a desktop notification.
     pub notify: bool,
+    /// Tell me with a text to My phone.
+    pub text_me: bool,
     pub project: Option<String>,
     pub model: Option<String>,
     pub missed: Missed,
@@ -99,6 +104,7 @@ impl Editor {
             allowed: r.allowed,
             tell: r.tell,
             notify: r.channels.iter().any(|c| c == CHANNEL_DESKTOP),
+            text_me: r.channels.iter().any(|c| c == CHANNEL_PHONE),
             project: r.project.clone(),
             model: r.model.clone(),
             missed: r.missed,
@@ -147,9 +153,12 @@ impl Editor {
         r.when = self.triggers()?;
         r.allowed = self.allowed;
         r.tell = self.tell;
-        r.channels.retain(|c| c != CHANNEL_DESKTOP);
+        r.channels.retain(|c| c != CHANNEL_DESKTOP && c != CHANNEL_PHONE);
         if self.notify {
             r.channels.insert(0, CHANNEL_DESKTOP.to_owned());
+        }
+        if self.text_me {
+            r.channels.push(CHANNEL_PHONE.to_owned());
         }
         r.project.clone_from(&self.project);
         r.model.clone_from(&self.model);
@@ -371,6 +380,16 @@ impl Routines {
         ui.add_space(6.0);
         ui.add_enabled_ui(ed.tell != Tell::Never, |ui| {
             ui.checkbox(&mut ed.notify, RichText::new("With a notification").color(t.text)).on_hover_text("On this computer, and on others where byob is open");
+            // Only once My phone is set up (or if it texts already: it can be switched off).
+            if more.phone.is_some() || ed.text_me {
+                let on = match &more.phone {
+                    Some(channel) => format!("Text me (on {channel})"),
+                    None => "Text me (My phone isn't set up)".to_owned(),
+                };
+                ui.checkbox(&mut ed.text_me, RichText::new(on).color(t.text)).on_hover_text(format!(
+                    "byob texts you what it finds (at most {DAILY_CAP} a day), and asks you there when it needs you; reply to talk about it"
+                ));
+            }
         });
         ui.add_space(20.0);
         more_fields(ui, t, ed, more);

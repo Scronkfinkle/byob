@@ -70,6 +70,8 @@ impl ByobApp {
             // The desktop app's own (a browser has none).
             Key::KeepRunning => self.desktop.is_some() && self.keep_running().is_some(),
             Key::StartAtLogin => self.desktop.as_ref().is_some_and(|d| d.start_at_login().is_some()),
+            // The engine keeps it: only with one that does.
+            Key::Phone => self.engine_has(byob_protocol::phone::CAP_PHONE),
             _ => true,
         }
     }
@@ -105,6 +107,10 @@ impl ByobApp {
                     ui.label(RichText::new("The chat in view isn't in a project").color(t.text_faint));
                 }
             },
+            Key::Phone => {
+                let msgs = self.phone.ui(ui, t);
+                self.send_all(msgs);
+            }
             Key::PluginList => self.plugins.panel(ui, t, &crate::plugins::Filter::All),
             Key::Mode => {
                 // Each mode drawn in the colors it gives: the light and dark themes as picked.

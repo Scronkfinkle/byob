@@ -485,7 +485,8 @@ impl ByobApp {
         // The main role's saved model, else the model the engine talks to.
         let main = list.and_then(|l| l.roles.get(byob_protocol::profiles::ROLE_MAIN).and_then(|id| l.get(id))).map(|p| p.profile.label().to_owned());
         let default_model = main.or_else(|| self.state.as_ref().map(|s| s.inference_model.clone())).unwrap_or_default();
-        routines::page::PageCtx { projects, models, default_model }
+        let phone = self.phone.state.as_ref().and_then(|s| s.phone.as_ref()).map(|p| p.title.clone());
+        routines::page::PageCtx { projects, models, default_model, phone }
     }
 
     /// Above a run's chat: whose run it is and when, and the way to its routine.
@@ -2171,6 +2172,9 @@ mod app_tests {
 
     /// The Routines page, a routine's page, run chats and the sidebar's dot.
     mod routines_page;
+
+    /// Settings → Plugins → My phone, and Text me on a routine's page.
+    mod phone_settings;
 
     /// The window across arrangements, themes and sizes, checked for layout invariants.
     mod matrix;

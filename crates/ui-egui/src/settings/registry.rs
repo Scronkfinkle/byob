@@ -24,7 +24,7 @@ macro_rules! keys {
 keys! {
     ModelList, VisionRole, SubagentRole, UtilityRole,
     Instructions, Approvals, ToolCalls, Subagents, Compaction, ModelImages, ToolCalling, WorkspaceSettings,
-    PluginList,
+    Phone, PluginList,
     Mode, ThemePair, Accent, Background, Foreground, Font, Radius, ChartColors, MessageLayout, UserBubble, ReplyBubble, BubblePadding, LineSpacing, ShownPreset, ShownList, ThinkingSize, Controls, Backdrop, Glass, Frost, PanelGap, Arrangement, ImportTheme, ExportTheme, ResetLook, ResetAppearance,
     Zoom, TextSize, CodeSize, CodeFont, Density, ColumnWidth, ChatListWidth, ArtifactPane, HighContrast, ReduceMotion, ResetText,
     ColorRoles,
@@ -82,6 +82,8 @@ pub static SCOPES: Section = sec(
     "Projects and chats",
     "A project can change each of these for its chats, and a chat for itself (the sliders next to its title in the header).",
 );
+pub static PHONE: Section =
+    sec(Tab::Plugins, "phone", "My phone", "byob can text you when a routine finds something or needs you, and you can answer from your phone.");
 pub static PLUGINS: Section = sec(Tab::Plugins, "plugins", "", "");
 // Appearance's page: what everyone sets.
 pub static THEME: Section = sec(Tab::Appearance, "theme", "Look", "");
@@ -131,6 +133,7 @@ pub static SECTIONS: &[&Section] = &[
     &AUTONOMY,
     &REQUESTS,
     &SCOPES,
+    &PHONE,
     &PLUGINS,
     &THEME,
     &MESSAGES,
@@ -269,7 +272,16 @@ pub static SETTINGS: &[Setting] = &[
         "workspace docker container nix environment folder project",
         Row,
     ),
-    // Plugins.
+    // Plugins: My phone (a channel plugin's setup), then the list.
+    s(
+        Key::Phone,
+        "my-phone",
+        &PHONE,
+        "My phone",
+        "Where byob texts you: set up Telegram, pair your phone, send a test message.",
+        "phone text sms message telegram notify notification channel pair bot mobile shoot me a text",
+        Block,
+    ),
     s(
         Key::PluginList,
         "plugin-list",
