@@ -128,7 +128,10 @@ impl ByobApp {
     }
 
     fn composer_column(&mut self, ui: &mut Ui, t: &Tokens) {
-        for (level, text) in &self.notices {
+        if let Some(left) = self.notices.prune(web_time::Instant::now()) {
+            ui.ctx().request_repaint_after(left);
+        }
+        for (level, text) in self.notices.iter() {
             let color = if *level == NoticeLevel::Error { t.danger } else { t.text_dim };
             ui.label(egui::RichText::new(text).color(color));
         }

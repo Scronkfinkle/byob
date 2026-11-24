@@ -30,6 +30,7 @@ pub mod math;
 pub mod media;
 mod menu;
 pub mod models;
+mod notices;
 pub mod pane;
 pub mod plugins;
 mod projects;
@@ -54,9 +55,6 @@ use byob_protocol::{ClientMsg, Connection, EngineState, Entry, EntryRole, Notice
 
 /// Tallest an expanded thinking block gets before it scrolls.
 const THINKING_MAX_HEIGHT: f32 = 320.0;
-
-/// Notices kept on screen.
-const MAX_NOTICES: usize = 3;
 
 /// What fills the space beside the list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +128,7 @@ pub struct ByobApp {
     layout_seen: bool,
     state: Option<EngineState>,
     entries: Vec<Entry>,
-    notices: Vec<(NoticeLevel, String)>,
+    notices: notices::Notices,
     input: String,
     show_settings: bool,
     /// The connection form (welcome screen and settings).
@@ -252,7 +250,7 @@ impl ByobApp {
             layout_seen: false,
             state: None,
             entries: Vec::new(),
-            notices: Vec::new(),
+            notices: notices::Notices::default(),
             input: String::new(),
             show_settings: false,
             connect: connect::ConnectForm::default(),
@@ -544,9 +542,7 @@ impl ByobApp {
     }
 
     fn notice(&mut self, level: NoticeLevel, text: String) {
-        self.notices.push((level, text));
-        let excess = self.notices.len().saturating_sub(MAX_NOTICES);
-        self.notices.drain(..excess);
+        self.notices.push(level, text);
     }
 
     /// Attach a file to the next message, as if picked in the composer (scripted runs).
@@ -633,9 +629,7 @@ impl ByobApp {
                     self.state = Some(state);
                 }
                 ServerMsg::Notice { level, text } => {
-                    self.notices.push((level, text));
-                    let excess = self.notices.len().saturating_sub(MAX_NOTICES);
-                    self.notices.drain(..excess);
+                    self.notice(level, text);
                 }
                 ServerMsg::Transcript { entries } => self.entries = entries,
                 ServerMsg::EntryAdded(entry) => self.entries.push(entry),
