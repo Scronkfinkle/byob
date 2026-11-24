@@ -354,7 +354,7 @@ impl eframe::App for App {
     // the engine's messages are taken here so look changes don't wait for the window.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ui.logic(ctx);
-        self.background.borrow_mut().logic(ctx, &self.ui);
+        self.background.borrow_mut().logic(ctx, &mut self.ui);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -624,7 +624,14 @@ fn claim_instance(paths: Option<&Paths>, args: &Args, bus: &background::Bus) -> 
                     bus.send(background::Event::Show);
                     Ok(())
                 }
-                Request::Run(_) => Err("that byob has no routines yet".to_owned()),
+                Request::Run(_) if headless => Err("that byob runs without a window (--headless); use Run now on its Routines page".to_owned()),
+                Request::Run(name) => match bus.find_routine(&name) {
+                    Some(id) => {
+                        bus.send(background::Event::Run(id));
+                        Ok(())
+                    }
+                    None => Err(format!("there's no routine called {name:?}")),
+                },
             };
             if let Err(e) = instance.listen(answer) {
                 log::warn!("{e}; launching byob again won't find this one");
@@ -728,7 +735,10 @@ fn run_ui(args: Args, engine: EngineHandle, saved_theme: byob_ui_egui::theme::Th
     let Outside { bus, events } = outside;
     // Outlives each window: where a window can't hide (Wayland), closing it closes it and byob
     // waits for a Show to open another.
+    let waker = bus.engine_waker();
     let background = std::rc::Rc::new(std::cell::RefCell::new(background::Background::new(bus, events, in_background, start_hidden)));
+    // Its own connection: notifications and the tray follow routines with no window open.
+    background.borrow_mut().connect(Box::new(engine.connect(waker)));
     let (theme_arg, open_settings, section, search) = (args.theme, args.open_settings, args.settings_section, args.settings_search);
     let backdrop_arg = args.backdrop;
     let (arrangement_arg, arranging, look_args) = (args.arrangement, args.arranging, args.look);
