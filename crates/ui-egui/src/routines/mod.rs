@@ -873,23 +873,68 @@ pub fn created_lines(ui: &mut Ui, t: &Tokens, entry: &byob_protocol::Entry) {
         let Some((_, name, next)) = known.0.iter().find(|(k, _, _)| k == id).cloned() else { continue };
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.spacing_mut().item_spacing.x = 0.0;
             let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
             icons::check(ui.painter(), r, t.success);
-            ui.label(RichText::new("Created").color(t.text_dim));
+            ui.label(RichText::new(" Created ").color(t.text_dim));
             let link = ui.add(egui::Label::new(RichText::new(&name).color(t.text).underline()).sense(Sense::click()));
             if link.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Open the routine").clicked() {
                 ui.ctx().data_mut(|d| d.insert_temp(ask_id(), Ask::Open(id.to_owned())));
             }
             let after = next.map(|n| format!(". Next run {}.", when_in_sentence(n, now))).unwrap_or_else(|| ".".to_owned());
             ui.label(RichText::new(after).color(t.text_dim));
-            ui.add_space(8.0);
+            ui.add_space(12.0);
             let (r, _) = ui.allocate_exact_size(vec2(112.0, 28.0), Sense::hover());
             if run_button(ui, t, r, egui::Id::unique(("created-run", entry.id, id)), "Run it now").clicked() {
                 ui.ctx().data_mut(|d| d.insert_temp(ask_id(), Ask::Run(id.to_owned())));
             }
         });
     }
+}
+
+fn report_id() -> egui::Id {
+    egui::Id::unique("routines-run-report")
+}
+
+/// The report of the run chat in view (none elsewhere), for [`report_card`]; set each frame.
+pub fn share_report(ctx: &egui::Context, report: Option<byob_protocol::routines::Report>) {
+    ctx.data_mut(|d| match report {
+        Some(r) => {
+            d.insert_temp(report_id(), r);
+        }
+        None => d.remove::<byob_protocol::routines::Report>(report_id()),
+    });
+}
+
+/// In a run's chat, under the reply that reported: the report as a card (what the
+/// notification said), title and all.
+pub fn report_card(ui: &mut Ui, t: &Tokens, entry: &byob_protocol::Entry) {
+    let reported = entry.steps.iter().any(|s| s.tool == "report" && s.status == byob_protocol::StepStatus::Done);
+    if !reported {
+        return;
+    }
+    let Some(report) = ui.ctx().data(|d| d.get_temp::<byob_protocol::routines::Report>(report_id())) else { return };
+    ui.add_space(6.0);
+    let fill = crate::theme::mix(t.assistant_bubble, t.success, if t.dark { 0.1 } else { 0.07 });
+    let edge = crate::theme::mix(t.border, t.success, 0.35);
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0, edge))
+        .corner_radius(t.round(crate::form::CARD_R - 2.0))
+        .inner_margin(egui::Margin::symmetric(14, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let (r, _) = ui.allocate_exact_size(vec2(15.0, 15.0), Sense::hover());
+                icons::star(ui.painter(), r, t.accent);
+                ui.add(egui::Label::new(RichText::new(&report.title).strong().color(t.text_strong)).wrap());
+            });
+            if !report.body.is_empty() {
+                ui.add_space(4.0);
+                ui.add(egui::Label::new(RichText::new(&report.body).color(t.text)).wrap().selectable(true));
+            }
+        });
 }
 
 /// The note under the list: byob keeps running (or doesn't) when its window closes.

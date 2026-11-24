@@ -224,6 +224,10 @@ fn run_chats_are_filed_under_their_routine() {
     assert!(plugins::tests::has(&strip, "A run of "), "{strip:?}");
     assert!(plugins::tests::has(&strip, "Ask anything about it here."));
     assert!(strip.iter().any(|t| t.0.starts_with(", today at ")), "when it ran: {strip:?}");
+    // The reply that reported shows the report as a card.
+    fake.inbox.lock().unwrap().push(ServerMsg::Transcript { entries: vec![reply(vec![done_step("report", "Reported.")])] });
+    let shown = texts(&ctx, &mut app, 1100.0, vec![]);
+    assert!(plugins::tests::has(&shown, "At The Woolery until Sunday."), "the report's body: {shown:?}");
     click_text(&ctx, &mut app, 1100.0, "Open routine");
     assert_eq!((app.page, app.routines.view.clone()), (Page::Routines, View::Routine("loom".into())));
 }
@@ -270,13 +274,25 @@ fn a_phone_gets_one_column() {
 fn a_reply_that_made_a_routine_offers_run_it_now() {
     let ctx = egui::Context::default();
     let (fake, mut app) = with_routines(four(sidebar::now_ms()));
-    let step = byob_protocol::Step {
+    let step = done_step("create_routine", "Created the routine \"Loom deals\" (id loom): Every day at 8:00 AM. Offer to run it once now");
+    let entry = reply(vec![step]);
+    fake.inbox.lock().unwrap().push(ServerMsg::Transcript { entries: vec![entry] });
+    let shown = texts(&ctx, &mut app, 1100.0, vec![]);
+    assert!(plugins::tests::has(&shown, "Created"), "{shown:?}");
+    sent(&fake);
+    click_text(&ctx, &mut app, 1100.0, "Run it now");
+    assert!(sent(&fake).contains(&ClientMsg::RunRoutine { id: "loom".into() }));
+}
+
+/// A finished call of `tool` whose result was `detail`.
+fn done_step(tool: &str, detail: &str) -> byob_protocol::Step {
+    byob_protocol::Step {
         id: 7,
-        tool: "create_routine".into(),
-        title: "Created the routine Loom deals".into(),
+        tool: tool.into(),
+        title: format!("{tool} done"),
         access: byob_protocol::ToolAccess::Write,
         status: StepStatus::Done,
-        detail: "Created the routine \"Loom deals\" (id loom): Every day at 8:00 AM. Offer to run it once now".into(),
+        detail: detail.into(),
         changes: vec![],
         at: 0,
         preview: None,
@@ -285,8 +301,12 @@ fn a_reply_that_made_a_routine_offers_run_it_now() {
         delegation: None,
         ask: None,
         views: vec![],
-    };
-    let entry = Entry {
+    }
+}
+
+/// A finished reply with `steps`.
+fn reply(steps: Vec<byob_protocol::Step>) -> Entry {
+    Entry {
         id: 3,
         role: byob_protocol::EntryRole::Assistant,
         content: "Done.".into(),
@@ -294,15 +314,9 @@ fn a_reply_that_made_a_routine_offers_run_it_now() {
         done: true,
         error: None,
         stats: None,
-        steps: vec![step],
+        steps,
         undoable: false,
         undone: false,
         attachments: vec![],
-    };
-    fake.inbox.lock().unwrap().push(ServerMsg::Transcript { entries: vec![entry] });
-    let shown = texts(&ctx, &mut app, 1100.0, vec![]);
-    assert!(plugins::tests::has(&shown, "Created"), "{shown:?}");
-    sent(&fake);
-    click_text(&ctx, &mut app, 1100.0, "Run it now");
-    assert!(sent(&fake).contains(&ClientMsg::RunRoutine { id: "loom".into() }));
+    }
 }

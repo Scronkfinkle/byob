@@ -483,7 +483,11 @@ impl ByobApp {
 
     /// Above a run's chat: whose run it is and when, and the way to its routine.
     fn run_strip(&mut self, ui: &mut egui::Ui, t: &theme::Tokens) {
-        let Some((chat, routine)) = self.sidebar.current().and_then(|c| Some((c.id.clone(), c.origin.clone()?))) else { return };
+        let Some((chat, routine)) = self.sidebar.current().and_then(|c| Some((c.id.clone(), c.origin.clone()?))) else {
+            routines::share_report(ui.ctx(), None);
+            return;
+        };
+        routines::share_report(ui.ctx(), self.routines.run_of_chat(&routine, &chat).and_then(|r| r.report.clone()));
         if self.run_runs_asked.as_deref() != Some(chat.as_str()) && self.routines.get(&routine).is_some() {
             // Its runs say when it ran (and the chat counts as seen).
             self.run_runs_asked = Some(chat.clone());
@@ -2002,6 +2006,7 @@ fn entry_view(
                             views.show_step_with(ui, t, step, latest, plugins, artifacts.web_mut());
                         });
                         routines::created_lines(ui, t, entry);
+                        routines::report_card(ui, t, entry);
                     }
                     EntryRole::User if editing.open.as_ref().is_some_and(|(id, _)| *id == entry.id) => {
                         answer = edit_box(ui, t, entry, editing);
