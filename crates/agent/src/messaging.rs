@@ -372,6 +372,9 @@ impl Engine {
                 }
             })
             .collect();
+        // Two-way first (Telegram before a push service): the first is the one offered.
+        let mut channels = channels;
+        channels.sort_by_key(|c| (!c.two_way, c.title.to_lowercase()));
         let phone = self.messaging.file.phone.clone().and_then(|t| {
             let p = self.messaging.file.peers.iter().find(|p| p.channel == t.channel && p.peer == t.peer)?;
             let title = channels.iter().find(|c| c.key == t.channel).map_or_else(|| t.channel.clone(), |c| c.title.clone());
