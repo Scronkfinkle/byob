@@ -112,6 +112,7 @@ fn bundled_plugins_load_with_no_files_on_disk() {
             "routines",
             "sheets",
             "subagents",
+            "telegram",
             "web",
             "workspace-instructions"
         ]
@@ -121,7 +122,11 @@ fn bundled_plugins_load_with_no_files_on_disk() {
     assert!(!mail.enabled && mail.tools.is_empty(), "{mail:?}");
     assert_eq!(mail.problems, ["needs settings: Username, Password"]);
     assert!(!c.sections.contains("mail_search"), "no mail prompt while it is off");
-    for p in c.infos.iter().filter(|p| p.id != "mail") {
+    // So does Telegram (it needs a bot of your own).
+    let telegram = c.infos.iter().find(|p| p.id == "telegram").unwrap();
+    assert!(!telegram.enabled && telegram.backend.is_none(), "{telegram:?}");
+    assert_eq!(telegram.problems, ["needs settings: Bot token"]);
+    for p in c.infos.iter().filter(|p| p.id != "mail" && p.id != "telegram") {
         // the calendar ships off too (it needs an account)
         assert_eq!((p.scope, p.origin, p.enabled), (PluginScope::Bundled, PluginOrigin::Bundled, p.id != "calendar"), "{}", p.id);
         assert!(p.problems.is_empty(), "{}: {:?}", p.id, p.problems);

@@ -70,6 +70,46 @@ pub struct Manifest {
     pub hooks: Vec<ManifestHook>,
     /// Workspace environment providers it adds (`environments`), see [`ManifestEnv`].
     pub environments: Vec<ManifestEnv>,
+    /// Ways byob reaches the user outside the app that its backend provides (`channels`),
+    /// see [`ManifestChannel`].
+    pub channels: Vec<ManifestChannel>,
+}
+
+/// Most channels one plugin declares.
+pub const MAX_CHANNELS: usize = 4;
+/// The longest message a channel may say it takes when it doesn't say (Telegram's limit).
+pub const DEFAULT_CHANNEL_MAX_LEN: usize = 4096;
+
+/// A channel its backend provides (`channels[]`): a way byob reaches the user outside the
+/// app ("text me"), e.g. `{"id": "telegram", "title": "Telegram", "two_way": true,
+/// "buttons": true, "max_len": 4096, "pair": "code"}`. byob sends it `deliver` requests; a
+/// two-way one reports what the user sends back as `inbound` messages (see
+/// `docs/plugins-backend.md`, Channels).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ManifestChannel {
+    /// `[a-z0-9_-]{1,32}`, unique in the plugin.
+    pub id: String,
+    /// What people call it: "Telegram".
+    pub title: String,
+    /// The user can answer (replies, buttons); one-way channels (push notifications) can't.
+    pub two_way: bool,
+    /// Messages can carry buttons (approvals answered with a tap). Only two-way channels.
+    pub buttons: bool,
+    /// The longest message it takes (characters; byob cuts longer ones).
+    pub max_len: usize,
+    /// How a person's phone gets paired: `code` (byob makes a one-time code, the backend
+    /// reports it as `pair_claim`) or `none` (nothing to pair: the setting is the address).
+    pub pair: ChannelPairing,
+}
+
+/// How a channel's peer gets paired (`channels[].pair`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelPairing {
+    /// A one-time code byob makes; the person sends it (or opens a link with it).
+    Code,
+    /// Nothing to pair (a push topic, an address in the plugin's settings).
+    None,
 }
 
 /// The turn pipeline's hook points, in the order a turn reaches them.
@@ -553,6 +593,7 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
     }
     let requirements = parse_requirements(r.get("python"))?;
     let hooks = parse_hooks(r.get("hooks"), backend.is_some())?;
+    let backend_some = backend.is_some();
     let name = req_str(r.get("name"), "name")?;
     let views = parse_views(r.get("views"), &name)?;
     if backend.is_none() && views.iter().any(|v| v.html.is_empty()) {
@@ -600,7 +641,52 @@ fn parse(raw: &Value, builtin: bool) -> R<Manifest> {
         system_prompt: parse_prompt_source(r.get("system_prompt"))?,
         hooks,
         environments: parse_environments(r.get("environments"))?,
+        channels: parse_channels(r.get("channels"), backend_some)?,
     })
+}
+
+/// `"channels": [{"id", "title"?, "two_way"?, "buttons"?, "max_len"?, "pair"?}]`.
+fn parse_channels(v: Option<&Value>, has_backend: bool) -> R<Vec<ManifestChannel>> {
+    let items = list(v, "channels")?;
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !has_backend {
+        return Err("channels are served by the plugin's backend: add a \"backend\"".into());
+    }
+    if items.len() > MAX_CHANNELS {
+        return Err(format!("channels: at most {MAX_CHANNELS}"));
+    }
+    let mut out: Vec<ManifestChannel> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let f = format!("channels[{i}]");
+        let o = obj(item, &f)?;
+        let id = req_str(o.get("id"), &format!("{f}.id"))?;
+        if !(1..=32).contains(&id.len()) || !id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-')) {
+            return Err(format!("{f}.id must be lowercase letters, digits, _ or -, like \"telegram\""));
+        }
+        if out.iter().any(|c| c.id == id) {
+            return Err(format!("{f}.id {id:?} is used twice"));
+        }
+        let title = truncate_chars(&opt_str(o.get("title"), &format!("{f}.title"))?.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| id.clone()), 60);
+        let two_way = truthy(o.get("two_way"));
+        let buttons = two_way && truthy(o.get("buttons"));
+        let max_len = match o.get("max_len") {
+            None | Some(Value::Null) => DEFAULT_CHANNEL_MAX_LEN,
+            Some(v) => match v.as_u64().and_then(|n| usize::try_from(n).ok()) {
+                Some(n) if (100..=65_536).contains(&n) => n,
+                _ => return Err(format!("{f}.max_len must be a number of characters from 100 to 65536")),
+            },
+        };
+        let pair = match opt_str(o.get("pair"), &format!("{f}.pair"))?.as_deref() {
+            None if two_way => ChannelPairing::Code,
+            None | Some("none") => ChannelPairing::None,
+            Some("code") => ChannelPairing::Code,
+            Some(_) => return Err(format!("{f}.pair must be \"code\" or \"none\"")),
+        };
+        out.push(ManifestChannel { id, title, two_way, buttons, max_len, pair });
+    }
+    Ok(out)
 }
 
 /// `"hooks": [{"event", "priority"?, "native"? | "backend": true, "timeout_ms"?, "fail"?, "tools"?}]`.
@@ -1265,6 +1351,41 @@ mod tests {
         assert_eq!(m.provides.as_deref(), Some("spreadsheets"));
         let m = parse_user(json!({"id": "a", "name": "x"})).unwrap();
         assert!(m.on_by_default && m.provides.is_none());
+    }
+
+    #[test]
+    fn channels_need_a_backend_and_default_sensibly() {
+        let m = parse_user(json!({"id": "tg", "name": "Telegram", "backend": {"native": "telegram"},
+            "channels": [{"id": "telegram", "title": "Telegram", "two_way": true, "buttons": true, "max_len": 4096}, {"id": "push"}]}))
+        .unwrap();
+        assert_eq!(
+            m.channels[0],
+            ManifestChannel { id: "telegram".into(), title: "Telegram".into(), two_way: true, buttons: true, max_len: 4096, pair: ChannelPairing::Code }
+        );
+        // One-way: no buttons, nothing to pair, the title is the id.
+        assert_eq!(
+            m.channels[1],
+            ManifestChannel {
+                id: "push".into(),
+                title: "push".into(),
+                two_way: false,
+                buttons: false,
+                max_len: DEFAULT_CHANNEL_MAX_LEN,
+                pair: ChannelPairing::None
+            }
+        );
+        let one_way_buttons = parse_user(json!({"id": "a", "name": "x", "backend": "b.py", "channels": [{"id": "c", "buttons": true}]})).unwrap();
+        assert!(!one_way_buttons.channels[0].buttons, "buttons need a way back");
+        for (raw, why) in [
+            (json!({"id": "a", "name": "x", "channels": [{"id": "c"}]}), "served by the plugin's backend"),
+            (json!({"id": "a", "name": "x", "backend": "b.py", "channels": [{"id": "C!"}]}), "channels[0].id must be"),
+            (json!({"id": "a", "name": "x", "backend": "b.py", "channels": [{"id": "c"}, {"id": "c"}]}), "used twice"),
+            (json!({"id": "a", "name": "x", "backend": "b.py", "channels": [{"id": "c", "max_len": 5}]}), "max_len"),
+            (json!({"id": "a", "name": "x", "backend": "b.py", "channels": [{"id": "c", "pair": "qr"}]}), "pair must be"),
+        ] {
+            let e = parse_user(raw).unwrap_err();
+            assert!(e.contains(why), "{e}");
+        }
     }
 
     #[test]

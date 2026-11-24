@@ -57,6 +57,7 @@ mod live_views;
 pub mod look;
 #[cfg(test)]
 mod loop_tests;
+mod messaging;
 #[cfg(test)]
 mod native_backend_tests;
 pub mod natives;
@@ -329,6 +330,8 @@ enum Input {
         chat: String,
         report: byob_types::routine::Report,
     },
+    /// A channel's delivery finished, or a run's `text_me` (see [`messaging`]).
+    Channel(messaging::Event),
     /// The backend of the plugin in `dir` said something, started or exited.
     Backend {
         dir: PathBuf,
@@ -553,6 +556,8 @@ struct Running {
     turn_tools: Vec<Arc<dyn byob_tools::Tool>>,
     /// The routine whose unattended run this turn is.
     routine: Option<String>,
+    /// It was started by a message from a phone: its answer and approvals go back there.
+    phone: Option<messaging::FromPhone>,
 }
 
 /// What makes a turn a routine's run (see [`routines`]).
@@ -693,6 +698,8 @@ struct Engine {
     default_hooks: hooks::Hooks,
     /// Routines, their runs and the scheduler ([`routines`]).
     routines: routines::Routines,
+    /// Channels: My phone, paired peers, pairing, deliveries ([`messaging`]).
+    messaging: messaging::Messaging,
 }
 
 fn run(mut engine: Engine, rx: Receiver<Input>) {
@@ -709,6 +716,7 @@ fn run(mut engine: Engine, rx: Receiver<Input>) {
             }
             engine.flush_due();
             engine.routines_tick();
+            engine.phone_tick();
         }));
         if handled.is_err() {
             log::error!("engine panicked while handling a message; continuing");
@@ -762,6 +770,7 @@ impl Engine {
         let plugin_values = Self::load_plugin_values(config.paths.as_ref());
         let layout = Self::load_layout(config.paths.as_ref());
         let routines = routines::Routines::open(config.paths.as_ref(), config.clock);
+        let messaging = messaging::Messaging::open(config.paths.as_ref());
         let keep_running = config.paths.as_ref().map(|p| byob_store::Settings::load(&p.settings()).value.keep_running).unwrap_or_default();
         let sink_inbox = inbox.clone();
         let sink: backends::SinkFor = Arc::new(move |dir, plugin, generation| {
@@ -840,6 +849,7 @@ impl Engine {
             profile_slots: std::sync::Mutex::default(),
             envs: config.envs,
             routines,
+            messaging,
         };
         engine.rebuild_models();
         engine.check_link();
@@ -1408,6 +1418,7 @@ impl Engine {
                 let _ = reply.send(self.routine_op(chat.as_deref(), op));
             }
             Input::Reported { chat, report } => self.routine_reported(&chat, report),
+            Input::Channel(event) => self.channel_event(event),
         }
     }
 
@@ -1446,6 +1457,7 @@ impl Engine {
                 self.send_profiles(id);
                 self.send_layout(id);
                 self.send_routines(id);
+                self.send_phone(id);
                 self.send_chats(id, None, FIRST_PAGE);
                 self.show_chat_with(id, chat, false);
             }
@@ -1466,6 +1478,7 @@ impl Engine {
                 }
             }
             ClientMsg::Approve { step, answer } => self.answer(step, answer),
+            msg @ (ClientMsg::PairPhone { .. } | ClientMsg::CancelPairing | ClientMsg::UnpairPhone | ClientMsg::TestPhone) => self.phone_client_msg(id, msg),
             msg @ (ClientMsg::SaveRoutine { .. }
             | ClientMsg::DeleteRoutine { .. }
             | ClientMsg::RunRoutine { .. }
@@ -1852,8 +1865,10 @@ impl Engine {
                 self.settle_step(entry, child, step.clone());
                 let title = step.title.clone();
                 let asked_at = self.now_ms();
+                let shown = step.clone();
                 self.pending.insert(step.id, Pending { entry, step, reply, child, asked_at });
                 self.routine_waiting(entry, &title);
+                self.phone_waiting(entry, &shown);
             }
         }
     }
@@ -2022,9 +2037,11 @@ impl Engine {
         let composed = self.compose_for(Some(&chat), None, true);
         // `/name args`: what the model gets instead (the transcript keeps what was typed).
         let model_text = composed.as_ref().and_then(|c| extensions::expand_slash(&text, c)).unwrap_or_else(|| text.clone());
-        let model_text = match &run {
-            Some(r) => format!("{}\n\n{model_text}", r.note),
-            None => model_text,
+        let from_phone = self.messaging.next_turn.take();
+        let model_text = match (&run, &from_phone) {
+            (Some(r), _) => format!("{}\n\n{model_text}", r.note),
+            (None, Some(f)) => format!("{}\n\n{model_text}", self.phone_note(f)),
+            (None, None) => model_text,
         };
         let plugin_agents = composed.as_ref().map(|c| c.agents.clone()).unwrap_or_default();
         let plugin_guidance = composed.as_ref().map(|c| c.tool_prompts.clone()).unwrap_or_default();
@@ -2117,6 +2134,7 @@ impl Engine {
                 owners,
                 turn_tools: extra,
                 routine,
+                phone: from_phone,
             },
         );
         self.chat_changed(&chat);
@@ -2466,6 +2484,11 @@ impl Engine {
             error.as_ref().map(|_| byob_protocol::QueuePause::Failed)
         };
         self.queue_turn_ended(&run.chat, pause);
+        if let Some(from) = &run.phone {
+            let routine = self.store.chat(&run.chat).ok().flatten().and_then(|c| c.origin);
+            let answer = self.live.get(&run.chat).and_then(|l| l.entries.iter().rev().find(|e| e.id == id)).map(|e| e.content.clone());
+            self.phone_turn_finished(from, &run.chat, routine.as_deref(), answer.as_deref(), error.as_deref(), run.cancel.load(Ordering::Relaxed));
+        }
         if let Some(routine) = &run.routine {
             let tokens = stats.map_or(0, |s| s.prompt_tokens.saturating_add(s.completion_tokens));
             self.routine_turn_finished(&run.chat, routine, error.as_deref(), run.cancel.load(Ordering::Relaxed), tokens);

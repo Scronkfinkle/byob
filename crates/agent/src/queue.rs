@@ -79,6 +79,18 @@ impl Engine {
         self.queue_changed(chat);
     }
 
+    /// Append a message that came from outside a client (a phone's reply) to `chat`'s queue;
+    /// its item id.
+    pub(crate) fn enqueue_from(&mut self, chat: &str, text: String) -> Result<u64, String> {
+        let q = self.queues.entry(chat.to_owned()).or_default();
+        q.check_room(text.len(), None)?;
+        self.queue_ids = self.queue_ids.wrapping_add(1);
+        q.items.push_back(QueuedMessage { id: self.queue_ids, text, attachments: Vec::new() });
+        let id = self.queue_ids;
+        self.queue_changed(chat);
+        Ok(id)
+    }
+
     /// The queue of the chat `client` looks at and the position of item `id` in it, or a
     /// notice that it is gone (most likely just sent).
     fn queued(&mut self, client: ClientId, id: u64) -> Option<(String, usize)> {
@@ -207,7 +219,12 @@ impl Engine {
                     }
                     other => other.map_err(|(_, text)| text),
                 },
-                None => self.begin_turn_in(chat, item.text.clone(), item.attachments.clone()),
+                None => {
+                    self.phone_queued_turn(item.id);
+                    let started = self.begin_turn_in(chat, item.text.clone(), item.attachments.clone());
+                    self.messaging.next_turn = None;
+                    started
+                }
             };
             if let Err(text) = started {
                 let q = self.queues.entry(chat.to_owned()).or_default();

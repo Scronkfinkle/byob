@@ -15,31 +15,31 @@ use crate::routines::NOBODY_ANSWERED;
 /// A clock the scenario moves. Each engine start gets its own reading of it; an engine from
 /// before a restart (whose thread lingers) sees the epoch, so it never runs anything again.
 #[derive(Clone)]
-struct Time {
+pub(super) struct Time {
     now: Arc<Mutex<DateTime<Utc>>>,
     starts: Arc<AtomicU64>,
 }
 
-fn at(s: &str) -> DateTime<Utc> {
+pub(super) fn at(s: &str) -> DateTime<Utc> {
     Utc.from_utc_datetime(&NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap())
 }
 
 impl Time {
-    fn new(s: &str) -> Self {
+    pub(super) fn new(s: &str) -> Self {
         Self { now: Arc::new(Mutex::new(at(s))), starts: Arc::default() }
     }
 
-    fn set(&self, s: &str) {
+    pub(super) fn set(&self, s: &str) {
         *self.now.lock().unwrap() = at(s);
     }
 
-    fn clock(&self) -> crate::Clock {
+    pub(super) fn clock(&self) -> crate::Clock {
         let me = self.starts.fetch_add(1, Ordering::SeqCst) + 1;
         let (now, starts) = (Arc::clone(&self.now), Arc::clone(&self.starts));
         Arc::new(move || if starts.load(Ordering::SeqCst) == me { *now.lock().unwrap() } else { DateTime::UNIX_EPOCH })
     }
 
-    fn world(&self) -> World {
+    pub(super) fn world(&self) -> World {
         let t = self.clone();
         World::with(move |c| c.clock = t.clock())
     }
@@ -49,7 +49,7 @@ fn ms(s: &str) -> i64 {
     at(s).timestamp_millis()
 }
 
-fn daily(name: &str, at: &str) -> Routine {
+pub(super) fn daily(name: &str, at: &str) -> Routine {
     Routine {
         name: name.into(),
         instructions: format!("{name}: look for news."),
@@ -60,7 +60,7 @@ fn daily(name: &str, at: &str) -> Routine {
 
 impl World {
     /// The next routine list byob sends that `f` accepts.
-    fn routines_where(&mut self, mut f: impl FnMut(&[RoutineView]) -> bool) -> Vec<RoutineView> {
+    pub(super) fn routines_where(&mut self, mut f: impl FnMut(&[RoutineView]) -> bool) -> Vec<RoutineView> {
         self.wait(|m| match m {
             ServerMsg::Routines { items } if f(items) => Some(items.clone()),
             _ => None,
@@ -68,7 +68,7 @@ impl World {
     }
 
     /// Save a routine as a client would; its saved form.
-    fn save(&mut self, r: Routine) -> Routine {
+    pub(super) fn save(&mut self, r: Routine) -> Routine {
         let name = r.name.clone();
         self.tell(ClientMsg::SaveRoutine { routine: r });
         let items = self.routines_where(|items| items.iter().any(|v| v.routine.name == name));
@@ -76,7 +76,7 @@ impl World {
     }
 
     /// A routine's runs, newest first.
-    fn runs(&mut self, id: &str) -> Vec<RunRecord> {
+    pub(super) fn runs(&mut self, id: &str) -> Vec<RunRecord> {
         self.tell(ClientMsg::ListRoutineRuns { id: id.into() });
         self.wait(|m| match m {
             ServerMsg::RoutineRuns { routine, runs } if routine == id => Some(runs.clone()),
@@ -85,7 +85,7 @@ impl World {
     }
 
     /// Wait for a routine event of `kind`: (routine, chat, title, body).
-    fn event(&mut self, kind: RoutineEventKind) -> (String, Option<String>, String, String) {
+    pub(super) fn event(&mut self, kind: RoutineEventKind) -> (String, Option<String>, String, String) {
         self.wait(|m| match m {
             ServerMsg::RoutineEvent { routine, chat, kind: k, title, body, .. } if *k == kind => {
                 Some((routine.clone(), chat.clone(), title.clone(), body.clone()))
@@ -95,13 +95,13 @@ impl World {
     }
 
     /// Wait until routine `id`'s latest run has finished; its runs, newest first.
-    fn finished(&mut self, id: &str) -> Vec<RunRecord> {
+    pub(super) fn finished(&mut self, id: &str) -> Vec<RunRecord> {
         self.routines_where(|items| items.iter().any(|v| v.routine.id == id && v.last_run.as_ref().is_some_and(|r| !r.status.active())));
         self.runs(id)
     }
 
     /// Give the scheduler a few ticks.
-    fn settle(&mut self) {
+    pub(super) fn settle(&mut self) {
         std::thread::sleep(Duration::from_millis(800));
     }
 }

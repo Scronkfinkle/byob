@@ -33,6 +33,7 @@ mod menu;
 pub mod models;
 mod notices;
 pub mod pane;
+pub mod phone;
 pub mod plugins;
 mod projects;
 pub mod queue;
@@ -115,6 +116,8 @@ pub struct ByobApp {
     projects: projects::Projects,
     /// Routines: what the engine said, the Routines page and a routine's page.
     routines: routines::Routines,
+    /// My phone (Settings → Plugins).
+    phone: phone::Phone,
     /// The run chat in view's routine runs were asked for (its header says when it ran).
     run_runs_asked: Option<String>,
     /// The run chat whose report was last scrolled into view.
@@ -275,6 +278,7 @@ impl ByobApp {
             library: library::Library::default(),
             projects: projects::Projects::default(),
             routines: routines::Routines::default(),
+            phone: phone::Phone::default(),
             run_runs_asked: None,
             run_scrolled: None,
             page: Page::Chat,
@@ -735,7 +739,7 @@ impl ByobApp {
                 self.send_all(msgs);
                 continue;
             }
-            if self.library.apply(&msg) || self.plugins.apply_logo(&msg) {
+            if self.library.apply(&msg) || self.plugins.apply_logo(&msg) || self.phone.apply(&msg) {
                 continue;
             }
             if self.usage.apply(&msg) || self.workspaces.apply(&msg) || self.sidebar.apply(&msg) || self.artifacts.apply(&msg) || self.plugins.apply(&msg) {
@@ -755,7 +759,7 @@ impl ByobApp {
                 ServerMsg::Plugin { plugin, .. } => self.skip(format!("messages from plugin {plugin:?}")),
                 ServerMsg::Unknown => self.skip("messages of a type this client doesn't know".into()),
                 // Handled by the routines above.
-                ServerMsg::Routines { .. } | ServerMsg::RoutineRuns { .. } => {}
+                ServerMsg::Routines { .. } | ServerMsg::RoutineRuns { .. } | ServerMsg::Phone(_) => {}
                 ServerMsg::RoutineEvent { routine, name, chat, kind, title, body } => {
                     // The desktop app shows these as notifications; a browser tab says them here.
                     if self.desktop.is_none() {

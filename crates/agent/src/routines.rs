@@ -611,7 +611,10 @@ impl Engine {
             routine: id.to_owned(),
             note: run_note(&r, cause, when),
             policy: run_policy(r.allowed),
-            tools: vec![Arc::new(crate::routine_tools::ReportTool { inbox: self.inbox.clone() })],
+            tools: vec![
+                Arc::new(crate::routine_tools::ReportTool { inbox: self.inbox.clone() }),
+                Arc::new(crate::messaging::TextMeTool { inbox: self.inbox.clone() }),
+            ],
         };
         let message = run_message(&r, self.routines.logs.get(id));
         if let Err(e) = self.begin_turn_with(&chat, message, Vec::new(), Some(run)) {
@@ -743,12 +746,15 @@ impl Engine {
             match (status, &report) {
                 (RunStatus::Reported, Some(rep)) if r.tell != Tell::Never => {
                     self.routine_event(&r, Some(chat), RoutineEventKind::Reported, rep.title.clone(), rep.body.clone());
+                    self.phone_report(&r.id, chat, &rep.title, &rep.body);
                 }
                 (RunStatus::Quiet, _) if r.tell == Tell::Always => {
                     self.routine_event(&r, Some(chat), RoutineEventKind::Reported, format!("{}: nothing new", r.name), String::new());
+                    self.phone_report(&r.id, chat, &format!("{}: nothing new", r.name), "");
                 }
                 (RunStatus::Failed, _) if r.tell != Tell::Never => {
                     self.routine_event(&r, Some(chat), RoutineEventKind::Failed, format!("{} failed", r.name), error.unwrap_or_default().to_owned());
+                    self.phone_report(&r.id, chat, &format!("{} failed", r.name), error.unwrap_or_default());
                 }
                 _ => {}
             }
@@ -807,12 +813,13 @@ impl Engine {
         match op {
             Op::Create { routine, here } => {
                 let r = self.save_routine(*routine, chat.filter(|_| here))?;
+                let phone = self.phone_note_for(&r);
                 let when = described(&r);
                 let next = next_due(&r, None)
                     .and_then(at_ms)
                     .map(|t| byob_when::time::show(t, &schedules(&r).into_iter().flatten().next().map(|s| s.zone()).unwrap_or_default()));
                 Ok(format!(
-                    "Created the routine {:?} (id {}): {}.{} Offer to run it once now (run_routine) so the user sees what a run does.",
+                    "Created the routine {:?} (id {}): {}.{}{phone} Offer to run it once now (run_routine) so the user sees what a run does.",
                     r.name,
                     r.id,
                     if when.is_empty() { "no schedule, it runs when asked".to_owned() } else { when.join("; ") },
@@ -822,11 +829,23 @@ impl Engine {
             Op::Update { id, apply } => {
                 let Some(current) = self.routines.list.get(&id).cloned() else { return Err(format!("there's no routine {id:?}")) };
                 let r = self.save_routine(apply(current)?, None)?;
-                Ok(format!("Updated the routine {:?}: {}.", r.name, described(&r).join("; ")))
+                let phone = self.phone_note_for(&r);
+                Ok(format!("Updated the routine {:?}: {}.{phone}", r.name, described(&r).join("; ")))
             }
             Op::Delete { id } => self.delete_routine(&id),
             Op::List => Ok(self.list_text()),
             Op::Run { id } => self.run_routine_now(&id),
+        }
+    }
+
+    /// What the model should tell the user about a routine that texts while My phone isn't
+    /// set up.
+    fn phone_note_for(&self, r: &Routine) -> String {
+        let texts = r.channels.iter().any(|c| c == byob_types::channel::CHANNEL_PHONE);
+        if texts && self.messaging.phone().is_none() {
+            " It will text the user's phone, but My phone isn't set up yet: tell them to set it up in Settings → Plugins → My phone (Telegram, free, a few minutes); until then it only notifies on the desktop.".to_owned()
+        } else {
+            String::new()
         }
     }
 

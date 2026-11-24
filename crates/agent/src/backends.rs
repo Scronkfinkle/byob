@@ -252,7 +252,11 @@ impl Engine {
         let chat = self.ext.as_ref().and_then(|e| e.backends.get(dir)).filter(|e| e.generation == generation).map(|e| e.chat.clone());
         let Some(chat) = chat else { return };
         match out {
-            Out::Started | Out::Exited(_) => self.extensions_changed(),
+            Out::Started => {
+                self.extensions_changed();
+                self.channel_started(plugin);
+            }
+            Out::Exited(_) => self.extensions_changed(),
             Out::Msg(msg) => {
                 let to = msg.get("client").and_then(Value::as_u64);
                 match msg.get("type").and_then(Value::as_str).unwrap_or_default() {
@@ -274,6 +278,15 @@ impl Engine {
                     }
                     "fault" => self.extensions_changed(),
                     "artifact" => self.backend_artifact(dir, chat.as_deref(), plugin, &msg),
+                    // Channels: only the global copy of a plugin (never a chat's or a project's).
+                    "inbound" | "pair_claim" | "channel_status"
+                        if chat.is_some() || self.ext.as_ref().and_then(|e| e.backends.get(dir)).is_some_and(|e| e.workspace.is_some()) =>
+                    {
+                        log::warn!("plugin {plugin}: channel messages from a chat's or project's copy are ignored");
+                    }
+                    "inbound" => self.channel_inbound(plugin, &msg),
+                    "pair_claim" => self.channel_pair_claim(plugin, &msg),
+                    "channel_status" => self.channel_status(plugin, &msg),
                     other => log::debug!("plugin {plugin}: backend message {other:?} ignored"),
                 }
             }

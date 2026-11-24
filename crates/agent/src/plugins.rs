@@ -212,6 +212,8 @@ impl Engine {
             self.send_extensions(id, false);
         }
         self.sweep_views();
+        self.channels_wake();
+        self.broadcast_phone();
     }
 
     /// Send client `id` the plugins of the chat it looks at.

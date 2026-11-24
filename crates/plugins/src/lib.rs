@@ -43,7 +43,7 @@ pub use connectors::{
     connector_tools_on, parse_connector,
 };
 pub use discover::{BUNDLED_DIR, Discovery, Embedded, Plugin, PluginSources, discover, discover_embedded, load_embedded, load_plugin};
-pub use manifest::{MANIFEST, Manifest, ManifestError, McpServerConfig, OLD_MANIFEST, parse_manifest};
+pub use manifest::{MANIFEST, Manifest, ManifestChannel, ManifestError, McpServerConfig, OLD_MANIFEST, parse_manifest};
 pub use names::ToolNames;
 pub use pyenv::{PluginPython, PyEnvs};
 pub use python::{PythonTool, default_python, python_tools, python_tools_in, python_tools_with, run_script_sandboxed, run_script_unsandboxed};

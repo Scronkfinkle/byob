@@ -1,6 +1,7 @@
 //! Shared serde types used across every byob layer.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod channel;
 pub mod chart;
 pub mod config;
 pub mod desktop;

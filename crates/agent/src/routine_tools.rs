@@ -13,6 +13,7 @@ use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant};
 
 use byob_tools::{Access, Preview, Tool, ToolContext, ToolOutput, ToolSpec};
+use byob_types::channel::CHANNEL_PHONE;
 use byob_types::config::Approvals;
 use byob_types::routine::{Missed, Report, Routine, Tell, Trigger};
 use byob_when::Schedule;
@@ -132,6 +133,12 @@ pub(crate) fn apply(mut r: Routine, args: &Value) -> Result<Routine, String> {
     if let Some(v) = args.get("model") {
         r.model = v.as_str().map(str::to_owned).filter(|s| !s.trim().is_empty());
     }
+    if let Some(on) = args.get("text_me").and_then(Value::as_bool) {
+        r.channels.retain(|c| c != CHANNEL_PHONE);
+        if on {
+            r.channels.push(CHANNEL_PHONE.to_owned());
+        }
+    }
     Ok(r)
 }
 
@@ -152,7 +159,14 @@ fn can_and_cant(a: Approvals) -> (&'static str, &'static str) {
 
 /// When it tells you, in words.
 fn tells(r: &Routine) -> String {
-    let how = if r.channels.iter().any(|c| c == byob_types::routine::CHANNEL_DESKTOP) { ": a notification" } else { "" };
+    let desktop = r.channels.iter().any(|c| c == byob_types::routine::CHANNEL_DESKTOP);
+    let phone = r.channels.iter().any(|c| c == CHANNEL_PHONE);
+    let how = match (desktop, phone) {
+        (true, true) => ": a notification and a text to your phone",
+        (true, false) => ": a notification",
+        (false, true) => ": a text to your phone",
+        (false, false) => "",
+    };
     match r.tell {
         Tell::Found => format!("Only when it finds something new{how}"),
         Tell::Always => format!("After every run{how}"),
@@ -225,6 +239,7 @@ fn routine_params(create: bool) -> Value {
         "tell": {"type": "string", "enum": ["found", "always", "never"], "description": "When the user hears about a run: found (default: only runs that report something), always, never."},
         "missed": {"type": "string", "enum": ["once", "skip"], "description": "Runs missed while byob was off or asleep: once (default: made up once) or skip."},
         "keep": {"type": "integer", "description": "How many runs to keep (default 30)."},
+        "text_me": {"type": "boolean", "description": "Also text what it finds to the user's phone (My phone), not just a desktop notification. Set it when they say \"text me\", \"shoot me a text\", \"message me\" or \"let me know on my phone\"."},
         "model": {"type": "string", "description": "A saved model's id for its runs; omit for the default model."},
     });
     if create {
@@ -301,7 +316,7 @@ fn update_fields(args: &Value) -> Option<Vec<(String, String)>> {
             "When" => has("schedule"),
             "Does" => has("instructions"),
             "It can" | "It can't" => has("allowed"),
-            "Tells you" => has("tell"),
+            "Tells you" => has("tell") || has("text_me"),
             "If byob is closed" => has("missed"),
             "Model" => has("model"),
             _ => false,

@@ -12,6 +12,7 @@ pub mod env;
 pub mod layout;
 pub mod look;
 pub mod media;
+pub mod phone;
 pub mod plugins;
 pub mod profiles;
 pub mod queue;
@@ -31,6 +32,7 @@ pub use connect::{Detected, InferenceTest, Link, PRESETS, Preset, Problem};
 pub use delegation::{Delegation, DelegationState, DelegationUpdate};
 pub use env::{ContainerEnv, EnvAction, EnvSupport, WorkspaceEnv};
 pub use media::{MediaContent, MediaKind, MediaRef};
+pub use phone::{CAP_PHONE, PhoneState};
 pub use plugins::{
     BackendInfo, Extensions, PluginAction, PluginCard, PluginInfo, PluginLoadError, PluginOrigin, PluginScope, PluginSetting, PluginTest, RendererDecl,
     ServerInfo, ServerState, SlashItem, SlashKind, StarterDecl,
@@ -501,6 +503,18 @@ pub enum ClientMsg {
     PauseRoutines {
         paused: bool,
     },
+    /// Start pairing a phone on channel `channel` (`<plugin>:<channel>`; 13.23+, cap
+    /// [`phone::CAP_PHONE`]): the engine makes a one-time code and the channel a link, sent
+    /// back in [`ServerMsg::Phone`]. At most 3 codes wait at once per channel.
+    PairPhone {
+        channel: String,
+    },
+    /// Forget the pairing codes waiting.
+    CancelPairing,
+    /// Forget My phone and the person paired on it (they can't reach byob any more).
+    UnpairPhone,
+    /// Send My phone a test message (an error notice if it can't).
+    TestPhone,
     /// A message from a newer client this engine doesn't know (answered with a notice).
     #[serde(other)]
     Unknown,
@@ -646,6 +660,9 @@ pub enum ServerMsg {
         #[serde(default)]
         body: String,
     },
+    /// My phone: the channels there are, whether it's set up, a pairing in progress (13.23+,
+    /// only to clients that list [`phone::CAP_PHONE`]); after the Welcome and on change.
+    Phone(phone::PhoneState),
     /// A message from a newer engine this client doesn't know: skip it.
     #[serde(other)]
     Unknown,

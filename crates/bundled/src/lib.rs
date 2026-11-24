@@ -69,6 +69,7 @@ mod tests {
                 "routines",
                 "sheets",
                 "subagents",
+                "telegram",
                 "web",
                 "workspace-instructions"
             ]

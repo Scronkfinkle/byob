@@ -26,6 +26,7 @@
 //! and keeps what a client would show in [`World::seen`]. Tests here run on SQLite; wrap them
 //! in `folder_too!` to run them on the folder backend as well.
 
+mod channels;
 mod chats;
 mod folders;
 mod images;
@@ -400,6 +401,8 @@ pub(crate) struct Seen {
     pub(crate) notices: Vec<(NoticeLevel, String)>,
     /// The chat in view's compactions (summaries standing in for earlier entries).
     pub(crate) compactions: Vec<byob_protocol::Compaction>,
+    /// My phone, as last sent.
+    pub(crate) phone: Option<byob_protocol::PhoneState>,
 }
 
 impl Seen {
@@ -458,6 +461,7 @@ impl Seen {
             ServerMsg::Compactions { items, .. } => self.compactions = items.clone(),
             ServerMsg::Compacted(c) => self.compactions.push(c.clone()),
             ServerMsg::Notice { level, text } => self.notices.push((*level, text.clone())),
+            ServerMsg::Phone(p) => self.phone = Some(p.clone()),
             _ => {}
         }
     }
