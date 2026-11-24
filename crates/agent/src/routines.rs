@@ -705,14 +705,18 @@ impl Engine {
         } else {
             RunStatus::Quiet
         };
-        let _ = self.routines.logs.update(routine, |l| {
-            if let Some(rec) = l.runs.iter_mut().rev().find(|x| x.chat.as_deref() == Some(chat)) {
-                rec.status = status;
-                rec.finished = Some(now);
-                rec.report.clone_from(&report);
-                rec.error = error.map(str::to_owned);
-                rec.tokens = tokens;
-            }
+        // A routine deleted while its run went keeps no log.
+        let exists = self.routines.list.get(routine).is_some();
+        let _ = exists.then(|| {
+            self.routines.logs.update(routine, |l| {
+                if let Some(rec) = l.runs.iter_mut().rev().find(|x| x.chat.as_deref() == Some(chat)) {
+                    rec.status = status;
+                    rec.finished = Some(now);
+                    rec.report.clone_from(&report);
+                    rec.error = error.map(str::to_owned);
+                    rec.tokens = tokens;
+                }
+            })
         });
         if let Some(r) = self.routines.list.get(routine).cloned() {
             match (status, &report) {

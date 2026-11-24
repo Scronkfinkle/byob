@@ -333,3 +333,46 @@ fn run_by_the_model_and_old_run_chats_go_but_their_reports_stay() {
     assert_eq!((runs[1].chat.as_deref(), runs[1].report.as_ref().map(|r| r.title.as_str())), (None, Some("A loom")));
     assert!(w.store().chat(&old_chat).unwrap().is_none());
 }
+
+/// "Always" on a run's card is for the routine: its later runs (new chats) make that call
+/// without asking. A routine deleted while its run goes leaves no run log behind.
+#[test]
+fn always_on_a_runs_card_lets_the_routines_later_runs_go_on() {
+    let time = Time::new("2026-11-24 07:00");
+    let mut w = time.world();
+    let r = w.save(Routine { when: vec![], ..daily("Notes", "08:00") });
+    w.model.calls("write_file", json!({"path": "found.md", "content": "a loom"}));
+    w.model.says("Saved.");
+    w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
+    let (_, chat, _, _) = w.event(RoutineEventKind::Waiting);
+    let chat = chat.unwrap();
+    // The person opens the run (the notification would) and answers its card.
+    w.open_chat(&chat);
+    let card =
+        w.seen.entries.iter().flat_map(|e| &e.steps).find(|s| s.tool == "write_file" && s.status == StepStatus::Waiting).map(|s| s.id).expect("the card");
+    w.tell(ClientMsg::Approve { step: card, answer: ApprovalAnswer::Always });
+    let runs = w.finished(&r.id);
+    assert_eq!(runs[0].status, RunStatus::Quiet);
+    let folder = |w: &World, chat: &str| w.store().chat(chat).unwrap().unwrap().workspace;
+    assert!(folder(&w, &chat).join("found.md").exists());
+    assert!(w.read("found.md").is_none(), "the run works in a folder of its own, not the project");
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(w.home.path().join("routines.json")).unwrap()).unwrap();
+    assert_eq!(saved["routines"][0]["grants"], json!(["write_file"]));
+    // The next run writes without a card.
+    w.model.calls("write_file", json!({"path": "again.md", "content": "another loom"}));
+    w.model.says("Saved again.");
+    w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
+    let runs = w.finished(&r.id);
+    assert_eq!((runs.len(), runs[0].status), (2, RunStatus::Quiet));
+    let second = runs[0].chat.clone().unwrap();
+    assert!(folder(&w, &second).join("again.md").exists());
+    // Deleted mid-run: no log comes back.
+    w.model.answers(|_| Answer::text("slow ".repeat(20)).slowly(Duration::from_millis(30)));
+    w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
+    w.routines_where(|items| items.iter().any(|v| v.last_run.as_ref().is_some_and(|x| x.status == RunStatus::Running)));
+    w.tell(ClientMsg::DeleteRoutine { id: r.id.clone() });
+    w.routines_where(<[RoutineView]>::is_empty);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(w.model.unused(), 0);
+    assert!(!w.home.path().join("routine-runs").join(format!("{}.json", r.id)).exists());
+}
