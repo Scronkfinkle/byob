@@ -295,7 +295,20 @@ failed reply's card) → Models; `PluginsUi::open` (⋯ → Plugins…, the head
 Files) → Plugins; `--settings-section NAME` (a tab id: `models`, `defaults`, `plugins`,
 `appearance`, `text`, `colors`; also `chats`, `knobs`, `advanced`, `model:<id>`; or a setting's
 id such as `accent`, `approvals`, `reduce-motion`); `--settings-search TEXT`; `--open-panel
-models|plugins|plugin:<id>|add-models:<url>|edit-model:<id>`. Spacing comes from `form.rs`
+models|plugins|plugin:<id>|add-models:<url>|edit-model:<id>`.
+
+**Routines** (`routines/`, cap `routines`): a page beside Projects (sidebar row with a dot for
+a notable run, a report, a wait or a failure, newer than this device last saw: `SidebarPrefs::
+routines_seen`). The list: tile, name and the engine's schedule words, the last run (Found:,
+Nothing new, Waiting for you, Failed:), the next run, a switch (`SetRoutineEnabled`) and ⋯
+(Run now, Edit, Duplicate, Delete). A routine's page (`page.rs`): a form whose When is
+`schedule::When` (every day, weekdays, chosen days, every few hours, a day of the month, only
+when you run it, or a rule kept as it is), saved with Save (Create routine for a new one,
+which opens once the engine lists it), and its runs (`ListRoutineRuns`; each opens its chat).
+Run chats (`ChatSummary::origin`) stay out of Recent and search (`Sidebar::runs`); viewing
+one shows a strip naming its routine. A finished `create_routine` call gets "Created … Run it
+now" under its reply. Scripted: `--open-panel routines|new-routine|routine:<id>|chat:<id>`
+(`#panel=` in the browser). Spacing comes from `form.rs`
 (page padding, rows, one control height, section gaps, all through `Tokens::pad`); the
 workspace and chat settings keep `form::grid` and the same `LayerEditor` fields.
 
@@ -308,15 +321,22 @@ start at login and nothing else):
   something calls `request_repaint` (the engine's messages, the `Bus`). On a close request
   it decides with `KeepRunning::hides_on_close(routines_on)` (the engine's `keep_running`,
   saved in settings.json and sent in `EngineState`; until the state arrives, closing quits:
-  `when-routines-are-on` (default), `always`, `never`; `routines_on` is a stub returning false
-  until routines exist): hide (`CancelClose` + `Visible(false)`) or let the close through.
+  `when-routines-are-on` (default), `always`, `never`; `routines_on` is the engine's
+  `EngineState::routines_active`): hide (`CancelClose` + `Visible(false)`) or let the close through.
   Quit byob (tray) or Ctrl/Cmd+Q sets `quitting` and sends `Close`, which goes through.
   `--background` (login launches) hides the window at the first frame if closing would.
   Wayland can't hide a window (winit), so there it's closed: `run_native` returns,
   `Background::wait_to_reopen` blocks on the bus, and a Show runs `run_native` again (eframe
   reuses its event loop) with a new `App`; `Background` (tray, told, paused) outlives windows.
 - **The bus.** The tray, the instance listener and notification clicks send `Event`s (Show,
-  Quit, TogglePause, Run, Clicked, TrayHost) on an mpsc channel and wake the window.
+  Quit, TogglePause, Run, Clicked, TrayHost, Engine) on an mpsc channel and wake the window.
+- **Its own engine connection.** `Background::connect` attaches a client of its own (caps
+  `routines` only, viewing no chat; `Bus::engine_waker` turns its messages into
+  `Event::Engine`), so it works with no window open (Wayland closes it): `RoutineEvent`s become
+  notifications whose action id is the run's chat (a click shows the window and opens it),
+  `Routines` fill the tray's Run ▸ and its attention (a run waiting for you), and
+  `EngineState::routines_paused` its Pause routines (`ClientMsg::PauseRoutines`). The routine
+  names it keeps answer another launch's `run <name>` (`Bus::find_routine`).
 - **One byob per data folder.** `<data>/instance.lock` is held with an OS file lock
   (`File::try_lock`; released by the OS when the process ends, so a crash leaves nothing to
   clean up); `<data>/instance.addr` (0600) has the pid, a loopback port and a token (apart

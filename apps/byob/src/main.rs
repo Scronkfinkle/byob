@@ -304,7 +304,9 @@ fn parse_args_from(argv: impl Iterator<Item = String>) -> Result<Args, String> {
                     || v.starts_with("palette:")
                     || v.starts_with("new-workspace-folder:")
                     || v.starts_with("workspace-settings:")
-                    || v.starts_with("edit-model:");
+                    || v.starts_with("edit-model:")
+                    || v.starts_with("routine:")
+                    || v.starts_with("chat:");
                 if !plugin_panel && !byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == v) {
                     return Err(format!(
                         "unknown panel {v:?} ({}, {}, {})",

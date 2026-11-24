@@ -365,8 +365,8 @@ pub struct ListCtx {
     pub now_ms: i64,
     /// Routines are paused (the tray, or the banner here).
     pub paused: bool,
-    /// Closing the window keeps byob running (routines run while it's closed).
-    pub keeps_running: Option<bool>,
+    /// What closing the window does (routines run while byob runs).
+    pub keep_running: Option<crate::desktop::KeepRunning>,
     /// The app can open Settings → System (the desktop).
     pub desktop: bool,
 }
@@ -382,12 +382,12 @@ fn icon_for(v: &RoutineView) -> icons::Paint {
         icons::mail
     } else if has(&["calendar", "meeting", "agenda"]) {
         icons::calendar
-    } else if has(&["sheet", "spreadsheet", "file", "folder", "document", "report"]) {
-        icons::file_text
     } else if has(&["news", "headline"]) {
         icons::megaphone
     } else if has(&["web", "search", "price", "deal", "site", "page", "http"]) {
         icons::globe
+    } else if has(&["sheet", "spreadsheet", "file", "folder", "document"]) {
+        icons::file_text
     } else {
         icons::repeat
     }
@@ -668,11 +668,9 @@ impl Routines {
         // The switch and ⋯ at the right.
         let mut on = v.routine.enabled;
         let sw = Rect::from_min_size(pos2(rect.right() - TOOLS_W + 8.0, rect.center().y - 12.0), vec2(48.0, 24.0));
-        let r = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(sw).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-                crate::form::switch(ui, t, &mut on)
-            })
-            .inner;
+        // A child that doesn't move the list's cursor (the row has its height already).
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sw).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let r = crate::form::switch(&mut child, t, &mut on);
         let tip = if v.routine.enabled { "On: it runs on its schedule. Turn off to pause it." } else { "Off: it doesn't run on its own. Run now still works." };
         if r.on_hover_text(tip).changed() {
             self.set_enabled(&id, on);
@@ -896,10 +894,12 @@ pub fn created_lines(ui: &mut Ui, t: &Tokens, entry: &byob_protocol::Entry) {
 
 /// The note under the list: byob keeps running (or doesn't) when its window closes.
 fn footer(ui: &mut Ui, t: &Tokens, ctx: &ListCtx) -> Option<Action> {
-    let text = match ctx.keeps_running {
+    use crate::desktop::KeepRunning;
+    let text = match ctx.keep_running {
         _ if !ctx.desktop => "Routines run on the computer byob runs on, while byob is running there. This page doesn't need to stay open.",
-        Some(false) => "Closing byob's window quits it, so routines only run while it's open.",
-        _ => "byob keeps running in the tray when you close its window, so routines can run.",
+        Some(KeepRunning::Never) => "Closing byob's window quits it, so routines only run while it's open.",
+        Some(KeepRunning::Always) => "byob keeps running in the tray when you close its window, so routines can run.",
+        _ => "While a routine is on, byob keeps running in the tray when you close its window, so it can run.",
     };
     let mut action = None;
     ui.horizontal_wrapped(|ui| {

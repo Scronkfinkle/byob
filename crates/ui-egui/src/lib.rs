@@ -455,7 +455,7 @@ impl ByobApp {
         let ctx = routines::ListCtx {
             now_ms: sidebar::now_ms(),
             paused: state.and_then(|s| s.routines_paused).unwrap_or(false),
-            keeps_running: self.keep_running().map(|k| k.hides_on_close(self.routines_active() || self.routines.items.iter().any(|v| v.routine.enabled))),
+            keep_running: self.keep_running(),
             desktop: self.desktop.is_some(),
         };
         let more = self.routine_page_ctx();
@@ -473,13 +473,11 @@ impl ByobApp {
     /// Projects and models a routine can use.
     fn routine_page_ctx(&self) -> routines::page::PageCtx {
         let projects = self.sidebar.workspaces().iter().map(|w| (w.id.clone(), w.name.clone())).collect();
-        let (models, default_model) = match self.workspaces.profiles() {
-            Some(list) => {
-                let main = list.roles.get(byob_protocol::profiles::ROLE_MAIN).and_then(|id| list.get(id)).map(|p| p.profile.label().to_owned());
-                (list.items.iter().map(|p| (p.profile.id.clone(), p.profile.label().to_owned())).collect(), main.unwrap_or_default())
-            }
-            None => (Vec::new(), self.state.as_ref().map(|s| s.inference_model.clone()).unwrap_or_default()),
-        };
+        let list = self.workspaces.profiles();
+        let models = list.map(|l| l.items.iter().map(|p| (p.profile.id.clone(), p.profile.label().to_owned())).collect()).unwrap_or_default();
+        // The main role's saved model, else the model the engine talks to.
+        let main = list.and_then(|l| l.roles.get(byob_protocol::profiles::ROLE_MAIN).and_then(|id| l.get(id))).map(|p| p.profile.label().to_owned());
+        let default_model = main.or_else(|| self.state.as_ref().map(|s| s.inference_model.clone())).unwrap_or_default();
         routines::page::PageCtx { projects, models, default_model }
     }
 
@@ -1031,6 +1029,8 @@ impl ByobApp {
     /// workspace's "⋯" menu), `sidebar-hover` (its rows as if hovered), `chat-list` (the list
     /// open, on phones too), `new-chat` (as New chat does), `search:<text>` (typed
     /// into its search), `palette` / `palette:<text>` (the search palette), `footer-menu`,
+    /// `routines` (the Routines page), `new-routine`, `routine:<id>` (a routine's page),
+    /// `chat:<id>` (that chat, e.g. a routine's run),
     /// `projects` / `projects-grid` (the Projects page), `new-project-empty` (New project,
     /// started empty), and `new-workspace-folder:<path>` (the form as if that folder was
     /// dropped). False for an unknown name, or a workspace view before the workspace list arrived.
@@ -1057,6 +1057,7 @@ impl ByobApp {
                 self.routines.new_routine(None);
                 self.page = Page::Routines;
             }
+            _ if name.starts_with("chat:") => self.open_chat(name.trim_start_matches("chat:")),
             _ if name.starts_with("routine:") => {
                 let id = name.trim_start_matches("routine:");
                 if self.routines.get(id).is_none() {
@@ -1137,10 +1138,10 @@ impl ByobApp {
     }
 
     /// The names [`ByobApp::open_panel`] knows.
-    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu, model-menu, models, plugins, new-chat-menu, workspace-menu, sidebar-hover, chat-list, new-chat, palette, footer-menu, projects, projects-grid, new-project-empty";
+    pub const PANELS: &'static str = "new-workspace, new-workspace-container, workspace-settings, chat-settings, more-menu, model-menu, models, plugins, new-chat-menu, workspace-menu, sidebar-hover, chat-list, new-chat, palette, footer-menu, projects, projects-grid, new-project-empty, routines, new-routine";
     /// Names [`ByobApp::open_panel`] takes with an argument: `search:<text>`,
     /// `new-workspace-folder:<path>`.
-    pub const ARG_PANELS: &'static str = "search:<text>, palette:<text>, new-workspace-folder:<path>, workspace-settings:<part>";
+    pub const ARG_PANELS: &'static str = "search:<text>, palette:<text>, new-workspace-folder:<path>, workspace-settings:<part>, routine:<id>, chat:<id>";
     /// Names [`ByobApp::open_panel`] takes once plugins are known: `plugin-pane` (the first
     /// plugin pane), `plugin-pane:<plugin>[/<view>]`, `plugin:<id>` (Settings → Plugins, open
     /// on that plugin).

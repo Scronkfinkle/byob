@@ -140,7 +140,7 @@ fn hash_value(key: &str) -> Option<String> {
 #[cfg(target_arch = "wasm32")]
 fn panel_from_hash() -> Option<String> {
     let name = hash_value("panel")?;
-    byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == name).then_some(name)
+    (byob_ui_egui::ByobApp::PANELS.split(", ").any(|p| p == name) || name.starts_with("routine:") || name.starts_with("chat:")).then_some(name)
 }
 
 #[cfg(target_arch = "wasm32")]
