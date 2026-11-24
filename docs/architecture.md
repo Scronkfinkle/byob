@@ -310,6 +310,9 @@ its two settings and nothing else):
   until routines exist): hide (`CancelClose` + `Visible(false)`) or let the close through.
   Quit byob (tray) or Ctrl/Cmd+Q sets `quitting` and sends `Close`, which goes through.
   `--background` (login launches) hides the window at the first frame if closing would.
+  Wayland can't hide a window (winit), so there it's closed: `run_native` returns,
+  `Background::wait_to_reopen` blocks on the bus, and a Show runs `run_native` again (eframe
+  reuses its event loop) with a new `App`; `Background` (tray, told, paused) outlives windows.
 - **The bus.** The tray, the instance listener and notification clicks send `Event`s (Show,
   Quit, TogglePause, Run, Clicked, TrayHost) on an mpsc channel and wake the window.
 - **One byob per data folder.** `<data>/instance.lock` is held with an OS file lock

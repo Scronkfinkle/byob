@@ -5,6 +5,9 @@
 //! Everything that happens outside the window (the tray, the instance listener, notification
 //! clicks) arrives as an [`Event`] on the [`Bus`], which wakes the window so `App::logic` (run
 //! even while the window is hidden) handles it on the main thread.
+//!
+//! Where a window can't be hidden (Wayland: winit can't unmap one), it is closed instead and
+//! byob waits without one ([`Background::wait_to_reopen`]); showing it opens a new window.
 
 pub mod autostart;
 pub mod instance;
@@ -13,7 +16,7 @@ pub mod tray;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use byob_store::{KeepRunning, Settings};
 use byob_ui_egui::ByobApp;
@@ -39,7 +42,8 @@ pub enum Event {
 #[derive(Clone)]
 pub struct Bus {
     tx: Sender<Event>,
-    ctx: Arc<OnceLock<egui::Context>>,
+    /// The window to wake (none between windows).
+    ctx: Arc<Mutex<Option<egui::Context>>>,
 }
 
 impl Bus {
@@ -50,13 +54,18 @@ impl Bus {
 
     /// Wake this window for every event from now on (events before it wait for its first frame).
     pub fn attach(&self, ctx: &egui::Context) {
-        let _ = self.ctx.set(ctx.clone());
+        *self.ctx.lock().unwrap_or_else(PoisonError::into_inner) = Some(ctx.clone());
         ctx.request_repaint();
+    }
+
+    /// The window is gone.
+    fn detach(&self) {
+        *self.ctx.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     pub fn send(&self, event: Event) {
         let _ = self.tx.send(event);
-        if let Some(ctx) = self.ctx.get() {
+        if let Some(ctx) = &*self.ctx.lock().unwrap_or_else(PoisonError::into_inner) {
             ctx.request_repaint();
         }
     }
@@ -94,7 +103,8 @@ const TITLE: &str = "byob is still running";
 const IN_TRAY: &str = "It keeps working in the background. Open it again from its icon in the tray, or quit it there.";
 const NO_TRAY: &str = "It keeps working in the background. To get its window back, open byob again. To quit, press Ctrl+Q in its window.";
 
-/// The window's side of running in the background (see the module docs).
+/// The window's side of running in the background (see the module docs). Outlives each
+/// window: where windows can't hide, byob goes on between them.
 pub struct Background {
     bus: Bus,
     rx: Receiver<Event>,
@@ -102,7 +112,11 @@ pub struct Background {
     enabled: bool,
     /// `--background`: hide the window at the first frame (if closing would hide it too).
     start_hidden: bool,
+    /// This window can be hidden (not on Wayland): else it's closed and byob waits for a Show.
+    can_hide: bool,
     hidden: bool,
+    /// The window is closing to the background (where it can't hide): let the close through.
+    closing_to_background: bool,
     /// Quit byob was chosen: let the close through.
     quitting: bool,
     tray: Option<tray::Tray>,
@@ -116,10 +130,43 @@ pub struct Background {
     told: Told,
 }
 
+/// What the window has to do about an event.
+#[derive(Debug, PartialEq, Eq)]
+enum Action {
+    Show,
+    Quit,
+}
+
 impl Background {
-    pub fn new(bus: Bus, rx: Receiver<Event>, enabled: bool, start_hidden: bool, told: Told) -> Self {
+    pub fn new(bus: Bus, rx: Receiver<Event>, enabled: bool, start_hidden: bool) -> Self {
         let notifier = notify::Notifier::new(bus.clone());
-        Self { bus, rx, enabled, start_hidden, hidden: false, quitting: false, tray: None, tray_up: false, tray_failed: false, notifier, paused: false, told }
+        Self {
+            bus,
+            rx,
+            enabled,
+            start_hidden,
+            can_hide: true,
+            hidden: false,
+            closing_to_background: false,
+            quitting: false,
+            tray: None,
+            tray_up: false,
+            tray_failed: false,
+            notifier,
+            paused: false,
+            told: Told::default(),
+        }
+    }
+
+    /// A window opened: wake it for events; `can_hide`: it can be hidden (not on Wayland);
+    /// `told`: the notifications its saved state says were shown.
+    pub fn attach(&mut self, ctx: &egui::Context, can_hide: bool, told: Told) {
+        self.bus.attach(ctx);
+        if !can_hide {
+            log::info!("this window can't be hidden (Wayland): closing it to the background closes it");
+        }
+        self.can_hide = can_hide;
+        self.told = Told { tray: self.told.tray || told.tray, no_tray: self.told.no_tray || told.no_tray };
     }
 
     pub fn told(&self) -> Told {
@@ -152,16 +199,47 @@ impl Background {
             self.hide(ctx);
         }
         while let Ok(event) = self.rx.try_recv() {
-            self.handle(ctx, event);
+            match self.apply(event) {
+                Some(Action::Show) => self.show(ctx),
+                Some(Action::Quit) => self.quit(ctx),
+                None => {}
+            }
         }
         if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Q))) {
-            self.handle(ctx, Event::Quit);
+            self.quit(ctx);
         }
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && hides {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && !self.closing_to_background && hides {
+            if self.can_hide {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
             self.hide(ctx);
             self.tell_once();
         }
+        self.update_menu();
+    }
+
+    /// After the window closed: `true` if it closed to the background (where windows can't
+    /// hide) and something asked for it again; `false`: quit.
+    pub fn wait_to_reopen(&mut self) -> bool {
+        self.bus.detach();
+        if self.quitting || !std::mem::take(&mut self.closing_to_background) {
+            return false;
+        }
+        log::info!("window closed; byob keeps running until it's opened again or quit");
+        while let Ok(event) = self.rx.recv() {
+            match self.apply(event) {
+                Some(Action::Show) => {
+                    self.hidden = false;
+                    return true;
+                }
+                Some(Action::Quit) => return false,
+                None => self.update_menu(),
+            }
+        }
+        false
+    }
+
+    fn update_menu(&mut self) {
         let menu = self.menu();
         if let Some(t) = &mut self.tray {
             t.set_menu(menu);
@@ -188,32 +266,51 @@ impl Background {
         }
     }
 
-    fn handle(&mut self, ctx: &egui::Context, event: Event) {
+    /// Take in an event; what the window should do about it.
+    fn apply(&mut self, event: Event) -> Option<Action> {
         match event {
-            Event::Show => self.show(ctx),
+            Event::Show => Some(Action::Show),
             Event::Clicked(action) => {
-                self.show(ctx);
                 if !action.is_empty() {
                     // Routines: open the run's chat.
                     log::info!("notification {action:?} clicked");
                 }
+                Some(Action::Show)
             }
-            Event::Quit => {
-                self.quitting = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                ctx.request_repaint();
-            }
+            Event::Quit => Some(Action::Quit),
             // STUB: routines pause here.
-            Event::TogglePause => self.paused = !self.paused,
-            Event::Run(id) => log::info!("run {id:?}: there are no routines yet"),
-            Event::TrayHost(up) => self.tray_up = up,
+            Event::TogglePause => {
+                self.paused = !self.paused;
+                None
+            }
+            Event::Run(id) => {
+                log::info!("run {id:?}: there are no routines yet");
+                None
+            }
+            Event::TrayHost(up) => {
+                self.tray_up = up;
+                None
+            }
         }
+    }
+
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.quitting = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        ctx.request_repaint();
     }
 
     fn hide(&mut self, ctx: &egui::Context) {
         self.hidden = true;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        log::info!("window hidden; byob keeps running");
+        if self.can_hide {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            log::info!("window hidden; byob keeps running");
+        } else {
+            // Closed instead; [`Self::wait_to_reopen`] takes over.
+            self.closing_to_background = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            ctx.request_repaint();
+        }
     }
 
     fn show(&mut self, ctx: &egui::Context) {
@@ -247,7 +344,9 @@ pub struct DesktopHost {
 }
 
 impl DesktopHost {
-    pub fn new(settings: Option<PathBuf>, keep: KeepRunning) -> Self {
+    /// As `settings` (settings.json) says now, and the login entry.
+    pub fn load(settings: Option<PathBuf>) -> Self {
+        let keep = settings.as_deref().map(|p| Settings::load(p).value.keep_running).unwrap_or_default();
         Self { settings, keep, login: autostart::enabled() }
     }
 }
@@ -315,7 +414,8 @@ mod tests {
         let ctx = egui::Context::default();
         let (bus, rx) = Bus::new();
         // Enabled, but a tray here would go on the test machine's session bus: say it failed.
-        let mut bg = Background::new(bus.clone(), rx, true, false, Told { tray: true, no_tray: true });
+        let mut bg = Background::new(bus.clone(), rx, true, false);
+        bg.told = Told { tray: true, no_tray: true };
         bg.tray_failed = true;
         let ui = app(KeepRunning::Always);
         let cmds = pass(&ctx, &mut bg, &ui, true);
@@ -337,7 +437,7 @@ mod tests {
         let ctx = egui::Context::default();
         for (keep, enabled) in [(KeepRunning::Never, true), (KeepRunning::WhenRoutines, true), (KeepRunning::Always, false)] {
             let (bus, rx) = Bus::new();
-            let mut bg = Background::new(bus, rx, enabled, true, Told::default());
+            let mut bg = Background::new(bus, rx, enabled, true);
             let cmds = pass(&ctx, &mut bg, &app(keep), true);
             assert!(cmds.is_empty(), "{keep:?} enabled {enabled}: {cmds:?}");
             assert!(!bg.is_hidden() && bg.tray.is_none());
@@ -345,10 +445,42 @@ mod tests {
     }
 
     #[test]
+    fn where_windows_cant_hide_a_close_goes_through_and_byob_waits_for_show() {
+        let ctx = egui::Context::default();
+        let (bus, rx) = Bus::new();
+        let mut bg = Background::new(bus.clone(), rx, true, false);
+        bg.attach(&ctx, false, Told { tray: true, no_tray: true });
+        bg.tray_failed = true;
+        let ui = app(KeepRunning::Always);
+        let cmds = pass(&ctx, &mut bg, &ui, true);
+        assert!(!cmds.contains(&egui::ViewportCommand::CancelClose), "{cmds:?}");
+        // The window is gone; a Show (from another thread) opens a new one.
+        let sender = bus.clone();
+        let t = std::thread::spawn(move || {
+            sender.send(Event::TogglePause);
+            sender.send(Event::Show);
+        });
+        assert!(bg.wait_to_reopen());
+        t.join().unwrap();
+        assert!(bg.paused, "events between windows still count");
+        // Quit while closed: no new window.
+        bg.attach(&ctx, false, Told::default());
+        pass(&ctx, &mut bg, &ui, true);
+        bus.send(Event::Quit);
+        assert!(!bg.wait_to_reopen());
+        // A close that quits (Never) doesn't wait.
+        let (bus, rx) = Bus::new();
+        let mut never = Background::new(bus, rx, true, false);
+        never.attach(&ctx, false, Told::default());
+        pass(&ctx, &mut never, &app(KeepRunning::Never), true);
+        assert!(!never.wait_to_reopen());
+    }
+
+    #[test]
     fn starting_in_the_background_hides_the_window_once() {
         let ctx = egui::Context::default();
         let (bus, rx) = Bus::new();
-        let mut bg = Background::new(bus, rx, true, true, Told::default());
+        let mut bg = Background::new(bus, rx, true, true);
         bg.tray_failed = true;
         let ui = app(KeepRunning::Always);
         assert!(pass(&ctx, &mut bg, &ui, false).contains(&egui::ViewportCommand::Visible(false)));
