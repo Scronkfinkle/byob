@@ -275,6 +275,8 @@ mod imp {
 mod tests {
     use super::*;
 
+    /// Linux and the BSDs (paths written the Unix way).
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn the_autostart_entry_goes_under_xdg_config_home() {
         let home = Path::new("/home/ada");
@@ -317,7 +319,9 @@ mod tests {
     fn a_nix_install_starts_from_its_profile_link_not_the_store() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        // Its real path: macOS's temporary folder is behind a symlink (/var → /private/var).
+        let real = dir.path().canonicalize().unwrap();
+        let root = real.as_path();
         let store = root.join("nix/store");
         let bin = |p: &Path| {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();

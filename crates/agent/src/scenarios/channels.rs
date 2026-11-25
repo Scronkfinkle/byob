@@ -155,6 +155,13 @@ impl World {
         let state = self.phone_where(|s| s.phone.is_some());
         assert_eq!(state.phone.as_ref().map(|p| p.name.as_str()), Some("@jesse"));
         assert!(state.pairing.is_none());
+        // The welcome text is sent after the state says paired: wait for it, so a test that
+        // counts messages from here doesn't count it as its own (it did on a slow runner).
+        let deadline = Instant::now() + PATIENCE;
+        while !phone.sent.lock().unwrap().iter().any(|m| m["to"] == ME && m["text"].as_str().is_some_and(|t| t.starts_with("Paired with"))) {
+            assert!(Instant::now() < deadline, "no welcome text: {:?}", phone.sent.lock().unwrap());
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 

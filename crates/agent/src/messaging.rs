@@ -537,7 +537,7 @@ impl Engine {
         self.messaging.save();
         log::info!("channel {key}: paired {name:?}; it's My phone now");
         self.send_peers(plugin);
-        let hello = format!("Paired with byob: this is your phone for byob now (Settings → Plugins → My phone).\n\n{HELP}");
+        let hello = format!("Paired with byob: this is your phone for byob now (in byob: Plugins → Connects to).\n\n{HELP}");
         self.deliver_to(&key, &peer, hello, Vec::new(), None, Link::note());
         self.broadcast_phone();
     }
