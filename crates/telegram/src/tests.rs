@@ -188,6 +188,15 @@ fn deliver_sends_plain_text_with_buttons_and_says_which_message() {
     assert_eq!(body["text"].as_str().unwrap().chars().count(), MAX_TEXT);
     assert_eq!(body["reply_markup"]["inline_keyboard"], json!([[{"text": "Yes", "callback_data": "a1:yes"}, {"text": "No", "callback_data": "a1:no"}]]));
     assert_eq!(body["reply_parameters"], json!({"message_id": 55, "allow_sending_without_reply": true}));
+    // Two to a row.
+    h.tg.request(
+        "deliver",
+        &json!({"to": "777", "text": "x", "buttons": [{"id": "1", "label": "A"}, {"id": "2", "label": "B"}, {"id": "3", "label": "C"}]}),
+        &out,
+    )
+    .unwrap();
+    let rows = &h.server.calls("sendMessage")[1]["reply_markup"]["inline_keyboard"];
+    assert_eq!((rows[0].as_array().unwrap().len(), rows[1][0]["text"].as_str()), (2, Some("C")));
     let long = "z".repeat(65);
     assert!(h.tg.request("deliver", &json!({"to": "777", "text": "x", "buttons": [{"id": long, "label": "Yes"}]}), &out).is_err());
     assert!(h.tg.request("deliver", &json!({"to": "../etc", "text": "x"}), &out).is_err());

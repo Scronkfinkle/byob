@@ -346,8 +346,9 @@ fn a_run_waiting_on_an_approval_is_answered_from_the_phone() {
     let text = ask["text"].as_str().unwrap();
     assert!(text.starts_with("Notes wants to: ") && text.contains("found.md") && text.ends_with("Allow it?"), "{text}");
     let buttons = ask["buttons"].as_array().unwrap();
-    assert_eq!(buttons.iter().map(|b| b["label"].as_str().unwrap()).collect::<Vec<_>>(), ["Allow", "Deny"]);
+    assert_eq!(buttons.iter().map(|b| b["label"].as_str().unwrap()).collect::<Vec<_>>(), ["✅ Allow", "❌ Deny", "🔓 Always allow for this routine"]);
     let allow = buttons[0]["id"].as_str().unwrap().to_owned();
+    let always = buttons[2]["id"].as_str().unwrap().to_owned();
     assert!(allow.len() <= 64);
     // A stranger pressing it does nothing.
     phone.says(json!({"type": "inbound", "channel": "chat", "peer": "777", "button": allow}));
@@ -364,20 +365,67 @@ fn a_run_waiting_on_an_approval_is_answered_from_the_phone() {
     phone.says(json!({"type": "inbound", "channel": "chat", "peer": ME, "button": allow}));
     assert!(phone.next(&mut seen)["text"].as_str().unwrap().contains("already answered"));
 
-    // Must-confirm: creating a routine from a run.
+    // Always allow: the routine's later runs write without asking.
+    w.model.calls("write_file", json!({"path": "found.md", "content": "two looms"}));
+    w.model.says("Saved again.");
+    w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
+    let ask = phone.next(&mut seen);
+    let always = ask["buttons"][2]["id"].as_str().map_or(always, str::to_owned);
+    phone.says(json!({"type": "inbound", "channel": "chat", "peer": ME, "button": always}));
+    assert!(phone.next(&mut seen)["text"].as_str().unwrap().contains("from now on without asking"));
+    w.settle();
+    w.model.calls("write_file", json!({"path": "found.md", "content": "three looms"}));
+    w.model.says("Saved, unasked.");
+    w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
+    let deadline = Instant::now() + PATIENCE;
+    while w.model.unused() > 0 {
+        assert!(Instant::now() < deadline, "the third run never went on");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    w.settle();
+    assert_eq!(phone.count(), seen, "no question the third time");
+
+    // Must-confirm: creating a routine from a run. The text says all the card does, with the
+    // tool's own words on the buttons, and a tap confirms it.
     w.model.calls("create_routine", json!({"name": "Another", "instructions": "Do more."}));
-    w.model.says("Couldn't.");
+    w.model.says("Made it.");
     w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
     let ask = phone.next(&mut seen);
     let text = ask["text"].as_str().unwrap();
-    assert!(text.contains("open byob to confirm"), "{text}");
-    assert!(ask.get("buttons").is_none(), "no tap for a must-confirm call: {ask}");
-    // The person denies it in byob; the run ends.
-    let chat = w.runs(&r.id)[0].chat.clone().unwrap();
-    w.open_chat(&chat);
-    let card = w.seen.entries.iter().flat_map(|e| &e.steps).find(|s| s.tool == "create_routine" && s.status == StepStatus::Waiting).map(|s| s.id).unwrap();
-    w.tell(ClientMsg::Approve { step: card, answer: byob_protocol::ApprovalAnswer::Deny });
-    assert_eq!(w.finished(&r.id)[0].status, RunStatus::Quiet);
+    assert!(text.starts_with("Notes wants to: ") && text.contains("Another") && text.ends_with("This always needs you to say yes."), "{text}");
+    let buttons = ask["buttons"].as_array().unwrap();
+    assert_eq!(buttons.iter().map(|b| b["label"].as_str().unwrap()).collect::<Vec<_>>(), ["✅ Create routine", "❌ Not now"], "never always");
+    let confirm = buttons[0]["id"].as_str().unwrap().to_owned();
+    phone.says(json!({"type": "inbound", "channel": "chat", "peer": ME, "button": confirm}));
+    assert!(phone.next(&mut seen)["text"].as_str().unwrap().starts_with("Allowed: "));
+    // Confirmed from the phone, so it was made.
+    w.routines_where(|items| items.iter().any(|v| v.routine.name == "Another"));
+    w.settle();
+
+    // A question: its choices are buttons; a reply to it is an answer of its own.
+    w.model.calls("ask_user", json!({"question": "Which fiber?", "options": ["Wool", "Cotton"]}));
+    w.model.answers(|req| {
+        assert!(req.tool_results().last().unwrap().contains("Cotton"), "{:?}", req.tool_results());
+        Answer::call("ask_user", json!({"question": "Which color?", "options": ["Red", "Blue"]}))
+    });
+    w.model.answers(|req| {
+        assert!(req.tool_results().last().unwrap().contains("undyed, please"), "{:?}", req.tool_results());
+        Answer::text("Noted.")
+    });
+    w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
+    let ask = phone.next(&mut seen);
+    assert!(ask["text"].as_str().unwrap().starts_with("Notes asks: Which fiber?"), "{ask}");
+    let buttons = ask["buttons"].as_array().unwrap();
+    assert_eq!(buttons.iter().map(|b| b["label"].as_str().unwrap()).collect::<Vec<_>>(), ["Wool", "Cotton"]);
+    phone.says(json!({"type": "inbound", "channel": "chat", "peer": ME, "button": buttons[1]["id"]}));
+    assert_eq!(phone.next(&mut seen)["text"], "Answered: Cotton. It goes on.");
+    let ask = phone.next(&mut seen);
+    assert!(ask["text"].as_str().unwrap().contains("reply to this message with your own answer"), "{ask}");
+    phone.text(ME, "undyed, please", Some(&format!("m{seen}")));
+    assert_eq!(phone.next(&mut seen)["text"], "Answered: undyed, please. It goes on.");
+    w.settle();
+    assert_eq!(w.model.unused(), 0);
+    w.model.check();
 }
 
 /// `text_me` is only in runs; there it texts, at most 10 a day per routine, and the rest go
@@ -489,7 +537,8 @@ fn telegram_end_to_end_against_a_fake_bot_api() {
     w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
     let ask = wait_for(&api, 555, 2).pop().unwrap();
     let keyboard = &ask["reply_markup"]["inline_keyboard"][0];
-    assert_eq!((keyboard[0]["text"].as_str(), keyboard[1]["text"].as_str()), (Some("Allow"), Some("Deny")), "{ask}");
+    assert_eq!((keyboard[0]["text"].as_str(), keyboard[1]["text"].as_str()), (Some("✅ Allow"), Some("❌ Deny")), "{ask}");
+    assert_eq!(ask["reply_markup"]["inline_keyboard"][1][0]["text"], "🔓 Always allow for this routine", "on a row of its own: {ask}");
     let allow = keyboard[0]["callback_data"].as_str().unwrap().to_owned();
     api.push(Next::Updates(vec![json!({"update_id": 3, "callback_query": {"id": "cb1", "from": {"id": 555, "is_bot": false, "username": "ada"},
         "message": {"message_id": 101, "chat": {"id": 555, "type": "private"}}, "data": allow}})]));

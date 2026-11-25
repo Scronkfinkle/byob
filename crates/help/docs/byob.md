@@ -125,8 +125,9 @@ starts it hidden.
 Telegram for now (free; a bot of your own: its page walks you through @BotFather's /newbot and
 the token). Pair my phone shows a
 link and a one-time code to send from the phone. Then a routine's Tell me offers Text me (or say
-"text me when it finds one"): its findings arrive as texts, its questions as Allow/Deny buttons
-(anything that must always be confirmed, like sending mail, says to open byob), and a reply to a
+"text me when it finds one"): its findings arrive as texts, what it asks as buttons (Allow, Deny
+or Always allow; a question's choices; for what must always be confirmed, like sending mail, the
+text says everything it will do), and a reply to a
 text continues that chat (each chat is its own reply thread), with the answer texted back.
 `/new` starts a new chat from the phone (`/new` and what it's about, or `/new` alone). byob
 only asks Telegram for the bot's messages (no open port); people who aren't paired get nothing.

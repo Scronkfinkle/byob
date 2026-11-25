@@ -192,7 +192,9 @@ impl Telegram {
                 let label = b.get("label").and_then(Value::as_str).map(str::trim).filter(|l| !l.is_empty()).unwrap_or(id);
                 row.push(json!({"text": chars(label, 64), "callback_data": id}));
             }
-            body["reply_markup"] = json!({"inline_keyboard": [row]});
+            // Two to a row: room for each label on a phone.
+            let rows: Vec<Vec<Value>> = row.chunks(2).map(<[Value]>::to_vec).collect();
+            body["reply_markup"] = json!({"inline_keyboard": rows});
         }
         if let Some(r) = text_of(params.get("reply_to")).and_then(|r| r.parse::<i64>().ok()) {
             body["reply_parameters"] = json!({"message_id": r, "allow_sending_without_reply": true});

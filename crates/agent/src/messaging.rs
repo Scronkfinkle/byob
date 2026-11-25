@@ -11,7 +11,9 @@
 //!   (global). Inbound from anyone else is dropped (logged, counted); nothing answers them.
 //!   Backends get the list too (`channel_peers` events) to drop strangers early.
 //! - **Routing inbound** (untrusted text, cut and rate-capped): a button answers the approval
-//!   it was sent for (never a must-confirm one: "open byob to confirm"); a reply to a message
+//!   or question it was sent for (must-confirm calls too: their text says everything the call
+//!   will do, as the card does); a reply to a question that takes free text answers it; a
+//!   reply to a message
 //!   byob sent continues that message's chat as a user message (queued while it's busy), and
 //!   the answer goes back to the phone, so each chat is a reply thread and two can't mix.
 //!   `/new TEXT` starts a chat (with the new-chat defaults) with TEXT as its first message;
@@ -63,8 +65,6 @@ const NEW_CHAT: &str = "OK, a new chat: what's it about?";
 const REPLY_OR_NEW: &str = "To keep talking about something, reply to my message about it. To start a new chat, send /new (or /new and what it's about).";
 /// Said when a pairing code didn't work.
 const WRONG_CODE: &str = "That code didn't work (it may have expired). Get a new one in byob: Settings → Plugins → My phone.";
-/// Said to a must-confirm call's button (it never gets buttons; an old message might).
-pub(crate) const OPEN_TO_CONFIRM: &str = "This needs you to confirm it in byob itself: open byob to confirm.";
 
 /// A pairing code waiting.
 #[derive(Debug, Clone)]
@@ -98,15 +98,17 @@ pub(crate) struct Link {
     client: Option<ClientId>,
     /// Answer this tool call with the outcome (`text_me`).
     reply: Option<Sender<Result<String, String>>>,
+    /// The approval or question it asks (a reply to it may answer it).
+    step: Option<u64>,
 }
 
 impl Link {
     fn note() -> Self {
-        Self { chat: None, routine: None, kind: Sent::Note, client: None, reply: None }
+        Self { chat: None, routine: None, kind: Sent::Note, client: None, reply: None, step: None }
     }
 
     fn chat(chat: &str, routine: Option<&str>, kind: Sent) -> Self {
-        Self { chat: Some(chat.to_owned()), routine: routine.map(str::to_owned), kind, client: None, reply: None }
+        Self { chat: Some(chat.to_owned()), routine: routine.map(str::to_owned), kind, client: None, reply: None, step: None }
     }
 }
 
@@ -170,6 +172,8 @@ pub(crate) struct Messaging {
     courier: Option<Sender<Job>>,
     /// A turn about to start from a phone's message (taken by `begin_turn_with`).
     pub(crate) next_turn: Option<FromPhone>,
+    /// Questions sent to phones, by (channel, peer, message ref): a reply answers them.
+    asked: BTreeMap<(String, String, String), u64>,
     /// Peers who sent `/new` alone: their next message (not a reply) starts a chat.
     starting: std::collections::BTreeSet<(String, String)>,
     /// Queued messages (queue item ids) that came from a phone.
@@ -654,7 +658,17 @@ impl Engine {
         let found = reply_to.and_then(|r| self.messaging.file.recent.iter().rev().find(|d| d.channel == key && d.peer == peer && d.reference == r).cloned());
         match found {
             Some(d) if d.kind == Sent::Approval => {
-                self.deliver_to(&key, &peer, "Tap Allow or Deny on that message to answer it (or open byob).".into(), Vec::new(), None, Link::note())
+                let step = self.messaging.asked.get(&(key.clone(), peer.clone(), d.reference.clone())).copied();
+                let free =
+                    step.and_then(|s| self.pending.get(&s)).is_some_and(|p| p.step.ask.as_ref().and_then(|a| a.choice.as_ref()).is_some_and(|c| c.free_text));
+                match step {
+                    Some(step) if free && !text.is_empty() => {
+                        self.messaging.buttons.retain(|_, b| b.step != step);
+                        self.answer_question(step, &text);
+                        self.deliver_to(&key, &peer, format!("Answered: {}. It goes on.", ch::cut(&text, 200)), Vec::new(), None, Link::note());
+                    }
+                    _ => self.deliver_to(&key, &peer, "Tap a button on that message to answer it (or open byob).".into(), Vec::new(), None, Link::note()),
+                }
             }
             Some(Delivered { chat: Some(chat), routine, .. }) if !text.is_empty() => self.phone_reply(&key, &peer, &chat, routine.as_deref(), text),
             _ if text.is_empty() => self.deliver_to(&key, &peer, "byob only reads text messages from here for now.".into(), Vec::new(), None, Link::note()),
@@ -679,9 +693,9 @@ impl Engine {
         }
     }
 
-    /// A button pressed on the phone.
+    /// A button pressed on the phone: `TOKEN:y`, `TOKEN:n`, or `TOKEN:N` (a question's Nth choice).
     fn phone_button(&mut self, key: &str, peer: &str, button: &str) {
-        let Some((token, yes)) = button.strip_suffix(":y").map(|t| (t, true)).or_else(|| button.strip_suffix(":n").map(|t| (t, false))) else {
+        let Some((token, pressed)) = button.rsplit_once(':') else {
             return log::info!("channel {key}: a button byob doesn't know");
         };
         let b = self.messaging.buttons.get(token).cloned().filter(|b| b.channel == key && b.peer == peer);
@@ -690,13 +704,34 @@ impl Engine {
             self.messaging.buttons.remove(token);
             return self.deliver_to(key, peer, "That was already answered, or the run has ended.".into(), Vec::new(), None, Link::note());
         };
-        if must_confirm(&step) || step.ask.as_ref().is_some_and(|a| a.choice.is_some()) {
-            return self.deliver_to(key, peer, OPEN_TO_CONFIRM.into(), Vec::new(), None, Link::note());
-        }
-        self.messaging.buttons.remove(token);
-        log::info!("channel {key}: {} from the phone", if yes { "allowed" } else { "denied" });
-        self.answer(b.step, if yes { ApprovalAnswer::Allow } else { ApprovalAnswer::Deny });
-        let said = if yes { format!("Allowed: {}. It goes on.", step.title) } else { format!("Denied: {}. It goes on without it.", step.title) };
+        let choice = step.ask.as_ref().and_then(|a| a.choice.as_ref());
+        let said = match (choice, pressed) {
+            (Some(c), n) => {
+                let Some(option) = n.parse::<usize>().ok().and_then(|n| c.options.get(n)).cloned() else {
+                    return log::info!("channel {key}: a choice byob doesn't know");
+                };
+                self.answer_question(b.step, &option);
+                format!("Answered: {}. It goes on.", ch::cut(&option, 200))
+            }
+            (None, "y" | "n" | "a") => {
+                let answer = match pressed {
+                    "y" => ApprovalAnswer::Allow,
+                    // Never for a question or a must-confirm call (an old or forged button).
+                    "a" if step.ask.is_none() => ApprovalAnswer::Always,
+                    "a" => ApprovalAnswer::Allow,
+                    _ => ApprovalAnswer::Deny,
+                };
+                log::info!("channel {key}: {answer:?} from the phone");
+                self.answer(b.step, answer);
+                match answer {
+                    ApprovalAnswer::Deny => format!("Denied: {}. It goes on without it.", step.title),
+                    ApprovalAnswer::Always => format!("Allowed: {}, and from now on without asking. It goes on.", step.title),
+                    _ => format!("Allowed: {}. It goes on.", step.title),
+                }
+            }
+            (None, _) => return log::info!("channel {key}: a button byob doesn't know"),
+        };
+        self.messaging.buttons.retain(|_, x| x.step != b.step);
         self.deliver_to(key, peer, said, Vec::new(), None, Link::note());
     }
 
@@ -826,6 +861,11 @@ impl Engine {
         match &result {
             Ok(v) => {
                 let reference = v.get("ref").map(|r| r.as_str().map_or_else(|| r.to_string(), str::to_owned)).filter(|r| !r.is_empty() && r.len() <= 64);
+                if let (Some(reference), Some(step)) = (&reference, link.step) {
+                    let pending = &self.pending;
+                    self.messaging.asked.retain(|_, s| pending.contains_key(s));
+                    self.messaging.asked.insert((channel.clone(), peer.clone(), reference.clone()), step);
+                }
                 if let Some(reference) = reference
                     && link.kind != Sent::Note
                 {
@@ -925,12 +965,11 @@ impl Engine {
         let who = routine.as_deref().and_then(|r| self.routines.list.get(r)).map_or_else(|| "byob".to_owned(), |r| r.name.clone());
         let what = ch::cut(&step.title, 300);
         let two_way = self.channel(&target.channel).is_some_and(|c| c.decl.buttons);
-        let (text, buttons) = if must_confirm(step) {
-            (format!("{who} wants to: {what}. That needs you to confirm it in byob itself: open byob to confirm."), Vec::new())
-        } else if step.ask.as_ref().is_some_and(|a| a.choice.is_some()) {
-            (format!("{who} has a question for you: open byob to answer it."), Vec::new())
-        } else if !two_way {
-            (format!("{who} is waiting for you: it wants to {what}. Open byob to answer."), Vec::new())
+        let ask = step.ask.as_deref();
+        let choice = ask.and_then(|a| a.choice.as_ref());
+        let (text, buttons) = if !two_way {
+            let what = if choice.is_some() { "has a question for you".to_owned() } else { format!("is waiting for you: it wants to {what}") };
+            (format!("{who} {what}. Open byob to answer."), Vec::new())
         } else {
             let t = token();
             self.messaging.buttons.insert(t.clone(), Buttons { step: step.id, channel: target.channel.clone(), peer: target.peer.clone() });
@@ -939,13 +978,34 @@ impl Engine {
             {
                 self.messaging.buttons.remove(&k);
             }
-            (format!("{who} wants to: {what}\n\nAllow it?"), vec![(format!("{t}:y"), "Allow".to_owned()), (format!("{t}:n"), "Deny".to_owned())])
+            match choice {
+                Some(c) => {
+                    let question = ask.map_or("", |a| a.text.as_str());
+                    let free = if c.free_text { "\n\n(Or reply to this message with your own answer.)" } else { "" };
+                    let buttons =
+                        c.options.iter().take(byob_protocol::MAX_CHOICE_OPTIONS).enumerate().map(|(i, o)| (format!("{t}:{i}"), ch::cut(o, 60))).collect();
+                    (format!("{who} asks: {}{free}", ch::cut(question, 1000)), buttons)
+                }
+                None => {
+                    let card = ask.and_then(|a| a.card.as_ref());
+                    let allow = card.and_then(|c| c.allow.as_deref()).unwrap_or("Allow");
+                    let deny = card.and_then(|c| c.deny.as_deref()).unwrap_or("Deny");
+                    let mut buttons = vec![(format!("{t}:y"), format!("✅ {allow}")), (format!("{t}:n"), format!("❌ {deny}"))];
+                    // Questions and must-confirm calls are never granted for good.
+                    if ask.is_none() {
+                        let scope = if routine.is_some() { "for this routine" } else { "in this chat" };
+                        buttons.push((format!("{t}:a"), format!("🔓 Always allow {scope}")));
+                    }
+                    (approval_text(&who, &what, step), buttons)
+                }
+            }
         };
         let now = self.now_ms();
         if !self.messaging.hourly_slot(now) {
             return log::warn!("My phone: {HOURLY_CAP} messages in the last hour; an approval wasn't sent");
         }
-        self.deliver_to(&target.channel, &target.peer, text, buttons, None, Link::chat(&chat, routine.as_deref(), Sent::Approval));
+        let link = Link { step: Some(step.id), ..Link::chat(&chat, routine.as_deref(), Sent::Approval) };
+        self.deliver_to(&target.channel, &target.peer, text, buttons, None, link);
     }
 
     /// A turn that came from the phone ended: its answer goes back there.
@@ -1026,6 +1086,63 @@ impl Engine {
 /// Only a person in byob may allow it: no phone tap.
 pub(crate) fn must_confirm(step: &Step) -> bool {
     step.ask.as_ref().is_some_and(|a| a.always)
+}
+
+/// An approval as a text: what the call does, and for a must-confirm one everything its card
+/// says (what saying yes means, its warning, what it will do), since the phone is all the
+/// person sees before they tap.
+fn approval_text(who: &str, what: &str, step: &Step) -> String {
+    let mut out = format!("{who} wants to: {what}");
+    if let Some(a) = step.ask.as_deref() {
+        if !a.text.trim().is_empty() {
+            out.push_str(&format!("\n\n{}", ch::cut(a.text.trim(), 1000)));
+        }
+        if let Some(w) = a.warning.as_deref().filter(|w| !w.trim().is_empty()) {
+            out.push_str(&format!("\n\n⚠ {}", ch::cut(w.trim(), 300)));
+        }
+    }
+    if let Some(p) = step.preview.as_ref().map(preview_text).filter(|p| !p.is_empty()) {
+        out.push_str(&format!("\n\n{p}"));
+    }
+    out.push_str(if must_confirm(step) { "\n\nThis always needs you to say yes." } else { "\n\nAllow it?" });
+    out
+}
+
+/// A tool call's preview as plain lines (capped: a phone message has room for the gist).
+fn preview_text(p: &byob_protocol::Preview) -> String {
+    use byob_protocol::{LineKind, Preview};
+    const LINES: usize = 25;
+    let more = |n: usize| if n > 0 { format!("\n…and {n} more") } else { String::new() };
+    let text = match p {
+        Preview::Write { path, bytes, replaces, lines, more: m } => {
+            let head = format!("{} {path} ({bytes} bytes)", if *replaces { "Replaces" } else { "Writes" });
+            let body: Vec<String> = lines
+                .iter()
+                .take(LINES)
+                .map(|l| match l.kind {
+                    LineKind::Added => format!("+ {}", l.text),
+                    LineKind::Removed => format!("- {}", l.text),
+                    LineKind::Skipped => format!("  … {}", l.text),
+                    LineKind::Same => format!("  {}", l.text),
+                })
+                .collect();
+            format!("{head}\n{}{}", body.join("\n"), more(m + lines.len().saturating_sub(LINES)))
+        }
+        Preview::Move { moves, more: m } => {
+            let body: Vec<String> = moves.iter().take(LINES).map(|(a, b)| format!("{a} → {b}")).collect();
+            format!("{}{}", body.join("\n"), more(m + moves.len().saturating_sub(LINES)))
+        }
+        Preview::Delete { path, what } => format!("Moves {path} ({what}) to the trash"),
+        Preview::Args { fields, code, more: m } => {
+            let mut body: Vec<String> = fields.iter().take(LINES).map(|(k, v)| format!("{k}: {v}")).collect();
+            if let Some(code) = code {
+                body.push(code.clone());
+            }
+            format!("{}{}", body.join("\n"), more(m + fields.len().saturating_sub(LINES)))
+        }
+        Preview::Other => String::new(),
+    };
+    ch::cut(text.trim(), 2500)
 }
 
 /// `text_me`: only in routine runs.
