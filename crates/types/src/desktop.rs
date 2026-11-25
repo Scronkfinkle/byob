@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum KeepRunning {
     /// Only while a routine is on (nothing else needs byob when its window is closed).
-    #[default]
     #[serde(rename = "when-routines-are-on", alias = "routines")]
     WhenRoutines,
+    /// Closing hides to the tray, as chat and game launchers do.
+    #[default]
     #[serde(rename = "always")]
     Always,
     #[serde(rename = "never")]
@@ -17,7 +18,7 @@ pub enum KeepRunning {
 }
 
 impl KeepRunning {
-    pub const ALL: [KeepRunning; 3] = [KeepRunning::WhenRoutines, KeepRunning::Always, KeepRunning::Never];
+    pub const ALL: [KeepRunning; 3] = [KeepRunning::Always, KeepRunning::WhenRoutines, KeepRunning::Never];
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -52,8 +53,8 @@ mod tests {
     #[test]
     fn stored_as_kebab_case_names() {
         let names: Vec<String> = KeepRunning::ALL.iter().map(|k| serde_json::to_string(k).unwrap()).collect();
-        assert_eq!(names, ["\"when-routines-are-on\"", "\"always\"", "\"never\""]);
+        assert_eq!(names, ["\"always\"", "\"when-routines-are-on\"", "\"never\""]);
         assert_eq!(serde_json::from_str::<KeepRunning>("\"routines\"").unwrap(), KeepRunning::WhenRoutines);
-        assert_eq!(KeepRunning::default(), KeepRunning::WhenRoutines);
+        assert_eq!(KeepRunning::default(), KeepRunning::Always, "closing hides to the tray, as chat apps and game launchers do");
     }
 }

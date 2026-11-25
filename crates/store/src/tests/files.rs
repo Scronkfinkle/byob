@@ -109,12 +109,12 @@ fn keep_running_is_saved_only_when_changed_and_read_leniently() {
     let p = dir.path().join("settings.json");
     Settings::default().save(&p).unwrap();
     assert!(read_json(&p).get("keep_running").is_none(), "the default isn't written");
-    Settings::update(&p, |s| s.keep_running = KeepRunning::Always).unwrap();
-    assert_eq!(read_json(&p)["keep_running"], json!("always"));
-    assert_eq!(Settings::load(&p).value.keep_running, KeepRunning::Always);
+    Settings::update(&p, |s| s.keep_running = KeepRunning::Never).unwrap();
+    assert_eq!(read_json(&p)["keep_running"], json!("never"));
+    assert_eq!(Settings::load(&p).value.keep_running, KeepRunning::Never);
     std::fs::write(&p, r#"{"keep_running":"sometimes","theme":"dark"}"#).unwrap();
     let s = Settings::load(&p).value;
-    assert_eq!((s.keep_running, s.theme), (KeepRunning::WhenRoutines, Theme::Dark), "an unknown value is the default");
+    assert_eq!((s.keep_running, s.theme), (KeepRunning::Always, Theme::Dark), "an unknown value is the default");
 }
 
 #[test]

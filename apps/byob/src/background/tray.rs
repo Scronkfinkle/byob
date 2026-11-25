@@ -1,9 +1,10 @@
 //! The tray icon: Open byob · Run ▸ (each routine) · Pause routines · Quit byob, and an
 //! attention state when a run waits for you.
 //!
-//! - Linux and the BSDs: a StatusNotifierItem (ksni) on its own thread. Without a tray host
-//!   (GNOME without the AppIndicator extension, some tiling setups) it reports
-//!   [`Event::TrayHost`]`(false)` and byob carries on without one.
+//! - Linux and the BSDs: a StatusNotifierItem (ksni) on its own thread. Without a host for
+//!   those (i3bar, polybar, dwm, older XFCE) but with an X11 system tray, an XEmbed icon
+//!   instead ([`super::xembed`]), whose menu byob draws. With neither (GNOME without the
+//!   AppIndicator extension) it reports [`Event::TrayHost`]`(false)` and byob carries on.
 //! - macOS and Windows: tray-icon on the main thread (made from `App::logic`, inside the
 //!   event loop); its clicks come through its global handlers onto the [`Bus`].
 
@@ -17,6 +18,30 @@ pub struct Menu {
     pub paused: bool,
     /// Something waits for you (a run asks for approval): the icon says so.
     pub attention: bool,
+    /// The window's colors, for a menu byob draws itself (the X11 tray's; the other trays
+    /// draw their own).
+    #[cfg_attr(any(target_os = "macos", target_os = "windows"), allow(dead_code))]
+    pub look: Look,
+}
+
+pub type Rgb = [u8; 3];
+
+/// The menu's colors.
+#[cfg_attr(any(target_os = "macos", target_os = "windows"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Look {
+    pub bg: Rgb,
+    pub fg: Rgb,
+    /// The item under the pointer.
+    pub hover_bg: Rgb,
+    pub hover_fg: Rgb,
+    pub border: Rgb,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Self { bg: [32, 33, 36], fg: [226, 228, 232], hover_bg: [62, 99, 221], hover_fg: [255, 255, 255], border: [70, 72, 78] }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +66,7 @@ pub fn event_for(id: &str) -> Option<Event> {
 }
 
 /// The icon, 64×64 RGBA.
-fn icon_rgba() -> Option<(u32, u32, Vec<u8>)> {
+pub fn icon_rgba() -> Option<(u32, u32, Vec<u8>)> {
     let decoder = png::Decoder::new(std::io::Cursor::new(&include_bytes!("../../assets/tray-icon.png")[..]));
     let mut reader = decoder.read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()?];
@@ -164,6 +189,8 @@ mod imp {
     #[derive(Default)]
     struct Shared {
         handle: Option<ksni::blocking::Handle<Sni>>,
+        /// The XEmbed icon, where no StatusNotifierItem host is.
+        x: Option<crate::background::xembed::XTray>,
         menu: Menu,
         dropped: bool,
     }
@@ -206,12 +233,12 @@ mod imp {
                             bus.send(Event::TrayHost(true));
                         }
                         Ok(Err(e)) => {
-                            log::info!("no tray icon: {e}");
-                            bus.send(Event::TrayHost(false));
+                            log::info!("no StatusNotifierItem host ({e}); trying an X11 system tray");
+                            xembed(&bus, &slot);
                         }
                         Err(_) => {
-                            log::warn!("no tray icon: it panicked");
-                            bus.send(Event::TrayHost(false));
+                            log::warn!("the StatusNotifierItem panicked; trying an X11 system tray");
+                            xembed(&bus, &slot);
                         }
                     }
                 })
@@ -222,6 +249,9 @@ mod imp {
         pub fn set_menu(&mut self, menu: &Menu) {
             let mut s = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
             s.menu = menu.clone();
+            if let Some(x) = &s.x {
+                x.set_menu(menu);
+            }
             if let Some(h) = &s.handle {
                 let menu = menu.clone();
                 h.update(|t| t.menu = menu);
@@ -233,8 +263,35 @@ mod imp {
         fn drop(&mut self) {
             let mut s = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
             s.dropped = true;
+            s.x = None;
             if let Some(h) = s.handle.take() {
                 drop(h.shutdown());
+            }
+        }
+    }
+
+    /// The XEmbed icon instead (it says [`Event::TrayHost`] itself as trays come and go).
+    fn xembed(bus: &Bus, slot: &Mutex<Shared>) {
+        if std::env::var_os("DISPLAY").is_none() {
+            log::info!("no tray icon: no StatusNotifierItem host and no X display");
+            bus.send(Event::TrayHost(false));
+            return;
+        }
+        let menu = slot.lock().unwrap_or_else(PoisonError::into_inner).menu.clone();
+        match crate::background::xembed::XTray::start(bus.clone(), &menu) {
+            Ok(x) => {
+                let mut s = slot.lock().unwrap_or_else(PoisonError::into_inner);
+                if !s.dropped {
+                    // The menu may have changed while it started.
+                    if s.menu != menu {
+                        x.set_menu(&s.menu);
+                    }
+                    s.x = Some(x);
+                }
+            }
+            Err(e) => {
+                log::info!("no tray icon: {e}");
+                bus.send(Event::TrayHost(false));
             }
         }
     }

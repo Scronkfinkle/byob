@@ -22,6 +22,9 @@ pub use prefs::{Accent, Align, BubbleStyle, ChartPalette, Controls, Density, Kno
 use presets::Palette;
 
 /// Font family for bold text and headings (Inter SemiBold). egui's default fonts have no bold.
+/// Inter, byob's interface font (for what draws text outside egui: the X11 tray menu).
+pub const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+
 pub fn bold_family() -> FontFamily {
     FontFamily::Name("bold".into())
 }
@@ -52,7 +55,7 @@ fn font_definitions(ui_font: UiFont, mono_font: MonoFont, color_emoji: Option<Ar
             list.insert(at, COLOR_EMOJI.into());
         }
     }
-    fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/Inter-Regular.ttf"))));
+    fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(INTER)));
     fonts.font_data.insert("inter-semibold".into(), Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/Inter-SemiBold.ttf"))));
     fonts.font_data.insert("jetbrains-mono".into(), Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf"))));
     let fallbacks = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();

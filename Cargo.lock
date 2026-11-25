@@ -725,6 +725,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 name = "byob"
 version = "0.3.11"
 dependencies = [
+ "ab_glyph_rasterizer",
  "byob-agent",
  "byob-artifact-wire",
  "byob-calendar",
@@ -754,9 +755,11 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "skrifa 0.44.0",
  "tempfile",
  "tiktoken-rs",
  "tray-icon",
+ "x11rb",
  "zbus",
 ]
 

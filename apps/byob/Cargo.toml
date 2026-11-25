@@ -65,6 +65,9 @@ nix.workspace = true
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 ksni.workspace = true
 zbus.workspace = true
+x11rb.workspace = true
+skrifa.workspace = true
+ab_glyph_rasterizer.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tray-icon.workspace = true

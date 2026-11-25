@@ -12,7 +12,11 @@
 pub mod autostart;
 pub mod instance;
 pub mod notify;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod pixels;
 pub mod tray;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod xembed;
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -134,6 +138,19 @@ struct EngineLink {
     paused: bool,
 }
 
+/// The window's colors as the tray menu's.
+fn look_of(ctx: &egui::Context) -> tray::Look {
+    let v = ctx.global_style().visuals.clone();
+    let rgb = |c: egui::Color32| [c.r(), c.g(), c.b()];
+    tray::Look {
+        bg: rgb(v.window_fill),
+        fg: rgb(v.text_color()),
+        hover_bg: rgb(v.widgets.hovered.weak_bg_fill),
+        hover_fg: rgb(v.widgets.hovered.fg_stroke.color),
+        border: rgb(v.window_stroke.color),
+    }
+}
+
 /// What a close of the window does now: hide it (byob goes on) or quit.
 pub fn hides_on_close(keep: KeepRunning, routines_on: bool) -> bool {
     keep.hides_on_close(routines_on)
@@ -184,6 +201,8 @@ pub struct Background {
     /// A clicked notification's chat, to open in the next window's logic.
     open_chat: Option<String>,
     told: Told,
+    /// The window's colors, for the menu the X11 tray draws.
+    look: tray::Look,
 }
 
 /// What the window has to do about an event.
@@ -212,6 +231,7 @@ impl Background {
             engine: EngineLink::default(),
             open_chat: None,
             told: Told::default(),
+            look: tray::Look::default(),
         }
     }
 
@@ -284,7 +304,7 @@ impl Background {
     fn menu(&self) -> tray::Menu {
         let routines = self.engine.routines.iter().map(|v| tray::Routine { id: v.routine.id.clone(), label: v.routine.name.clone() }).collect();
         let attention = self.engine.routines.iter().any(|v| v.last_run.as_ref().is_some_and(|r| r.status == RunStatus::Waiting));
-        tray::Menu { routines, paused: self.engine.paused, attention }
+        tray::Menu { routines, paused: self.engine.paused, attention, look: self.look }
     }
 
     /// Every frame, and while the window is hidden whenever something wakes it.
@@ -293,6 +313,7 @@ impl Background {
             return;
         }
         // The engine's setting (until its state arrives, closing quits).
+        self.look = look_of(ctx);
         let keep = ui.keep_running();
         let hides = keep.is_some_and(|k| hides_on_close(k, routines_on(ui)));
         self.keep_tray(hides);
@@ -475,7 +496,8 @@ mod tests {
 
     #[test]
     fn closing_hides_by_the_setting_and_routines() {
-        assert!(!hides_on_close(KeepRunning::default(), false));
+        assert!(hides_on_close(KeepRunning::default(), false), "closing hides to the tray by default");
+        assert!(!hides_on_close(KeepRunning::WhenRoutines, false));
         assert!(hides_on_close(KeepRunning::WhenRoutines, true));
         assert!(hides_on_close(KeepRunning::Always, false));
         assert!(!hides_on_close(KeepRunning::Never, true));

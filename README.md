@@ -143,9 +143,9 @@ Appearance (light or dark, themes, accent, messages, theme files), Text & layout
 fonts, density, accessibility), Colors and, in the desktop app, System (keep running in the
 background, start at login). Back or Esc returns to the chat as you left it.
 
-**In the background** (Settings → System): with Keep running in the background on Always (or
-When routines are on, once you have some), closing the window hides it and byob goes on; its
-tray icon opens it again or quits it. Without a tray, open byob again: a second launch brings
+**In the background** (Settings → System): closing the window hides it to the tray and byob
+goes on, so routines keep running (Keep running in the background: Always; or only When
+routines are on, or Never). Its tray icon opens it again (a click) or quits it (its menu). Without a tray, open byob again: a second launch brings
 the running one's window back (one byob runs per data folder). Start byob when you log in
 starts it hidden.
 
