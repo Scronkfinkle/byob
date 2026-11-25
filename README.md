@@ -154,9 +154,9 @@ Telegram for now (free; a bot of your own: its page walks you through @BotFather
 the token). Pair my phone shows a
 link and a one-time code to send from the phone. Then a routine's Tell me offers Text me (or say
 "text me when it finds one"): its findings arrive as texts, its questions as Allow/Deny buttons
-(anything that must always be confirmed, like sending mail, says to open byob), and what you send
-back continues the chat byob last texted about (or the one you reply to), with the answer texted
-back. `/new` starts a new chat from the phone (`/new` and what it's about, or `/new` alone). byob
+(anything that must always be confirmed, like sending mail, says to open byob), and a reply to a
+text continues that chat (each chat is its own reply thread), with the answer texted back.
+`/new` starts a new chat from the phone (`/new` and what it's about, or `/new` alone). byob
 only asks Telegram for the bot's messages (no open port); people who aren't paired get nothing.
 At most 10 texts a day per routine; the rest arrive together, later. Or, one way and with no
 account, push notifications through the ntfy app (pick a topic name; you answer in byob).

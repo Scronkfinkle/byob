@@ -1,6 +1,7 @@
 //! Channels, end to end: a fake two-way channel plugin (a native backend that records what
 //! byob asks it to send, and through which the scenario plays the person's phone) pairs with
 //! a code, and then a routine's report reaches the phone, a reply continues the run's chat,
+//! `/new` starts a chat of the phone's own (replies go on with it), anything else is told how,
 //! a run waiting on an approval gets buttons and a tap lets it go on, a must-confirm call
 //! says to open byob, strangers get nothing, `text_me` exists only in runs, and the caps hold.
 
@@ -268,72 +269,62 @@ fn a_report_reaches_the_phone_and_a_reply_continues_the_run() {
     let texts: Vec<&str> = w.seen.entries.iter().map(|e| e.content.as_str()).collect();
     assert!(texts.contains(&"Which shop?") && texts.contains(&"The Woolery, in Kentucky."), "{texts:?}");
 
-    // A message that isn't a reply goes on with the chat byob last texted about.
-    w.model.answers(|req| {
-        let last = req.user_texts().last().unwrap().clone();
-        assert!(last.contains("from their phone") && last.ends_with("Is it in stock?"), "{last}");
-        Answer::text("Two left.")
-    });
+    // A message that isn't a reply starts nothing: reply, or /new.
     phone.text(ME, "Is it in stock?", None);
-    let answer = phone.next(&mut seen);
-    assert_eq!((answer["text"].as_str(), answer["chat"].as_str()), (Some("Two left."), Some(chat.as_str())));
+    let note = phone.next(&mut seen);
+    assert!(note["text"].as_str().unwrap().starts_with("To keep talking about something, reply to my message"), "{note}");
     w.settle();
     assert_eq!(w.model.unused(), 0);
     w.model.check();
 }
 
-/// `/new` starts a chat (its answer goes back to the phone), and what's sent after goes on
-/// with it; `/new TEXT` starts one with TEXT; `/help` says what works; a chat that's gone
-/// isn't gone on with (the next message starts a new one).
+/// `/new TEXT` starts a chat with TEXT, and a reply to its answer goes on with it; `/new`
+/// alone (what Telegram's command menu sends) makes the next message start one, once;
+/// `/help` says what works.
 #[test]
-fn new_starts_a_chat_from_the_phone_and_later_messages_go_on_with_it() {
+fn new_starts_a_chat_from_the_phone_and_replies_go_on_with_it() {
     let time = Time::new("2026-11-24 07:00");
     let (mut w, phone) = world(&time);
     w.pair(&phone);
     let mut seen = phone.count();
 
-    phone.text(ME, "/new", None);
-    assert_eq!(phone.next(&mut seen)["text"], "OK, a new chat: what's it about?");
-    w.model.says("Try the Ashford Kiwi.");
-    phone.text(ME, "Which spinning wheel for a beginner?", None);
+    w.model.answers(|req| {
+        let users = req.user_texts();
+        assert!(users.len() == 1 && users[0].contains("from their phone") && users[0].ends_with("Which spinning wheel for a beginner?"), "{users:?}");
+        Answer::text("Try the Ashford Kiwi.")
+    });
+    phone.text(ME, "/new@fake_bot Which spinning wheel for a beginner?", None);
     let answer = phone.next(&mut seen);
     assert_eq!(answer["text"], "Try the Ashford Kiwi.");
     let first = answer["chat"].as_str().unwrap().to_owned();
     w.settle();
 
     w.model.answers(|req| {
-        let users = req.user_texts();
-        assert_eq!(users.len(), 2, "the same chat: {users:?}");
+        assert_eq!(req.user_texts().len(), 2, "the same chat");
         Answer::text("About $600.")
     });
-    phone.text(ME, "How much?", None);
+    phone.text(ME, "How much?", Some(&format!("m{seen}")));
     let answer = phone.next(&mut seen);
     assert_eq!((answer["text"].as_str(), answer["chat"].as_str()), (Some("About $600."), Some(first.as_str())));
     w.settle();
 
+    phone.text(ME, "/new", None);
+    assert_eq!(phone.next(&mut seen)["text"], "OK, a new chat: what's it about?");
     w.model.answers(|req| {
-        let users = req.user_texts();
-        assert!(users.len() == 1 && users[0].ends_with("weather in Lisbon"), "a new chat: {users:?}");
+        assert_eq!(req.user_texts().len(), 1, "a new chat");
         Answer::text("Sunny.")
     });
-    phone.text(ME, "/new@fake_bot weather in Lisbon", None);
+    phone.text(ME, "weather in Lisbon", None);
     let answer = phone.next(&mut seen);
-    let second = answer["chat"].as_str().unwrap().to_owned();
     assert_eq!(answer["text"], "Sunny.");
-    assert_ne!(second, first);
+    assert_ne!(answer["chat"], first.as_str());
     w.settle();
+    // Once: the next message that isn't a reply starts nothing.
+    phone.text(ME, "and tomorrow?", None);
+    assert!(phone.next(&mut seen)["text"].as_str().unwrap().contains("send /new"));
 
     phone.text(ME, "/help", None);
     assert!(phone.next(&mut seen)["text"].as_str().unwrap().contains("/new to start a new chat"));
-
-    // The current chat deleted: the next message starts a new one.
-    w.tell(ClientMsg::DeleteChat { id: second.clone() });
-    w.settle();
-    w.model.says("Hello again.");
-    phone.text(ME, "hi", None);
-    let answer = phone.next(&mut seen);
-    assert_eq!(answer["text"], "Hello again.");
-    assert!(answer["chat"] != first.as_str() && answer["chat"] != second.as_str(), "{answer}");
     w.settle();
     assert_eq!(w.model.unused(), 0);
     w.model.check();

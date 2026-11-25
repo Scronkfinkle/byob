@@ -13,10 +13,10 @@
 //! - **Routing inbound** (untrusted text, cut and rate-capped): a button answers the approval
 //!   it was sent for (never a must-confirm one: "open byob to confirm"); a reply to a message
 //!   byob sent continues that message's chat as a user message (queued while it's busy), and
-//!   the answer goes back to the phone. Any other text goes to the peer's current chat (the
-//!   one byob last texted them about, or they last talked in), so nobody has to use replies;
-//!   `/new` starts a fresh chat (with the new-chat defaults), `/new TEXT` with TEXT as its
-//!   first message; `/help` (and `/start`) says what works.
+//!   the answer goes back to the phone, so each chat is a reply thread and two can't mix.
+//!   `/new TEXT` starts a chat (with the new-chat defaults) with TEXT as its first message;
+//!   `/new` alone (what Telegram's command menu sends) makes the next message start one.
+//!   Anything else gets a note: reply to go on, or `/new`. `/help` (and `/start`) says what works.
 //! - **Delivery.** Reports of routines whose Tell me includes Text me, approvals their runs
 //!   wait on, `text_me` (runs only), answers to the phone's messages. Off the engine thread,
 //!   in order, through one courier thread. Per routine at most [`DAILY_CAP`] texts a day
@@ -56,9 +56,11 @@ const MAX_ANSWER_CHARS: usize = 3000;
 /// The peer of a channel with nothing to pair (its settings say where messages go).
 const UNPAIRED_PEER: &str = "me";
 /// What paired phones can do (`/help`, `/start`, a command byob doesn't know).
-pub(crate) const HELP: &str = "This is byob. From here you can:\n• send a message: it goes on with the chat I last texted you about (or reply to one of my messages to go on with that one)\n• /new to start a new chat (or /new and what it's about)\n• tap a button to answer a question I asked";
+pub(crate) const HELP: &str = "This is byob. From here you can:\n• reply to one of my messages to keep talking about it (your reply goes into that chat)\n• /new to start a new chat (or /new and what it's about)\n• tap a button to answer a question I asked";
 /// Said to `/new` without text.
 const NEW_CHAT: &str = "OK, a new chat: what's it about?";
+/// Said to a message that isn't a reply (or a command).
+const REPLY_OR_NEW: &str = "To keep talking about something, reply to my message about it. To start a new chat, send /new (or /new and what it's about).";
 /// Said when a pairing code didn't work.
 const WRONG_CODE: &str = "That code didn't work (it may have expired). Get a new one in byob: Settings → Plugins → My phone.";
 /// Said to a must-confirm call's button (it never gets buttons; an old message might).
@@ -168,6 +170,8 @@ pub(crate) struct Messaging {
     courier: Option<Sender<Job>>,
     /// A turn about to start from a phone's message (taken by `begin_turn_with`).
     pub(crate) next_turn: Option<FromPhone>,
+    /// Peers who sent `/new` alone: their next message (not a reply) starts a chat.
+    starting: std::collections::BTreeSet<(String, String)>,
     /// Queued messages (queue item ids) that came from a phone.
     pub(crate) queued: BTreeMap<u64, FromPhone>,
     flushed_at: i64,
@@ -484,7 +488,7 @@ impl Engine {
     fn use_unpaired(&mut self, c: &ChannelPlugin) -> Result<(), String> {
         let now = self.now_ms();
         self.messaging.file.peers.retain(|p| p.channel != c.key);
-        self.messaging.file.peers.push(Peer { channel: c.key.clone(), peer: UNPAIRED_PEER.into(), name: String::new(), paired_at: now, current: None });
+        self.messaging.file.peers.push(Peer { channel: c.key.clone(), peer: UNPAIRED_PEER.into(), name: String::new(), paired_at: now });
         self.messaging.file.phone = Some(PhoneTarget { channel: c.key.clone(), peer: UNPAIRED_PEER.into() });
         self.messaging.save();
         log::info!("channel {}: it's My phone now", c.key);
@@ -544,7 +548,7 @@ impl Engine {
         self.messaging.codes.retain(|c| c.channel != key);
         self.messaging.pairing = None;
         self.messaging.file.peers.retain(|p| p.channel != key);
-        self.messaging.file.peers.push(Peer { channel: key.clone(), peer: peer.clone(), name: name.clone(), paired_at: now, current: None });
+        self.messaging.file.peers.push(Peer { channel: key.clone(), peer: peer.clone(), name: name.clone(), paired_at: now });
         self.messaging.file.phone = Some(PhoneTarget { channel: key.clone(), peer: peer.clone() });
         self.messaging.save();
         log::info!("channel {key}: paired {name:?}; it's My phone now");
@@ -563,6 +567,7 @@ impl Engine {
         self.messaging.file.peers.retain(|p| !(p.channel == t.channel && p.peer == t.peer));
         self.messaging.file.recent.retain(|d| d.channel != t.channel || d.peer != t.peer);
         self.messaging.buttons.retain(|_, b| b.channel != t.channel || b.peer != t.peer);
+        self.messaging.starting.retain(|(c, p)| *c != t.channel || *p != t.peer);
         self.messaging.save();
         if let Some((plugin, id)) = ch::split_key(&t.channel).map(|(p, c)| (p.to_owned(), c.to_owned())) {
             if let Some(c) = self.channel(&t.channel)
@@ -638,13 +643,14 @@ impl Engine {
         if let Some((command, rest)) = command(&text) {
             return match command.as_str() {
                 "new" if rest.is_empty() => {
-                    self.set_current(&key, &peer, None);
+                    self.messaging.starting.insert((key.clone(), peer.clone()));
                     self.deliver_to(&key, &peer, NEW_CHAT.into(), Vec::new(), None, Link::note());
                 }
                 "new" => self.phone_new(&key, &peer, rest.to_owned()),
                 _ => self.deliver_to(&key, &peer, HELP.into(), Vec::new(), None, Link::note()),
             };
         }
+        let starting = self.messaging.starting.remove(&(key.clone(), peer.clone()));
         let found = reply_to.and_then(|r| self.messaging.file.recent.iter().rev().find(|d| d.channel == key && d.peer == peer && d.reference == r).cloned());
         match found {
             Some(d) if d.kind == Sent::Approval => {
@@ -652,28 +658,8 @@ impl Engine {
             }
             Some(Delivered { chat: Some(chat), routine, .. }) if !text.is_empty() => self.phone_reply(&key, &peer, &chat, routine.as_deref(), text),
             _ if text.is_empty() => self.deliver_to(&key, &peer, "byob only reads text messages from here for now.".into(), Vec::new(), None, Link::note()),
-            _ => match self.current_chat(&key, &peer) {
-                Some(chat) => {
-                    let routine = self.store.chat(&chat).ok().flatten().and_then(|c| c.origin);
-                    self.phone_reply(&key, &peer, &chat, routine.as_deref(), text);
-                }
-                None => self.phone_new(&key, &peer, text),
-            },
-        }
-    }
-
-    /// The peer's current chat, if it's still in byob.
-    fn current_chat(&self, key: &str, peer: &str) -> Option<String> {
-        let chat = self.messaging.file.peers.iter().find(|p| p.channel == key && p.peer == peer)?.current.clone()?;
-        self.store.chat(&chat).ok().flatten().map(|_| chat)
-    }
-
-    /// Make `chat` (or none: the next message starts one) the peer's current chat.
-    fn set_current(&mut self, key: &str, peer: &str, chat: Option<&str>) {
-        let Some(p) = self.messaging.file.peers.iter_mut().find(|p| p.channel == key && p.peer == peer) else { return };
-        if p.current.as_deref() != chat {
-            p.current = chat.map(str::to_owned);
-            self.messaging.save();
+            _ if starting => self.phone_new(&key, &peer, text),
+            _ => self.deliver_to(&key, &peer, REPLY_OR_NEW.into(), Vec::new(), None, Link::note()),
         }
     }
 
@@ -720,7 +706,6 @@ impl Engine {
         if self.store.chat(chat).ok().flatten().is_none() {
             return self.deliver_to(key, peer, "That chat isn't in byob any more.".into(), Vec::new(), None, Link::note());
         }
-        self.set_current(key, peer, Some(chat));
         if self.chat_busy(chat) {
             match self.enqueue_from(chat, text) {
                 Ok(id) => {
@@ -841,11 +826,6 @@ impl Engine {
         match &result {
             Ok(v) => {
                 let reference = v.get("ref").map(|r| r.as_str().map_or_else(|| r.to_string(), str::to_owned)).filter(|r| !r.is_empty() && r.len() <= 64);
-                // A report makes its chat the one a message that isn't a reply goes on with (an
-                // answer doesn't: the phone's message already did, and a `/new` since wins).
-                if let Some(chat) = link.chat.as_deref().filter(|_| link.kind == Sent::Report) {
-                    self.set_current(&channel, &peer, Some(chat));
-                }
                 if let Some(reference) = reference
                     && link.kind != Sent::Note
                 {
