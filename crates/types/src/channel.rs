@@ -109,6 +109,10 @@ pub struct Peer {
     /// ms since the epoch.
     #[serde(default)]
     pub paired_at: i64,
+    /// The chat a message from them that isn't a reply goes to: the one byob last texted
+    /// them about or they last talked in. `None` (after `/new`): the next message starts one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
 }
 
 /// "My phone": the channel and peer that "text me" means.
@@ -233,7 +237,7 @@ mod tests {
 
     #[test]
     fn tidy_keeps_one_peer_per_channel_and_a_paired_phone() {
-        let peer = |c: &str, p: &str| Peer { channel: c.into(), peer: p.into(), name: String::new(), paired_at: 0 };
+        let peer = |c: &str, p: &str| Peer { channel: c.into(), peer: p.into(), name: String::new(), paired_at: 0, current: None };
         let mut f = ChannelsFile {
             peers: vec![peer("tg:tg", "1"), peer("tg:tg", "2"), peer("bad", "3"), peer("x:y", "")],
             phone: Some(PhoneTarget { channel: "tg:tg".into(), peer: "2".into() }),

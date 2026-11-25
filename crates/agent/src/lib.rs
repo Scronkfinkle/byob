@@ -1010,15 +1010,20 @@ impl Engine {
     }
 
     /// Create a chat titled after its first message, in the workspace `client` chose for
-    /// it, with the settings it gave it beforehand.
-    fn create_chat(&mut self, client: ClientId, first_message: &str) -> Result<String, StoreError> {
+    /// it, with the settings it gave it beforehand (no client: the phone's, in the default
+    /// workspace with the global settings).
+    pub(crate) fn create_chat(&mut self, client: Option<ClientId>, first_message: &str) -> Result<String, StoreError> {
         let title = chats::heuristic_title(first_message);
-        let unattached = self.clients.get(&client).is_some_and(|c| c.new_unattached);
+        let unattached = client.and_then(|c| self.clients.get(&c)).is_some_and(|c| c.new_unattached);
         let mut attempt = 0;
         let chat = loop {
             let id = chats::new_chat_id();
             // A chat without a project works in a folder of its own, named after it.
-            let folder = if unattached { self.unattached_folder(&id)? } else { self.new_chat_folder(client) };
+            let folder = match client {
+                _ if unattached => self.unattached_folder(&id)?,
+                Some(client) => self.new_chat_folder(client),
+                None => self.default_workspace.clone(),
+            };
             match self.store.create_chat(&id, &title, &folder) {
                 Ok(chat) => break chat,
                 // Id collision (clock went backwards): try another.
@@ -1039,7 +1044,9 @@ impl Engine {
             app_context: BTreeMap::new(),
         };
         self.live.insert(chat.id.clone(), live);
-        self.adopt_new_chat_settings(client, &chat.id);
+        if let Some(client) = client {
+            self.adopt_new_chat_settings(client, &chat.id);
+        }
         let new_workspace = !self.is_unattached(&chat.workspace) && self.ensure_workspace(&chat.workspace);
         self.broadcast(ServerMsg::ChatUpdated(self.chat_summary(&chat)));
         self.refresh_folder_stats();
@@ -1993,7 +2000,7 @@ impl Engine {
                     self.notice(client, format!("inference URL is invalid: {e}"));
                     return;
                 }
-                match self.create_chat(client, &text) {
+                match self.create_chat(Some(client), &text) {
                     Ok(chat) => {
                         self.show_chat(client, Some(chat.clone()));
                         chat

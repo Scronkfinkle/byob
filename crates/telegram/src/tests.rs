@@ -121,6 +121,9 @@ fn private_texts_are_passed_on_once_and_the_offset_moves_on() {
     assert!(polls.iter().any(|b| b["offset"] == 15), "the next poll asks for what comes after: {polls:?}");
     assert!(polls.last().unwrap()["allowed_updates"] == json!(["message", "callback_query"]));
     assert_eq!(h.of("channel_status").len(), 1, "status is sent when it changes, not every poll");
+    let menu = h.server.calls("setMyCommands");
+    assert_eq!(menu.len(), 1, "once, on connecting");
+    assert_eq!(menu[0]["commands"][0], json!({"command": "new", "description": "Start a new chat"}));
 }
 
 #[test]

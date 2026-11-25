@@ -130,7 +130,7 @@ fn answer(st: &Arc<Mutex<State>>, path: &str, body: Value) -> (u16, Value) {
             s.next_message += 1;
             (200, json!({"ok": true, "result": {"message_id": s.next_message, "chat": {"id": body["chat_id"]}, "text": body["text"]}}))
         }
-        "answerCallbackQuery" | "deleteWebhook" => (200, json!({"ok": true, "result": true})),
+        "answerCallbackQuery" | "deleteWebhook" | "setMyCommands" => (200, json!({"ok": true, "result": true})),
         _ => (404, error(404, "Not Found: method not found")),
     }
 }

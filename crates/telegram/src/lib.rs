@@ -46,6 +46,9 @@ pub const API_ENV: &str = "BYOB_TELEGRAM_API";
 pub const MAX_TEXT: usize = 4096;
 /// Messages passed on per sender per minute; more are dropped.
 pub const MAX_PER_MINUTE: usize = 20;
+/// The commands byob reads (byob-agent's `messaging`), for Telegram's "/" menu:
+/// (command, description).
+pub const COMMANDS: [(&str, &str); 2] = [("new", "Start a new chat"), ("help", "What you can do from here")];
 /// Longest button data Telegram takes (bytes).
 pub const MAX_BUTTON_ID: usize = 64;
 /// Most buttons on one message.
@@ -317,6 +320,13 @@ impl Poller {
             let result = match &self.bot {
                 None => self.api.call("getMe", &json!({})).map(|me| {
                     self.bot = me.get("username").and_then(Value::as_str).map(|u| chars(u, MAX_NAME));
+                    // Telegram's command menu ("/"); byob reads the commands, so this is a hint.
+                    if let Err(e) = self.api.call(
+                        "setMyCommands",
+                        &json!({"commands": COMMANDS.map(|(command, description)| json!({"command": command, "description": description}))}),
+                    ) {
+                        self.log(&format!("couldn't set the bot's command menu: {}", e.text()));
+                    }
                     Vec::new()
                 }),
                 Some(_) => self
