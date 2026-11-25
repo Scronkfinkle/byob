@@ -99,7 +99,16 @@ impl Phone {
         let deadline = Instant::now() + PATIENCE;
         loop {
             if let Some(m) = self.sent.lock().unwrap().get(n - 1) {
-                return m.clone();
+                // `header` and `body`: the text's first line when it names a chat, and the rest.
+                let mut m = m.clone();
+                let text = m["text"].as_str().unwrap_or_default().to_owned();
+                let (header, body) = match text.split_once("\n\n") {
+                    Some((h, b)) if h.starts_with("🔁 ") || h.starts_with("💬 ") => (Some(h.to_owned()), b.to_owned()),
+                    _ => (None, text.clone()),
+                };
+                m["header"] = json!(header);
+                m["body"] = json!(body);
+                return m;
             }
             assert!(Instant::now() < deadline, "byob never sent message {n}; it sent {:?}", self.sent.lock().unwrap());
             std::thread::sleep(Duration::from_millis(5));
@@ -183,7 +192,7 @@ fn pairing_takes_only_a_waiting_code_and_makes_my_phone() {
     phone.says(json!({"type": "pair_claim", "channel": "chat", "peer": "777", "code": "ZZZZZZZZ"}));
     let wrong = phone.nth(1);
     assert_eq!(wrong["to"], "777");
-    assert!(wrong["text"].as_str().unwrap().starts_with("That code didn't work"), "{wrong}");
+    assert!(wrong["body"].as_str().unwrap().starts_with("That code didn't work"), "{wrong}");
     // Nor does a stranger's message get through afterwards.
     phone.text("777", "hello?", None);
     w.settle();
@@ -192,7 +201,7 @@ fn pairing_takes_only_a_waiting_code_and_makes_my_phone() {
     w.pair(&phone);
     let hello = phone.nth(2);
     assert_eq!(hello["to"], ME);
-    assert!(hello["text"].as_str().unwrap().starts_with("Paired with byob"), "{hello}");
+    assert!(hello["body"].as_str().unwrap().starts_with("Paired with byob"), "{hello}");
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(w.home.path().join("channels.json")).unwrap()).unwrap();
     assert_eq!(saved["phone"], json!({"channel": KEY, "peer": ME}));
     assert_eq!(saved["peers"][0]["peer"], ME);
@@ -249,9 +258,10 @@ fn a_report_reaches_the_phone_and_a_reply_continues_the_run() {
     let text = phone.next(&mut seen);
     assert_eq!(text["to"], ME);
     assert_eq!(text["chat"], chat);
-    let body = text["text"].as_str().unwrap();
+    let body = text["body"].as_str().unwrap();
     assert!(body.starts_with("Schacht Wolf Pup 8S, 20% off\n\nAt The Woolery"), "{body}");
-    assert!(body.contains("— Loom deals"), "{body}");
+    assert!(body.ends_with("(Reply to this message to talk to byob about it.)"), "{body}");
+    assert_eq!(text["header"], "🔁 Loom deals", "which thread it is");
     assert!(text.get("buttons").is_none());
     w.finished(&r.id);
 
@@ -264,7 +274,7 @@ fn a_report_reaches_the_phone_and_a_reply_continues_the_run() {
     });
     phone.text(ME, "Which shop?", Some(&format!("m{seen}")));
     let answer = phone.next(&mut seen);
-    assert_eq!(answer["text"], "The Woolery, in Kentucky.");
+    assert_eq!(answer["body"], "The Woolery, in Kentucky.");
     w.open_chat(&chat);
     let texts: Vec<&str> = w.seen.entries.iter().map(|e| e.content.as_str()).collect();
     assert!(texts.contains(&"Which shop?") && texts.contains(&"The Woolery, in Kentucky."), "{texts:?}");
@@ -272,7 +282,7 @@ fn a_report_reaches_the_phone_and_a_reply_continues_the_run() {
     // A message that isn't a reply starts nothing: reply, or /new.
     phone.text(ME, "Is it in stock?", None);
     let note = phone.next(&mut seen);
-    assert!(note["text"].as_str().unwrap().starts_with("To keep talking about something, reply to my message"), "{note}");
+    assert!(note["body"].as_str().unwrap().starts_with("To keep talking about something, reply to my message"), "{note}");
     w.settle();
     assert_eq!(w.model.unused(), 0);
     w.model.check();
@@ -295,7 +305,7 @@ fn new_starts_a_chat_from_the_phone_and_replies_go_on_with_it() {
     });
     phone.text(ME, "/new@fake_bot Which spinning wheel for a beginner?", None);
     let answer = phone.next(&mut seen);
-    assert_eq!(answer["text"], "Try the Ashford Kiwi.");
+    assert_eq!(answer["body"], "Try the Ashford Kiwi.");
     let first = answer["chat"].as_str().unwrap().to_owned();
     w.settle();
 
@@ -305,26 +315,26 @@ fn new_starts_a_chat_from_the_phone_and_replies_go_on_with_it() {
     });
     phone.text(ME, "How much?", Some(&format!("m{seen}")));
     let answer = phone.next(&mut seen);
-    assert_eq!((answer["text"].as_str(), answer["chat"].as_str()), (Some("About $600."), Some(first.as_str())));
+    assert_eq!((answer["body"].as_str(), answer["chat"].as_str()), (Some("About $600."), Some(first.as_str())));
     w.settle();
 
     phone.text(ME, "/new", None);
-    assert_eq!(phone.next(&mut seen)["text"], "OK, a new chat: what's it about?");
+    assert_eq!(phone.next(&mut seen)["body"], "OK, a new chat: what's it about?");
     w.model.answers(|req| {
         assert_eq!(req.user_texts().len(), 1, "a new chat");
         Answer::text("Sunny.")
     });
     phone.text(ME, "weather in Lisbon", None);
     let answer = phone.next(&mut seen);
-    assert_eq!(answer["text"], "Sunny.");
+    assert_eq!(answer["body"], "Sunny.");
     assert_ne!(answer["chat"], first.as_str());
     w.settle();
     // Once: the next message that isn't a reply starts nothing.
     phone.text(ME, "and tomorrow?", None);
-    assert!(phone.next(&mut seen)["text"].as_str().unwrap().contains("send /new"));
+    assert!(phone.next(&mut seen)["body"].as_str().unwrap().contains("send /new"));
 
     phone.text(ME, "/help", None);
-    assert!(phone.next(&mut seen)["text"].as_str().unwrap().contains("/new to start a new chat"));
+    assert!(phone.next(&mut seen)["body"].as_str().unwrap().contains("/new to start a new chat"));
     w.settle();
     assert_eq!(w.model.unused(), 0);
     w.model.check();
@@ -343,8 +353,9 @@ fn a_run_waiting_on_an_approval_is_answered_from_the_phone() {
     w.model.says("Saved it.");
     w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
     let ask = phone.next(&mut seen);
-    let text = ask["text"].as_str().unwrap();
-    assert!(text.starts_with("Notes wants to: ") && text.contains("found.md") && text.ends_with("Allow it?"), "{text}");
+    let text = ask["body"].as_str().unwrap();
+    assert!(text.starts_with("byob wants to: ") && text.contains("found.md") && text.ends_with("Allow it?"), "{text}");
+    assert_eq!(ask["header"], "🔁 Notes");
     let buttons = ask["buttons"].as_array().unwrap();
     assert_eq!(buttons.iter().map(|b| b["label"].as_str().unwrap()).collect::<Vec<_>>(), ["✅ Allow", "❌ Deny", "🔓 Always allow for this routine"]);
     let allow = buttons[0]["id"].as_str().unwrap().to_owned();
@@ -358,12 +369,25 @@ fn a_run_waiting_on_an_approval_is_answered_from_the_phone() {
     let runs = w.finished(&r.id);
     assert_eq!(runs[0].status, RunStatus::Quiet);
     let ack = phone.next(&mut seen);
-    assert!(ack["text"].as_str().unwrap().starts_with("Allowed: "), "{ack}");
+    assert!(ack["body"].as_str().unwrap().starts_with("Allowed: "), "{ack}");
     let folder = w.store().chat(runs[0].chat.as_deref().unwrap()).unwrap().unwrap().workspace;
     assert!(folder.join("found.md").exists(), "the run went on and wrote it");
+    // The note is in the run's thread: it names it, answers the question it's about, and a
+    // reply to it (or to the answered question) goes on in the run's chat.
+    let asked = format!("m{}", seen - 1);
+    assert_eq!((ack["header"].as_str(), ack["reply_to"].as_str()), (Some("🔁 Notes"), Some(asked.as_str())), "{ack}");
+    w.model.says("It has 8 shafts.");
+    phone.text(ME, "What loom was it?", Some(&format!("m{seen}")));
+    let answer = phone.next(&mut seen);
+    assert_eq!((answer["body"].as_str(), answer["chat"].as_str()), (Some("It has 8 shafts."), runs[0].chat.as_deref()));
+    assert_eq!(answer["reply_to"], format!("m{}", seen - 1), "a reply to the last message in the thread");
+    w.model.says("Yes, in found.md.");
+    phone.text(ME, "Did it save?", Some(&asked));
+    assert_eq!(phone.next(&mut seen)["body"], "Yes, in found.md.");
+    w.settle();
     // Pressed again: already answered.
     phone.says(json!({"type": "inbound", "channel": "chat", "peer": ME, "button": allow}));
-    assert!(phone.next(&mut seen)["text"].as_str().unwrap().contains("already answered"));
+    assert!(phone.next(&mut seen)["body"].as_str().unwrap().contains("already answered"));
 
     // Always allow: the routine's later runs write without asking.
     w.model.calls("write_file", json!({"path": "found.md", "content": "two looms"}));
@@ -372,7 +396,7 @@ fn a_run_waiting_on_an_approval_is_answered_from_the_phone() {
     let ask = phone.next(&mut seen);
     let always = ask["buttons"][2]["id"].as_str().map_or(always, str::to_owned);
     phone.says(json!({"type": "inbound", "channel": "chat", "peer": ME, "button": always}));
-    assert!(phone.next(&mut seen)["text"].as_str().unwrap().contains("from now on without asking"));
+    assert!(phone.next(&mut seen)["body"].as_str().unwrap().contains("from now on without asking"));
     w.settle();
     w.model.calls("write_file", json!({"path": "found.md", "content": "three looms"}));
     w.model.says("Saved, unasked.");
@@ -391,13 +415,13 @@ fn a_run_waiting_on_an_approval_is_answered_from_the_phone() {
     w.model.says("Made it.");
     w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
     let ask = phone.next(&mut seen);
-    let text = ask["text"].as_str().unwrap();
-    assert!(text.starts_with("Notes wants to: ") && text.contains("Another") && text.ends_with("This always needs you to say yes."), "{text}");
+    let text = ask["body"].as_str().unwrap();
+    assert!(text.starts_with("byob wants to: ") && text.contains("Another") && text.ends_with("This always needs you to say yes."), "{text}");
     let buttons = ask["buttons"].as_array().unwrap();
     assert_eq!(buttons.iter().map(|b| b["label"].as_str().unwrap()).collect::<Vec<_>>(), ["✅ Create routine", "❌ Not now"], "never always");
     let confirm = buttons[0]["id"].as_str().unwrap().to_owned();
     phone.says(json!({"type": "inbound", "channel": "chat", "peer": ME, "button": confirm}));
-    assert!(phone.next(&mut seen)["text"].as_str().unwrap().starts_with("Allowed: "));
+    assert!(phone.next(&mut seen)["body"].as_str().unwrap().starts_with("Allowed: "));
     // Confirmed from the phone, so it was made.
     w.routines_where(|items| items.iter().any(|v| v.routine.name == "Another"));
     w.settle();
@@ -414,15 +438,15 @@ fn a_run_waiting_on_an_approval_is_answered_from_the_phone() {
     });
     w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
     let ask = phone.next(&mut seen);
-    assert!(ask["text"].as_str().unwrap().starts_with("Notes asks: Which fiber?"), "{ask}");
+    assert!(ask["body"].as_str().unwrap().starts_with("byob asks: Which fiber?"), "{ask}");
     let buttons = ask["buttons"].as_array().unwrap();
     assert_eq!(buttons.iter().map(|b| b["label"].as_str().unwrap()).collect::<Vec<_>>(), ["Wool", "Cotton"]);
     phone.says(json!({"type": "inbound", "channel": "chat", "peer": ME, "button": buttons[1]["id"]}));
-    assert_eq!(phone.next(&mut seen)["text"], "Answered: Cotton. It goes on.");
+    assert_eq!(phone.next(&mut seen)["body"], "Answered: Cotton. It goes on.");
     let ask = phone.next(&mut seen);
-    assert!(ask["text"].as_str().unwrap().contains("reply to this message with your own answer"), "{ask}");
+    assert!(ask["body"].as_str().unwrap().contains("reply to this message with your own answer"), "{ask}");
     phone.text(ME, "undyed, please", Some(&format!("m{seen}")));
-    assert_eq!(phone.next(&mut seen)["text"], "Answered: undyed, please. It goes on.");
+    assert_eq!(phone.next(&mut seen)["body"], "Answered: undyed, please. It goes on.");
     w.settle();
     assert_eq!(w.model.unused(), 0);
     w.model.check();
@@ -460,13 +484,14 @@ fn text_me_only_in_runs_and_the_caps_hold() {
     assert_eq!(w.finished(&r.id)[0].status, RunStatus::Quiet);
     w.model.check();
     for i in 1..=DAILY_CAP {
-        assert_eq!(phone.next(&mut seen)["text"], format!("ping {i}\n\n— Pinger"));
+        let m = phone.next(&mut seen);
+        assert_eq!((m["header"].as_str(), m["body"].as_str()), (Some("🔁 Pinger"), Some(format!("ping {i}").as_str())));
     }
     w.settle();
     assert_eq!(phone.count(), seen, "the rest are held");
     time.set("2026-11-25 07:01");
     let batch = phone.next(&mut seen);
-    let text = batch["text"].as_str().unwrap();
+    let text = batch["body"].as_str().unwrap();
     assert!(text.starts_with("2 more from Pinger") && text.contains("• ping 11\n• ping 12"), "{text}");
 
     // Twelve messages in a burst from the phone: ten get through (each answered with help).
@@ -571,14 +596,14 @@ fn a_one_way_channel_gets_texts_and_no_buttons() {
     assert_eq!(state.phone.unwrap().channel, "fakepush:push");
     assert!(phone.codes.lock().unwrap().is_empty(), "nothing to pair");
     let mut seen = 0;
-    assert!(phone.next(&mut seen)["text"].as_str().unwrap().starts_with("byob will send you messages here"));
+    assert!(phone.next(&mut seen)["body"].as_str().unwrap().starts_with("byob will send you messages here"));
     let r = w.save(Routine { when: vec![], channels: vec![CHANNEL_PHONE.into()], ..daily("Notes", "08:00") });
     w.model.calls("report", json!({"title": "A loom", "body": "Cheap."}));
     w.model.calls("write_file", json!({"path": "found.md", "content": "a loom"}));
     w.model.says("Saved.");
     w.tell(ClientMsg::RunRoutine { id: r.id.clone() });
     let ask = phone.next(&mut seen);
-    assert!(ask["text"].as_str().unwrap().contains("Open byob to answer") && ask.get("buttons").is_none(), "{ask}");
+    assert!(ask["body"].as_str().unwrap().contains("Open byob to answer") && ask.get("buttons").is_none(), "{ask}");
     // Answered in byob, the run reports.
     let chat = w.runs(&r.id)[0].chat.clone().unwrap();
     w.open_chat(&chat);
@@ -586,7 +611,7 @@ fn a_one_way_channel_gets_texts_and_no_buttons() {
     w.tell(ClientMsg::Approve { step: card, answer: byob_protocol::ApprovalAnswer::Allow });
     assert_eq!(w.finished(&r.id)[0].status, RunStatus::Reported);
     let report = phone.next(&mut seen);
-    assert_eq!(report["text"], "A loom\n\nCheap.\n\n— Notes (the details are in byob)");
+    assert_eq!(report["body"], "A loom\n\nCheap.\n\n(The details are in byob.)");
     // Inbound on a one-way channel is ignored.
     phone.text("me", "hello", None);
     w.settle();

@@ -661,13 +661,20 @@ impl Engine {
                 let step = self.messaging.asked.get(&(key.clone(), peer.clone(), d.reference.clone())).copied();
                 let free =
                     step.and_then(|s| self.pending.get(&s)).is_some_and(|p| p.step.ask.as_ref().and_then(|a| a.choice.as_ref()).is_some_and(|c| c.free_text));
-                match step {
-                    Some(step) if free && !text.is_empty() => {
+                let waiting = step.is_some_and(|s| self.pending.contains_key(&s));
+                match (step, d.chat) {
+                    (Some(step), _) if free && !text.is_empty() => {
                         self.messaging.buttons.retain(|_, b| b.step != step);
+                        let about = self.about_step(step);
                         self.answer_question(step, &text);
-                        self.deliver_to(&key, &peer, format!("Answered: {}. It goes on.", ch::cut(&text, 200)), Vec::new(), None, Link::note());
+                        self.deliver_to(&key, &peer, format!("Answered: {}. It goes on.", ch::cut(&text, 200)), Vec::new(), None, about);
                     }
-                    _ => self.deliver_to(&key, &peer, "Tap a button on that message to answer it (or open byob).".into(), Vec::new(), None, Link::note()),
+                    _ if waiting => {
+                        self.deliver_to(&key, &peer, "Tap a button on that message to answer it (or open byob).".into(), Vec::new(), None, Link::note())
+                    }
+                    // Answered already: like any message about the chat, a reply goes on there.
+                    (_, Some(chat)) if !text.is_empty() => self.phone_reply(&key, &peer, &chat, d.routine.as_deref(), text),
+                    _ => self.deliver_to(&key, &peer, "That was already answered, or the run has ended.".into(), Vec::new(), None, Link::note()),
                 }
             }
             Some(Delivered { chat: Some(chat), routine, .. }) if !text.is_empty() => self.phone_reply(&key, &peer, &chat, routine.as_deref(), text),
@@ -704,6 +711,7 @@ impl Engine {
             self.messaging.buttons.remove(token);
             return self.deliver_to(key, peer, "That was already answered, or the run has ended.".into(), Vec::new(), None, Link::note());
         };
+        let about = self.about_step(b.step);
         let choice = step.ask.as_ref().and_then(|a| a.choice.as_ref());
         let said = match (choice, pressed) {
             (Some(c), n) => {
@@ -732,7 +740,15 @@ impl Engine {
             (None, _) => return log::info!("channel {key}: a button byob doesn't know"),
         };
         self.messaging.buttons.retain(|_, x| x.step != b.step);
-        self.deliver_to(key, peer, said, Vec::new(), None, Link::note());
+        self.deliver_to(key, peer, said, Vec::new(), None, about);
+    }
+
+    /// What an answer to approval `step` is about: its chat (a reply to it goes on there).
+    fn about_step(&self, step: u64) -> Link {
+        match self.pending.get(&step).and_then(|p| self.turns.get(&p.entry)) {
+            Some(run) => Link::chat(&run.chat, run.routine.as_deref(), Sent::Answer),
+            None => Link::note(),
+        }
     }
 
     /// A reply from the phone to a message about `chat`: a user message there.
@@ -803,6 +819,16 @@ impl Engine {
             (_, Err(e)) => return self.delivered(key.to_owned(), peer.to_owned(), link, Err(e)),
             (None, Ok(_)) => return,
         };
+        // Which chat it's about, on top (a routine's runs and other chats look alike otherwise),
+        // and a reply to byob's last message about that chat: one thread you can scroll up.
+        let text = match self.header(&link) {
+            Some(h) => format!("{h}\n\n{text}"),
+            None => text,
+        };
+        let reply_to = reply_to.or_else(|| {
+            let chat = link.chat.as_deref()?;
+            self.messaging.file.recent.iter().rev().find(|d| d.channel == key && d.peer == peer && d.chat.as_deref() == Some(chat)).map(|d| d.reference.clone())
+        });
         let text = ch::cut(&text, c.decl.max_len);
         let buttons: Vec<Value> = if c.decl.buttons { buttons.iter().map(|(id, label)| json!({"id": id, "label": label})).collect() } else { Vec::new() };
         let mut params = json!({"channel": c.decl.id, "to": peer, "text": text});
@@ -821,6 +847,17 @@ impl Engine {
             }
         }
         self.courier(Job { backend, method: "deliver", params, after: After::Delivered { channel: key.to_owned(), peer: peer.to_owned(), link } });
+    }
+
+    /// The first line of a message about a chat: 🔁 and the routine's name for a run, 💬 and
+    /// the title for any other chat.
+    fn header(&self, link: &Link) -> Option<String> {
+        let chat = link.chat.as_deref()?;
+        let line = match link.routine.as_deref().and_then(|r| self.routines.list.get(r)) {
+            Some(r) => format!("🔁 {}", r.name),
+            None => format!("💬 {}", self.store.chat(chat).ok().flatten()?.title),
+        };
+        Some(ch::cut(line.trim(), 80))
     }
 
     /// Send to My phone (if set up and the hourly safety net allows).
@@ -911,7 +948,6 @@ impl Engine {
         if !self.texts_me(routine) || self.messaging.file.phone.is_none() {
             return;
         }
-        let name = self.routines.list.get(routine).map(|r| r.name.clone()).unwrap_or_default();
         let mut text = title.to_owned();
         if !body.trim().is_empty() {
             text.push_str("\n\n");
@@ -919,9 +955,9 @@ impl Engine {
         }
         let two_way = self.messaging.file.phone.clone().and_then(|t| self.channel(&t.channel)).is_some_and(|c| c.decl.two_way);
         if two_way {
-            text.push_str(&format!("\n\n— {name} (reply to this message to talk to byob about it)"));
+            text.push_str("\n\n(Reply to this message to talk to byob about it.)");
         } else {
-            text.push_str(&format!("\n\n— {name} (the details are in byob)"));
+            text.push_str("\n\n(The details are in byob.)");
         }
         if let Err(e) = self.deliver_capped(routine, text, title.to_owned(), Link::chat(chat, Some(routine), Sent::Report)) {
             log::info!("routine {routine}: not texted: {e}");
@@ -934,8 +970,7 @@ impl Engine {
             let _ = reply.send(Err("text_me only works in a routine's run".into()));
             return;
         };
-        let name = self.routines.list.get(&routine).map(|r| r.name.clone()).unwrap_or_default();
-        let body = format!("{}\n\n— {name}", text.trim());
+        let body = text.trim().to_owned();
         let link = Link { reply: Some(reply.clone()), ..Link::chat(chat, Some(&routine), Sent::Report) };
         match self.deliver_capped(&routine, body, ch::cut(text.trim(), 200), link) {
             Ok(true) => {}
@@ -962,7 +997,7 @@ impl Engine {
             (None, true, Some(t)) => FromPhone { channel: t.channel, peer: t.peer },
             _ => return,
         };
-        let who = routine.as_deref().and_then(|r| self.routines.list.get(r)).map_or_else(|| "byob".to_owned(), |r| r.name.clone());
+        let who = "byob";
         let what = ch::cut(&step.title, 300);
         let two_way = self.channel(&target.channel).is_some_and(|c| c.decl.buttons);
         let ask = step.ask.as_deref();
@@ -996,7 +1031,7 @@ impl Engine {
                         let scope = if routine.is_some() { "for this routine" } else { "in this chat" };
                         buttons.push((format!("{t}:a"), format!("🔓 Always allow {scope}")));
                     }
-                    (approval_text(&who, &what, step), buttons)
+                    (approval_text(who, &what, step), buttons)
                 }
             }
         };
