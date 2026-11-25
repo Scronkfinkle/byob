@@ -105,6 +105,12 @@ fn claim_waiting(dir: &Path, wait: Duration) -> Result<Claim, String> {
                 if let Some(running) = std::fs::read_to_string(&addr_file).ok().and_then(|s| parse_addr(&s)) {
                     return Ok(Claim::Taken(running));
                 }
+                // Or it let go meanwhile (it quit; or the lock was only held a moment longer
+                // by a process forked while it was open).
+                if lock.try_lock().is_ok() {
+                    let _ = std::fs::remove_file(&addr_file);
+                    return Ok(Claim::First(Instance { _lock: lock, addr_file, token: new_token() }));
+                }
                 if Instant::now() >= until {
                     return Err(format!("byob is already running on {} but doesn't say how to reach it ({} is missing)", dir.display(), addr_file.display()));
                 }
