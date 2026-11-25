@@ -48,7 +48,8 @@ pub const MAX_TEXT: usize = 4096;
 pub const MAX_PER_MINUTE: usize = 20;
 /// The commands byob reads (byob-agent's `messaging`), for Telegram's "/" menu:
 /// (command, description).
-pub const COMMANDS: [(&str, &str); 2] = [("new", "Start a new chat"), ("help", "What you can do from here")];
+pub const COMMANDS: [(&str, &str); 4] =
+    [("new", "Start a new chat"), ("chats", "Your latest chats"), ("find", "Look for a chat: /find and some words"), ("help", "What you can do from here")];
 /// Longest button data Telegram takes (bytes).
 pub const MAX_BUTTON_ID: usize = 64;
 /// Most buttons on one message.

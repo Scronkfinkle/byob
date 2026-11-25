@@ -129,7 +129,8 @@ link and a one-time code to send from the phone. Then a routine's Tell me offers
 or Always allow; a question's choices; for what must always be confirmed, like sending mail, the
 text says everything it will do), and a reply to a
 text continues that chat (each chat is its own reply thread), with the answer texted back.
-`/new` starts a new chat from the phone (`/new` and what it's about, or `/new` alone). byob
+`/new` starts a new chat from the phone (`/new` and what it's about, or `/new` alone); `/chats`
+lists the latest and `/find` and some words looks for one, and a tap picks it up there. byob
 only asks Telegram for the bot's messages (no open port); people who aren't paired get nothing.
 At most 10 texts a day per routine; the rest arrive together, later. Or, one way and with no
 account, push notifications through the ntfy app (pick a topic name; you answer in byob).

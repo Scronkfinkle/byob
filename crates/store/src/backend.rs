@@ -18,6 +18,9 @@ use crate::store::{MAX_PAGE, Store};
 /// [`Store`]; see its inherent methods for the details of each.
 ///
 /// Implementations are `Send` but need not be `Sync`: the engine owns its store on its
+/// Most chats [`ChatStore::find_chats`]'s default reads (the most recent).
+pub const FIND_SCAN: usize = 500;
+
 /// state thread. Message ids are only meaningful to the store that issued them.
 pub trait ChatStore: Send {
     /// Which backend this is.
@@ -32,6 +35,39 @@ pub trait ChatStore: Send {
     fn list_chats(&self, limit: usize, after: Option<&ChatCursor>) -> Result<ChatPage>;
     /// Pinned chats, most recently pinned first.
     fn pinned_chats(&self) -> Result<Vec<Chat>>;
+    /// Chats (not archived) matching `words` anywhere in the title or a message, best first
+    /// (see [`Store::find_chats`]). This default reads the [`FIND_SCAN`] most recent chats.
+    fn find_chats(&self, words: &[&str], limit: usize) -> Result<Vec<Chat>> {
+        let words: Vec<String> = words.iter().map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).take(crate::MAX_FIND_WORDS).collect();
+        if words.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let (mut scored, mut after, mut read) = (Vec::new(), None, 0);
+        while read < FIND_SCAN {
+            let page = self.list_chats(MAX_PAGE, after.as_ref())?;
+            read += page.chats.len();
+            for c in page.chats.into_iter().filter(|c| c.archived_at.is_none()) {
+                let title = c.title.to_lowercase();
+                let texts: Vec<String> = self.messages(&c.id)?.into_iter().map(|m| m.content.to_lowercase()).collect();
+                let score: usize =
+                    words.iter().map(|w| 3 * usize::from(title.contains(w.as_str())) + usize::from(texts.iter().any(|t| t.contains(w.as_str())))).sum();
+                if score > 0 {
+                    scored.push((score, c));
+                }
+            }
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        // Stable: within a score, the list's most-recent-first order stays.
+        scored.sort_by_key(|a| std::cmp::Reverse(a.0));
+        Ok(scored.into_iter().take(limit.min(MAX_PAGE)).map(|(_, c)| c).collect())
+    }
+    /// The text of a chat's latest reply that has any.
+    fn last_reply(&self, id: &str) -> Result<Option<String>> {
+        Ok(self.messages(id)?.into_iter().rev().find(|m| m.role == crate::model::Role::Assistant && !m.content.trim().is_empty()).map(|m| m.content))
+    }
     fn rename_chat(&self, id: &str, title: &str) -> Result<()>;
     fn set_chat_workspace(&self, id: &str, workspace: &Path) -> Result<()>;
     /// Pin a chat or unpin it (pinning an archived chat brings it back).
@@ -280,6 +316,12 @@ impl ChatStore for Store {
     }
     fn pinned_chats(&self) -> Result<Vec<Chat>> {
         Store::pinned_chats(self)
+    }
+    fn find_chats(&self, words: &[&str], limit: usize) -> Result<Vec<Chat>> {
+        Store::find_chats(self, words, limit)
+    }
+    fn last_reply(&self, id: &str) -> Result<Option<String>> {
+        Store::last_reply(self, id)
     }
     fn rename_chat(&self, id: &str, title: &str) -> Result<()> {
         Store::rename_chat(self, id, title)

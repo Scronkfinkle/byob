@@ -18,7 +18,9 @@
 //!   the answer goes back to the phone, so each chat is a reply thread and two can't mix.
 //!   `/new TEXT` starts a chat (with the new-chat defaults) with TEXT as its first message;
 //!   `/new` alone (what Telegram's command menu sends) makes the next message start one.
-//!   Anything else gets a note: reply to go on, or `/new`. `/help` (and `/start`) says what works.
+//!   Anything else gets a note: reply to go on, or `/new`. `/chats` lists the latest chats
+//!   and `/find WORDS` the ones that match, as buttons; a tap posts the chat's last answer in
+//!   its thread, and a reply to that goes on there. `/help` (and `/start`) says what works.
 //! - **Delivery.** Reports of routines whose Tell me includes Text me, approvals their runs
 //!   wait on, `text_me` (runs only), answers to the phone's messages. Off the engine thread,
 //!   in order, through one courier thread. Per routine at most [`DAILY_CAP`] texts a day
@@ -58,7 +60,7 @@ const MAX_ANSWER_CHARS: usize = 3000;
 /// The peer of a channel with nothing to pair (its settings say where messages go).
 const UNPAIRED_PEER: &str = "me";
 /// What paired phones can do (`/help`, `/start`, a command byob doesn't know).
-pub(crate) const HELP: &str = "This is byob. From here you can:\n• reply to one of my messages to keep talking about it (your reply goes into that chat)\n• /new to start a new chat (or /new and what it's about)\n• tap a button to answer a question I asked";
+pub(crate) const HELP: &str = "This is byob. From here you can:\n• reply to one of my messages to keep talking about it (your reply goes into that chat)\n• /new to start a new chat (or /new and what it's about)\n• /chats for your latest chats, /find and some words to look for one\n• tap a button to answer a question I asked";
 /// Said to `/new` without text.
 const NEW_CHAT: &str = "OK, a new chat: what's it about?";
 /// Said to a message that isn't a reply (or a command).
@@ -81,6 +83,19 @@ struct Buttons {
     channel: String,
     peer: String,
 }
+
+/// The chats one `/chats` or `/find` offered (a tap picks one).
+#[derive(Debug, Clone)]
+struct Picks {
+    channel: String,
+    peer: String,
+    chats: Vec<String>,
+}
+
+/// Most chats `/chats` and `/find` offer.
+const MAX_PICKS: usize = 8;
+/// Most `/chats` and `/find` lists remembered.
+const MAX_PICK_LISTS: usize = 20;
 
 /// A turn started by a message from a phone: its answer (and approvals) go back there.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +189,8 @@ pub(crate) struct Messaging {
     pub(crate) next_turn: Option<FromPhone>,
     /// Questions sent to phones, by (channel, peer, message ref): a reply answers them.
     asked: BTreeMap<(String, String, String), u64>,
+    /// Chats offered by `/chats` and `/find`, by their message's button token.
+    picks: BTreeMap<String, Picks>,
     /// Peers who sent `/new` alone: their next message (not a reply) starts a chat.
     starting: std::collections::BTreeSet<(String, String)>,
     /// Queued messages (queue item ids) that came from a phone.
@@ -181,6 +198,18 @@ pub(crate) struct Messaging {
     flushed_at: i64,
     /// The channel backends were woken once since the engine started.
     woken: bool,
+}
+
+/// How long ago, short: "5m", "3h", "2d", "6w".
+fn ago(ms: i64) -> String {
+    let min = ms.max(0) / 60_000;
+    match min {
+        0 => "now".to_owned(),
+        1..60 => format!("{min}m"),
+        60..1440 => format!("{}h", min / 60),
+        1440..10080 => format!("{}d", min / 1440),
+        _ => format!("{}w", min / 10080),
+    }
 }
 
 /// A command (`/new`, `/new@some_bot rest`): its name, lower case, and the rest, trimmed.
@@ -651,6 +680,8 @@ impl Engine {
                     self.deliver_to(&key, &peer, NEW_CHAT.into(), Vec::new(), None, Link::note());
                 }
                 "new" => self.phone_new(&key, &peer, rest.to_owned()),
+                "chats" | "list" => self.phone_chats(&key, &peer, ""),
+                "find" | "search" => self.phone_chats(&key, &peer, rest),
                 _ => self.deliver_to(&key, &peer, HELP.into(), Vec::new(), None, Link::note()),
             };
         }
@@ -705,6 +736,13 @@ impl Engine {
         let Some((token, pressed)) = button.rsplit_once(':') else {
             return log::info!("channel {key}: a button byob doesn't know");
         };
+        if let Some(picks) = self.messaging.picks.get(token).filter(|p| p.channel == key && p.peer == peer) {
+            let chat = pressed.strip_prefix('c').and_then(|n| n.parse::<usize>().ok()).and_then(|n| picks.chats.get(n)).cloned();
+            return match chat {
+                Some(chat) => self.phone_resume(key, peer, &chat),
+                None => log::info!("channel {key}: a chat button byob doesn't know"),
+            };
+        }
         let b = self.messaging.buttons.get(token).cloned().filter(|b| b.channel == key && b.peer == peer);
         let pending = b.as_ref().and_then(|b| self.pending.get(&b.step)).map(|p| p.step.clone());
         let (Some(b), Some(step)) = (b, pending) else {
@@ -741,6 +779,71 @@ impl Engine {
         };
         self.messaging.buttons.retain(|_, x| x.step != b.step);
         self.deliver_to(key, peer, said, Vec::new(), None, about);
+    }
+
+    /// `/chats` (no words) or `/find WORDS`: the chats as buttons.
+    fn phone_chats(&mut self, key: &str, peer: &str, words: &str) {
+        let words: Vec<&str> = words.split_whitespace().collect();
+        let found = if words.is_empty() {
+            self.store.pinned_chats().and_then(|mut chats| {
+                chats.extend(self.store.list_chats(MAX_PICKS * 2, None)?.chats);
+                Ok(chats)
+            })
+        } else {
+            self.store.find_chats(&words, MAX_PICKS)
+        };
+        let mut chats = match found {
+            Ok(chats) => chats,
+            Err(e) => return self.deliver_to(key, peer, format!("Couldn't look: {e}"), Vec::new(), None, Link::note()),
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        chats.retain(|c| c.archived_at.is_none() && seen.insert(c.id.clone()));
+        chats.truncate(MAX_PICKS);
+        let looked = ch::cut(&words.join(" "), 60);
+        if chats.is_empty() {
+            let text = if words.is_empty() {
+                "No chats yet: send /new to start one.".to_owned()
+            } else {
+                format!("No chat matches \"{looked}\". /chats lists the latest.")
+            };
+            return self.deliver_to(key, peer, text, Vec::new(), None, Link::note());
+        }
+        let t = token();
+        let now = self.now_ms();
+        let buttons = chats.iter().enumerate().map(|(i, c)| (format!("{t}:c{i}"), self.chat_label(c, now))).collect();
+        self.messaging.picks.insert(t, Picks { channel: key.to_owned(), peer: peer.to_owned(), chats: chats.into_iter().map(|c| c.id).collect() });
+        while self.messaging.picks.len() > MAX_PICK_LISTS {
+            let Some(k) = self.messaging.picks.keys().next().cloned() else { break };
+            self.messaging.picks.remove(&k);
+        }
+        let text = if words.is_empty() {
+            "Your latest chats: tap one to pick it up.".to_owned()
+        } else {
+            format!("Chats that match \"{looked}\": tap one to pick it up.")
+        };
+        self.deliver_to(key, peer, text, buttons, None, Link::note());
+    }
+
+    /// A chat's button: 🔁 and the routine for a run, 💬 and the title, and how long ago.
+    fn chat_label(&self, c: &byob_store::Chat, now: i64) -> String {
+        let name = match c.origin.as_deref().and_then(|r| self.routines.list.get(r)) {
+            Some(r) => format!("🔁 {}", r.name),
+            None => format!("💬 {}", c.title),
+        };
+        format!("{} · {}", ch::cut(name.trim(), 40), ago(now.saturating_sub(c.updated_at)))
+    }
+
+    /// A chat picked from `/chats` or `/find`: its last answer, in its thread (a reply goes on there).
+    fn phone_resume(&mut self, key: &str, peer: &str, chat: &str) {
+        let Ok(Some(row)) = self.store.chat(chat) else {
+            return self.deliver_to(key, peer, "That chat isn't in byob any more.".into(), Vec::new(), None, Link::note());
+        };
+        let last = self.store.last_reply(chat).ok().flatten().map(|t| ch::cut(t.trim(), 600));
+        let text = match last {
+            Some(t) => format!("Last: {t}\n\nReply to this message to continue."),
+            None => "Nothing answered here yet. Reply to this message to continue.".to_owned(),
+        };
+        self.deliver_to(key, peer, text, Vec::new(), None, Link::chat(chat, row.origin.as_deref(), Sent::Answer));
     }
 
     /// What an answer to approval `step` is about: its chat (a reply to it goes on there).

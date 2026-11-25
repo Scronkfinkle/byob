@@ -302,3 +302,26 @@ fn migrates_v5_to_latest_keeping_pins_and_archiving_works() {
     let s = Store::open(&path).unwrap();
     assert!(s.chat("q").unwrap().unwrap().archived_at.is_some(), "archiving is kept across a reopen");
 }
+
+#[test]
+fn find_chats_matches_titles_before_messages_and_skips_archived() {
+    let s = mem();
+    let looms = s.create_chat("a", "Loom deals", Path::new("/work")).unwrap();
+    s.append_message(&looms.id, &NewMessage::user("any 8-shaft looms on sale?")).unwrap();
+    s.create_chat("b", "Weekend", Path::new("/work")).unwrap();
+    s.append_message("b", &NewMessage::user("I saw a LOOM at the fair")).unwrap();
+    s.create_chat("c", "Old loom notes", Path::new("/work")).unwrap();
+    s.archive_chat("c", true).unwrap();
+    s.create_chat("d", "Taxes", Path::new("/work")).unwrap();
+    let ids = |words: &[&str]| s.find_chats(words, 10).unwrap().into_iter().map(|c| c.id).collect::<Vec<_>>();
+    assert_eq!(ids(&["loom"]), ["a", "b"], "the title first, any case, not archived");
+    assert_eq!(ids(&["Shaft", "fair"]), ["b", "a"], "ties go to the most recent");
+    assert!(ids(&["nothing"]).is_empty() && ids(&[" "]).is_empty());
+    assert_eq!(s.find_chats(&["loom"], 1).unwrap().len(), 1);
+    // A word with SQL in it is only text.
+    assert!(ids(&["%' OR 1=1 --"]).is_empty());
+
+    assert_eq!(s.last_reply("a").unwrap(), None);
+    s.append_message("a", &NewMessage { role: Role::Assistant, content: "Two at The Woolery.".into(), ..NewMessage::user("") }).unwrap();
+    assert_eq!(s.last_reply("a").unwrap().as_deref(), Some("Two at The Woolery."));
+}

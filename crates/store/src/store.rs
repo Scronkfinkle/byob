@@ -160,6 +160,39 @@ impl Store {
         Ok(ChatPage { chats, next })
     }
 
+    /// Chats (not archived) matching `words` (case-insensitive, anywhere in the title or a
+    /// message), best first: a word in the title counts 3, in a message 1; ties go to the
+    /// most recently active. At most [`MAX_FIND_WORDS`] words, `limit` (≤ [`MAX_PAGE`]) chats.
+    pub fn find_chats(&self, words: &[&str], limit: usize) -> Result<Vec<Chat>> {
+        let words: Vec<String> = words.iter().map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).take(MAX_FIND_WORDS).collect();
+        if words.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let score = (1..=words.len())
+            .map(|i| {
+                format!(
+                    "(instr(lower(title), ?{i}) > 0) * 3 + EXISTS(SELECT 1 FROM messages m WHERE m.chat_id = chats.id AND instr(lower(m.content), ?{i}) > 0)"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let sql = format!(
+            "SELECT {CHAT_COLS} FROM (SELECT *, ({score}) AS score FROM chats WHERE archived_at IS NULL) WHERE score > 0 ORDER BY score DESC, updated_at DESC, id DESC LIMIT {}",
+            limit.min(MAX_PAGE)
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        Ok(stmt.query_map(rusqlite::params_from_iter(words.iter()), chat_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The text of a chat's latest reply that has any.
+    pub fn last_reply(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .prepare_cached("SELECT content FROM messages WHERE chat_id = ?1 AND role = 'assistant' AND trim(content) != '' ORDER BY id DESC LIMIT 1")?
+            .query_row([id], |r| r.get(0))
+            .optional()?)
+    }
+
     /// Pinned chats, most recently pinned first.
     pub fn pinned_chats(&self) -> Result<Vec<Chat>> {
         let mut stmt = self.conn.prepare_cached(&format!("SELECT {CHAT_COLS} FROM chats WHERE pinned_at IS NOT NULL ORDER BY pinned_at DESC, id DESC"))?;
@@ -231,6 +264,9 @@ impl Store {
         Ok(conn.prepare_cached("UPDATE chats SET updated_at = max(updated_at + 1, ?2) WHERE id = ?1")?.execute(params![id, now()])?)
     }
 }
+
+/// Most words [`Store::find_chats`] looks for.
+pub const MAX_FIND_WORDS: usize = 8;
 
 const CHAT_COLS: &str = "id, title, workspace, created_at, updated_at, pinned_at, archived_at, origin";
 

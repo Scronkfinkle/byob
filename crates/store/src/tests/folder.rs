@@ -486,3 +486,22 @@ fn hand_written_and_newer_compaction_lines_degrade() {
     assert_eq!(cs[0].through, s.messages("c").unwrap()[0].id);
     assert_eq!(cs[0].summary, "ok");
 }
+
+#[test]
+fn find_chats_and_last_reply_work_on_a_folder_too() {
+    let dir = TempDir::new();
+    let s = open(dir.path());
+    let s: &dyn ChatStore = &s;
+    s.create_chat("a", "Loom deals", Path::new("/work")).unwrap();
+    s.append_message("a", &NewMessage::user("any 8-shaft looms?")).unwrap();
+    s.create_chat("b", "Weekend", Path::new("/work")).unwrap();
+    s.append_message("b", &NewMessage::user("I saw a LOOM at the fair")).unwrap();
+    s.create_chat("c", "Old loom notes", Path::new("/work")).unwrap();
+    s.archive_chat("c", true).unwrap();
+    let ids = |words: &[&str]| s.find_chats(words, 10).unwrap().into_iter().map(|c| c.id).collect::<Vec<_>>();
+    assert_eq!(ids(&["loom"]), ["a", "b"]);
+    assert!(ids(&["taxes"]).is_empty());
+    assert_eq!(s.last_reply("a").unwrap(), None);
+    s.append_message("a", &NewMessage { role: Role::Assistant, content: "Two.".into(), ..NewMessage::user("") }).unwrap();
+    assert_eq!(s.last_reply("a").unwrap().as_deref(), Some("Two."));
+}

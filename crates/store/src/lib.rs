@@ -70,7 +70,7 @@ pub use settings::{
     Settings, StorageKind, SubagentSettings, Theme, ToolMode,
 };
 pub use steps::MAX_STEP_OUTPUT;
-pub use store::{BUSY_TIMEOUT, MAX_PAGE, Store};
+pub use store::{BUSY_TIMEOUT, MAX_FIND_WORDS, MAX_PAGE, Store};
 pub use workspaces::{
     MAX_LINKED_FOLDERS, MAX_NAME_CHARS, MAX_PATH_CHARS, PluginTrust, WorkspaceRow, Workspaces, clean_name, default_name, folder_slug, workspace_id,
 };

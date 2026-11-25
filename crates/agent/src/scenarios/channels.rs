@@ -340,6 +340,56 @@ fn new_starts_a_chat_from_the_phone_and_replies_go_on_with_it() {
     w.model.check();
 }
 
+/// `/chats` lists the latest chats as buttons and `/find` the ones that match; a tap posts
+/// the chat's last answer in its thread, and a reply to that goes on in the chat.
+#[test]
+fn chats_and_find_pick_up_an_earlier_chat() {
+    let time = Time::new("2026-11-24 07:00");
+    let (mut w, phone) = world(&time);
+    w.pair(&phone);
+    let mut seen = phone.count();
+    w.model.says("Try the Ashford Kiwi.");
+    phone.text(ME, "/new Which spinning wheel for a beginner?", None);
+    let wheel = phone.next(&mut seen)["chat"].as_str().unwrap().to_owned();
+    w.settle();
+    w.model.says("Sunny all week.");
+    phone.text(ME, "/new weather in Lisbon", None);
+    phone.next(&mut seen);
+    w.settle();
+
+    phone.text(ME, "/chats", None);
+    let list = phone.next(&mut seen);
+    assert!(list["body"].as_str().unwrap().starts_with("Your latest chats"), "{list}");
+    let labels: Vec<&str> = list["buttons"].as_array().unwrap().iter().map(|b| b["label"].as_str().unwrap()).collect();
+    assert_eq!(labels.len(), 2, "{labels:?}");
+    assert!(labels[0].starts_with("💬 ") && labels[0].contains("Lisbon") && labels[1].contains("spinning wheel"), "newest first: {labels:?}");
+
+    phone.text(ME, "/find SPINNING", None);
+    let found = phone.next(&mut seen);
+    assert!(found["body"].as_str().unwrap().starts_with("Chats that match \"SPINNING\""), "{found}");
+    let buttons = found["buttons"].as_array().unwrap();
+    assert_eq!(buttons.len(), 1, "{found}");
+    phone.says(json!({"type": "inbound", "channel": "chat", "peer": ME, "button": buttons[0]["id"]}));
+    let resumed = phone.next(&mut seen);
+    assert_eq!(resumed["chat"], wheel.as_str());
+    assert!(resumed["header"].as_str().unwrap().contains("spinning wheel"), "{resumed}");
+    assert!(resumed["body"].as_str().unwrap().starts_with("Last: Try the Ashford Kiwi."), "{resumed}");
+
+    w.model.answers(|req| {
+        assert_eq!(req.user_texts().len(), 2, "the earlier chat");
+        Answer::text("About $600.")
+    });
+    phone.text(ME, "How much is it?", Some(&format!("m{seen}")));
+    let answer = phone.next(&mut seen);
+    assert_eq!((answer["body"].as_str(), answer["chat"].as_str()), (Some("About $600."), Some(wheel.as_str())));
+    w.settle();
+
+    phone.text(ME, "/find taxes", None);
+    assert_eq!(phone.next(&mut seen)["body"], "No chat matches \"taxes\". /chats lists the latest.");
+    assert_eq!(w.model.unused(), 0);
+    w.model.check();
+}
+
 /// A read-only routine's run wants to write a file: the phone gets Allow/Deny; Allow lets the
 /// run go on. A must-confirm call (making a routine) gets no buttons: open byob to confirm.
 #[test]
