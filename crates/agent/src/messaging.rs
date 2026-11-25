@@ -62,7 +62,7 @@ pub(crate) const HELP: &str = "This is byob. From here you can:\n• reply to on
 /// Said to `/new` without text.
 const NEW_CHAT: &str = "OK, a new chat: what's it about?";
 /// Said to a message that isn't a reply (or a command).
-const REPLY_OR_NEW: &str = "To keep talking about something, reply to my message about it. To start a new chat, send /new (or /new and what it's about).";
+const REPLY_OR_NEW: &str = "byob's chats here are threaded, so you can have several conversations going at once. To continue one, reply to a message in it. To start a new one, send /new (or /new and what it's about).";
 /// Said when a pairing code didn't work.
 const WRONG_CODE: &str = "That code didn't work (it may have expired). Get a new one in byob: Settings → Plugins → My phone.";
 

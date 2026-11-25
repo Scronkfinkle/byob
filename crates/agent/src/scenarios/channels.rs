@@ -282,7 +282,7 @@ fn a_report_reaches_the_phone_and_a_reply_continues_the_run() {
     // A message that isn't a reply starts nothing: reply, or /new.
     phone.text(ME, "Is it in stock?", None);
     let note = phone.next(&mut seen);
-    assert!(note["body"].as_str().unwrap().starts_with("To keep talking about something, reply to my message"), "{note}");
+    assert!(note["body"].as_str().unwrap().starts_with("byob's chats here are threaded"), "{note}");
     w.settle();
     assert_eq!(w.model.unused(), 0);
     w.model.check();
