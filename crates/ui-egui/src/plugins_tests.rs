@@ -530,3 +530,62 @@ fn a_plugin_that_needs_setup_is_set_up_in_a_dialog_with_one_save() {
     assert!(ui_state.setup_open.is_none(), "saving closes the dialog");
     assert!(ui_state.drafts.values().all(String::is_empty) || ui_state.drafts.is_empty());
 }
+
+/// Telegram is something byob connects to: its tile is under Connects to, and its page sets
+/// My phone up there (the steps, the token, then pairing), not in a generic dialog.
+#[test]
+fn telegram_connects_and_sets_up_my_phone_on_its_page() {
+    use byob_protocol::phone::{ChannelOption, PhoneState};
+    let bundled = |id: &str| info(id, PluginScope::Bundled, PluginOrigin::Bundled);
+    assert_eq!(group_of(&bundled("telegram")), Group::Connections);
+    assert_eq!(group_of(&bundled("ntfy")), Group::Connections);
+    let ctx = egui::Context::default();
+    let mut ui_state = PluginsUi::default();
+    let mut tg = bundled("telegram");
+    tg.name = "Telegram".into();
+    tg.enabled = false;
+    tg.settings.push(PluginSetting { key: "BOT_TOKEN".into(), label: "Bot token".into(), help: None, secret: true, required: true, set: false });
+    ui_state.apply(&ext(vec![tg]));
+    let channel = ChannelOption {
+        key: "telegram:telegram".into(),
+        plugin: "telegram".into(),
+        title: "Telegram".into(),
+        two_way: true,
+        buttons: true,
+        setting: Some("BOT_TOKEN".into()),
+        setting_label: Some("Bot token".into()),
+        ..Default::default()
+    };
+    ui_state.phone.apply(&ServerMsg::Phone(PhoneState { channels: vec![channel], ..Default::default() }));
+    let mut query = String::new();
+    let mut draw = |ui: &mut egui::Ui| {
+        ui_state.page(ui, &Tokens::dark(), &mut query);
+    };
+    let texts = frame(&ctx, vec![], &mut draw);
+    assert!(has(&texts, "Connects to") && has(&texts, "Text you, and read your replies"), "{:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
+    assert!(find(&texts, "Telegram").top() > find(&texts, "Connects to").bottom(), "on the Connects to board");
+    let tile = find(&texts, "Text you, and read your replies");
+    click_at(&ctx, Pos2::new(tile.left() + 10.0, tile.center().y), &mut draw);
+    assert_eq!(ui_state.detail(), Some("telegram"));
+    let mut draw = |ui: &mut egui::Ui| {
+        ui_state.page(ui, &Tokens::dark(), &mut query);
+    };
+    frame(&ctx, vec![], &mut draw);
+    let texts = frame(&ctx, vec![], &mut draw);
+    for s in ["Your phone", "Set up Telegram (about 3 minutes):", "@BotFather", "Save"] {
+        assert!(texts.iter().any(|(t, _)| t.contains(s)), "{s:?} isn't on Telegram's page: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
+    }
+    assert!(!has(&texts, "Bot token"), "the token is asked for once, in Your phone");
+    ui_state.phone.token = "123456:AAE-secret".into();
+    let mut draw = |ui: &mut egui::Ui| {
+        ui_state.page(ui, &Tokens::dark(), &mut query);
+    };
+    let texts = frame(&ctx, vec![], &mut draw);
+    let texts = click(&ctx, &texts, "Save", &mut draw);
+    drop(texts);
+    assert!(
+        ui_state.out.contains(&ClientMsg::SetPluginSetting { plugin: "telegram".into(), key: "BOT_TOKEN".into(), value: Some("123456:AAE-secret".into()) }),
+        "{:?}",
+        ui_state.out
+    );
+}

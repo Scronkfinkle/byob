@@ -84,8 +84,40 @@ impl Phone {
         self.channel().map(|c| ClientMsg::PairPhone { channel: c.key.clone() }).into_iter().collect()
     }
 
+    /// Plugin `id` offers a way to text you (its page sets My phone up).
+    pub fn offered_by(&self, id: &str) -> bool {
+        self.state.as_ref().is_some_and(|s| s.channels.iter().any(|c| c.plugin == id))
+    }
+
+    /// The setting plugin `id`'s channel is set up with (its bot token), which the phone
+    /// setup asks for itself.
+    pub fn setting_of(&self, id: &str) -> Option<String> {
+        self.state.as_ref()?.channels.iter().find(|c| c.plugin == id)?.setting.clone()
+    }
+
+    /// The setup on plugin `id`'s own page (Plugins → Connects to → Telegram): that plugin's
+    /// channel only. `None`: it offers none.
+    pub fn ui_for_plugin(&mut self, ui: &mut Ui, t: &Tokens, id: &str) -> Option<Vec<ClientMsg>> {
+        let state = self.state.clone()?;
+        let c = state.channels.iter().find(|c| c.plugin == id)?.clone();
+        if let Some(p) = state.phone.as_ref().filter(|p| p.channel != c.key) {
+            ui.add(
+                egui::Label::new(RichText::new(format!("byob texts you on {} now. Unpair it there to use {} instead.", p.title, c.title)).color(t.text_dim))
+                    .wrap(),
+            );
+            return Some(Vec::new());
+        }
+        self.picked = Some(c.key);
+        Some(self.draw(ui, t, false))
+    }
+
     /// Draw the section; the messages its buttons sent.
     pub fn ui(&mut self, ui: &mut Ui, t: &Tokens) -> Vec<ClientMsg> {
+        self.draw(ui, t, true)
+    }
+
+    /// The section; `choose`: offer a choice of channel when there are several.
+    fn draw(&mut self, ui: &mut Ui, t: &Tokens, choose: bool) -> Vec<ClientMsg> {
         let mut out = Vec::new();
         let Some(state) = self.state.clone() else {
             ui.label(RichText::new("This byob can't text you (its engine is older).").color(t.text_faint));
@@ -98,7 +130,7 @@ impl Phone {
         ui.spacing_mut().item_spacing.y = t.pad(8.0);
         let Some(c) = self.channel_in(&state).cloned() else { return out };
         // Which channel (one now; a choice once there are more).
-        if state.channels.len() > 1 && state.phone.is_none() {
+        if choose && state.channels.len() > 1 && state.phone.is_none() {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Text me on").color(t.text));
                 let mut i = state.channels.iter().position(|x| x.key == c.key).unwrap_or(0);

@@ -108,7 +108,7 @@ impl ByobApp {
                 }
             },
             Key::Phone => {
-                let msgs = self.phone.ui(ui, t);
+                let msgs = self.plugins.phone.ui(ui, t);
                 self.send_all(msgs);
             }
             Key::PluginList => self.plugins.panel(ui, t, &crate::plugins::Filter::All),

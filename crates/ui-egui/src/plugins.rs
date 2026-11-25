@@ -73,6 +73,8 @@ pub struct PluginsUi {
     logos: std::collections::HashMap<String, Logo>,
     /// The plugins' live views at render sites (pane, status items, settings sections, cards).
     pub sites: crate::sites::Sites,
+    /// My phone: set up on a channel plugin's page (Telegram's) and in Settings → Plugins.
+    pub phone: crate::phone::Phone,
 }
 
 impl PluginsUi {
@@ -974,7 +976,7 @@ fn section_head(ui: &mut egui::Ui, t: &Tokens, title: &str, n: usize) {
 }
 
 /// byob's own plugins people think of as connections: they reach outside byob.
-const CONNECT: [&str; 3] = ["mail", "calendar", "web"];
+const CONNECT: [&str; 5] = ["mail", "calendar", "web", "telegram", "ntfy"];
 /// byob's own plugins that make a kind of thing.
 const MAKE: [&str; 6] = ["html-apps", "sheets", "charts", "markdown", "images", "math"];
 
@@ -987,6 +989,8 @@ pub fn plain_line(p: &PluginInfo) -> &str {
         "mail" => "Read, search and send your email",
         "calendar" => "See your week, find free time, add events",
         "web" => "Search the web and read pages",
+        "telegram" => "Text you, and read your replies",
+        "ntfy" => "Send alerts to your phone",
         "charts" => "Draw charts from numbers",
         "html-apps" => "Build small apps that run beside the chat",
         "sheets" => "Spreadsheets with formulas you can edit",
@@ -1555,8 +1559,13 @@ impl PluginsUi {
                 );
                 on_control = b.hovered();
                 if b.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    self.setup_open = Some(p.id.clone());
-                    self.setup_advanced = false;
+                    if self.phone.offered_by(&p.id) {
+                        // Texting you is set up step by step on its page (token, then pairing).
+                        self.detail = Some(p.id.clone());
+                    } else {
+                        self.setup_open = Some(p.id.clone());
+                        self.setup_advanced = false;
+                    }
                 }
             });
         } else if !p.locked {
@@ -1949,13 +1958,24 @@ impl PluginsUi {
                     ui.add_space(16.0);
                     ui.add(egui::Label::new(RichText::new(&p.description).color(t.text)).wrap());
                 }
-                // Its settings.
-                if !p.settings.is_empty() || p.locked {
+                // A way to text you: My phone's setup, for this channel.
+                if self.phone.offered_by(&p.id) {
+                    section_head(ui, t, "Your phone", 0);
+                    if let Some(msgs) = self.phone.ui_for_plugin(ui, t, &p.id) {
+                        self.out.extend(msgs);
+                    }
+                }
+                // Its settings (but the one Your phone asks for).
+                let mut rest = p.clone();
+                if let Some(key) = self.phone.setting_of(&p.id) {
+                    rest.settings.retain(|s| s.key != key);
+                }
+                if !rest.settings.is_empty() || p.locked {
                     section_head(ui, t, "Settings", 0);
                     if p.locked {
                         ui.label(RichText::new("Always on: part of byob's core. Fork it to change how it works.").color(t.text_dim));
                     }
-                    self.settings_summary(ui, t, p);
+                    self.settings_summary(ui, t, &rest);
                     self.sites.settings_sections(ui, t, &p.id);
                 }
                 // What it brings.

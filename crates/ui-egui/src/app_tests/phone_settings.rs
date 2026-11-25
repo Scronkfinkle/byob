@@ -88,7 +88,7 @@ fn my_phone_walks_through_setting_up_telegram() {
     }
     assert!(!plugins::tests::has(&page, "Pair my phone"), "no pairing before there's a bot");
     sent(&fake);
-    app.phone.token = "123456:AAE-secret".into();
+    app.plugins.phone.token = "123456:AAE-secret".into();
     click_text(&ctx, &mut app, 1100.0, "Save");
     let msgs = sent(&fake);
     assert!(

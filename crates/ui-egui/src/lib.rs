@@ -116,8 +116,6 @@ pub struct ByobApp {
     projects: projects::Projects,
     /// Routines: what the engine said, the Routines page and a routine's page.
     routines: routines::Routines,
-    /// My phone (Settings → Plugins).
-    phone: phone::Phone,
     /// The run chat in view's routine runs were asked for (its header says when it ran).
     run_runs_asked: Option<String>,
     /// The run chat whose report was last scrolled into view.
@@ -278,7 +276,6 @@ impl ByobApp {
             library: library::Library::default(),
             projects: projects::Projects::default(),
             routines: routines::Routines::default(),
-            phone: phone::Phone::default(),
             run_runs_asked: None,
             run_scrolled: None,
             page: Page::Chat,
@@ -485,7 +482,7 @@ impl ByobApp {
         // The main role's saved model, else the model the engine talks to.
         let main = list.and_then(|l| l.roles.get(byob_protocol::profiles::ROLE_MAIN).and_then(|id| l.get(id))).map(|p| p.profile.label().to_owned());
         let default_model = main.or_else(|| self.state.as_ref().map(|s| s.inference_model.clone())).unwrap_or_default();
-        let phone = self.phone.state.as_ref().and_then(|s| s.phone.as_ref()).map(|p| p.title.clone());
+        let phone = self.plugins.phone.state.as_ref().and_then(|s| s.phone.as_ref()).map(|p| p.title.clone());
         routines::page::PageCtx { projects, models, default_model, phone }
     }
 
@@ -740,7 +737,7 @@ impl ByobApp {
                 self.send_all(msgs);
                 continue;
             }
-            if self.library.apply(&msg) || self.plugins.apply_logo(&msg) || self.phone.apply(&msg) {
+            if self.library.apply(&msg) || self.plugins.apply_logo(&msg) || self.plugins.phone.apply(&msg) {
                 continue;
             }
             if self.usage.apply(&msg) || self.workspaces.apply(&msg) || self.sidebar.apply(&msg) || self.artifacts.apply(&msg) || self.plugins.apply(&msg) {
